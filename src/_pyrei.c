@@ -3,13 +3,16 @@
  * The extension compiles the vendored core sources directly, so the module
  * is self-contained: no system librei is required or consulted.
  *
- * GIL policy (channel handles are submitter handles — exec is NULL): the
- * veneer releases the GIL around every verb; the stage/read/check callbacks
- * reacquire it with PyGILState_Ensure. The park hook stays NULL — it exists
- * for exec-capable worker handles, which hold the GIL through collect.
- * Staging pins nothing (pickle streams and bare vector bytes are
- * self-contained; out-of-line regions ride the core's retain table), so the
- * drop hook is NULL too.
+ * GIL policy, per handle kind. Submitter handles (channels, pool
+ * controllers/submitters — exec is NULL) release the GIL around every verb;
+ * the stage/read/check callbacks reacquire it with PyGILState_Ensure, and
+ * the park hook stays NULL. Worker (exec-capable) handles hold the GIL
+ * through run and collect — nested-collect help reenters exec_fn from
+ * inside the core's collect path — and register the around-park hook, which
+ * drops the GIL for each bounded sleep so the worker process's other
+ * threads run. Staging pins nothing (pickle streams and bare vector bytes
+ * are self-contained; out-of-line regions ride the core's retain table), so
+ * the drop hook is NULL too.
  */
 
 #define PY_SSIZE_T_CLEAN
@@ -31,17 +34,25 @@
 enum { REI_CE_NATIVE = 0, REI_CE_UTF8 = 1, REI_CE_LATIN1 = 2, REI_CE_BYTES = 3 };
 
 static PyTypeObject ReiChannelType;
+static PyTypeObject ReiPoolType;
+static PyTypeObject ReiTaskType;
+static PyTypeObject ReiCaughtType;
 
 // Module state -------------------------------------------------------------------
 
 static PyObject *ReiError;           /* base */
 static PyObject *ReiStartupError;    /* child failed to attach in time */
 static PyObject *ReiShmError;        /* region create/open failure */
-static PyObject *ReiSubmitTimeoutError;   /* pool (verb surface lands later) */
+static PyObject *ReiSubmitTimeoutError;   /* ring full past the deadline */
 static PyObject *ReiSlotsExhaustedError;
 static PyObject *ReiStoppedError;
 static PyObject *ReiCancelledError;
 static PyObject *ReiWorkerDiedError;
+static PyObject *ReiTaskError;       /* a task's own error, re-raised */
+
+/* traceback.format_exception, resolved lazily on the first task error (the
+   error path is cold; importing it at module init is not). */
+static PyObject *rei_traceback_fmt;
 
 /* pickle, or cloudpickle when installed (used transparently — its output is
    a standard protocol stream). Resolved at module init; protocol pinned to 4. */
@@ -92,6 +103,41 @@ static PyObject *sentinel_new(const char *name) {
   if (s == NULL) return NULL;
   s->name = name;
   return (PyObject *) s;
+}
+
+// Outcome boxes (the rei_caught mirror) --------------------------------------
+
+/* A collect's non-OK outcome comes back boxed: the exception instance rides
+   inside, so a task value that is itself an exception object stays bare.
+   The collect veneer unwraps the box and raises. */
+typedef struct {
+  PyObject_HEAD
+  PyObject *exc;
+} ReiCaught;
+
+static void Caught_dealloc(ReiCaught *self) {
+  Py_DECREF(self->exc);
+  ReiCaughtType.tp_free((PyObject *) self);
+}
+
+static PyTypeObject ReiCaughtType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pyrei._Caught",
+  .tp_basicsize = sizeof(ReiCaught),
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A collected task outcome, boxed for the veneer to raise.",
+  .tp_dealloc = (destructor) Caught_dealloc,
+};
+
+static PyObject *caught_new(PyObject *exc) {   /* steals exc */
+  if (exc == NULL) return NULL;
+  ReiCaught *c = (ReiCaught *) ReiCaughtType.tp_alloc(&ReiCaughtType, 0);
+  if (c == NULL) {
+    Py_DECREF(exc);
+    return NULL;
+  }
+  c->exc = exc;
+  return (PyObject *) c;
 }
 
 // Errors -------------------------------------------------------------------------
@@ -193,6 +239,20 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
   }
   uint64_t off;
   uint8_t *chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
+  if (chunk == NULL && h->htype == REI_HTYPE_POOL && n <= UINT32_MAX) {
+    /* a pool has no arena: out-of-line frames are always named regions (the
+       mirror of R's pool RAWSPILL framing — aux packs the wire type and the
+       region name length). A region failure falls to pickle. */
+    rei_shm *shm;
+    if (rei_stage_spill_get(h, n, &shm) != REI_OK) return -1;
+    memcpy(shm->addr, v->buf, n);
+    hdr->kind = REI_KIND_RAWSPILL;
+    hdr->len = (uint32_t) n;
+    hdr->aux = (uint64_t) type | ((uint64_t) shm->name_len << 8);
+    memcpy(payload, shm->name, shm->name_len);
+    rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
+    return 0;
+  }
   if (chunk == NULL) return -1;
   memcpy(chunk, v->buf, n);
   hdr->kind = REI_KIND_RAWSPILL;
@@ -328,8 +388,8 @@ static PyObject *read_stream(const uint8_t *src, size_t n) {
   }
 }
 
-static PyObject *read_impl(const rei_slot_hdr *hdr, const uint8_t *payload,
-                           size_t limit, rei_read_ctx *ctx) {
+static PyObject *read_frame(const rei_slot_hdr *hdr, const uint8_t *payload,
+                            size_t limit, rei_read_ctx *ctx) {
   switch (hdr->kind) {
   case REI_KIND_NIL:
     Py_RETURN_NONE;
@@ -337,10 +397,22 @@ static PyObject *read_impl(const rei_slot_hdr *hdr, const uint8_t *payload,
     if (hdr->len > limit) break;
     return read_raw(payload, hdr->len, (int) hdr->aux);
   case REI_KIND_RAWSPILL:
+    if (hdr->aux >> 8) {
+      /* pool framing: the region name in the payload, its length and the
+         wire type packed in aux (the channel's arena framing of this kind
+         is resolved by the transport, never reaching here) */
+      uint32_t name_len = (uint32_t) (hdr->aux >> 8);
+      int type = (int) (hdr->aux & 0xff);
+      if (name_len == 0 || name_len >= REI_NAME_MAX) break;
+      rei_shm *shm = rei_read_region(ctx, payload, name_len);
+      if (shm == NULL) return NULL;          /* ctx->gone set */
+      if ((uint64_t) hdr->len > (uint64_t) shm->size) break;
+      return read_raw((const uint8_t *) shm->addr, hdr->len, type);
+    }
     /* the channel's arena framing is resolved to its byte range by the
-       transport before the call (the pool's region framing is pool-side) */
+       transport before the call */
     if (hdr->len > limit) break;
-    return read_raw(payload, hdr->len, (int) (hdr->aux & 0xff));
+    return read_raw(payload, hdr->len, (int) hdr->aux);
   case REI_KIND_STR1: {
     if (hdr->aux == REI_STR1_NA) {
       if (hdr->len != 0) break;
@@ -393,6 +465,91 @@ static PyObject *read_impl(const rei_slot_hdr *hdr, const uint8_t *payload,
   return NULL;
 }
 
+/* The ERR outcome's payload is the worker's constructed envelope: a pickled
+   (type name, message, traceback) tuple — never a pickled exception
+   instance. Rebuild it as a TaskError carrying the remote type name and
+   traceback text. */
+static PyObject *task_error_of(PyObject *env) {
+  PyObject *tn = NULL, *ms = NULL, *tbs = NULL;
+  if (PyTuple_Check(env) && PyTuple_GET_SIZE(env) == 3 &&
+      PyUnicode_Check(PyTuple_GET_ITEM(env, 0)) &&
+      PyUnicode_Check(PyTuple_GET_ITEM(env, 1)) &&
+      PyUnicode_Check(PyTuple_GET_ITEM(env, 2))) {
+    tn = PyTuple_GET_ITEM(env, 0);
+    ms = PyTuple_GET_ITEM(env, 1);
+    tbs = PyTuple_GET_ITEM(env, 2);
+    Py_INCREF(tn);
+    Py_INCREF(ms);
+    Py_INCREF(tbs);
+  } else {
+    tn = PyUnicode_FromString("Exception");
+    ms = PyUnicode_FromString("pyrei: task failed (unreadable error envelope)");
+    tbs = PyUnicode_FromString("");
+  }
+  PyObject *exc = NULL;
+  PyObject *text = (tn != NULL && ms != NULL) ?
+    PyUnicode_FromFormat("%U: %U", tn, ms) : NULL;
+  if (text != NULL)
+    exc = PyObject_CallFunction(ReiTaskError, "N", text);
+  if (exc != NULL && tn != NULL && tbs != NULL &&
+      (PyObject_SetAttrString(exc, "remote_type", tn) < 0 ||
+       PyObject_SetAttrString(exc, "remote_traceback", tbs) < 0))
+    Py_CLEAR(exc);
+  Py_XDECREF(tn);
+  Py_XDECREF(ms);
+  Py_XDECREF(tbs);
+  return exc;
+}
+
+/* The DIED outcome carries no payload (a reap cannot write payload bytes
+   without racing a live worker's publish): build the error off the claimant
+   record. */
+static PyObject *worker_died_of(const rei_read_ctx *ctx) {
+  PyObject *exc = PyObject_CallFunction(
+    ReiWorkerDiedError, "s", "pyrei: worker died while executing this task");
+  if (exc == NULL) return NULL;
+  PyObject *slot = ctx->died_slot >= 0 ?
+    PyLong_FromLong((long) ctx->died_slot) : (Py_INCREF(Py_None), Py_None);
+  PyObject *pid = ctx->died_pid > 0 ?
+    PyLong_FromLongLong((long long) ctx->died_pid) :
+    (Py_INCREF(Py_None), Py_None);
+  int ok = slot != NULL && pid != NULL &&
+           PyObject_SetAttrString(exc, "slot", slot) == 0 &&
+           PyObject_SetAttrString(exc, "pid", pid) == 0;
+  Py_XDECREF(slot);
+  Py_XDECREF(pid);
+  if (!ok) {
+    Py_DECREF(exc);
+    return NULL;
+  }
+  return exc;
+}
+
+/* The read dispatch: a pool collect's non-OK outcomes build the binding's
+   error object (boxed for the veneer to raise); everything else is a frame
+   read. */
+static PyObject *read_impl(const rei_slot_hdr *hdr, const uint8_t *payload,
+                           size_t limit, rei_read_ctx *ctx) {
+  switch (ctx->outcome) {
+  case REI_RS_OK:
+    return read_frame(hdr, payload, limit, ctx);
+  case REI_RS_ERR: {
+    PyObject *env = read_frame(hdr, payload, limit, ctx);
+    if (env == NULL) return NULL;      /* ctx->gone, or a read failure */
+    PyObject *exc = task_error_of(env);
+    Py_DECREF(env);
+    return caught_new(exc);
+  }
+  case REI_RS_CANCEL:
+    return caught_new(PyObject_CallFunction(
+      ReiCancelledError, "s", "pyrei: task cancelled or pool stopped"));
+  case REI_RS_DIED:
+    return caught_new(worker_died_of(ctx));
+  }
+  PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
+  return NULL;
+}
+
 /* The binding's read_fn. NULL with a Python error set fails the verb as
    REI_ERR ("payload read failed"); NULL via ctx->gone propagates the
    vanished-region verdict. */
@@ -413,6 +570,241 @@ static int py_check(void *Py_UNUSED(ctx)) {
   int rc = PyErr_CheckSignals();
   PyGILState_Release(gil);
   return rc != 0;
+}
+
+/* The worker handle's around-park hook: the worker thread holds the GIL
+   through run and collect, so each bounded sleep drops it for the worker
+   process's other threads. The hook brackets one sleep at a time on the
+   verb-calling thread, so a thread-local carries the state. */
+static _Thread_local PyThreadState *rei_park_tstate;
+
+static void py_park(void *Py_UNUSED(ctx), int entering) {
+  if (entering) {
+    rei_park_tstate = PyEval_SaveThread();
+  } else {
+    PyThreadState *tstate = rei_park_tstate;
+    rei_park_tstate = NULL;
+    PyEval_RestoreThread(tstate);
+  }
+}
+
+// Task execution (the worker's exec_fn) ----------------------------------------
+
+/* UTF-8-boundary truncation: decoding with "ignore" drops the partial
+   sequence at the cut. */
+static PyObject *utf8_truncate(PyObject *s, size_t n) {
+  PyObject *b = PyUnicode_AsUTF8String(s);
+  if (b == NULL) {
+    PyErr_Clear();
+    return PyUnicode_FromString("");
+  }
+  Py_ssize_t len = PyBytes_GET_SIZE(b);
+  if ((size_t) len <= n) {
+    Py_DECREF(b);
+    Py_INCREF(s);
+    return s;
+  }
+  PyObject *out = PyUnicode_DecodeUTF8(PyBytes_AS_STRING(b), (Py_ssize_t) n,
+                                       "ignore");
+  Py_DECREF(b);
+  if (out == NULL) {
+    PyErr_Clear();
+    out = PyUnicode_FromString("");
+  }
+  return out;
+}
+
+/* The single-argument form reads the traceback off the normalized exception
+   instance (the legacy 3-arg form with tb=NULL formats no stack). */
+static PyObject *traceback_text(PyObject *value) {
+  if (rei_traceback_fmt == NULL) {
+    PyObject *mod = PyImport_ImportModule("traceback");
+    if (mod == NULL) {
+      PyErr_Clear();
+      return PyUnicode_FromString("");
+    }
+    rei_traceback_fmt = PyObject_GetAttrString(mod, "format_exception");
+    Py_DECREF(mod);
+    if (rei_traceback_fmt == NULL) {
+      PyErr_Clear();
+      return PyUnicode_FromString("");
+    }
+  }
+  PyObject *parts = PyObject_CallFunction(rei_traceback_fmt, "O", value);
+  if (parts == NULL) {
+    PyErr_Clear();
+    return PyUnicode_FromString("");
+  }
+  PyObject *sep = PyUnicode_FromString("");
+  PyObject *text = sep != NULL ? PyUnicode_Join(sep, parts) : NULL;
+  Py_XDECREF(sep);
+  Py_DECREF(parts);
+  if (text == NULL) {
+    PyErr_Clear();
+    text = PyUnicode_FromString("");
+  }
+  return text;
+}
+
+/* Publish the currently-held exception as the task's ERR result: the
+   constructed, bounded (type name, message, traceback) envelope — never a
+   pickled exception instance, whose unpicklable attributes or __traceback__
+   would fail the publish (fail the task, never the worker). The traceback,
+   then the message, truncate at a UTF-8 boundary to fit the slot's inline
+   budget; framed INLINE in the sink's buffer wherever the envelope fits, so
+   the publish itself cannot fail. Returns 0 on publish (or a cancel beat),
+   nonzero on infrastructure failure. */
+static int publish_exc(rei_result_sink *sink) {
+  PyObject *type = NULL, *value = NULL, *tb = NULL;
+  PyErr_Fetch(&type, &value, &tb);
+  PyErr_NormalizeException(&type, &value, &tb);
+  const char *tn = type != NULL ? PyExceptionClass_Name(type) : NULL;
+  PyObject *tname = PyUnicode_FromString(tn != NULL ? tn : "Exception");
+  PyObject *msg = value != NULL ? PyObject_Str(value) : NULL;
+  if (msg == NULL) {
+    PyErr_Clear();
+    msg = PyUnicode_FromString("<unprintable exception>");
+  }
+  PyObject *tbs = value != NULL ? traceback_text(value) : NULL;
+  Py_XDECREF(type);
+  Py_XDECREF(value);
+  Py_XDECREF(tb);
+  if (tname == NULL || msg == NULL || tbs == NULL) {
+    Py_XDECREF(tname);
+    Py_XDECREF(msg);
+    Py_XDECREF(tbs);
+    return 1;                    /* allocation failure: the worker goes down */
+  }
+  uint32_t budget = sink->inline_max;
+  PyObject *env = NULL, *stream = NULL;
+  for (int attempt = 0; attempt < 5; attempt++) {
+    PyObject *cand = PyTuple_Pack(3, tname, msg, tbs);
+    if (cand == NULL) goto infra;
+    PyObject *s = PyObject_CallFunction(rei_dumps, "Oi", cand, 4);
+    if (s == NULL) {
+      Py_DECREF(cand);
+      goto infra;
+    }
+    if ((uint64_t) PyBytes_GET_SIZE(s) <= (uint64_t) budget) {
+      env = cand;
+      stream = s;
+      break;
+    }
+    Py_DECREF(s);
+    Py_DECREF(cand);
+    PyObject *shrunk;
+    switch (attempt) {
+    case 0:
+      shrunk = utf8_truncate(tbs, budget / 2);
+      Py_DECREF(tbs);
+      tbs = shrunk;
+      break;
+    case 1:
+      shrunk = PyUnicode_FromString("");
+      Py_DECREF(tbs);
+      tbs = shrunk;
+      break;
+    case 2:
+      shrunk = utf8_truncate(msg, budget / 2);
+      Py_DECREF(msg);
+      msg = shrunk;
+      break;
+    default:
+      shrunk = PyUnicode_FromString(
+        "pyrei: task error (untransportable condition)");
+      Py_DECREF(msg);
+      msg = shrunk;
+      break;
+    }
+    if (shrunk == NULL) goto infra;
+  }
+  int rc;
+  if (stream != NULL) {
+    memcpy(sink->payload, PyBytes_AS_STRING(stream),
+           (size_t) PyBytes_GET_SIZE(stream));
+    rc = rei_result_publish_err(sink, NULL,
+                                (uint32_t) PyBytes_GET_SIZE(stream));
+  } else {
+    /* below the inline guarantee (a tiny slot): the tiered stage carries
+       the smallest envelope out of line */
+    env = PyTuple_Pack(3, tname, msg, tbs);
+    if (env == NULL) goto infra;
+    rc = rei_result_publish_err(sink, (void *) env, 0);
+  }
+  Py_DECREF(env);
+  Py_XDECREF(stream);
+  Py_DECREF(tname);
+  Py_DECREF(msg);
+  Py_DECREF(tbs);
+  return rc < 0;
+infra:
+  Py_XDECREF(tname);
+  Py_XDECREF(msg);
+  Py_XDECREF(tbs);
+  return 1;
+}
+
+/* The worker's task: decode the (callable, args, kwargs) frame, call, and
+   publish through the sink. Two error disciplines, both honored without a
+   longjmp: a task's own error (any Exception) is caught into the
+   constructed envelope at every reentry depth — `catching` needs no
+   distinction — and KeyboardInterrupt / SystemExit escape as infrastructure
+   failure (the hard-crash semantics: the worker goes down and the reaper's
+   DIED verdict fails the task). Runs with the GIL held: the worker veneer
+   never releases it. */
+static int py_exec(const rei_slot_hdr *hdr, const uint8_t *payload,
+                   size_t limit, rei_result_sink *sink, int catching,
+                   void *ctx) {
+  (void) catching;
+  rei_read_ctx rctx;
+  memset(&rctx, 0, sizeof(rctx));
+  rctx.size = (uint32_t) sizeof(rctx);
+  rctx.outcome = REI_RS_OK;
+  rctx.died_slot = -1;
+  rctx.handle = (rei_handle *) sink->p;
+  rctx.binding_ctx = ctx;
+  PyObject *task = read_impl(hdr, payload, limit, &rctx);
+  if (task == NULL) {
+    if (rctx.gone) {
+      /* the enqueuer died and its region went along: the task can never
+         run anywhere — it fails as DIED, and the drain continues */
+      rei_result_publish_died(sink);
+      return 0;
+    }
+    return publish_exc(sink);    /* the decode failure is the task's error */
+  }
+  PyObject *fn = NULL, *args = NULL, *kwargs = NULL;
+  int shape_ok = PyTuple_Check(task) && PyTuple_GET_SIZE(task) == 3;
+  if (shape_ok) {
+    fn = PyTuple_GET_ITEM(task, 0);
+    args = PyTuple_GET_ITEM(task, 1);
+    kwargs = PyTuple_GET_ITEM(task, 2);
+    shape_ok = PyCallable_Check(fn) && PyTuple_Check(args) &&
+               (kwargs == Py_None || PyDict_Check(kwargs));
+  }
+  if (!shape_ok) {
+    Py_DECREF(task);
+    PyErr_SetString(ReiError, "pyrei: corrupt task payload");
+    return publish_exc(sink);
+  }
+  PyObject *value =
+    PyObject_Call(fn, args, kwargs == Py_None ? NULL : kwargs);
+  Py_DECREF(task);
+  if (value == NULL) {
+    if (!PyErr_ExceptionMatches(PyExc_Exception))
+      return 1;      /* BaseException: the worker goes down; the exception
+                        stays set for the worker entry to report */
+    return publish_exc(sink);
+  }
+  int rc = rei_result_publish(sink, (void *) value);
+  Py_DECREF(value);
+  if (rc < 0 && PyErr_Occurred()) {
+    /* staging the result failed (an unpicklable object): recover as the
+       task's ERR result. The handle's recorded stage error is stale-only —
+       nothing reads it while exec keeps returning 0. */
+    rc = publish_exc(sink) != 0 ? -1 : 0;
+  }
+  return rc < 0;
 }
 
 // The channel handle ---------------------------------------------------------------
@@ -844,6 +1236,1030 @@ static PyTypeObject ReiChannelType = {
   .tp_dealloc = (destructor) Channel_dealloc,
 };
 
+
+// The pool handle ----------------------------------------------------------------
+
+typedef struct {
+  PyObject_HEAD
+  rei_pool *core;
+  long self_pid;
+  int role;            /* REI_ROLE_* */
+} ReiPool;
+
+typedef struct {
+  PyObject_HEAD
+  uint64_t word;       /* the core's 8-byte rei_task, by value */
+  PyObject *pool;      /* keeps the pool handle alive */
+} ReiTask;
+
+/* Submitter/controller handles release the GIL around every verb; worker
+   handles hold it (exec_fn reentry) and drop it only around bounded sleeps
+   via the park hook. */
+#define POOL_ALLOW_THREADS(self) \
+  PyThreadState *_save = \
+    (self)->role == REI_ROLE_WORKER ? NULL : PyEval_SaveThread()
+#define POOL_RESUME() \
+  if (_save != NULL) PyEval_RestoreThread(_save)
+
+static void pool_binding(rei_binding *b, int worker) {
+  rei_binding_init(b);
+  b->stage = py_stage;
+  b->read = py_read;
+  b->check = py_check;
+  b->exec = worker ? py_exec : NULL;
+  b->park = worker ? py_park : NULL;
+  /* sweep/drop NULL: no per-handle caches, and staging pins nothing */
+}
+
+static rei_pool *pool_peek(ReiPool *self) {
+  rei_pool *p = self->core;
+  if (p == NULL) return NULL;
+  if (self->self_pid != rei_self_pid()) {
+    PyErr_SetString(ReiError, "pyrei: pool handles do not survive fork()");
+    return NULL;
+  }
+  return p;
+}
+
+static rei_pool *pool_get(ReiPool *self) {
+  rei_pool *p = pool_peek(self);
+  if (p == NULL && !PyErr_Occurred())
+    PyErr_SetString(PyExc_ValueError, "pyrei: pool handle is closed");
+  return p;
+}
+
+/* Raise a pool verb's REI_ERR. A callback that already set a Python error
+   (the check hook's KeyboardInterrupt, a stage/read failure) wins. */
+static PyObject *pool_raise(ReiPool *self) {
+  if (PyErr_Occurred()) return NULL;
+  rei_errcat cat = rei_pool_errcat(self->core);
+  const char *msg = rei_pool_error(self->core);
+  switch (cat) {
+  case REI_ERRCAT_INTERRUPTED:
+    PyErr_SetNone(PyExc_KeyboardInterrupt);
+    break;
+  case REI_ERRCAT_STOPPED:
+    PyErr_Format(ReiStoppedError, "pyrei: %s", msg);
+    break;
+  case REI_ERRCAT_EXHAUSTED:
+    PyErr_Format(ReiSlotsExhaustedError, "pyrei: %s", msg);
+    break;
+  case REI_ERRCAT_NOSPACE:
+  case REI_ERRCAT_NOMEMORY:
+  case REI_ERRCAT_EXISTS:
+    PyErr_Format(ReiShmError, "pyrei: %s", msg);
+    break;
+  default:
+    PyErr_Format(ReiError, "pyrei: %s", msg);
+    break;
+  }
+  return NULL;
+}
+
+static ReiPool *pool_wrap(rei_pool *p, int role) {
+  ReiPool *self = (ReiPool *) ReiPoolType.tp_alloc(&ReiPoolType, 0);
+  if (self == NULL) return NULL;
+  self->core = p;
+  self->self_pid = rei_self_pid();
+  self->role = role;
+  return self;
+}
+
+/* A collected value is either the task's result or a _Caught box carrying
+   the outcome's exception. Unwrap and raise; with_index attributes the
+   0-based position (collect_any / collect_all). */
+static PyObject *caught_or_value(PyObject *v, size_t index, int with_index) {
+  if (Py_TYPE(v) != &ReiCaughtType) return v;
+  PyObject *exc = ((ReiCaught *) v)->exc;
+  Py_INCREF(exc);
+  Py_DECREF(v);
+  if (with_index) {
+    PyObject *i = PyLong_FromSize_t(index);
+    if (i == NULL || PyObject_SetAttrString(exc, "index", i) < 0) {
+      Py_XDECREF(i);
+      Py_DECREF(exc);
+      return NULL;
+    }
+    Py_DECREF(i);
+  }
+  PyErr_SetObject((PyObject *) Py_TYPE(exc), exc);
+  Py_DECREF(exc);
+  return NULL;
+}
+
+// Task handles -------------------------------------------------------------------
+
+static ReiTask *task_wrap(ReiPool *pool, const rei_task *t) {
+  ReiTask *self = (ReiTask *) ReiTaskType.tp_alloc(&ReiTaskType, 0);
+  if (self == NULL) return NULL;
+  self->word = t->word;
+  Py_INCREF(pool);
+  self->pool = (PyObject *) pool;
+  return self;
+}
+
+/* Unpack a task handle and its pool (NULL on error, with the exception
+   set). Errors on a foreign or finalized handle; the core detects a stale
+   (collected/released) sequence. */
+static rei_task task_get(ReiTask *self, ReiPool **pool_out) {
+  ReiPool *pool = (ReiPool *) self->pool;
+  rei_task t = { self->word };
+  if (self->word == 0) {
+    PyErr_SetString(PyExc_ValueError, "pyrei: task handle is closed");
+    pool = NULL;
+  } else if (pool_get(pool) == NULL) {
+    pool = NULL;
+  }
+  *pool_out = pool;
+  return t;
+}
+
+/* Extract a task sequence's handles and their shared pool. */
+static ReiPool *tasks_get(PyObject *arg, rei_task **ts_out, size_t *n_out) {
+  PyObject *seq = PySequence_Fast(
+    arg, "pyrei: tasks must be a non-empty sequence of task handles");
+  if (seq == NULL) return NULL;
+  Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+  if (n < 1) {
+    Py_DECREF(seq);
+    PyErr_SetString(PyExc_ValueError,
+                    "pyrei: tasks must be a non-empty sequence of task handles");
+    return NULL;
+  }
+  rei_task *ts = PyMem_Malloc((size_t) n * sizeof(rei_task));
+  if (ts == NULL) {
+    Py_DECREF(seq);
+    PyErr_NoMemory();
+    return NULL;
+  }
+  ReiPool *pool = NULL;
+  PyObject **items = PySequence_Fast_ITEMS(seq);
+  for (Py_ssize_t i = 0; i < n; i++) {
+    if (Py_TYPE(items[i]) != &ReiTaskType) {
+      PyErr_SetString(PyExc_TypeError, "pyrei: not a task handle");
+      goto fail;
+    }
+    ReiPool *pi;
+    ts[i] = task_get((ReiTask *) items[i], &pi);
+    if (pi == NULL) goto fail;
+    if (pool == NULL) {
+      pool = pi;
+    } else if (pool != pi) {
+      PyErr_SetString(PyExc_ValueError,
+                      "pyrei: task handles must belong to the same pool handle");
+      goto fail;
+    }
+  }
+  Py_DECREF(seq);
+  *ts_out = ts;
+  *n_out = (size_t) n;
+  return pool;
+fail:
+  PyMem_Free(ts);
+  Py_DECREF(seq);
+  return NULL;
+}
+
+// Pool verbs ---------------------------------------------------------------------
+
+PyDoc_STRVAR(pool_submit_doc,
+"submit(payload, timeout=None) -> _Task\n\n\
+Stage and submit one task payload (the facade's (fn, args, kwargs) tuple).\n\
+Blocks only for injection-ring space, up to `timeout` seconds (None waits\n\
+indefinitely, 0 polls): pyrei.SubmitTimeoutError on expiry,\n\
+pyrei.SlotsExhaustedError / pyrei.StoppedError on the fatal outcomes.");
+
+static PyObject *Pool_submit(ReiPool *self, PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"payload", "timeout", NULL};
+  PyObject *payload, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:submit", kwlist, &payload,
+                                   &tmo))
+    return NULL;
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  rei_task t;
+  rei_status st;
+  POOL_ALLOW_THREADS(self);
+  st = rei_pool_submit(p, (void *) payload, &t, ms);
+  POOL_RESUME();
+  if (st == REI_OK) return (PyObject *) task_wrap(self, &t);
+  if (st == REI_FULL) {
+    PyErr_SetString(ReiSubmitTimeoutError,
+                    "pyrei: submission timed out (injection ring full)");
+    return NULL;
+  }
+  return pool_raise(self);
+}
+
+PyDoc_STRVAR(pool_submit_batch_doc,
+"submit_batch(payloads, timeout=None) -> list of _Task\n\n\
+One task per payload in a single crossing. Ring-full past `timeout` ends\n\
+the batch short — the accepted handles stay valid and collectible; the\n\
+fatal outcomes still raise.");
+
+static PyObject *Pool_submit_batch(ReiPool *self, PyObject *args,
+                                   PyObject *kw) {
+  static char *kwlist[] = {"payloads", "timeout", NULL};
+  PyObject *seq, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:submit_batch", kwlist,
+                                   &seq, &tmo))
+    return NULL;
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  PyObject *fast =
+    PySequence_Fast(seq, "pyrei: expected a sequence of task payloads");
+  if (fast == NULL) return NULL;
+  Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
+  void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));
+  rei_task *ts = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(rei_task));
+  if (objs == NULL || ts == NULL) {
+    PyMem_Free(objs);
+    PyMem_Free(ts);
+    Py_DECREF(fast);
+    return PyErr_NoMemory();
+  }
+  PyObject **items = PySequence_Fast_ITEMS(fast);
+  for (Py_ssize_t i = 0; i < n; i++)
+    objs[i] = (void *) items[i];
+  size_t done = 0;
+  rei_status st;
+  POOL_ALLOW_THREADS(self);
+  st = rei_pool_submit_batch(p, objs, (size_t) n, ts, &done, ms);
+  POOL_RESUME();
+  PyMem_Free(objs);
+  Py_DECREF(fast);
+  if (st == REI_ERR) {
+    PyMem_Free(ts);
+    return pool_raise(self);
+  }
+  PyObject *out = PyList_New((Py_ssize_t) done);
+  if (out == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  for (size_t i = 0; i < done; i++) {
+    ReiTask *t = task_wrap(self, &ts[i]);
+    if (t == NULL) {
+      PyMem_Free(ts);
+      Py_DECREF(out);
+      return NULL;
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, (PyObject *) t);
+  }
+  PyMem_Free(ts);
+  return out;
+}
+
+PyDoc_STRVAR(pool_collect_any_doc,
+"collect_any(tasks, timeout=None) -> (index, value) | sentinel\n\n\
+Wait on several of this handle's tasks at once; return the first terminal\n\
+one as its 0-based position and value (ties among already-terminal handles\n\
+break to the earliest position). A non-OK outcome raises with an `index`\n\
+attribute. pyrei.TIMEOUT on expiry; the reported handle is consumed, the\n\
+rest stay collectible.");
+
+static PyObject *Pool_collect_any(ReiPool *self, PyObject *args,
+                                  PyObject *kw) {
+  static char *kwlist[] = {"tasks", "timeout", NULL};
+  PyObject *seq, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:collect_any", kwlist,
+                                   &seq, &tmo))
+    return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  rei_task *ts;
+  size_t n;
+  ReiPool *pool = tasks_get(seq, &ts, &n);
+  if (pool == NULL) return NULL;
+  if (pool != self) {
+    PyMem_Free(ts);
+    PyErr_SetString(PyExc_ValueError,
+                    "pyrei: task handles must belong to this pool handle");
+    return NULL;
+  }
+  void *v = NULL;
+  size_t idx = 0;
+  rei_status st;
+  POOL_ALLOW_THREADS(self);
+  st = rei_pool_collect_any(self->core, ts, n, &idx, &v, ms);
+  POOL_RESUME();
+  PyMem_Free(ts);
+  if (st == REI_TIMEOUT) {
+    Py_INCREF(SentTimeout);
+    return SentTimeout;
+  }
+  if (st == REI_ERR) return pool_raise(self);
+  PyObject *val = caught_or_value((PyObject *) v, idx, 1);
+  if (val == NULL) return NULL;
+  PyObject *i = PyLong_FromSize_t(idx);
+  PyObject *out = i != NULL ? PyTuple_New(2) : NULL;
+  if (out != NULL) {
+    PyTuple_SET_ITEM(out, 0, i);
+    PyTuple_SET_ITEM(out, 1, val);
+  } else {
+    Py_XDECREF(i);
+    Py_DECREF(val);
+  }
+  return out;
+}
+
+PyDoc_STRVAR(pool_collect_all_doc,
+"collect_all(tasks, timeout=None) -> list | sentinel\n\n\
+Wait until every task is terminal; return all values in input order. On\n\
+the first non-OK outcome by position it raises with an `index` attribute\n\
+— handles up to it inclusive are consumed, the rest stay collectible.\n\
+pyrei.TIMEOUT consumes nothing.");
+
+static PyObject *Pool_collect_all(ReiPool *self, PyObject *args,
+                                  PyObject *kw) {
+  static char *kwlist[] = {"tasks", "timeout", NULL};
+  PyObject *seq, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:collect_all", kwlist,
+                                   &seq, &tmo))
+    return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  rei_task *ts;
+  size_t n;
+  ReiPool *pool = tasks_get(seq, &ts, &n);
+  if (pool == NULL) return NULL;
+  if (pool != self) {
+    PyMem_Free(ts);
+    PyErr_SetString(PyExc_ValueError,
+                    "pyrei: task handles must belong to this pool handle");
+    return NULL;
+  }
+  void **vals = PyMem_Malloc(n * sizeof(void *));
+  if (vals == NULL) {
+    PyMem_Free(ts);
+    return PyErr_NoMemory();
+  }
+  size_t err_idx = 0;
+  rei_status st;
+  POOL_ALLOW_THREADS(self);
+  st = rei_pool_collect_all(self->core, ts, n, vals, &err_idx, ms);
+  POOL_RESUME();
+  PyMem_Free(ts);
+  if (st == REI_TIMEOUT) {
+    PyMem_Free(vals);
+    Py_INCREF(SentTimeout);
+    return SentTimeout;
+  }
+  if (st == REI_ERR) {
+    PyMem_Free(vals);
+    return pool_raise(self);
+  }
+  if (err_idx < n) {
+    /* the first non-OK by position: its box, with the 0-based index */
+    PyObject *box = (PyObject *) vals[err_idx];
+    for (size_t i = 0; i < err_idx; i++)
+      Py_DECREF((PyObject *) vals[i]);
+    PyMem_Free(vals);
+    return caught_or_value(box, err_idx, 1);
+  }
+  PyObject *out = PyList_New((Py_ssize_t) n);
+  if (out != NULL)
+    for (size_t i = 0; i < n; i++)
+      PyList_SET_ITEM(out, (Py_ssize_t) i, (PyObject *) vals[i]);
+  PyMem_Free(vals);
+  return out;
+}
+
+PyDoc_STRVAR(pool_ready_wait_doc,
+"ready_wait(slots, timeout) -> bool\n\n\
+The startup / elastic-spawn rendezvous: wait up to `timeout` seconds for\n\
+the given worker slots to join. False on expiry. Controller only.");
+
+static PyObject *Pool_ready_wait(ReiPool *self, PyObject *args,
+                                 PyObject *kw) {
+  static char *kwlist[] = {"slots", "timeout", NULL};
+  PyObject *seq, *tmo;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "OO:ready_wait", kwlist,
+                                   &seq, &tmo))
+    return NULL;
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (self->role != REI_ROLE_CONTROLLER) {
+    PyErr_SetString(ReiError, "pyrei: only the controller can wait for workers");
+    return NULL;
+  }
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  PyObject *fast = PySequence_Fast(seq, "pyrei: expected worker slot indices");
+  if (fast == NULL) return NULL;
+  Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
+  uint32_t *slots = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(uint32_t));
+  if (slots == NULL) {
+    Py_DECREF(fast);
+    return PyErr_NoMemory();
+  }
+  PyObject **items = PySequence_Fast_ITEMS(fast);
+  for (Py_ssize_t i = 0; i < n; i++) {
+    long s = PyLong_AsLong(items[i]);
+    if (s == -1 && PyErr_Occurred()) {
+      PyMem_Free(slots);
+      Py_DECREF(fast);
+      return NULL;
+    }
+    if (s < 0 || s >= REI_MAX_WORKERS) {
+      PyMem_Free(slots);
+      Py_DECREF(fast);
+      PyErr_SetString(PyExc_ValueError, "pyrei: worker slot out of range");
+      return NULL;
+    }
+    slots[i] = (uint32_t) s;
+  }
+  Py_DECREF(fast);
+  rei_status st;
+  Py_BEGIN_ALLOW_THREADS
+  st = rei_pool_ready_wait(p, slots, (size_t) n, ms);
+  Py_END_ALLOW_THREADS
+  PyMem_Free(slots);
+  if (st == REI_ERR) return pool_raise(self);
+  return PyBool_FromLong(st == REI_OK);
+}
+
+PyDoc_STRVAR(pool_retire_doc,
+"retire(slot) -> None\n\n\
+Ask one worker to exit cleanly: non-blocking, never preemptive. The worker\n\
+observes between tasks and releases its slot; the remaining workers\n\
+consume its queued work in place. Controller only.");
+
+static PyObject *Pool_retire(ReiPool *self, PyObject *arg) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (self->role != REI_ROLE_CONTROLLER) {
+    PyErr_SetString(ReiError, "pyrei: only the controller can retire a worker");
+    return NULL;
+  }
+  long slot = PyLong_AsLong(arg);
+  if (slot == -1 && PyErr_Occurred()) return NULL;
+  if (slot < 0 || slot >= REI_MAX_WORKERS) {
+    PyErr_SetString(PyExc_ValueError, "pyrei: worker slot out of range");
+    return NULL;
+  }
+  if (rei_pool_retire(p, (uint32_t) slot) != REI_OK)
+    return pool_raise(self);
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_stop_doc,
+"stop(timeout=5.0) -> bool\n\n\
+Orderly shutdown, controller only: broadcast shutdown, wake every parked\n\
+participant, cancel all pending tasks (blocked collectors raise\n\
+pyrei.CancelledError), then wait up to `timeout` seconds for clean worker\n\
+exits and unlink. False on expiry — the workers still exit on their own.\n\
+Idempotent; the handle is dead afterwards.");
+
+static PyObject *Pool_stop(ReiPool *self, PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"timeout", NULL};
+  PyObject *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:stop", kwlist, &tmo))
+    return NULL;
+  if (self->core == NULL) Py_RETURN_TRUE;    /* idempotent */
+  if (self->self_pid != rei_self_pid()) {
+    self->core = NULL;
+    Py_RETURN_TRUE;
+  }
+  if (self->role != REI_ROLE_CONTROLLER) {
+    PyErr_SetString(ReiError, "pyrei: only the controller can stop a pool");
+    return NULL;
+  }
+  double ms;
+  if (tmo == Py_None) {
+    ms = 5000.0;
+  } else if (timeout_ms_of(tmo, &ms) < 0) {
+    return NULL;
+  }
+  rei_status st;
+  Py_BEGIN_ALLOW_THREADS
+  st = rei_pool_stop(self->core, ms);
+  Py_END_ALLOW_THREADS
+  if (st == REI_ERR) return pool_raise(self);
+  /* the handle stays alive (a post-stop submit reads the shutdown flag as
+     StoppedError); the finalizer's destroy is a no-op after */
+  return PyBool_FromLong(st == REI_OK);
+}
+
+PyDoc_STRVAR(pool_destroy_doc,
+"destroy() -> None\n\n\
+Idempotent, never blocks: a controller broadcasts shutdown without the\n\
+wait; a participant releases its slot. The finalizer target.");
+
+static PyObject *Pool_destroy(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  if (self->core != NULL && self->self_pid == rei_self_pid())
+    rei_pool_destroy(self->core);
+  self->core = NULL;
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_run_doc,
+"run() -> int\n\n\
+The worker loop: claim/steal tasks and execute them on this thread,\n\
+blocking until an exit reason — 0 shutdown, 1 owner gone, 2 retired.\n\
+Raises on infrastructure failure. Worker handles only. The GIL stays held\n\
+(the park hook drops it around each bounded sleep).");
+
+static PyObject *Pool_run(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (self->role != REI_ROLE_WORKER) {
+    PyErr_SetString(ReiError, "pyrei: not a worker handle");
+    return NULL;
+  }
+  rei_worker_exit ex = rei_pool_worker_run(p);
+  if (PyErr_Occurred()) return NULL;   /* a BaseException escaped a task */
+  if (ex == REI_EXIT_ERROR) return pool_raise(self);
+  return PyLong_FromLong((long) ex);
+}
+
+PyDoc_STRVAR(pool_leave_doc,
+"leave() -> None\n\n\
+The clean-exit handshake of a worker. No-op on a released handle.");
+
+static PyObject *Pool_leave(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = self->core;
+  if (p == NULL || self->self_pid != rei_self_pid()) Py_RETURN_NONE;
+  if (self->role != REI_ROLE_WORKER) {
+    PyErr_SetString(ReiError, "pyrei: not a worker handle");
+    return NULL;
+  }
+  if (rei_pool_leave(p) != REI_OK) return pool_raise(self);
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_lame_duck_doc,
+"lame_duck() -> bool\n\n\
+One linger beat for a retired worker anchoring its uncollected results:\n\
+True when the anchor may drop (shutdown or owner death ends the linger).");
+
+static PyObject *Pool_lame_duck(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = self->core;
+  if (p == NULL || self->self_pid != rei_self_pid()) Py_RETURN_TRUE;
+  return PyBool_FromLong(rei_pool_lame_duck(p));
+}
+
+// Pool introspection --------------------------------------------------------------
+
+static const char *const wk_states[] =
+  {"free", "claiming", "live", "leaving", "reaping"};
+static const char *const sub_states[] = {"free", "live", "reaping"};
+static const char *const rs_states[] =
+  {"free", "pending", "ok", "err", "cancel", "died"};
+
+static int dict_set_sll(PyObject *d, const char *key, long long v) {
+  PyObject *o = PyLong_FromLongLong(v);
+  if (o == NULL) return -1;
+  int rc = PyDict_SetItemString(d, key, o);
+  Py_DECREF(o);
+  return rc;
+}
+
+static int dict_set_str(PyObject *d, const char *key, const char *s) {
+  PyObject *o = PyUnicode_FromString(s);
+  if (o == NULL) return -1;
+  int rc = PyDict_SetItemString(d, key, o);
+  Py_DECREF(o);
+  return rc;
+}
+
+static PyObject *state_list(const uint8_t *states, uint32_t n,
+                            const char *const *names, int nnames) {
+  PyObject *out = PyList_New((Py_ssize_t) n);
+  if (out == NULL) return NULL;
+  for (uint32_t i = 0; i < n; i++) {
+    int s = states[i];
+    PyObject *o = PyUnicode_FromString(
+      s >= 0 && s < nnames ? names[s] : "unknown");
+    if (o == NULL) {
+      Py_DECREF(out);
+      return NULL;
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, o);
+  }
+  return out;
+}
+
+PyDoc_STRVAR(pool_status_doc,
+"status() -> dict\n\n\
+A read-only wire-state snapshot: registry states, parked-worker count,\n\
+queued injection entries, and result-slot occupancy.");
+
+static PyObject *Pool_status(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  rei_pool_status st;
+  if (rei_pool_status_get(p, &st) != REI_OK) return pool_raise(self);
+  PyObject *d = PyDict_New();
+  if (d == NULL) return NULL;
+  const char *role = st.role == REI_ROLE_CONTROLLER ? "controller" :
+    st.role == REI_ROLE_WORKER ? "worker" : "submitter";
+  PyObject *workers = NULL, *submitters = NULL, *tasks = NULL, *deque = NULL;
+  int nparked = 0;
+  for (uint32_t i = 0; i < 64; i++)
+    nparked += (int) (st.parked_mask >> i) & 1;
+  uint64_t queued = 0;
+  for (uint32_t j = 0; j < st.max_submitters; j++)
+    queued += st.inj_queued[j];
+  workers = state_list(st.worker_state, st.max_workers, wk_states, 5);
+  submitters = state_list(st.sub_state, st.max_submitters, sub_states, 3);
+  tasks = PyDict_New();
+  deque = PyList_New((Py_ssize_t) st.max_workers);
+  if (workers == NULL || submitters == NULL || tasks == NULL || deque == NULL)
+    goto fail;
+  {
+    static const char *const tnames[] =
+      {"pending", "ok", "err", "cancel", "died"};
+    for (int s = 0; s < 5; s++)
+      if (dict_set(tasks, tnames[s],
+                   (unsigned long long) st.tasks_by_state[s + REI_RS_PENDING]) < 0)
+        goto fail;
+    for (uint32_t i = 0; i < st.max_workers; i++) {
+      PyObject *o = PyLong_FromLongLong((long long) st.deque_depth[i]);
+      if (o == NULL) goto fail;
+      PyList_SET_ITEM(deque, (Py_ssize_t) i, o);
+    }
+  }
+  if (dict_set_str(d, "name", st.name) < 0 ||
+      dict_set_str(d, "role", role) < 0 ||
+      dict_set(d, "max_workers", st.max_workers) < 0 ||
+      dict_set(d, "max_submitters", st.max_submitters) < 0 ||
+      dict_set(d, "injection_cap", st.injection_cap) < 0 ||
+      dict_set(d, "result_slots", st.result_slots) < 0 ||
+      dict_set(d, "slot_size", st.slot_size) < 0 ||
+      dict_set(d, "parked", (unsigned long long) nparked) < 0 ||
+      dict_set(d, "injection", queued) < 0 ||
+      dict_set(d, "shutdown", (unsigned long long) (st.shutdown != 0)) < 0 ||
+      PyDict_SetItemString(d, "workers", workers) < 0 ||
+      PyDict_SetItemString(d, "submitters", submitters) < 0 ||
+      PyDict_SetItemString(d, "tasks", tasks) < 0 ||
+      PyDict_SetItemString(d, "deque", deque) < 0)
+    goto fail;
+  Py_DECREF(workers);
+  Py_DECREF(submitters);
+  Py_DECREF(tasks);
+  Py_DECREF(deque);
+  return d;
+fail:
+  Py_XDECREF(workers);
+  Py_XDECREF(submitters);
+  Py_XDECREF(tasks);
+  Py_XDECREF(deque);
+  Py_DECREF(d);
+  return NULL;
+}
+
+PyDoc_STRVAR(pool_dump_doc,
+"dump() -> dict\n\n\
+A read-only debugging snapshot of the whole pool region, one level deeper\n\
+than status(): per-slot registry detail, every occupied result slot, and\n\
+the handle-local machinery under `local`. States can move mid-fill.");
+
+static PyObject *dump_worker(const rei_pool_dump *d, uint32_t i) {
+  const rei_worker_stat *w = &d->workers[i];
+  PyObject *r = PyDict_New();
+  if (r == NULL) return NULL;
+  int s = w->status, ps = w->park_state;
+  if (dict_set(r, "slot", i) < 0 ||
+      dict_set_str(r, "status",
+                   s >= 0 && s < 5 ? wk_states[s] : "unknown") < 0 ||
+      dict_set_sll(r, "pid", (long long) w->pid) < 0 ||
+      dict_set_str(r, "park_state",
+                   ps >= 0 && ps < 4 ?
+                   (const char *[]) {"running", "idle", "parked",
+                                     "waking"}[ps] : "unknown") < 0 ||
+      dict_set(r, "parked", (unsigned long long)
+               ((d->status.parked_mask >> i) & 1)) < 0 ||
+      dict_set_sll(r, "top", (long long) w->deque_top) < 0 ||
+      dict_set_sll(r, "bottom", (long long) w->deque_bottom) < 0 ||
+      dict_set_sll(r, "in_flight", (long long) w->in_flight_rs) < 0 ||
+      dict_set(r, "tasks", (unsigned long long) w->tasks) < 0 ||
+      dict_set(r, "steals", (unsigned long long) w->steals) < 0 ||
+      dict_set(r, "injections", (unsigned long long) w->injections) < 0 ||
+      dict_set(r, "parks", (unsigned long long) w->parks) < 0 ||
+      dict_set(r, "helps", (unsigned long long) w->helps) < 0) {
+    Py_DECREF(r);
+    return NULL;
+  }
+  return r;
+}
+
+static PyObject *dump_submitter(const rei_pool_dump *d, uint32_t j) {
+  const rei_sub_stat *s = &d->submitters[j];
+  PyObject *r = PyDict_New();
+  if (r == NULL) return NULL;
+  int st = s->status;
+  if (dict_set(r, "slot", j) < 0 ||
+      dict_set_str(r, "status",
+                   st >= 0 && st < 3 ? sub_states[st] : "unknown") < 0 ||
+      dict_set_sll(r, "pid", (long long) s->pid) < 0 ||
+      dict_set(r, "rs_start", s->rs_start) < 0 ||
+      dict_set(r, "rs_count", s->rs_count) < 0 ||
+      dict_set(r, "queued",
+               (unsigned long long) (s->injected - s->claimed)) < 0 ||
+      dict_set(r, "injected", (unsigned long long) s->injected) < 0 ||
+      dict_set(r, "claimed", (unsigned long long) s->claimed) < 0 ||
+      dict_set(r, "spills", (unsigned long long) s->spills) < 0 ||
+      dict_set(r, "spill_reuse", (unsigned long long) s->spill_reuse) < 0 ||
+      dict_set(r, "ready", (unsigned long long) (s->ready != 0)) < 0 ||
+      dict_set(r, "full_waiter",
+               (unsigned long long) (s->full_waiter != 0)) < 0) {
+    Py_DECREF(r);
+    return NULL;
+  }
+  return r;
+}
+
+static PyObject *Pool_dump(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  rei_pool_dump d;
+  if (rei_pool_dump_get(p, &d) != REI_OK) return pool_raise(self);
+  PyObject *out = PyDict_New();
+  PyObject *workers = NULL, *submitters = NULL, *tasks = NULL, *local = NULL;
+  if (out == NULL) return NULL;
+  workers = PyList_New((Py_ssize_t) d.n_workers);
+  submitters = PyList_New((Py_ssize_t) d.n_submitters);
+  tasks = PyList_New(0);
+  local = PyDict_New();
+  if (workers == NULL || submitters == NULL || tasks == NULL || local == NULL)
+    goto fail;
+  for (uint32_t i = 0; i < d.n_workers; i++) {
+    PyObject *r = dump_worker(&d, i);
+    if (r == NULL) goto fail;
+    PyList_SET_ITEM(workers, (Py_ssize_t) i, r);
+  }
+  for (uint32_t j = 0; j < d.n_submitters; j++) {
+    PyObject *r = dump_submitter(&d, j);
+    if (r == NULL) goto fail;
+    PyList_SET_ITEM(submitters, (Py_ssize_t) j, r);
+  }
+  {
+    /* every non-FREE result slot, paged in one call (result_slots rows is
+       always enough) */
+    uint32_t cap = d.status.result_slots;
+    rei_rs_row *rows = PyMem_Malloc((size_t) (cap != 0 ? cap : 1) *
+                                    sizeof(rei_rs_row));
+    if (rows == NULL) {
+      PyErr_NoMemory();
+      goto fail;
+    }
+    uint32_t n = 0;
+    rei_status st = rei_pool_tasks_get(p, rows, cap, &n);
+    if (st != REI_OK) {
+      PyMem_Free(rows);
+      pool_raise(self);
+      goto fail_no_raise;
+    }
+    for (uint32_t m = 0; m < n; m++) {
+      PyObject *r = PyDict_New();
+      int s = rows[m].status;
+      int ok = r != NULL &&
+               dict_set(r, "slot", rows[m].slot) == 0 &&
+               dict_set_str(r, "status",
+                            s >= 0 && s < 6 ? rs_states[s] : "unknown") == 0 &&
+               dict_set(r, "sequence",
+                        (unsigned long long) rows[m].sequence) == 0 &&
+               dict_set_sll(r, "worker", (long long) rows[m].worker_slot) == 0 &&
+               dict_set_sll(r, "waiter", (long long) rows[m].waiter_slot) == 0 &&
+               PyList_Append(tasks, r) == 0;
+      Py_XDECREF(r);
+      if (!ok) {
+        PyMem_Free(rows);
+        goto fail;
+      }
+    }
+    PyMem_Free(rows);
+  }
+  if (dict_set(local, "fl_entries", (unsigned long long) d.fl_entries) < 0 ||
+      dict_set(local, "fl_bytes", (unsigned long long) d.fl_bytes) < 0 ||
+      dict_set(local, "fl_hits", (unsigned long long) d.fl_hits) < 0 ||
+      dict_set(local, "open_hits", (unsigned long long) d.open_hits) < 0 ||
+      dict_set(local, "open_misses", (unsigned long long) d.open_misses) < 0 ||
+      dict_set(local, "collect_parks",
+               (unsigned long long) d.collect_parks) < 0 ||
+      dict_set_str(out, "name", d.status.name) < 0 ||
+      dict_set(out, "shutdown",
+               (unsigned long long) (d.status.shutdown != 0)) < 0 ||
+      dict_set(out, "help", (unsigned long long) (d.help_wanted != 0)) < 0 ||
+      PyDict_SetItemString(out, "workers", workers) < 0 ||
+      PyDict_SetItemString(out, "submitters", submitters) < 0 ||
+      PyDict_SetItemString(out, "tasks", tasks) < 0 ||
+      PyDict_SetItemString(out, "local", local) < 0)
+    goto fail;
+  Py_DECREF(workers);
+  Py_DECREF(submitters);
+  Py_DECREF(tasks);
+  Py_DECREF(local);
+  return out;
+fail:
+fail_no_raise:
+  Py_XDECREF(workers);
+  Py_XDECREF(submitters);
+  Py_XDECREF(tasks);
+  Py_XDECREF(local);
+  Py_DECREF(out);
+  return NULL;
+}
+
+static PyObject *Pool_token_get(ReiPool *self, void *Py_UNUSED(closure)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  char buf[64];
+  if (rei_pool_token(p, buf, sizeof(buf)) != REI_OK)
+    return pool_raise(self);
+  return PyUnicode_FromString(buf);
+}
+
+static PyObject *Pool_repr(ReiPool *self) {
+  if (self->core == NULL)
+    return PyUnicode_FromString("<pyrei.Pool (closed)>");
+  char buf[64];
+  if (rei_pool_token(self->core, buf, sizeof(buf)) != REI_OK)
+    buf[0] = '\0';
+  const char *role = self->role == REI_ROLE_CONTROLLER ? "controller" :
+    self->role == REI_ROLE_WORKER ? "worker" : "submitter";
+  return PyUnicode_FromFormat("<pyrei.Pool %s (%s)>", buf, role);
+}
+
+static void Pool_dealloc(ReiPool *self) {
+  /* a controller destroy broadcasts shutdown (no wait); a participant
+     releases its slot; a forked child's copy never touches the region */
+  if (self->core != NULL && self->self_pid == rei_self_pid())
+    rei_pool_destroy(self->core);
+  ReiPoolType.tp_free((PyObject *) self);
+}
+
+static PyMethodDef Pool_methods[] = {
+  {"submit", (PyCFunction)(void (*)(void)) Pool_submit,
+   METH_VARARGS | METH_KEYWORDS, pool_submit_doc},
+  {"submit_batch", (PyCFunction)(void (*)(void)) Pool_submit_batch,
+   METH_VARARGS | METH_KEYWORDS, pool_submit_batch_doc},
+  {"collect_any", (PyCFunction)(void (*)(void)) Pool_collect_any,
+   METH_VARARGS | METH_KEYWORDS, pool_collect_any_doc},
+  {"collect_all", (PyCFunction)(void (*)(void)) Pool_collect_all,
+   METH_VARARGS | METH_KEYWORDS, pool_collect_all_doc},
+  {"ready_wait", (PyCFunction)(void (*)(void)) Pool_ready_wait,
+   METH_VARARGS | METH_KEYWORDS, pool_ready_wait_doc},
+  {"retire", (PyCFunction) Pool_retire, METH_O, pool_retire_doc},
+  {"stop", (PyCFunction)(void (*)(void)) Pool_stop,
+   METH_VARARGS | METH_KEYWORDS, pool_stop_doc},
+  {"destroy", (PyCFunction) Pool_destroy, METH_NOARGS, pool_destroy_doc},
+  {"run", (PyCFunction) Pool_run, METH_NOARGS, pool_run_doc},
+  {"leave", (PyCFunction) Pool_leave, METH_NOARGS, pool_leave_doc},
+  {"lame_duck", (PyCFunction) Pool_lame_duck, METH_NOARGS, pool_lame_duck_doc},
+  {"status", (PyCFunction) Pool_status, METH_NOARGS, pool_status_doc},
+  {"dump", (PyCFunction) Pool_dump, METH_NOARGS, pool_dump_doc},
+  {NULL, NULL, 0, NULL}
+};
+
+static PyGetSetDef Pool_getset[] = {
+  {"token", (getter) Pool_token_get, NULL,
+   "The join token (\"<pid hex>_<counter hex>\") for worker/submitter attach.",
+   NULL},
+  {NULL, NULL, NULL, NULL, NULL}
+};
+
+static PyTypeObject ReiPoolType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pyrei._Pool",
+  .tp_basicsize = sizeof(ReiPool),
+  .tp_repr = (reprfunc) Pool_repr,
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A pool handle (process-private; does not survive fork()). "
+            "Construct through pyrei.Pool.create() / Pool.attach().",
+  .tp_methods = Pool_methods,
+  .tp_getset = Pool_getset,
+  .tp_dealloc = (destructor) Pool_dealloc,
+};
+
+// Task verbs ---------------------------------------------------------------------
+
+PyDoc_STRVAR(task_collect_doc,
+"collect(timeout=None) -> value | sentinel\n\n\
+Wait up to `timeout` seconds (None indefinitely, 0 polls) for the task's\n\
+terminal state and return its result. A task error re-raises as\n\
+pyrei.TaskError (carrying remote_type / remote_traceback), a cancellation\n\
+as pyrei.CancelledError, a dead worker as pyrei.WorkerDiedError.\n\
+pyrei.TIMEOUT on expiry; a task is collected exactly once.");
+
+static PyObject *Task_collect(ReiTask *self, PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"timeout", NULL};
+  PyObject *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:collect", kwlist, &tmo))
+    return NULL;
+  ReiPool *pool;
+  rei_task t = task_get(self, &pool);
+  if (pool == NULL) return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  void *v = NULL;
+  rei_status st;
+  POOL_ALLOW_THREADS(pool);
+  st = rei_pool_collect(pool->core, &t, &v, ms);
+  POOL_RESUME();
+  if (st == REI_TIMEOUT) {
+    Py_INCREF(SentTimeout);
+    return SentTimeout;
+  }
+  if (st == REI_ERR) return pool_raise(pool);
+  return caught_or_value((PyObject *) v, 0, 0);
+}
+
+PyDoc_STRVAR(task_cancel_doc,
+"cancel() -> bool\n\n\
+Advisory and discard-only, never preemptive: a still-queued task is\n\
+skipped; an executing one runs to completion and its result is dropped.\n\
+True when this call cancelled the task; every other edge folds to False.");
+
+static PyObject *Task_cancel(ReiTask *self, PyObject *Py_UNUSED(args)) {
+  ReiPool *pool = (ReiPool *) self->pool;
+  int cancelled = 0;
+  if (self->word != 0 && pool->core != NULL &&
+      pool->self_pid == rei_self_pid()) {
+    rei_task t = { self->word };
+    cancelled = rei_pool_cancel(pool->core, &t);
+  }
+  return PyBool_FromLong(cancelled);
+}
+
+static PyObject *Task_state_get(ReiTask *self, void *Py_UNUSED(closure)) {
+  ReiPool *pool = (ReiPool *) self->pool;
+  const char *state = "dropped";
+  if (self->word != 0 && pool->core != NULL &&
+      pool->self_pid == rei_self_pid()) {
+    rei_task t = { self->word };
+    switch (rei_pool_task_state(pool->core, &t)) {
+    case REI_RS_PENDING: state = "pending"; break;
+    case REI_RS_OK:      state = "ok"; break;
+    case REI_RS_ERR:     state = "err"; break;
+    case REI_RS_CANCEL:  state = "cancel"; break;
+    case REI_RS_DIED:    state = "died"; break;
+    default:             state = "collected"; break;   /* FREE / stale */
+    }
+  }
+  return PyUnicode_FromString(state);
+}
+
+static PyObject *Task_pool_get(ReiTask *self, void *Py_UNUSED(closure)) {
+  Py_INCREF(self->pool);
+  return self->pool;
+}
+
+static PyObject *Task_repr(ReiTask *self) {
+  return PyUnicode_FromFormat("<pyrei.Task seq=%llu slot=%u>",
+                              (unsigned long long) (self->word & ((1ULL << 40) - 1)),
+                              (unsigned int) (self->word >> 40));
+}
+
+static void Task_dealloc(ReiTask *self) {
+  ReiPool *pool = (ReiPool *) self->pool;
+  /* the finalizer release for a handle that was never collected: cancels a
+     pending task, frees a terminal one — advisory and total, so safe for a
+     stale handle, a released pool, or a forked child (guarded) alike */
+  if (self->word != 0 && pool->core != NULL &&
+      pool->self_pid == rei_self_pid()) {
+    rei_task t = { self->word };
+    rei_pool_task_release(pool->core, &t);
+  }
+  Py_DECREF(self->pool);
+  ReiTaskType.tp_free((PyObject *) self);
+}
+
+static PyMethodDef Task_methods[] = {
+  {"collect", (PyCFunction)(void (*)(void)) Task_collect,
+   METH_VARARGS | METH_KEYWORDS, task_collect_doc},
+  {"cancel", (PyCFunction) Task_cancel, METH_NOARGS, task_cancel_doc},
+  {NULL, NULL, 0, NULL}
+};
+
+static PyGetSetDef Task_getset[] = {
+  {"state", (getter) Task_state_get, NULL,
+   "The task's state (\"pending\" / \"ok\" / \"err\" / \"cancel\" / \"died\" "
+   "/ \"collected\" / \"dropped\"); informational, racy against slot reuse.",
+   NULL},
+  {"pool", (getter) Task_pool_get, NULL,
+   "The pool handle this task was submitted on.", NULL},
+  {NULL, NULL, NULL, NULL, NULL}
+};
+
+static PyTypeObject ReiTaskType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pyrei._Task",
+  .tp_basicsize = sizeof(ReiTask),
+  .tp_repr = (reprfunc) Task_repr,
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A task handle from _Pool.submit(). Collected exactly once; "
+            "an uncollected handle's finalizer releases its slot.",
+  .tp_methods = Task_methods,
+  .tp_getset = Task_getset,
+  .tp_dealloc = (destructor) Task_dealloc,
+};
+
 // Create / attach (module functions; the policy layer lives in pyrei.Channel) ------
 
 static int rei_pow2(uint64_t v) {
@@ -958,6 +2374,148 @@ static PyObject *pyrei_channel_attach(PyObject *Py_UNUSED(module),
   return out;
 }
 
+
+// Pool create / attach / join -----------------------------------------------------
+
+/* The join-token shape: "<pid hex>_<counter hex>". */
+static int token_valid(const char *token) {
+  const char *us = strchr(token, '_');
+  int ok = us != NULL && us != token && us[1] != '\0' &&
+           strchr(us + 1, '_') == NULL;
+  for (const char *p = token; ok && *p != '\0'; p++)
+    ok = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || *p == '_';
+  return ok;
+}
+
+PyDoc_STRVAR(pool_new_doc,
+"_pool_new(max_workers, max_submitters, injection_cap, per_worker_cap, "
+"result_slots, slot_size) -> _Pool\n\n\
+Controller side: create the pool region and return the handle (holding\n\
+submitter slot 0). The caller spawns the workers (with the token) and\n\
+completes the startup rendezvous.");
+
+static PyObject *pyrei_pool_new(PyObject *Py_UNUSED(module),
+                                PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"max_workers", "max_submitters", "injection_cap",
+                           "per_worker_cap", "result_slots", "slot_size",
+                           NULL};
+  unsigned int maxw, maxs, inj, deq, rslots, slot;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "IIIIII:_pool_new", kwlist,
+                                   &maxw, &maxs, &inj, &deq, &rslots, &slot))
+    return NULL;
+  if (maxw < 1 || maxw > REI_MAX_WORKERS) {
+    PyErr_Format(PyExc_ValueError,
+                 "pyrei: max_workers must be between 1 and %d",
+                 REI_MAX_WORKERS);
+    return NULL;
+  }
+  if (maxs < 1 || maxs > 64) {
+    PyErr_SetString(PyExc_ValueError,
+                    "pyrei: max_submitters must be between 1 and 64");
+    return NULL;
+  }
+  if (!rei_pow2(inj) || inj < 2 || inj > (1u << 24)) {
+    PyErr_SetString(PyExc_ValueError,
+                "pyrei: injection_cap must be a power of two between 2 and 2^24");
+    return NULL;
+  }
+  if (!rei_pow2(deq) || deq < 2 || deq > (1u << 24)) {
+    PyErr_SetString(PyExc_ValueError,
+              "pyrei: per_worker_cap must be a power of two between 2 and 2^24");
+    return NULL;
+  }
+  /* floor 128: a result slot's inline budget (slot - 40) must hold a
+     region name (up to 27 bytes on Windows) for an SHM_RAW spill */
+  if (!rei_pow2(slot) || slot < 128 || slot > (1u << 20)) {
+    PyErr_SetString(PyExc_ValueError,
+              "pyrei: slot_size must be a power of two between 128 and 2^20");
+    return NULL;
+  }
+  if (rslots < maxs || rslots > (1u << 24)) {
+    PyErr_SetString(PyExc_ValueError,
+              "pyrei: result_slots must be between max_submitters and 2^24");
+    return NULL;
+  }
+  rslots = (rslots + maxs - 1) / maxs * maxs;   /* per-submitter partition */
+  rei_pool_opts opts;
+  rei_pool_opts_init(&opts);
+  opts.max_workers = (uint32_t) maxw;
+  opts.max_submitters = (uint32_t) maxs;
+  opts.injection_cap = (uint32_t) inj;
+  opts.per_worker_cap = (uint32_t) deq;
+  opts.result_slots = (uint32_t) rslots;
+  opts.slot_size = (uint32_t) slot;
+  rei_binding b;
+  pool_binding(&b, 0);
+  rei_pool *p;
+  rei_status st;
+  Py_BEGIN_ALLOW_THREADS
+  st = rei_pool_create(&p, &opts, &b);
+  Py_END_ALLOW_THREADS
+  if (st != REI_OK) {
+    raise_tls();
+    return NULL;
+  }
+  return (PyObject *) pool_wrap(p, REI_ROLE_CONTROLLER);
+}
+
+PyDoc_STRVAR(pool_attach_doc,
+"_pool_attach(token) -> _Pool\n\n\
+Submitter side: join a live pool from another process, claiming a free\n\
+submitter slot with its own injection ring and result-slot subrange.");
+
+static PyObject *pyrei_pool_attach(PyObject *Py_UNUSED(module),
+                                   PyObject *arg) {
+  const char *token = PyUnicode_AsUTF8(arg);
+  if (token == NULL) return NULL;
+  if (!token_valid(token)) {
+    PyErr_SetString(PyExc_ValueError, "pyrei: malformed join token");
+    return NULL;
+  }
+  rei_binding b;
+  pool_binding(&b, 0);
+  rei_pool *p;
+  rei_status st;
+  Py_BEGIN_ALLOW_THREADS
+  st = rei_pool_attach(&p, token, &b);
+  Py_END_ALLOW_THREADS
+  if (st != REI_OK) {
+    raise_tls();
+    return NULL;
+  }
+  return (PyObject *) pool_wrap(p, REI_ROLE_SUBMITTER);
+}
+
+PyDoc_STRVAR(pool_worker_join_doc,
+"_pool_worker_join(token, slot) -> _Pool\n\n\
+Worker side: attach to the pool named by the join token as worker `slot`\n\
+(the liveness lock before the status CAS), registering the exec callback.\n\
+The entry point is python -m pyrei.worker.");
+
+static PyObject *pyrei_pool_worker_join(PyObject *Py_UNUSED(module),
+                                        PyObject *args) {
+  const char *token;
+  unsigned int slot;
+  if (!PyArg_ParseTuple(args, "sI:_pool_worker_join", &token, &slot))
+    return NULL;
+  if (!token_valid(token)) {
+    PyErr_SetString(PyExc_ValueError, "pyrei: malformed join token");
+    return NULL;
+  }
+  rei_binding b;
+  pool_binding(&b, 1);
+  rei_pool *p;
+  rei_status st;
+  Py_BEGIN_ALLOW_THREADS
+  st = rei_pool_worker_join(&p, token, (uint32_t) slot, &b);
+  Py_END_ALLOW_THREADS
+  if (st != REI_OK) {
+    raise_tls();
+    return NULL;
+  }
+  return (PyObject *) pool_wrap(p, REI_ROLE_WORKER);
+}
+
 PyDoc_STRVAR(is_sentinel_doc,
 "is_sentinel(x) -> bool\n\n\
 Provenance, not shape: True only for the exact sentinel singletons this\n\
@@ -982,6 +2540,11 @@ static PyMethodDef pyrei_methods[] = {
    METH_VARARGS | METH_KEYWORDS, channel_new_doc},
   {"_channel_attach", (PyCFunction) pyrei_channel_attach, METH_O,
    channel_attach_doc},
+  {"_pool_new", (PyCFunction)(void (*)(void)) pyrei_pool_new,
+   METH_VARARGS | METH_KEYWORDS, pool_new_doc},
+  {"_pool_attach", (PyCFunction) pyrei_pool_attach, METH_O, pool_attach_doc},
+  {"_pool_worker_join", (PyCFunction) pyrei_pool_worker_join, METH_VARARGS,
+   pool_worker_join_doc},
   {"is_sentinel", pyrei_is_sentinel, METH_O, is_sentinel_doc},
   {"abi_version", (PyCFunction) pyrei_abi_version, METH_NOARGS, abi_version_doc},
   {NULL, NULL, 0, NULL}
@@ -1008,7 +2571,10 @@ PyMODINIT_FUNC
 PyInit__pyrei(void)
 {
   if (PyType_Ready(&ReiSentinelType) < 0) return NULL;
+  if (PyType_Ready(&ReiCaughtType) < 0) return NULL;
   if (PyType_Ready(&ReiChannelType) < 0) return NULL;
+  if (PyType_Ready(&ReiPoolType) < 0) return NULL;
+  if (PyType_Ready(&ReiTaskType) < 0) return NULL;
 
   /* cloudpickle when installed, stock pickle otherwise; both read each
      other's protocol-4 streams */
@@ -1051,12 +2617,15 @@ PyInit__pyrei(void)
       add_exception(m, &ReiCancelledError, "pyrei.CancelledError",
                     ReiError) < 0 ||
       add_exception(m, &ReiWorkerDiedError, "pyrei.WorkerDiedError",
-                    ReiError) < 0) {
+                    ReiError) < 0 ||
+      add_exception(m, &ReiTaskError, "pyrei.TaskError", ReiError) < 0) {
     Py_DECREF(m);
     return NULL;
   }
 
   if (PyModule_AddObject(m, "_Channel", (PyObject *) &ReiChannelType) < 0 ||
+      PyModule_AddObject(m, "_Pool", (PyObject *) &ReiPoolType) < 0 ||
+      PyModule_AddObject(m, "_Task", (PyObject *) &ReiTaskType) < 0 ||
       PyModule_AddStringConstant(m, "__core_version__",
                                  REI_VERSION_STRING) < 0) {
     Py_DECREF(m);

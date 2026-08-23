@@ -71,15 +71,26 @@ changes go upstream to librei and are pulled by re-running the script
 
 ## Status
 
-The channel is implemented and tested: `_pyrei.c` holds the `_Channel`
-handle, the stage/read/check callbacks (buffer-protocol -> RAWVEC/RAWSPILL
-behind the O(1) gate, pickle protocol 4 fallback over INLINE/ARENA/SHM_RAW;
-copy-out reads, STR1 decode, informative "R payload" errors), the sentinel
-singletons, and the exception hierarchy. `pyrei.Channel` is the facade
-(create/attach/spawn); `python -m pyrei.child` is the peer entry
-(REI_DROP_SOURCE drops). The pytest suite (echo, batching, spill,
-sentinels, peer death, fork guard, SIGINT, numpy tiers) is green and runs
-in CI on the three OSes. Deferred: the MORH zero-copy view reader (SHM_VEC/
-REF), the R-side pickle-marker recognition and source-drop path, and the
-cross-language tests land together next; then the pool binding. License:
+The channel and the pool are implemented and tested. `_pyrei.c` holds the
+`_Channel` / `_Pool` / `_Task` handles, the stage/read/check callbacks
+(buffer-protocol -> RAWVEC/RAWSPILL behind the O(1) gate — pool handles
+frame RAWSPILL as a named region, the mirror of R's pool framing — pickle
+protocol 4 fallback over INLINE/ARENA/SHM_RAW; copy-out reads, STR1 decode,
+informative "R payload" errors), the worker's exec callback (the
+constructed, bounded (type, message, traceback) error envelope — never a
+pickled exception instance; an unpicklable result recovers as the task's
+ERR), the around-park GIL hook for worker handles, the `_Caught` outcome
+box the collect veneer unwraps and raises, the sentinel singletons, and the
+exception hierarchy (incl. TaskError with remote_type/remote_traceback,
+WorkerDiedError with slot/pid). `pyrei.Channel` / `pyrei.Pool` are the
+facades; `python -m pyrei.child` and `python -m pyrei.worker` are the
+spawned-process entries; `pyrei.current_pool()` binds the worker's own
+handle inside a task (nested submit/collect). The pytest suite (channel:
+echo, batching, spill, sentinels, peer death, fork guard, SIGINT, numpy
+tiers; pool: submit/collect, the outcome taxonomy, batching, worker death,
+nested submit incl. the GIL park-hook liveness case, collect_any/all,
+retire/spawn, attach) is green and runs in CI on the three OSes. Deferred:
+the MORH zero-copy view reader (SHM_VEC/REF), the R-side pickle-marker
+recognition and source-drop path, the cross-language tests, and the trace
+hook (`rei_pool_set_trace`) land with the cross-language commit. License:
 MIT.

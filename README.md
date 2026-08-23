@@ -12,7 +12,6 @@ The extension compiles the vendored C core, so no system library is necessary.
 A channel can also connect a Python process to an R process that uses the `rei` package.
 
 Pre-release (v0.1.0).
-Channels are implemented; the task-pool binding lands next (see the project plan in the librei repo).
 
 ## Channels
 
@@ -40,6 +39,24 @@ Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.
 `bytes` and 1-D contiguous numpy arrays of float64, int32, complex128, or uint8 ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
 Everything else crosses as a pickle protocol 4 stream.
 A channel can also connect a Python process to an R process that uses the `rei` package (R sends numeric vectors and strings; Python reads them as arrays and `str`).
+
+## Task pools
+
+```python
+import pyrei
+
+with pyrei.Pool.create(4) as pool:
+    task = pool.submit(pow, 2, 16)
+    print(task.collect(timeout=5))
+```
+
+`Pool.create()` spawns worker processes (`python -m pyrei.worker <token> <slot>`) that claim tasks from per-submitter injection rings and steal work from each other.
+A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.
+A task callable rides pickle: under stock pickle it must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently.
+A task error re-raises on collect as `pyrei.TaskError`, carrying the remote type name and traceback text — a constructed, bounded envelope, never a pickled exception instance.
+A cancellation raises `pyrei.CancelledError`; the death of the executing worker raises `pyrei.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
+`Pool.collect_any()` and `Pool.collect_all()` wait on several handles at once.
+Inside a task, `pyrei.current_pool()` returns the worker's own handle: a nested submit pushes onto the worker's deque, and a nested collect helps instead of parking, so nested fan-outs never deadlock the pool.
 
 ## Requirements
 
@@ -70,6 +87,7 @@ Optional extras:
 - `python/pyrei/`: the Python package.
   `child.py` and `worker.py` are the entry points for spawned processes (`python -m pyrei.child <token>`, `python -m pyrei.worker <suffix> <slot>`).
 - `tests/`: the pytest suite.
+  `tests/helpers.py` holds the task callables (pickle sends them by reference, so the workers must import them).
   If `Rscript` and the installed `rei` package are not present, the cross-language tests skip.
 
 ## License

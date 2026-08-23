@@ -4,6 +4,7 @@ task pools (the Python binding for librei)."""
 import re as _re
 import subprocess as _subprocess
 import sys as _sys
+import threading as _threading
 import warnings as _warnings
 
 from pyrei._pyrei import (
@@ -18,10 +19,15 @@ from pyrei._pyrei import (
     StartupError,
     StoppedError,
     SubmitTimeoutError,
+    TaskError,
     WorkerDiedError,
     __core_version__,
     _channel_attach,
     _channel_new,
+    _pool_attach,
+    _pool_new,
+    _pool_worker_join,
+    _Task as Task,
     abi_version,
     is_sentinel,
 )
@@ -157,6 +163,221 @@ class Channel:
         return False
 
 
+def _default_worker_launcher():
+    """Spawn one pool worker as ``python -m pyrei.worker <token> <slot>``."""
+
+    def launch(token, slot):
+        return _subprocess.Popen(
+            [_sys.executable, "-m", "pyrei.worker", token, str(slot)]
+        )
+
+    return launch
+
+
+class Pool:
+    """A shared-memory work-stealing task pool handle (process-private).
+
+    Create the controller side with :meth:`create` (which spawns the
+    workers, ``python -m pyrei.worker``); other processes join as
+    submitters with :meth:`attach`. The pool's lifetime is bound to the
+    creating process: dropping the handle shuts the pool down as
+    :meth:`stop` does, but without the wait. Handles do not survive
+    ``fork()``.
+
+    Task callables ride pickle: under stock pickle a submitted callable
+    must be an importable reference (the multiprocessing constraint);
+    installing cloudpickle lifts that transparently.
+    """
+
+    def __init__(self):
+        raise TypeError("use Pool.create() or Pool.attach()")
+
+    @classmethod
+    def _wrap(cls, handle):
+        self = cls.__new__(cls)
+        self._h = handle
+        return self
+
+    @classmethod
+    def create(
+        cls,
+        workers=1,
+        *,
+        max_workers=None,
+        max_submitters=8,
+        injection_cap=1024,
+        per_worker_cap=1024,
+        result_slots=4096,
+        slot_size=512,
+        launcher=None,
+        startup_timeout=30.0,
+    ):
+        """Create a pool and spawn its worker processes.
+
+        ``workers`` worker processes join the pool's registry (capacity
+        ``max_workers``). ``result_slots`` bounds each submitter's
+        outstanding (uncollected) tasks; ``slot_size`` is the bytes per
+        queue entry and result slot — a payload past the inline budget
+        travels in a fresh region per payload. ``launcher`` is a
+        ``callable(token, slot)`` arranging for a Python process to run
+        ``python -m pyrei.worker <token> <slot>``; the default spawns
+        ``sys.executable`` directly.
+        """
+        workers = int(workers)
+        if workers < 1:
+            raise ValueError("pyrei: workers must be at least 1")
+        if max_workers is None:
+            max_workers = workers
+        if workers > max_workers:
+            raise ValueError("pyrei: workers exceeds max_workers")
+        h = _pool_new(
+            max_workers,
+            max_submitters,
+            injection_cap,
+            per_worker_cap,
+            result_slots,
+            slot_size,
+        )
+        token = h.token
+        launch = launcher or _default_worker_launcher()
+        slots = list(range(workers))
+        for slot in slots:
+            launch(token, slot)
+        if not h.ready_wait(slots, startup_timeout):
+            h.destroy()
+            raise StartupError(
+                "pyrei: workers failed to attach within "
+                f"{startup_timeout} seconds"
+            )
+        return cls._wrap(h)
+
+    @classmethod
+    def attach(cls, token):
+        """Attach to a live pool as a submitter, by its join token.
+
+        The token travels out of band: it is ``pool.token`` on the
+        creator.
+        """
+        if not _TOKEN_RE.fullmatch(token):
+            raise ValueError("pyrei: malformed join token")
+        return cls._wrap(_pool_attach(token))
+
+    @property
+    def token(self):
+        """The join token for worker/submitter attach."""
+        return self._h.token
+
+    def submit(self, fn, /, *args, timeout=None, **kwargs):
+        """Submit ``fn(*args, **kwargs)`` as a task; return a Task handle.
+
+        Blocks only for injection-ring space, up to ``timeout`` seconds
+        (None waits indefinitely): SubmitTimeoutError on expiry,
+        SlotsExhaustedError / StoppedError on the fatal outcomes.
+        """
+        if not callable(fn):
+            raise TypeError("pyrei: fn must be callable")
+        return self._h.submit((fn, args, kwargs), timeout)
+
+    def submit_batch(self, fns, *, timeout=None):
+        """Submit one task per zero-arg callable in ``fns`` in one crossing.
+
+        Ring-full past ``timeout`` ends the batch short — the returned
+        handles stay valid and collectible. Use functools.partial to bind
+        arguments.
+        """
+        payloads = []
+        for fn in fns:
+            if not callable(fn):
+                raise TypeError("pyrei: batch items must be callable")
+            payloads.append((fn, (), {}))
+        return self._h.submit_batch(payloads, timeout)
+
+    def collect_any(self, tasks, timeout=None):
+        """Wait on several tasks; return ``(index, value)`` of the first
+        terminal one, or the TIMEOUT sentinel. A non-OK outcome raises
+        with an ``index`` attribute (0-based)."""
+        return self._h.collect_any(tasks, timeout)
+
+    def collect_all(self, tasks, timeout=None):
+        """Wait until every task is terminal; return all values in input
+        order, or the TIMEOUT sentinel (which consumes nothing)."""
+        return self._h.collect_all(tasks, timeout)
+
+    def retire(self, slot):
+        """Ask the worker in ``slot`` to exit cleanly (non-blocking)."""
+        return self._h.retire(slot)
+
+    def spawn_workers(self, n=1, *, launcher=None, startup_timeout=30.0):
+        """Spawn ``n`` additional workers into free registry slots and wait
+        for them to join. Returns the slot indices spawned into."""
+        n = int(n)
+        if n < 1:
+            raise ValueError("pyrei: n must be at least 1")
+        free = [
+            i for i, s in enumerate(self.status()["workers"]) if s == "free"
+        ]
+        if len(free) < n:
+            raise ReiError(
+                f"pyrei: not enough free worker slots ({len(free)} free)"
+            )
+        slots = free[:n]
+        token = self._h.token
+        launch = launcher or _default_worker_launcher()
+        for slot in slots:
+            launch(token, slot)
+        if not self._h.ready_wait(slots, startup_timeout):
+            raise StartupError(
+                "pyrei: workers failed to attach within "
+                f"{startup_timeout} seconds"
+            )
+        return slots
+
+    def stop(self, timeout=5.0):
+        """Orderly shutdown (controller only): broadcast shutdown, cancel
+        pending tasks, wait up to ``timeout`` seconds for clean worker
+        exits, and unlink. Idempotent."""
+        ok = self._h.stop(timeout)
+        if not ok:
+            _warnings.warn(
+                "pyrei: pool stop timed out waiting for workers; they exit "
+                "on their own once they observe shutdown"
+            )
+        return ok
+
+    def destroy(self):
+        return self._h.destroy()
+
+    def status(self):
+        """A read-only wire-state snapshot of the pool (dict)."""
+        return self._h.status()
+
+    def dump(self):
+        """A read-only debugging snapshot of the whole pool region (dict)."""
+        return self._h.dump()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+        return False
+
+
+_worker_local = _threading.local()
+
+
+def current_pool():
+    """The evaluating worker's own pool handle, inside a task.
+
+    A task uses it for nested submission: a nested submit pushes onto the
+    worker's own work-stealing deque (no ring, no wait), and a nested
+    collect helps — executes work — instead of parking, so nested fan-outs
+    run at fork/join cost and never deadlock the pool. None outside a
+    task.
+    """
+    return getattr(_worker_local, "pool", None)
+
+
 __all__ = [
     "CLOSED",
     "FULL",
@@ -164,15 +385,19 @@ __all__ = [
     "TIMEOUT",
     "CancelledError",
     "Channel",
+    "Pool",
     "ReiError",
     "ShmError",
     "SlotsExhaustedError",
     "StartupError",
     "StoppedError",
     "SubmitTimeoutError",
+    "Task",
+    "TaskError",
     "WorkerDiedError",
     "__core_version__",
     "__version__",
     "abi_version",
+    "current_pool",
     "is_sentinel",
 ]
