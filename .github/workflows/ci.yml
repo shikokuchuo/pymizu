@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # setup.py forces clang-cl on Windows (MSVC C11 atomics unsupported);
+      # LLVM is preinstalled on the runners but not on PATH.
+      - name: Add LLVM to PATH
+        if: runner.os == 'Windows'
+        run: echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+
+      - name: Build and install
+        run: pip install .
+
+      - name: Import smoke
+        run: python -c "import pyrei; print(pyrei.__version__, pyrei.__core_version__, pyrei.abi_version())"
