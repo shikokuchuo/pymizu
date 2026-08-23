@@ -6,6 +6,8 @@ in the test module. The repo-root conftest.py puts the root on sys.path in
 the test process; a spawned worker's sys.path[0] is the repo root already.
 """
 
+import os
+import random
 import threading
 import time
 
@@ -44,6 +46,55 @@ def fanout(n):
     pool = pyrei.current_pool()
     tasks = [pool.submit(square, i) for i in range(n)]
     return sum(t.collect() for t in tasks)
+
+
+def rand_elt(i):
+    """A draw from the worker's stdlib random stream (seeded maps)."""
+    return random.random()
+
+
+def fail_at(i, bad):
+    if i == bad:
+        raise ValueError(f"element {i}")
+    return i
+
+
+def sleep_then(i, t):
+    time.sleep(t)
+    return i
+
+
+def kill_at(i, bad):
+    """Die mid-map (the worker process exits without publishing)."""
+    if i == bad:
+        os._exit(1)
+    return i
+
+
+def nested_map(n):
+    """A map inside a task, on the evaluating worker's own pool handle."""
+    pool = pyrei.current_pool()
+    return pool.map(square, list(range(n)))
+
+
+def fail_or_sleep(i, bad, t):
+    if i == bad:
+        raise ValueError(f"element {i}")
+    time.sleep(t)
+    return i
+
+
+def sleep_ident(t):
+    time.sleep(t)
+    return t
+
+
+def scale_add(x, *, scale=1, add=0):
+    return x * scale + add
+
+
+def np_scalar_double(v):
+    return float(v) * 2
 
 
 def fanout_with_thread(n, interval=0.005):

@@ -16,9 +16,8 @@ nothing.
                             collect all (in-process loop as the anchor)
   5. streaming              one-way const messages: channel send_batch /
                             recv_batch
-
-Scenario 6 of the R bench (parallel map) has no Python counterpart in v1:
-rei_map is R-only.
+  6. parallel map           Pool.map of bench_sum over 2000 elements,
+                            4 workers (in-process loop as the anchor)
 
 Timings are best-of-3 after warm-up; single runs on a busy machine still
 jitter.
@@ -291,6 +290,20 @@ def stream_channel(ch):
               lambda: [stream_round() for _ in range(k)], "msg/s")
 
 with_channel(STREAM_PEER, stream_channel)
+
+# 6. parallel map --------------------------------------------------------------
+
+print("\n== 6. parallel map (Pool.map bench_sum x 2000, 4 workers) ==")
+n = 2000
+
+note_rate("map", "in-process", n, lambda: [bench_sum(i) for i in range(n)])
+
+def map_pool(p):
+    xs = list(range(n))
+    p.map(bench_sum, xs)   # warm-up (bench_sum is stochastic: no assert)
+    note_rate("map", "pyrei pool", n, lambda: p.map(bench_sum, xs))
+
+with_pool(4, map_pool)
 
 # summary ----------------------------------------------------------------------
 

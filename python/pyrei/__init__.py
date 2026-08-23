@@ -324,6 +324,36 @@ class Pool:
         order, or the TIMEOUT sentinel (which consumes nothing)."""
         return self._h.collect_all(tasks, timeout)
 
+    def map(self, fn, x, *, args=(), kwargs=None, chunks=None, seed=None,
+            timeout=None):
+        """Map ``fn`` over the elements of ``x`` on the pool; return the
+        results as a list in input order.
+
+        One call stages ``fn``, the constant ``args``/``kwargs``, and
+        ``x`` exactly once (a shared region, or inline in chunk tasks when
+        small), then submits one *runner* task per live worker; runners
+        self-schedule adaptively sized element batches off a shared
+        cursor. A C-contiguous buffer of a supported dtype
+        (float64/int32/complex128/uint8) travels as bare bytes — workers
+        wrap it once and index per element. ``chunks`` overrides the
+        morsel count (the scheduling granularity). ``seed`` (an int or
+        bytes) derives deterministic per-element streams of the stdlib
+        ``random`` module: element ``i`` runs under
+        ``random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))``,
+        identical for any chunking, worker count, or steal order.
+
+        A task error re-raises as TaskError carrying the failing element's
+        0-based ``index``; failure is fail-fast (peers stop within about
+        one batch). Worker death raises WorkerDiedError carrying the lost
+        element ranges as ``lost`` (0-based half-open ``(lo, hi)`` pairs,
+        conservative). On ``timeout`` expiry the outstanding work is
+        cancelled and the TIMEOUT sentinel is returned, never raised.
+        """
+        from pyrei import _map
+
+        return _map.pool_map(self, fn, x, args, kwargs, chunks, seed,
+                             timeout)
+
     def retire(self, slot):
         """Ask the worker in ``slot`` to exit cleanly (non-blocking)."""
         return self._h.retire(slot)

@@ -23,6 +23,7 @@
 
 #include "rei.h"
 #include "internal.h"
+#include "pymap.h"
 
 #define REI_STR_(x) #x
 #define REI_STR(x) REI_STR_(x)
@@ -221,6 +222,11 @@ static int wire_type_of(const Py_buffer *v) {
   if (f[0] == 'Z' && f[1] == 'd' && f[2] == '\0')
     return v->itemsize == 16 ? REI_TYPE_CPLX : 0;
   return 0;
+}
+
+/* map.c's raw-x gate rides the same dtype map. */
+int rei_py_wire_type_of(const Py_buffer *v) {
+  return wire_type_of(v);
 }
 
 /* Bare vector bytes: RAWVEC inline within the budget, else one arena chunk
@@ -467,11 +473,13 @@ static PyObject *read_frame(const rei_slot_hdr *hdr, const uint8_t *payload,
 
 /* The ERR outcome's payload is the worker's constructed envelope: a pickled
    (type name, message, traceback) tuple — never a pickled exception
-   instance. Rebuild it as a TaskError carrying the remote type name and
-   traceback text. */
+   instance — plus, for a map runner's annotated error, a fourth element
+   carrying the in-flight element index. Rebuild it as a TaskError carrying
+   the remote type name and traceback text (and `index` when present). */
 static PyObject *task_error_of(PyObject *env) {
-  PyObject *tn = NULL, *ms = NULL, *tbs = NULL;
-  if (PyTuple_Check(env) && PyTuple_GET_SIZE(env) == 3 &&
+  PyObject *tn = NULL, *ms = NULL, *tbs = NULL, *eidx = NULL;
+  Py_ssize_t arity = PyTuple_Check(env) ? PyTuple_GET_SIZE(env) : 0;
+  if ((arity == 3 || arity == 4) &&
       PyUnicode_Check(PyTuple_GET_ITEM(env, 0)) &&
       PyUnicode_Check(PyTuple_GET_ITEM(env, 1)) &&
       PyUnicode_Check(PyTuple_GET_ITEM(env, 2))) {
@@ -481,6 +489,13 @@ static PyObject *task_error_of(PyObject *env) {
     Py_INCREF(tn);
     Py_INCREF(ms);
     Py_INCREF(tbs);
+    if (arity == 4) {
+      PyObject *i = PyTuple_GET_ITEM(env, 3);
+      if (PyLong_Check(i)) {
+        eidx = i;
+        Py_INCREF(eidx);
+      }
+    }
   } else {
     tn = PyUnicode_FromString("Exception");
     ms = PyUnicode_FromString("pyrei: task failed (unreadable error envelope)");
@@ -493,11 +508,13 @@ static PyObject *task_error_of(PyObject *env) {
     exc = PyObject_CallFunction(ReiTaskError, "N", text);
   if (exc != NULL && tn != NULL && tbs != NULL &&
       (PyObject_SetAttrString(exc, "remote_type", tn) < 0 ||
-       PyObject_SetAttrString(exc, "remote_traceback", tbs) < 0))
+       PyObject_SetAttrString(exc, "remote_traceback", tbs) < 0 ||
+       (eidx != NULL && PyObject_SetAttrString(exc, "index", eidx) < 0)))
     Py_CLEAR(exc);
   Py_XDECREF(tn);
   Py_XDECREF(ms);
   Py_XDECREF(tbs);
+  Py_XDECREF(eidx);
   return exc;
 }
 
@@ -666,6 +683,19 @@ static int publish_exc(rei_result_sink *sink) {
     msg = PyUnicode_FromString("<unprintable exception>");
   }
   PyObject *tbs = value != NULL ? traceback_text(value) : NULL;
+  /* a map runner annotates its error with the in-flight element index: it
+     travels as the envelope's fourth element (ordinary task errors stay
+     3-tuples); the truncation ladder below never touches it */
+  PyObject *eidx = NULL;
+  if (value != NULL) {
+    eidx = PyObject_GetAttrString(value, "_pyrei_map_index");
+    if (eidx == NULL) {
+      PyErr_Clear();
+    } else if (!PyLong_Check(eidx)) {
+      Py_DECREF(eidx);
+      eidx = NULL;
+    }
+  }
   Py_XDECREF(type);
   Py_XDECREF(value);
   Py_XDECREF(tb);
@@ -673,12 +703,14 @@ static int publish_exc(rei_result_sink *sink) {
     Py_XDECREF(tname);
     Py_XDECREF(msg);
     Py_XDECREF(tbs);
+    Py_XDECREF(eidx);
     return 1;                    /* allocation failure: the worker goes down */
   }
   uint32_t budget = sink->inline_max;
   PyObject *env = NULL, *stream = NULL;
   for (int attempt = 0; attempt < 5; attempt++) {
-    PyObject *cand = PyTuple_Pack(3, tname, msg, tbs);
+    PyObject *cand = eidx != NULL ? PyTuple_Pack(4, tname, msg, tbs, eidx)
+                                  : PyTuple_Pack(3, tname, msg, tbs);
     if (cand == NULL) goto infra;
     PyObject *s = PyObject_CallFunction(rei_dumps, "Oi", cand, 4);
     if (s == NULL) {
@@ -727,7 +759,8 @@ static int publish_exc(rei_result_sink *sink) {
   } else {
     /* below the inline guarantee (a tiny slot): the tiered stage carries
        the smallest envelope out of line */
-    env = PyTuple_Pack(3, tname, msg, tbs);
+    env = eidx != NULL ? PyTuple_Pack(4, tname, msg, tbs, eidx)
+                       : PyTuple_Pack(3, tname, msg, tbs);
     if (env == NULL) goto infra;
     rc = rei_result_publish_err(sink, (void *) env, 0);
   }
@@ -736,11 +769,13 @@ static int publish_exc(rei_result_sink *sink) {
   Py_DECREF(tname);
   Py_DECREF(msg);
   Py_DECREF(tbs);
+  Py_XDECREF(eidx);
   return rc < 0;
 infra:
   Py_XDECREF(tname);
   Py_XDECREF(msg);
   Py_XDECREF(tbs);
+  Py_XDECREF(eidx);
   return 1;
 }
 
@@ -2094,6 +2129,99 @@ static void Pool_dealloc(ReiPool *self) {
   ReiPoolType.tp_free((PyObject *) self);
 }
 
+// Pool map support (the Pool.map veneers) -----------------------------------
+
+PyDoc_STRVAR(pool_map_caps_doc,
+"_map_caps() -> (live_workers, free_result_slots, injection_cap, \\\n\
+inline_entry_budget)\n\n\
+A map's batch-sizing inputs in one read pass. A worker's first nested map\n\
+claims its submitter slot here, exactly as a first nested submit does.");
+
+static PyObject *Pool_map_caps(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  uint32_t free_rs, inj_cap, inline_entry;
+  if (rei_pool_map_caps(p, &free_rs, &inj_cap, &inline_entry) != 0)
+    return pool_raise(self);
+  rei_pool_status st;
+  if (rei_pool_status_get(p, &st) != REI_OK) return pool_raise(self);
+  uint32_t live = 0;
+  for (uint32_t i = 0; i < st.max_workers; i++)
+    live += st.worker_state[i] == REI_WK_LIVE;
+  return Py_BuildValue("(IIII)", live, free_rs, inj_cap, inline_entry);
+}
+
+static void pool_sig_capsule_free(PyObject *caps) {
+  void *p = PyCapsule_GetPointer(caps, REI_PY_SIG_CAPSULE);
+  if (p == NULL) {
+    PyErr_Clear();   /* NULL payload tolerated */
+    return;
+  }
+  free(p);
+}
+
+PyDoc_STRVAR(pool_signals_doc,
+"_signals() -> capsule\n\n\
+The opaque pool-signal trio a map runner loads once per batch transition\n\
+(the help_wanted doorbell, the shared shutdown word, the owner-dead\n\
+flag). Worker-local only: the capsule wraps raw addresses, valid only in\n\
+the process that created it — a runner calls this on its own attached\n\
+pool handle, never on one received from a submitter.");
+
+static PyObject *Pool_signals(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  rei_pool_sig *s = rei_pool_signals(p);
+  if (s == NULL) return PyErr_NoMemory();
+  return PyCapsule_New(s, REI_PY_SIG_CAPSULE, pool_sig_capsule_free);
+}
+
+PyDoc_STRVAR(pool_help_once_doc,
+"_help_once() -> bool\n\n\
+One doorbell help beat at a runner's batch boundary: claims one foreign\n\
+injection task (a runner-flagged one is re-homed onto this worker's own\n\
+deque, not executed). True when it claimed. The worker keeps holding the\n\
+GIL around the call: a claimed task's Python callable needs it.");
+
+static PyObject *Pool_help_once(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  int rc = rei_pool_help_once(p);
+  if (rc < 0) return pool_raise(self);
+  return PyBool_FromLong(rc);
+}
+
+PyDoc_STRVAR(pool_submit_runner_doc,
+"_submit_runner(payload, timeout=None) -> _Task\n\n\
+A map runner's submit: submit plus the REI_ENTRY_RUNNER wire flag, so a\n\
+doorbell help beat re-homes it onto the helper's own deque instead of\n\
+executing a join ticket nested. Same error taxonomy as submit().");
+
+static PyObject *Pool_submit_runner(ReiPool *self, PyObject *args,
+                                    PyObject *kw) {
+  static char *kwlist[] = {"payload", "timeout", NULL};
+  PyObject *payload, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:_submit_runner", kwlist,
+                                   &payload, &tmo))
+    return NULL;
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  rei_task t;
+  rei_status st;
+  POOL_ALLOW_THREADS(self);
+  st = rei_pool_submit_flags(p, (void *) payload, REI_ENTRY_RUNNER, &t, ms);
+  POOL_RESUME();
+  if (st == REI_OK) return (PyObject *) task_wrap(self, &t);
+  if (st == REI_FULL) {
+    PyErr_SetString(ReiSubmitTimeoutError,
+                    "pyrei: submission timed out (injection ring full)");
+    return NULL;
+  }
+  return pool_raise(self);
+}
+
 static PyMethodDef Pool_methods[] = {
   {"submit", (PyCFunction)(void (*)(void)) Pool_submit,
    METH_VARARGS | METH_KEYWORDS, pool_submit_doc},
@@ -2114,6 +2242,12 @@ static PyMethodDef Pool_methods[] = {
   {"lame_duck", (PyCFunction) Pool_lame_duck, METH_NOARGS, pool_lame_duck_doc},
   {"status", (PyCFunction) Pool_status, METH_NOARGS, pool_status_doc},
   {"dump", (PyCFunction) Pool_dump, METH_NOARGS, pool_dump_doc},
+  {"_map_caps", (PyCFunction) Pool_map_caps, METH_NOARGS, pool_map_caps_doc},
+  {"_signals", (PyCFunction) Pool_signals, METH_NOARGS, pool_signals_doc},
+  {"_help_once", (PyCFunction) Pool_help_once, METH_NOARGS,
+   pool_help_once_doc},
+  {"_submit_runner", (PyCFunction)(void (*)(void)) Pool_submit_runner,
+   METH_VARARGS | METH_KEYWORDS, pool_submit_runner_doc},
   {NULL, NULL, 0, NULL}
 };
 
@@ -2654,7 +2788,8 @@ PyInit__pyrei(void)
       PyModule_AddObject(m, "_Pool", (PyObject *) &ReiPoolType) < 0 ||
       PyModule_AddObject(m, "_Task", (PyObject *) &ReiTaskType) < 0 ||
       PyModule_AddStringConstant(m, "__core_version__",
-                                 REI_VERSION_STRING) < 0) {
+                                 REI_VERSION_STRING) < 0 ||
+      rei_py_map_register(m, ReiError, ReiShmError) < 0) {
     Py_DECREF(m);
     return NULL;
   }

@@ -65,13 +65,30 @@ changes go upstream to librei and are pulled by re-running the script
 - Sentinels map to Python singletons; `REI_ERR` maps to an exception
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
+- Map conventions (`src/map.c`, `python/pyrei/_map.py`): one fresh region
+  per map (own "PYRM" magic, `REI_ABI_VERSION`-keyed, the R morsel
+  layout); runners are ordinary tasks submitted with `REI_ENTRY_RUNNER`
+  via `_Pool._submit_runner`; the pool-signal capsule is worker-local only
+  (raw addresses — a runner calls `_Pool._signals()` on its own handle,
+  never on one from the submitter); the cancel word is the fail-fast
+  store, set by an erroring runner before its ERR publish and by the
+  submitter on timeout/interrupt/death; the stage-side capsule destructor
+  unlinks (GC backstop), with `_map_close` the explicit unlink after
+  collect; a runner's error envelope carries the in-flight element index
+  as a fourth tuple element (ordinary `submit` errors stay 3-tuples);
+  element ranges are 0-based half-open `[lo, hi)` throughout the Python
+  side (R is 1-based inclusive).
 - Commit messages are a single line (subject only, no body).
 - Never push without explicit approval — every push must be approved by
   the user first.
 
 ## Status
 
-The channel and the pool are implemented and tested. `_pyrei.c` holds the
+The channel, the pool, and the parallel map (`Pool.map`: region + blob
+paths, morsel protocol, adaptive batching, doorbell help, fail-fast
+cancel, timeout sentinel, worker-death lost ranges, per-element seeding of
+the worker's stdlib `random` via SHA-256(seed ‖ i)) are implemented and
+tested. `_pyrei.c` holds the
 `_Channel` / `_Pool` / `_Task` handles, the stage/read/check callbacks
 (buffer-protocol -> RAWVEC/RAWSPILL behind the O(1) gate — pool handles
 frame RAWSPILL as a named region, the mirror of R's pool framing — pickle
@@ -89,8 +106,12 @@ handle inside a task (nested submit/collect). The pytest suite (channel:
 echo, batching, spill, sentinels, peer death, fork guard, SIGINT, numpy
 tiers; pool: submit/collect, the outcome taxonomy, batching, worker death,
 nested submit incl. the GIL park-hook liveness case, collect_any/all,
-retire/spawn, attach) is green and runs in CI on the three OSes. Deferred:
-the MORH zero-copy view reader (SHM_VEC/REF), the R-side pickle-marker
-recognition and source-drop path, the cross-language tests, and the trace
-hook (`rei_pool_set_trace`) land with the cross-language commit. License:
-MIT.
+retire/spawn, attach; map: round-trip/order, chunking invariance, blob and
+region paths, numpy x sections, the outcome taxonomy, fail-fast, timeout,
+worker death, seed determinism, nested maps, SIGINT) is green and runs in
+CI on the three OSes. Deferred: the MORH zero-copy view reader
+(SHM_VEC/REF), the R-side pickle-marker recognition and source-drop path,
+the cross-language tests, and the trace hook (`rei_pool_set_trace`) land
+with the cross-language commit; the map's template/output-area path,
+prepared maps (generation re-arm, in-place x swap), and numpy global-RNG
+seeding are later follow-ups. License: MIT.

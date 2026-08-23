@@ -46,7 +46,7 @@ core_sources = sorted(glob.glob("src/vendor/librei/*.c"))
 ext_modules = [
     Extension(
         "pyrei._pyrei",
-        sources=["src/_pyrei.c"] + core_sources,
+        sources=["src/_pyrei.c", "src/map.c"] + core_sources,
         include_dirs=["src/vendor/librei"],
         extra_compile_args=[] if os.name == "nt" else ["-std=c11", "-pthread"],
         extra_link_args=[] if os.name == "nt" else ["-pthread"],

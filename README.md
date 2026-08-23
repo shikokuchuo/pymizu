@@ -58,6 +58,25 @@ A cancellation raises `pyrei.CancelledError`; the death of the executing worker 
 `Pool.collect_any()` and `Pool.collect_all()` wait on several handles at once.
 Inside a task, `pyrei.current_pool()` returns the worker's own handle: a nested submit pushes onto the worker's deque, and a nested collect helps instead of parking, so nested fan-outs never deadlock the pool.
 
+## Parallel map
+
+```python
+with pyrei.Pool.create(4) as pool:
+    print(pool.map(abs, range(-5, 5)))
+```
+
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input order.
+One call stages `fn`, the constant `args=`/`kwargs=`, and `x` exactly once — a shared region, or inline in chunk tasks when small — then submits one runner task per live worker.
+Runners self-schedule adaptively sized element batches off a shared cursor: a trivial `fn` runs in large batches at near-zero scheduling overhead; an expensive or skewed one self-limits to fine claims that keep the workers balanced.
+A 1-D C-contiguous buffer of float64, int32, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing `x`.
+`chunks=` overrides the scheduling granularity outright.
+`seed=` (an int or bytes) derives deterministic per-element streams of the stdlib `random` module: element `i` runs under `random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))`, so results are identical for any chunking, worker count, or steal order.
+An error raised by `fn` re-raises as `pyrei.TaskError` carrying the failing element's 0-based `index`; failure is fail-fast — peers stop within about one batch.
+Worker death raises `pyrei.WorkerDiedError` carrying the lost element ranges as `lost` (0-based half-open pairs, conservative).
+On `timeout=` expiry the outstanding work is cancelled and the `pyrei.TIMEOUT` sentinel is returned, never raised.
+Ctrl-C during a map cancels its outstanding tasks.
+A map inside a task runs on the worker's own handle via `pyrei.current_pool()`, at fork/join cost.
+
 ## Requirements
 
 - Python 3.10 or later, on a 64-bit platform.
