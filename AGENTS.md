@@ -71,8 +71,15 @@ changes go upstream to librei and are pulled by re-running the script
 
 ## Status
 
-Repo stand-up: packaging (pyproject + setup.py), the vendor script, a
-compiling `_pyrei` skeleton (module + `abi_version()` + `__core_version__`),
-the package skeleton with `child.py`/`worker.py` entry stubs, README,
-LICENSE (MIT). The channel verbs, staging/reading tiers, spawn, and the
-pool binding land next per the plan's Phase 2 checklist. License: MIT.
+The channel is implemented and tested: `_pyrei.c` holds the `_Channel`
+handle, the stage/read/check callbacks (buffer-protocol -> RAWVEC/RAWSPILL
+behind the O(1) gate, pickle protocol 4 fallback over INLINE/ARENA/SHM_RAW;
+copy-out reads, STR1 decode, informative "R payload" errors), the sentinel
+singletons, and the exception hierarchy. `pyrei.Channel` is the facade
+(create/attach/spawn); `python -m pyrei.child` is the peer entry
+(REI_DROP_SOURCE drops). The pytest suite (echo, batching, spill,
+sentinels, peer death, fork guard, SIGINT, numpy tiers) is green and runs
+in CI on the three OSes. Deferred: the MORH zero-copy view reader (SHM_VEC/
+REF), the R-side pickle-marker recognition and source-drop path, and the
+cross-language tests land together next; then the pool binding. License:
+MIT.

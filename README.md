@@ -12,8 +12,34 @@ The extension compiles the vendored C core, so no system library is necessary.
 A channel can also connect a Python process to an R process that uses the `rei` package.
 
 Pre-release (v0.1.0).
-The extension module stands up the build and packaging only.
-The channel and pool verbs land next (see the project plan in the librei repo).
+Channels are implemented; the task-pool binding lands next (see the project plan in the librei repo).
+
+## Channels
+
+```python
+import pyrei
+
+ch = pyrei.Channel.create("""
+import pyrei
+while True:
+    x = ch.recv()
+    if x is pyrei.CLOSED:
+        break
+    ch.send(x)
+""")
+ch.send([1, "a", None])
+print(ch.recv(timeout=5))
+ch.close()
+```
+
+`Channel.create()` spawns a peer process (`python -m pyrei.child <token>`) and connects both ends over a lock-free ring pair.
+The peer program is a Python source string, evaluated with `ch` bound to the peer-side handle.
+Sends never block for ring space.
+Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.TIMEOUT`, `pyrei.CLOSED`, `pyrei.PEER_GONE` — tested by identity (`x is pyrei.TIMEOUT`), never raised.
+`None` crosses as an immediate.
+`bytes` and 1-D contiguous numpy arrays of float64, int32, complex128, or uint8 ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
+Everything else crosses as a pickle protocol 4 stream.
+A channel can also connect a Python process to an R process that uses the `rei` package (R sends numeric vectors and strings; Python reads them as arrays and `str`).
 
 ## Requirements
 
