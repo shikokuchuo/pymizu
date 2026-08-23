@@ -28,3 +28,15 @@ cloudpickle = ["cloudpickle"]
 [tool.setuptools]
 package-dir = { "" = "python" }
 packages = ["pyrei"]
+
+[tool.coverage.run]
+source = ["pyrei"]
+# Unique data file per process: the spawned child/worker interpreters
+# measure themselves via COVERAGE_PROCESS_START (see conftest.py).
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+  "if __name__ == .__main__.:",
+]

@@ -2560,9 +2560,20 @@ static struct PyModuleDef pyrei_module = {
 };
 
 static int add_exception(PyObject *m, PyObject **slot, const char *name,
-                         PyObject *base) {
-  *slot = PyErr_NewException(name, base, NULL);
-  if (*slot == NULL) return -1;
+                         PyObject *base, const char *doc) {
+  PyObject *dict = PyDict_New();
+  PyObject *docstr = PyUnicode_FromString(doc);
+  if (dict == NULL || docstr == NULL) {
+    Py_XDECREF(dict);
+    Py_XDECREF(docstr);
+    return -1;
+  }
+  int rc = PyDict_SetItemString(dict, "__doc__", docstr);
+  Py_DECREF(docstr);
+  if (rc == 0)
+    *slot = PyErr_NewException(name, base, dict);
+  Py_DECREF(dict);
+  if (rc != 0 || *slot == NULL) return -1;
   const char *dot = strchr(name, '.');
   return PyModule_AddObject(m, dot != NULL ? dot + 1 : name, *slot);
 }
@@ -2606,19 +2617,35 @@ PyInit__pyrei(void)
     return NULL;
   }
 
-  if (add_exception(m, &ReiError, "pyrei.ReiError", PyExc_Exception) < 0 ||
-      add_exception(m, &ReiStartupError, "pyrei.StartupError", ReiError) < 0 ||
-      add_exception(m, &ReiShmError, "pyrei.ShmError", ReiError) < 0 ||
+  if (add_exception(m, &ReiError, "pyrei.ReiError", PyExc_Exception,
+                    "Base class for all pyrei errors.") < 0 ||
+      add_exception(m, &ReiStartupError, "pyrei.StartupError", ReiError,
+                    "A channel peer or pool worker failed to attach within "
+                    "the startup timeout.") < 0 ||
+      add_exception(m, &ReiShmError, "pyrei.ShmError", ReiError,
+                    "A shared-memory region operation failed.") < 0 ||
       add_exception(m, &ReiSubmitTimeoutError, "pyrei.SubmitTimeoutError",
-                    ReiError) < 0 ||
+                    ReiError,
+                    "Pool.submit() timed out waiting for injection-ring "
+                    "space.") < 0 ||
       add_exception(m, &ReiSlotsExhaustedError, "pyrei.SlotsExhaustedError",
-                    ReiError) < 0 ||
-      add_exception(m, &ReiStoppedError, "pyrei.StoppedError", ReiError) < 0 ||
+                    ReiError,
+                    "Pool.submit() found no free result slot: too many "
+                    "outstanding (uncollected) tasks.") < 0 ||
+      add_exception(m, &ReiStoppedError, "pyrei.StoppedError", ReiError,
+                    "The pool is stopped; no further submission is "
+                    "possible.") < 0 ||
       add_exception(m, &ReiCancelledError, "pyrei.CancelledError",
-                    ReiError) < 0 ||
+                    ReiError,
+                    "The task was cancelled before it ran.") < 0 ||
       add_exception(m, &ReiWorkerDiedError, "pyrei.WorkerDiedError",
-                    ReiError) < 0 ||
-      add_exception(m, &ReiTaskError, "pyrei.TaskError", ReiError) < 0) {
+                    ReiError,
+                    "The executing worker died mid-task. Carries 'slot' "
+                    "and 'pid' attributes identifying the worker.") < 0 ||
+      add_exception(m, &ReiTaskError, "pyrei.TaskError", ReiError,
+                    "The task callable raised. Carries 'remote_type' and "
+                    "'remote_traceback' attributes describing the "
+                    "worker-side exception.") < 0) {
     Py_DECREF(m);
     return NULL;
   }

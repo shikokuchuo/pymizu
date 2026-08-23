@@ -123,18 +123,33 @@ class Channel:
         return self._h.token
 
     def send(self, x):
+        """Send one payload; return None, or the FULL / CLOSED /
+        PEER_GONE sentinel (identity-tested). ``None`` itself is a
+        valid payload; bytes and numpy arrays travel raw, everything
+        else rides pickle protocol 4."""
         return self._h.send(x)
 
     def send_batch(self, xs):
+        """Send several payloads in one crossing; return the number
+        accepted (short on ring-full or a terminal state)."""
         return self._h.send_batch(xs)
 
     def recv(self, timeout=None):
+        """Receive one payload, waiting up to ``timeout`` seconds
+        (None waits indefinitely); the TIMEOUT / CLOSED / PEER_GONE
+        sentinel on the non-payload outcomes."""
         return self._h.recv(timeout)
 
     def recv_batch(self, n=256, timeout=None):
+        """Receive up to ``n`` payloads in one crossing; a list
+        (possibly short or empty), or a terminal sentinel."""
         return self._h.recv_batch(n, timeout)
 
     def close(self, timeout=5.0):
+        """Orderly close: signal the peer and wait up to ``timeout``
+        seconds for it to observe the close. True on a clean handshake;
+        False (with a warning) on timeout, in which case resources
+        release when the handle is garbage collected."""
         ok = self._h.close(timeout)
         if not ok:
             _warnings.warn(
@@ -144,15 +159,21 @@ class Channel:
         return ok
 
     def close_signal(self):
+        """Signal close without waiting (the peer's recv side sees
+        CLOSED once the ring drains)."""
         return self._h.close_signal()
 
     def destroy(self):
+        """Tear down the handle immediately, without the close
+        handshake. The peer sees PEER_GONE."""
         return self._h.destroy()
 
     def alive(self):
+        """True while the peer process is alive."""
         return self._h.alive()
 
     def info(self):
+        """A read-only wire-state snapshot of the channel (dict)."""
         return self._h.info()
 
     def __enter__(self):
@@ -345,6 +366,9 @@ class Pool:
         return ok
 
     def destroy(self):
+        """Tear down the pool handle immediately, without the shutdown
+        broadcast or the wait. Workers exit once they observe the
+        controller gone."""
         return self._h.destroy()
 
     def status(self):
