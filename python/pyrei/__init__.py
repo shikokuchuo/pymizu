@@ -42,6 +42,7 @@ from pyrei._pyrei import (
 from pyrei._pyrei import (
     prune as _prune,
 )
+from pyrei._r import r_launcher
 
 __version__ = "0.1.0.dev0"
 
@@ -99,7 +100,8 @@ class Channel:
         ``slot_size`` are powers of two; the inline payload budget is
         ``slot_size - 16``. ``launcher`` is a ``callable(token)`` arranging
         for a Python process to run ``python -m pyrei.child <token>``; the
-        default spawns ``sys.executable`` directly.
+        default spawns ``sys.executable`` directly. ``pyrei.r_launcher()``
+        returns one spawning an R peer (the R package ``rei``).
         """
         if not isinstance(peer, str) or not peer:
             raise TypeError("pyrei: peer must be a non-empty source string")
@@ -631,4 +633,5 @@ __all__ = [
     "current_pool",
     "is_sentinel",
     "prune",
+    "r_launcher",
 ]

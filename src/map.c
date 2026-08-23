@@ -204,10 +204,11 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   have_x = x_obj != Py_None;
   int x_tag = 0;
   if (have_x) {
-    if (PyObject_GetBuffer(x_obj, &xbuf,
-                           PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0)
+    /* PyBUF_ND, not C_CONTIGUOUS (which implies WRITABLE): a read-only
+       x (a zero-copy view) is eligible; strides != NULL is not */
+    if (PyObject_GetBuffer(x_obj, &xbuf, PyBUF_ND | PyBUF_FORMAT) < 0)
       goto fail_desc;
-    x_tag = rei_py_wire_type_of(&xbuf);
+    x_tag = xbuf.strides == NULL ? rei_py_wire_type_of(&xbuf) : 0;
     size_t elt = rei_type_elt_size(x_tag);
     if (x_tag == 0 || elt == 0 || (uint64_t) xbuf.len != n_ll * elt) {
       PyBuffer_Release(&xbuf);
@@ -1083,11 +1084,11 @@ x rides the descriptor.");
 static PyObject *py_map_probe_x(PyObject *Py_UNUSED(module), PyObject *arg) {
   if (!PyObject_CheckBuffer(arg)) Py_RETURN_NONE;
   Py_buffer v;
-  if (PyObject_GetBuffer(arg, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) {
+  if (PyObject_GetBuffer(arg, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
     PyErr_Clear();
     Py_RETURN_NONE;
   }
-  int type = rei_py_wire_type_of(&v);
+  int type = v.strides == NULL ? rei_py_wire_type_of(&v) : 0;
   if (type == 0) {
     PyBuffer_Release(&v);
     Py_RETURN_NONE;

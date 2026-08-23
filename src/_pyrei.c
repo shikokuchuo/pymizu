@@ -926,8 +926,11 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
   }
   if (PyObject_CheckBuffer(obj)) {
     Py_buffer v;
-    if (PyObject_GetBuffer(obj, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) == 0) {
-      int type = wire_type_of(&v);
+    /* not PyBUF_C_CONTIGUOUS (it implies WRITABLE): a read-only buffer —
+       a zero-copy view echoing back — stages fine; contiguity is verified
+       as strides == NULL instead */
+    if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
+      int type = v.strides == NULL ? wire_type_of(&v) : 0;
       int rc = -1;
       if (type != 0)
         rc = stage_raw(&v, type, hdr, payload, inline_max, h);
@@ -1758,8 +1761,8 @@ corrupt:
 
 /* A serialized-stream frame (INLINE / ARENA / SHM_RAW bytes). Our streams
    are pickle protocol 4 (first byte 0x80) or the compact codec
-   (PYREI_CODEC_MAGIC). 'S' is the R compact codec, 'B' / 'X' / 'A' the R
-   serialize formats — no codec interop in v1. */
+   (PYREI_CODEC_MAGIC). REI_CODEC_MAGIC ('R') is rei's compact codec,
+   'B' / 'X' / 'A' the R serialize formats — no codec interop in v1. */
 static PyObject *read_stream(const uint8_t *src, size_t n,
                              rei_read_ctx *ctx) {
   if (n == 0) {
@@ -1772,7 +1775,7 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
                                  (Py_ssize_t) n);
   case PYREI_CODEC_MAGIC:
     return codec_read(src, n, ctx);
-  case 'S': case 'B': case 'X': case 'A':
+  case REI_CODEC_MAGIC: case 'B': case 'X': case 'A':
     PyErr_SetString(ReiError, "pyrei: R payload (no codec interop) - "
                     "send Python values from a pyrei peer");
     return NULL;

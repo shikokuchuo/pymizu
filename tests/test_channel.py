@@ -391,6 +391,13 @@ def test_view_survives_channel_destroy(echo):
     assert np.array_equal(b, a)  # the live view pins the mapping
 
 
+def test_r_codec_stream_dispatch():
+    # rei's compact codec magic is 'R' (0x52): the read side declines it
+    # with the informative foreign-payload error, not "unrecognized"
+    with pytest.raises(pyrei.ReiError, match="R payload"):
+        pyrei._pyrei._read_stream(b"R")
+
+
 # -- R interop (the view tier against an rei peer) --------------------------
 
 _RSCRIPT = shutil.which("Rscript")
@@ -522,6 +529,18 @@ def test_r_interop_attrs_rejected():
     ch = _r_channel(src)
     try:
         with pytest.raises(pyrei.ReiError, match="attributes"):
+            ch.recv(timeout=10)
+    finally:
+        ch.close()
+
+
+@r_only
+def test_r_interop_codec_payload_rejected():
+    # an R list stages as an INLINE rei-codec stream ('R' magic): declined
+    # with the informative foreign-payload error, not "unrecognized"
+    ch = _r_channel("{ rei_send(ch, list(1L, 2.5, 'x'))\n" + _R_ECHO + " }")
+    try:
+        with pytest.raises(pyrei.ReiError, match="R payload"):
             ch.recv(timeout=10)
     finally:
         ch.close()

@@ -121,6 +121,48 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 
 \* elt = element; microseconds of wall time per map element.
 
+## R interop
+
+A channel peer can be an R process that runs the `rei` package.
+Pass the peer program as R source, and set the launcher to `pyrei.r_launcher()`:
+
+```python
+import pyrei
+
+ch = pyrei.Channel.create(
+    """
+library(rei)
+repeat {
+  x <- rei_recv(ch, timeout = 30)
+  if (inherits(x, "rei_sentinel")) break
+  rei_send(ch, x)
+}
+""",
+    launcher=pyrei.r_launcher(),
+)
+
+import numpy as np
+ch.send(np.array([1.5, 2.5, 3.5]))   # arrives in R as a numeric vector
+print(ch.recv(timeout=5))            # echoes back as a float64 array
+ch.close()
+```
+
+`r_launcher()` needs R and the `rei` R package installed.
+If R or the package is missing, it raises `ReiError` before the channel is created.
+
+A launcher is one callable that takes the join token and spawns the peer process.
+For a different spawn method, write your own launcher.
+
+The reverse direction is also possible: an R host spawns a Python peer with `rei::rei_py_launcher()`.
+
+What crosses the language boundary:
+
+- numpy float64, int32, and uint8 arrays arrive in R as numeric, integer, and raw vectors — and back.
+- `bytes` stages as a raw vector.
+- Strings cross both ways (`str` rides the shared STR1 tier); `NA_character_` arrives as `None`.
+- A large R atomic vector arrives as a zero-copy, read-only numpy view over the shared pages — no copy, no parse.
+- Python-only payloads do not cross: R declines pyrei's compact codec streams and pickled objects with an informative error.
+
 ## Requirements
 
 - Python 3.10 or later, on a 64-bit platform.

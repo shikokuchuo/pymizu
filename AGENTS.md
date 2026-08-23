@@ -25,7 +25,8 @@ package). The governing design document is the ipc plan in the librei repo
 - `src/vendor/librei/` — vendored librei core (generated; see below).
 - `python/pyrei/` — the Python package. `child.py` / `worker.py` are the
   spawned-process entries: `python -m pyrei.child <token>` and
-  `python -m pyrei.worker <suffix> <slot>`.
+  `python -m pyrei.worker <suffix> <slot>`. `_r.py` holds the R-peer
+  launcher (`pyrei.r_launcher()`; see Conventions).
 - `tests/` — pytest. Cross-language cases skip unless `Rscript` and the
   installed R `rei` package are present (the `skip_if_no_child_rei()`
   mirror).
@@ -45,6 +46,9 @@ pyrefly check                        # typecheck
 `setup.py` holds the explicit `ext_modules` source list (`_pyrei.c` + the
 vendored core) and a `build_ext` override forcing clang-cl on Windows —
 setuptools' msvc backend resolves cl.exe itself and ignores CC.
+
+The `.venv` install is non-editable: after editing `python/`, reinstall
+(`pip install .`) or the tests import the stale copy.
 
 ## Vendoring
 
@@ -85,9 +89,12 @@ changes go upstream to librei and are pulled by re-running the script
   list/tuple/dict level
   of those, capped at 64 elements — exact-type checks throughout so
   subclasses keep their pickle semantics, anything else falls back); then
-  pickle protocol 4 over INLINE/ARENA/SHM_RAW. Reads dispatch on the first
-  byte across the three magics; R streams get an informative "R payload"
-  error. `_read_stream` exposes the stream parser for tests.
+  pickle protocol 4 over INLINE/ARENA/SHM_RAW. The buffer gate requests
+  `PyBUF_ND | PyBUF_FORMAT` and verifies C-contiguity as `strides == NULL`
+  — never `PyBUF_C_CONTIGUOUS`, which implies WRITABLE and would reject a
+  read-only view echoing back. Reads dispatch on the first byte across the
+  three magics; R streams get an informative "R payload" error.
+  `_read_stream` exposes the stream parser for tests.
 - Zero-copy views (SHM_VEC/REF reads): `_ShmView`, one exporter per view,
   holds the region's `_ShmOwner` (the shared mapping owner) and subs the
   refcount in `tp_dealloc` (a fork guard skips a child's sub); it exports a
@@ -105,6 +112,16 @@ changes go upstream to librei and are pulled by re-running the script
   versions). Task callables must be importable references under stock
   pickle; cloudpickle lifts that when installed. The channel peer program
   is always a UTF-8 source string (REI_DROP_SOURCE drop).
+- R interop: `pyrei.r_launcher()` (`python/pyrei/_r.py`) mirrors the R
+  package's exported `rei_launcher()` — a `Channel.create` launcher
+  spawning the peer through rei's static `rei-child.R` runner with the
+  entry expression (`rei:::peer_main("<token>")`) and the probed
+  `.libPaths()` hex-encoded in argv; never `Rscript -e` (it writes a
+  per-spawn command file). The probe (Rscript + an installed rei with
+  the source-drop path) runs at factory call, cached per Rscript, and
+  fails fast with `ReiError` before any channel region exists.
+  Channel-only: pools can't mix languages (task frames are
+  language-specific pickles).
 - A task error crosses as the worker's constructed, bounded (type,
   message, traceback) envelope — never a pickled exception instance; an
   unpicklable result recovers as the task's ERR.
@@ -164,6 +181,13 @@ changes go upstream to librei and are pulled by re-running the script
 - Coverage runs as `coverage run -m pytest tests/`; `conftest.py` arms the
   spawned child/worker interpreters via `COVERAGE_PROCESS_START` so they
   measure themselves too.
+- Cross-language cases (`tests/test_crosslang.py` +
+  `tests/r_host_roundtrip.R`, real user programs as REI_DROP_SOURCE drops
+  both directions) skip unless `Rscript` and an installed R `rei` with the
+  source-drop path are present. They dogfood the shipped
+  `pyrei.r_launcher()` — the fixture catches its `ReiError` as the skip,
+  so the probe logic has exactly one home (`_r.py`);
+  `test_r_launcher_missing_rscript` runs without R.
 
 ## CI
 
