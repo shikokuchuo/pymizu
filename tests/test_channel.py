@@ -52,7 +52,7 @@ def test_echo_roundtrip(echo):
         "héllo",
         [1, "a", None],
         {"k": (1, 2)},
-        list(range(100000)),   # past the inline budget: ARENA / SHM_RAW
+        list(range(100000)),  # past the inline budget: ARENA / SHM_RAW
     ]
     for x in payloads:
         assert echo.send(x) is True
@@ -100,7 +100,7 @@ def test_send_full():
         assert ch.send(3) is pyrei.FULL
     finally:
         ch._proc.kill()
-        assert ch.close() is True   # rendezvous on the peer's death
+        assert ch.close() is True  # rendezvous on the peer's death
         ch._proc.wait()
 
 
@@ -111,7 +111,7 @@ def test_closed_sentinel():
         assert ch.send(1) is pyrei.CLOSED
     finally:
         assert ch.close() is True
-    assert ch.close() is True   # idempotent
+    assert ch.close() is True  # idempotent
     with pytest.raises(ValueError):
         ch.send(1)
 
@@ -120,7 +120,7 @@ def test_peer_gone():
     ch = pyrei.Channel.create("import os; os._exit(0)")
     try:
         assert ch.recv(timeout=5) is pyrei.PEER_GONE
-        assert ch.recv(timeout=5) is pyrei.PEER_GONE   # sticky
+        assert ch.recv(timeout=5) is pyrei.PEER_GONE  # sticky
         assert not ch.alive()
     finally:
         ch.close()
@@ -165,16 +165,14 @@ def test_fork_guard(echo):
         os._exit(1)
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 0
-    assert echo.send(1) is True   # the parent's handle is unaffected
+    assert echo.send(1) is True  # the parent's handle is unaffected
     assert echo.recv(timeout=5) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_recv_interrupt():
     ch = pyrei.Channel.create("import time; time.sleep(30)")
-    timer = threading.Timer(
-        0.3, lambda: signal.raise_signal(signal.SIGINT)
-    )
+    timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
     timer.start()
     try:
         with pytest.raises(KeyboardInterrupt):
@@ -191,9 +189,7 @@ def test_recv_interrupt():
 np = pytest.importorskip("numpy", reason="numpy not installed")
 
 
-@pytest.mark.parametrize(
-    "dtype", ["float64", "int32", "complex128", "uint8"]
-)
+@pytest.mark.parametrize("dtype", ["float64", "int32", "complex128", "uint8"])
 def test_numpy_rawvec(echo, dtype):
     a = np.arange(12).astype(dtype)
     assert echo.send(a) is True
@@ -204,7 +200,7 @@ def test_numpy_rawvec(echo, dtype):
 
 
 def test_numpy_rawspill(echo):
-    a = np.arange(200000, dtype=np.float64)   # 1.6 MB: past the inline budget
+    a = np.arange(200000, dtype=np.float64)  # 1.6 MB: past the inline budget
     assert echo.send(a) is True
     b = echo.recv(timeout=5)
     assert b.dtype == np.float64

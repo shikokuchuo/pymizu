@@ -19,11 +19,19 @@ streams are per-element, results are identical for any chunking, worker
 count, or steal order.
 """
 
+from __future__ import annotations
+
 import hashlib as _hashlib
 import random as _random
 import time as _time
+from collections.abc import Callable as _Callable
+from typing import TYPE_CHECKING
+from typing import Any as _Any
 
 from pyrei import _pyrei
+
+if TYPE_CHECKING:
+    import pyrei
 
 try:
     import cloudpickle as _pickle
@@ -42,8 +50,13 @@ _X_RAWBUF = 1
 # The wire tags of the raw-x gate (rei.h's REI_TYPE_*), and their numpy /
 # memoryview spellings. Complex needs numpy (a memoryview cannot cast to
 # it); the gate falls back to the descriptor path when numpy is absent.
-_TAG_NP = {24: "uint8", 14: "float64", 13: "int32", 10: "int32",
-           15: "complex128"}
+_TAG_NP = {
+    24: "uint8",
+    14: "float64",
+    13: "int32",
+    10: "int32",
+    15: "complex128",
+}
 _TAG_MV = {24: "B", 14: "d", 13: "i", 10: "i"}
 
 # Morsel geometry (frozen by the R package's gate sweep): target ~256
@@ -63,7 +76,14 @@ _CTX_CACHE_MAX = 8
 class _Ctx:
     __slots__ = ("capsule", "fn", "args", "kwargs", "get")
 
-    def __init__(self, capsule, fn, args, kwargs, get):
+    def __init__(
+        self,
+        capsule: _Any,
+        fn: _Callable[..., _Any],
+        args: tuple,
+        kwargs: dict,
+        get: _Callable[[int], _Any],
+    ) -> None:
         self.capsule = capsule
         self.fn = fn
         self.args = args
@@ -71,10 +91,10 @@ class _Ctx:
         self.get = get
 
 
-_ctx_cache = {}
+_ctx_cache: dict[str, _Ctx] = {}
 
 
-def _raw_accessor(view, tag):
+def _raw_accessor(view: _Any, tag: int) -> _Callable[[int], _Any]:
     """Wrap the region's raw x section once: a numpy array over the mapping
     when numpy is present, else a cast memoryview. Indexing yields one
     element; no worker ever copies more than the elements it reads."""
@@ -83,7 +103,7 @@ def _raw_accessor(view, tag):
     return view.cast(_TAG_MV[tag]).__getitem__
 
 
-def _map_ctx(name):
+def _map_ctx(name: str) -> _Ctx:
     ctx = _ctx_cache.get(name)
     if ctx is None:
         if len(_ctx_cache) >= _CTX_CACHE_MAX:
@@ -102,7 +122,15 @@ def _map_ctx(name):
     return ctx
 
 
-def _run_batch(fn, args, kwargs, get, lo, hi, seed_bytes):
+def _run_batch(
+    fn: _Callable[..., _Any],
+    args: tuple,
+    kwargs: dict,
+    get: _Callable[[int], _Any],
+    lo: int,
+    hi: int,
+    seed_bytes: bytes | None,
+) -> list:
     """One batch's element loop: fn(elt, *args, **kwargs) over [lo, hi).
     An escaping error is annotated with the in-flight element index (the
     "first by element index" contract — the worker's error envelope
@@ -134,7 +162,7 @@ def _run_batch(fn, args, kwargs, get, lo, hi, seed_bytes):
     return out
 
 
-def _chunk(blob, lo, hi, seed_bytes):
+def _chunk(blob: bytes, lo: int, hi: int, seed_bytes: bytes | None) -> list:
     """Worker-side blob-path chunk task: the inline descriptor blob (the
     sizes this path admits make a per-chunk unpickle negligible, so there
     is no cache), the 0-based half-open element range, and the seed."""
@@ -142,7 +170,9 @@ def _chunk(blob, lo, hi, seed_bytes):
     return _run_batch(fn, args, kwargs, x.__getitem__, lo, hi, seed_bytes)
 
 
-def _runner(region_name, ordinal, seed_bytes):
+def _runner(
+    region_name: str, ordinal: int, seed_bytes: bytes | None
+) -> tuple[list, list]:
     """Worker-side morsel runner, riding each runner task. Opens (or
     reuses) the map context, obtains the pool signals worker-locally —
     never from the submitter — and loops batch transitions: claim the next
@@ -170,8 +200,9 @@ def _runner(region_name, ordinal, seed_bytes):
             if help_flag:
                 pool._h._help_once()
             vals.append(
-                _run_batch(ctx.fn, ctx.args, ctx.kwargs, ctx.get, lo, hi,
-                           seed_bytes)
+                _run_batch(
+                    ctx.fn, ctx.args, ctx.kwargs, ctx.get, lo, hi, seed_bytes
+                )
             )
             hist.append((lo, hi))
     except Exception:
@@ -182,7 +213,7 @@ def _runner(region_name, ordinal, seed_bytes):
     return (hist, vals)
 
 
-def _seed_bytes(seed):
+def _seed_bytes(seed: int | bytes | bytearray | None) -> bytes | None:
     if seed is None:
         return None
     if isinstance(seed, bool) or not isinstance(seed, (int, bytes, bytearray)):
@@ -192,7 +223,16 @@ def _seed_bytes(seed):
     return bytes(seed)
 
 
-def pool_map(pool, fn, x, args, kwargs, chunks, seed, timeout):
+def pool_map(
+    pool: pyrei.Pool,
+    fn: _Callable[..., _Any],
+    x: _Any,
+    args: _Any,
+    kwargs: dict | None,
+    chunks: int | None,
+    seed: int | bytes | bytearray | None,
+    timeout: float | None,
+) -> list | _pyrei._Sentinel:
     """The one map path: stage, submit the runners (or blob chunks),
     collect against the single deadline, splice into input order. The
     try/finally backstop cancels outstanding work on KeyboardInterrupt or
@@ -233,12 +273,12 @@ def pool_map(pool, fn, x, args, kwargs, chunks, seed, timeout):
 
     deadline = None if timeout is None else _time.monotonic() + timeout
 
-    def remaining():
+    def remaining() -> float | None:
         if deadline is None:
             return None
         return max(0.0, deadline - _time.monotonic())
 
-    def expired():
+    def expired() -> bool:
         return deadline is not None and _time.monotonic() >= deadline
 
     # Region-less probe: does the full chunk payload — the wrapper plus
@@ -253,16 +293,41 @@ def pool_map(pool, fn, x, args, kwargs, chunks, seed, timeout):
             blob = cand
 
     handles = []
-    box = {"capsule": None}   # _map_region hands its region back through
-    try:                      # here for the finally's cancel + unlink
+    box = {"capsule": None}  # _map_region hands its region back through
+    try:  # here for the finally's cancel + unlink
         if blob is not None:
             return _map_blob(
-                pool, pyrei, blob, n, seed_bytes, chunks, live, free_rs,
-                inj_cap, remaining, expired, handles,
+                pool,
+                pyrei,
+                blob,
+                n,
+                seed_bytes,
+                chunks,
+                live,
+                free_rs,
+                inj_cap,
+                remaining,
+                expired,
+                handles,
             )
         return _map_region(
-            pool, pyrei, fn, args, kwargs, x, probe, n, seed_bytes, chunks,
-            live, free_rs, inj_cap, remaining, expired, handles, box,
+            pool,
+            pyrei,
+            fn,
+            args,
+            kwargs,
+            x,
+            probe,
+            n,
+            seed_bytes,
+            chunks,
+            live,
+            free_rs,
+            inj_cap,
+            remaining,
+            expired,
+            handles,
+            box,
         )
     finally:
         # the interrupt/error/timeout backstop (a clean collect consumed
@@ -277,13 +342,26 @@ def pool_map(pool, fn, x, args, kwargs, chunks, seed, timeout):
             _pyrei._map_close(capsule)
 
 
-def _map_blob(pool, pyrei, blob, n, seed_bytes, chunks, live, free_rs,
-              inj_cap, remaining, expired, handles):
+def _map_blob(
+    pool: pyrei.Pool,
+    pyrei,
+    blob: bytes,
+    n: int,
+    seed_bytes: bytes | None,
+    chunks: int | None,
+    live: int,
+    free_rs: int,
+    inj_cap: int,
+    remaining: _Callable[[], float | None],
+    expired: _Callable[[], bool],
+    handles: list,
+) -> list | _pyrei._Sentinel:
     """The region-less path: fixed chunks ride the task payloads inline.
     Worker death reports the dead chunk's fixed [lo, hi) range directly
     (there is no cursor)."""
-    c = min(n, chunks if chunks is not None else 8 * max(1, live), free_rs,
-            inj_cap)
+    c = min(
+        n, chunks if chunks is not None else 8 * max(1, live), free_rs, inj_cap
+    )
     c = max(1, c)
     size, extra = divmod(n, c)
     sizes = [size + 1] * extra + [size] * (c - extra)
@@ -297,8 +375,9 @@ def _map_blob(pool, pyrei, blob, n, seed_bytes, chunks, live, free_rs,
             timed_out = True
             break
         hi = lo + sizes[k]
-        h = pool._h.submit((_chunk, (blob, lo, hi, seed_bytes), {}),
-                           remaining())
+        h = pool._h.submit(
+            (_chunk, (blob, lo, hi, seed_bytes), {}), remaining()
+        )
         handles.append(h)
         lo = hi
     if timed_out:
@@ -320,16 +399,31 @@ def _map_blob(pool, pyrei, blob, n, seed_bytes, chunks, live, free_rs,
     return out
 
 
-def _map_region(pool, pyrei, fn, args, kwargs, x, probe, n, seed_bytes,
-                chunks, live, free_rs, inj_cap, remaining, expired, handles,
-                box):
+def _map_region(
+    pool: pyrei.Pool,
+    pyrei,
+    fn: _Callable[..., _Any],
+    args: tuple,
+    kwargs: dict,
+    x: _Any,
+    probe: tuple | None,
+    n: int,
+    seed_bytes: bytes | None,
+    chunks: int | None,
+    live: int,
+    free_rs: int,
+    inj_cap: int,
+    remaining: _Callable[[], float | None],
+    expired: _Callable[[], bool],
+    handles: list,
+    box: dict,
+) -> list | _pyrei._Sentinel:
     """The region path: stage, submit one runner per live worker (clamped
     by the morsel count, the free result slots, and the injection ring),
     collect under the exhausted-runner trim, splice by element position."""
     runners = min(max(1, live), free_rs, inj_cap)
     if chunks is None:
-        morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER),
-                            _MORSEL_CAP))
+        morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP))
     else:
         morsel = -(-n // min(n, chunks))
     n_morsels = -(-n // morsel)
@@ -347,15 +441,23 @@ def _map_region(pool, pyrei, fn, args, kwargs, x, probe, n, seed_bytes,
         if expired():
             timed_out = True
             break
-        h = pool._h._submit_runner((_runner, (name, k, seed_bytes), {}),
-                                   remaining())
+        h = pool._h._submit_runner(
+            (_runner, (name, k, seed_bytes), {}), remaining()
+        )
         handles.append(h)
     if timed_out:
         return pyrei.TIMEOUT
     return _collect_region(pyrei, capsule, handles, n, remaining, expired)
 
 
-def _collect_region(pyrei, capsule, handles, n, remaining, expired):
+def _collect_region(
+    pyrei,
+    capsule: _Any,
+    handles: list,
+    n: int,
+    remaining: _Callable[[], float | None],
+    expired: _Callable[[], bool],
+) -> list | _pyrei._Sentinel:
     """Collect the runner handles under the exhausted-runner trim, in a
     deferred collection order. A runner carries no work of its own, so
     once the cursor exhausts a still-queued runner is dead weight — but
@@ -368,7 +470,7 @@ def _collect_region(pyrei, capsule, handles, n, remaining, expired):
     died: pyrei.WorkerDiedError | None = None
     runs = []
 
-    def consume(k, t):
+    def consume(k: int, t: float | None) -> bool:
         nonlocal died
         h = handles[k]
         try:
@@ -387,7 +489,7 @@ def _collect_region(pyrei, capsule, handles, n, remaining, expired):
             if hasattr(e, "index"):
                 errs.append(e)
                 return True
-            raise   # not fn's (a transition or help failure): fatal
+            raise  # not fn's (a transition or help failure): fatal
         if v is pyrei.TIMEOUT:
             return False
         handles[k] = None
@@ -419,7 +521,7 @@ def _collect_region(pyrei, capsule, handles, n, remaining, expired):
             elif verdict == 1:
                 done = consume(k, remaining())
             else:
-                done = False   # idle: defer, the trim trigger unarmed
+                done = False  # idle: defer, the trim trigger unarmed
             if done:
                 progress = True
             else:

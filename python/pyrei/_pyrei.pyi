@@ -1,5 +1,6 @@
 """Type stubs for the pyrei._pyrei C extension module."""
 
+from collections.abc import Iterable
 from typing import Any
 
 __core_version__: str
@@ -93,10 +94,10 @@ class _Pool:
         self, payloads: list, timeout: float | None = None
     ) -> list: ...
     def collect_any(
-        self, tasks: list, timeout: float | None = None
+        self, tasks: Iterable[_Task], timeout: float | None = None
     ) -> Any: ...
     def collect_all(
-        self, tasks: list, timeout: float | None = None
+        self, tasks: Iterable[_Task], timeout: float | None = None
     ) -> Any: ...
     def retire(self, slot: int) -> None: ...
     def stop(self, timeout: float = 5.0) -> bool: ...

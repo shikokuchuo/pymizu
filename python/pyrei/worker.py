@@ -19,6 +19,9 @@ _EXIT_RETIRED = 2
 
 
 def main() -> int:
+    """Run the pool worker; exit 0 on clean shutdown, 1 on an
+    infrastructure failure or a task's BaseException (hard crash), 2 on
+    bad arguments, join failure, or interrupt."""
     if len(sys.argv) != 3 or not re.fullmatch(
         r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]
     ):

@@ -1,11 +1,16 @@
 """pyrei — lock-free shared-memory IPC: SPSC channels and work-stealing
 task pools (the Python binding for librei)."""
 
+from __future__ import annotations
+
 import re as _re
 import subprocess as _subprocess
 import sys as _sys
 import threading as _threading
 import warnings as _warnings
+from collections.abc import Callable as _Callable
+from collections.abc import Iterable as _Iterable
+from typing import Any as _Any
 
 from pyrei import _pyrei
 from pyrei._pyrei import (
@@ -40,10 +45,10 @@ _DROP_SOURCE = 0x53  # 'S': UTF-8 source text in the peer's language
 _TOKEN_RE = _re.compile(r"[0-9a-f]+_[0-9a-f]+\Z")
 
 
-def _default_launcher():
+def _default_launcher() -> _Callable[[str], _subprocess.Popen]:
     """Spawn the channel peer as ``python -m pyrei.child <token>``."""
 
-    def launch(token):
+    def launch(token: str) -> _subprocess.Popen:
         return _subprocess.Popen([_sys.executable, "-m", "pyrei.child", token])
 
     return launch
@@ -65,7 +70,7 @@ class Channel:
         raise TypeError("use Channel.create() or Channel.attach()")
 
     @classmethod
-    def _wrap(cls, handle):
+    def _wrap(cls, handle: _pyrei._Channel) -> Channel:
         self = cls.__new__(cls)
         self._h = handle
         self._proc = None
@@ -74,15 +79,15 @@ class Channel:
     @classmethod
     def create(
         cls,
-        peer,
+        peer: str,
         *,
-        capacity=16384,
-        slot_size=256,
-        arena_size=4 * 1024 * 1024,
-        spin=False,
-        startup_timeout=30.0,
-        launcher=None,
-    ):
+        capacity: int = 16384,
+        slot_size: int = 256,
+        arena_size: int = 4 * 1024 * 1024,
+        spin: bool = False,
+        startup_timeout: float = 30.0,
+        launcher: _Callable[[str], _Any] | None = None,
+    ) -> Channel:
         """Create a channel and spawn its peer.
 
         ``peer`` is a Python source string, evaluated in the peer process
@@ -109,7 +114,7 @@ class Channel:
         return ch
 
     @classmethod
-    def attach(cls, token):
+    def attach(cls, token: str) -> Channel:
         """Attach to the channel named by a join token (the peer side).
 
         Low-level: the caller consumes ``ch.drop`` before signalling
@@ -124,34 +129,36 @@ class Channel:
         return ch
 
     @property
-    def token(self):
+    def token(self) -> str:
         """The join token for the peer's attach."""
         return self._h.token
 
-    def send(self, x):
+    def send(self, x: _Any) -> _pyrei._Sentinel | None:
         """Send one payload; return None, or the FULL / CLOSED /
         PEER_GONE sentinel (identity-tested). ``None`` itself is a
         valid payload; bytes and numpy arrays travel raw, everything
         else rides pickle protocol 4."""
         return self._h.send(x)
 
-    def send_batch(self, xs):
+    def send_batch(self, xs: _Iterable[_Any]) -> int:
         """Send several payloads in one crossing; return the number
         accepted (short on ring-full or a terminal state)."""
         return self._h.send_batch(xs)
 
-    def recv(self, timeout=None):
+    def recv(self, timeout: float | None = None) -> _Any:
         """Receive one payload, waiting up to ``timeout`` seconds
         (None waits indefinitely); the TIMEOUT / CLOSED / PEER_GONE
         sentinel on the non-payload outcomes."""
         return self._h.recv(timeout)
 
-    def recv_batch(self, n=256, timeout=None):
+    def recv_batch(
+        self, n: int = 256, timeout: float | None = None
+    ) -> list[_Any] | _pyrei._Sentinel:
         """Receive up to ``n`` payloads in one crossing; a list
         (possibly short or empty), or a terminal sentinel."""
         return self._h.recv_batch(n, timeout)
 
-    def close(self, timeout=5.0):
+    def close(self, timeout: float = 5.0) -> bool:
         """Orderly close: signal the peer and wait up to ``timeout``
         seconds for it to observe the close. True on a clean handshake;
         False (with a warning) on timeout, in which case resources
@@ -165,36 +172,36 @@ class Channel:
             )
         return ok
 
-    def close_signal(self):
+    def close_signal(self) -> None:
         """Signal close without waiting (the peer's recv side sees
         CLOSED once the ring drains)."""
         return self._h.close_signal()
 
-    def destroy(self):
+    def destroy(self) -> None:
         """Tear down the handle immediately, without the close
         handshake. The peer sees PEER_GONE."""
         return self._h.destroy()
 
-    def alive(self):
+    def alive(self) -> bool:
         """True while the peer process is alive."""
         return self._h.alive()
 
-    def info(self):
+    def info(self) -> dict:
         """A read-only wire-state snapshot of the channel (dict)."""
         return self._h.info()
 
-    def __enter__(self):
+    def __enter__(self) -> Channel:
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: _Any) -> bool:
         self.close()
         return False
 
 
-def _default_worker_launcher():
+def _default_worker_launcher() -> _Callable[[str, int], _subprocess.Popen]:
     """Spawn one pool worker as ``python -m pyrei.worker <token> <slot>``."""
 
-    def launch(token, slot):
+    def launch(token: str, slot: int) -> _subprocess.Popen:
         return _subprocess.Popen(
             [_sys.executable, "-m", "pyrei.worker", token, str(slot)]
         )
@@ -223,7 +230,7 @@ class Pool:
         raise TypeError("use Pool.create() or Pool.attach()")
 
     @classmethod
-    def _wrap(cls, handle):
+    def _wrap(cls, handle: _pyrei._Pool) -> Pool:
         self = cls.__new__(cls)
         self._h = handle
         return self
@@ -231,17 +238,17 @@ class Pool:
     @classmethod
     def create(
         cls,
-        workers=1,
+        workers: int = 1,
         *,
-        max_workers=None,
-        max_submitters=8,
-        injection_cap=1024,
-        per_worker_cap=1024,
-        result_slots=4096,
-        slot_size=512,
-        launcher=None,
-        startup_timeout=30.0,
-    ):
+        max_workers: int | None = None,
+        max_submitters: int = 8,
+        injection_cap: int = 1024,
+        per_worker_cap: int = 1024,
+        result_slots: int = 4096,
+        slot_size: int = 512,
+        launcher: _Callable[[str, int], _Any] | None = None,
+        startup_timeout: float = 30.0,
+    ) -> Pool:
         """Create a pool and spawn its worker processes.
 
         ``workers`` worker processes join the pool's registry (capacity
@@ -282,7 +289,7 @@ class Pool:
         return cls._wrap(h)
 
     @classmethod
-    def attach(cls, token):
+    def attach(cls, token: str) -> Pool:
         """Attach to a live pool as a submitter, by its join token.
 
         The token travels out of band: it is ``pool.token`` on the
@@ -293,11 +300,18 @@ class Pool:
         return cls._wrap(_pool_attach(token))
 
     @property
-    def token(self):
+    def token(self) -> str:
         """The join token for worker/submitter attach."""
         return self._h.token
 
-    def submit(self, fn, /, *args, timeout=None, **kwargs):
+    def submit(
+        self,
+        fn: _Callable[..., _Any],
+        /,
+        *args: _Any,
+        timeout: float | None = None,
+        **kwargs: _Any,
+    ) -> Task:
         """Submit ``fn(*args, **kwargs)`` as a task; return a Task handle.
 
         Blocks only for injection-ring space, up to ``timeout`` seconds
@@ -308,7 +322,12 @@ class Pool:
             raise TypeError("pyrei: fn must be callable")
         return self._h.submit((fn, args, kwargs), timeout)
 
-    def submit_batch(self, fns, *, timeout=None):
+    def submit_batch(
+        self,
+        fns: _Iterable[_Callable[[], _Any]],
+        *,
+        timeout: float | None = None,
+    ) -> list[Task]:
         """Submit one task per zero-arg callable in ``fns`` in one crossing.
 
         Ring-full past ``timeout`` ends the batch short — the returned
@@ -322,19 +341,32 @@ class Pool:
             payloads.append((fn, (), {}))
         return self._h.submit_batch(payloads, timeout)
 
-    def collect_any(self, tasks, timeout=None):
+    def collect_any(
+        self, tasks: _Iterable[Task], timeout: float | None = None
+    ) -> tuple[int, _Any] | _pyrei._Sentinel:
         """Wait on several tasks; return ``(index, value)`` of the first
         terminal one, or the TIMEOUT sentinel. A non-OK outcome raises
         with an ``index`` attribute (0-based)."""
         return self._h.collect_any(tasks, timeout)
 
-    def collect_all(self, tasks, timeout=None):
+    def collect_all(
+        self, tasks: _Iterable[Task], timeout: float | None = None
+    ) -> list[_Any] | _pyrei._Sentinel:
         """Wait until every task is terminal; return all values in input
         order, or the TIMEOUT sentinel (which consumes nothing)."""
         return self._h.collect_all(tasks, timeout)
 
-    def map(self, fn, x, *, args=(), kwargs=None, chunks=None, seed=None,
-            timeout=None):
+    def map(
+        self,
+        fn: _Callable[..., _Any],
+        x: _Iterable[_Any],
+        *,
+        args: _Iterable[_Any] = (),
+        kwargs: dict[str, _Any] | None = None,
+        chunks: int | None = None,
+        seed: int | bytes | bytearray | None = None,
+        timeout: float | None = None,
+    ) -> list[_Any] | _pyrei._Sentinel:
         """Map ``fn`` over the elements of ``x`` on the pool; return the
         results as a list in input order.
 
@@ -360,14 +392,19 @@ class Pool:
         """
         from pyrei import _map
 
-        return _map.pool_map(self, fn, x, args, kwargs, chunks, seed,
-                             timeout)
+        return _map.pool_map(self, fn, x, args, kwargs, chunks, seed, timeout)
 
-    def retire(self, slot):
+    def retire(self, slot: int) -> None:
         """Ask the worker in ``slot`` to exit cleanly (non-blocking)."""
         return self._h.retire(slot)
 
-    def spawn_workers(self, n=1, *, launcher=None, startup_timeout=30.0):
+    def spawn_workers(
+        self,
+        n: int = 1,
+        *,
+        launcher: _Callable[[str, int], _Any] | None = None,
+        startup_timeout: float = 30.0,
+    ) -> list[int]:
         """Spawn ``n`` additional workers into free registry slots and wait
         for them to join. Returns the slot indices spawned into."""
         n = int(n)
@@ -392,7 +429,7 @@ class Pool:
             )
         return slots
 
-    def stop(self, timeout=5.0):
+    def stop(self, timeout: float = 5.0) -> bool:
         """Orderly shutdown (controller only): broadcast shutdown, cancel
         pending tasks, wait up to ``timeout`` seconds for clean worker
         exits, and unlink. Idempotent."""
@@ -405,24 +442,24 @@ class Pool:
             )
         return ok
 
-    def destroy(self):
+    def destroy(self) -> None:
         """Tear down the pool handle immediately, without the shutdown
         broadcast or the wait. Workers exit once they observe the
         controller gone."""
         return self._h.destroy()
 
-    def status(self):
+    def status(self) -> dict:
         """A read-only wire-state snapshot of the pool (dict)."""
         return self._h.status()
 
-    def dump(self):
+    def dump(self) -> dict:
         """A read-only debugging snapshot of the whole pool region (dict)."""
         return self._h.dump()
 
-    def __enter__(self):
+    def __enter__(self) -> Pool:
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: _Any) -> bool:
         self.stop()
         return False
 
@@ -430,7 +467,7 @@ class Pool:
 _worker_local = _threading.local()
 
 
-def current_pool():
+def current_pool() -> Pool | None:
     """The evaluating worker's own pool handle, inside a task.
 
     A task uses it for nested submission: a nested submit pushes onto the

@@ -16,9 +16,23 @@ jobs:
       - name: Install tools
         run: pip install ruff pyrefly numpy cloudpickle
       - name: Ruff
-        run: ruff check python tests
+        run: ruff check python tests benchmarks
       - name: Pyrefly
         run: pyrefly check
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # The sdist must carry the vendored C core and build standalone.
+      - name: Build sdist and wheel from it
+        run: |
+          pip install build
+          python -m build --sdist
+          pip wheel --no-deps dist/*.tar.gz
 
   build:
     strategy:

@@ -10,16 +10,17 @@
      \/_______/
 
 pyrei is the Python binding to [librei](https://github.com/shikokuchuo/librei), a C library for lock-free shared-memory IPC.
+
 Parallel computation and data exchange between Python processes: channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+
 A channel is a two-way message link between a Python process and a helper process that it spawns.
 A pool is a set of worker processes that divide submitted tasks among themselves.
 In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.
+
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
 The GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
 pyrei makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
-
-The extension compiles the vendored C core, so no system library is necessary.
 
 Pre-release.
 
@@ -111,6 +112,8 @@ Headline numbers (Apple M4 Pro, from `benchmarks/rei-bench.py`):
 pip install .
 ```
 
+The extension compiles the vendored C core, so no system library is necessary.
+
 Optional extras:
 
 - `pyrei[numpy]`: zero-copy array views and raw-tier array staging.
@@ -132,3 +135,7 @@ Optional extras:
 
 MIT.
 The vendored librei core carries third-party RngStreams attribution (upstream `LICENSE.note`).
+
+------------------------------------------------------------------------
+
+Please note that this project is released with a [Contributor Code of Conduct](https://github.com/shikokuchuo/pyrei/blob/main/.github/CODE_OF_CONDUCT.md). By participating in this project you agree to abide by its terms.

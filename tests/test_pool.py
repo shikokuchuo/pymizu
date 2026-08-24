@@ -48,7 +48,7 @@ def test_collect_timeout(pool):
 
 
 def test_task_error(pool):
-    t = pool.submit(len, 5)   # TypeError in the worker
+    t = pool.submit(len, 5)  # TypeError in the worker
     with pytest.raises(pyrei.TaskError) as exc_info:
         t.collect(timeout=5)
     exc = exc_info.value
@@ -110,7 +110,7 @@ def test_cancel(pool):
     assert queued.cancel() is True
     with pytest.raises(pyrei.CancelledError):
         queued.collect(timeout=5)
-    assert queued.cancel() is False   # already cancelled
+    assert queued.cancel() is False  # already cancelled
     for t in slow:
         t.collect(timeout=10)
 
@@ -118,7 +118,7 @@ def test_cancel(pool):
 def test_cancel_too_late(pool):
     t = pool.submit(len, [1, 2])
     assert t.collect(timeout=5) == 2
-    assert t.cancel() is False   # completed: every edge folds to False
+    assert t.cancel() is False  # completed: every edge folds to False
 
 
 def test_submit_batch(pool):
@@ -135,7 +135,7 @@ def test_collect_any(pool):
 
 
 def test_collect_any_error_index(pool):
-    bad = pool.submit(len, 5)           # fails fast
+    bad = pool.submit(len, 5)  # fails fast
     slow = pool.submit(time.sleep, 1.5)
     with pytest.raises(pyrei.TaskError) as exc_info:
         pool.collect_any([slow, bad], timeout=10)
@@ -166,7 +166,7 @@ def test_collect_all_timeout_consumes_nothing(pool):
 def test_worker_died():
     p = pyrei.Pool.create(1)
     try:
-        t = p.submit(os._exit, 1)   # the worker dies mid-task
+        t = p.submit(os._exit, 1)  # the worker dies mid-task
         with pytest.raises(pyrei.WorkerDiedError) as exc_info:
             t.collect(timeout=15)
         assert exc_info.value.slot == 0
@@ -183,7 +183,7 @@ def test_nested_submit(pool):
 def test_nested_collect_releases_gil(pool):
     out, beats = pool.submit(fanout_with_thread, 6).collect(timeout=15)
     assert out == sum(i * i for i in range(6))
-    assert beats > 0   # the background thread ran through the nested waits
+    assert beats > 0  # the background thread ran through the nested waits
 
 
 def test_steal_under_load(pool):
@@ -206,7 +206,7 @@ def test_status_and_dump(pool):
 def test_stop_idempotent_and_stopped(pool):
     t = pool.submit(len, [1])
     assert t.collect(timeout=5) == 1
-    pa = pyrei.Pool.attach(pool.token)   # a second handle on the same pool
+    pa = pyrei.Pool.attach(pool.token)  # a second handle on the same pool
     assert pool.stop(timeout=5) is True
     assert pool.stop(timeout=5) is True
     # the controller's own handle is dead after its stop
@@ -263,7 +263,7 @@ def test_startup_error():
 
 def test_task_state(pool):
     t = pool.submit(time.sleep, 0.5)
-    assert t.state in ("pending", "ok")   # racy by design
+    assert t.state in ("pending", "ok")  # racy by design
     assert t.collect(timeout=5) is None
     assert t.state == "collected"
 

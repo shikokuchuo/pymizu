@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,11 +8,10 @@ version = "0.1.0.dev0"
 description = "Lock-free shared-memory channels and task pools"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "librei authors" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",

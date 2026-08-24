@@ -32,15 +32,15 @@ import os
 import subprocess
 import sys
 import time
-from functools import partial
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 
 import numpy as np
 
 import pyrei
-from benchmarks.tasks import bench_sum, const, identity
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from benchmarks.tasks import bench_sum, const, identity  # noqa: E402
 
 REPS = 3
 results = []
@@ -124,55 +124,71 @@ while True:
     ch.send_batch(xs)
 """
 
-print(f"pyrei {pyrei.__version__} | core {pyrei.__core_version__} | "
-      f"Python {sys.version.split()[0]} | {sys.platform} {os.uname().machine}")
+print(
+    f"pyrei {pyrei.__version__} | core {pyrei.__core_version__} | "
+    f"Python {sys.version.split()[0]} | {sys.platform} {os.uname().machine}"
+)
 
-# 1. sequential round-trip -----------------------------------------------------
+# 1. sequential round-trip ----------------------------------------------------
 
 print("\n== 1. sequential round-trip (const task, 1 worker) ==")
 n = 2000
 
-nc = 20000   # channel rt is us-scale: run long
+nc = 20000  # channel rt is us-scale: run long
+
 
 def seq_channel(ch):
     warmup(lambda: (ch.send(1), ch.recv(timeout=30)))
+
     def rep():
         for _ in range(nc):
             ch.send(1)
             ch.recv(timeout=30)
+
     note_us("sequential rt", "pyrei channel", nc, rep, "us/rt")
+
 
 with_channel(ECHO_PEER, seq_channel, capacity=1024)
 
+
 def seq_pool(p):
     warmup(lambda: p.submit(const).collect(timeout=30))
+
     def rep():
         for _ in range(n):
             p.submit(const).collect(timeout=30)
+
     note_us("sequential rt", "pyrei pool", n, rep)
+
 
 with_pool(1, seq_pool)
 
-# 2. pipelined throughput ------------------------------------------------------
+# 2. pipelined throughput -----------------------------------------------------
 
 print("\n== 2. pipelined throughput (const task, 1 worker) ==")
 n = 10000
-k = 10   # cycles per rep
+k = 10  # cycles per rep
+
 
 def pipe_channel(ch):
     warmup(lambda: (ch.send(1), ch.recv(timeout=30)))
+
     def rep():
         for _ in range(k):
             for _ in range(n):
                 ch.send(1)
             for _ in range(n):
                 ch.recv(timeout=30)
+
     note_rate("pipelined", "pyrei channel", k * n, rep, "rt/s")
+
 
 with_channel(ECHO_PEER, pipe_channel)
 
+
 def pipe_channel_batch(ch):
     batch = [1] * 4096
+
     def stream(m):
         sent = 0
         while sent < m:
@@ -184,35 +200,58 @@ def pipe_channel_batch(ch):
             if pyrei.is_sentinel(xs):
                 raise RuntimeError("pyrei channel batch: peer stopped echoing")
             got += len(xs)
+
     warmup(lambda: stream(100))
-    note_rate("pipelined", "pyrei channel batch", k * n,
-              lambda: [stream(n) for _ in range(k)], "rt/s")
+    note_rate(
+        "pipelined",
+        "pyrei channel batch",
+        k * n,
+        lambda: [stream(n) for _ in range(k)],
+        "rt/s",
+    )
+
 
 with_channel(BATCH_PEER, pipe_channel_batch)
+
 
 # a submitter's outstanding tasks are bounded by its result-slot share, so
 # fire-n-then-collect needs result_slots / max_submitters >= n
 def pipe_pool(p):
-    fire = lambda: p.submit(const)
-    reap = lambda t: t.collect(timeout=30)
+    def fire():
+        return p.submit(const)
+
+    def reap(t):
+        return t.collect(timeout=30)
+
     warmup(lambda: reap(fire()))
     note_rate("pipelined", "pyrei pool", n, lambda: pipeline(fire, reap, n))
 
+
 with_pool(1, pipe_pool, result_slots=20480)
+
 
 # the batch pair: one submit crossing + one collect crossing per burst
 def pipe_pool_batch(p):
     fns = [const] * n
-    warmup(lambda: p.collect_all(p.submit_batch(fns[:100], timeout=30),
-                                 timeout=30))
-    note_rate("pipelined", "pyrei pool batch", k * n, lambda: [
-        p.collect_all(p.submit_batch(fns, timeout=30), timeout=30)
-        for _ in range(k)
-    ])
+    warmup(
+        lambda: p.collect_all(
+            p.submit_batch(fns[:100], timeout=30), timeout=30
+        )
+    )
+    note_rate(
+        "pipelined",
+        "pyrei pool batch",
+        k * n,
+        lambda: [
+            p.collect_all(p.submit_batch(fns, timeout=30), timeout=30)
+            for _ in range(k)
+        ],
+    )
+
 
 with_pool(1, pipe_pool_batch, result_slots=20480)
 
-# 3. payload round-trip --------------------------------------------------------
+# 3. payload round-trip -------------------------------------------------------
 
 print("\n== 3. payload round-trip (identity task on a float64 vector) ==")
 
@@ -221,8 +260,16 @@ print("\n== 3. payload round-trip (identity task on a float64 vector) ==")
 # slots — a fresh RAWSPILL region per payload each way
 payloads = [
     (1000, 1000, dict(slot_size=16384)),
-    (100000, 200, dict(injection_cap=16, per_worker_cap=16,
-                       result_slots=4, slot_size=1048576)),
+    (
+        100000,
+        200,
+        dict(
+            injection_cap=16,
+            per_worker_cap=16,
+            result_slots=4,
+            slot_size=1048576,
+        ),
+    ),
     (1000000, 30, dict()),
 ]
 
@@ -232,34 +279,41 @@ for size, n, args in payloads:
 
     def run(p, x=x, n=n, label=label):
         assert np.array_equal(p.submit(identity, x).collect(timeout=30), x)
+
         def rep():
             for _ in range(n):
                 p.submit(identity, x).collect(timeout=30)
+
         note_us(label, "pyrei pool", n, rep)
 
     with_pool(1, run, **args)
 
-# 4. parallel fan-out ----------------------------------------------------------
+# 4. parallel fan-out ---------------------------------------------------------
 
 print("\n== 4. parallel fan-out (bench_sum x 2000, 4 workers) ==")
 n = 2000
 
-note_rate("fan-out", "in-process", n,
-          lambda: [bench_sum(i) for i in range(n)])
+note_rate("fan-out", "in-process", n, lambda: [bench_sum(i) for i in range(n)])
+
 
 def fanout_pool(p):
-    fire = lambda: p.submit(bench_sum, 0)
-    reap = lambda t: t.collect(timeout=30)
+    def fire():
+        return p.submit(bench_sum, 0)
+
+    def reap(t):
+        return t.collect(timeout=30)
+
     pipeline(fire, reap, n)
     note_rate("fan-out", "pyrei pool", n, lambda: pipeline(fire, reap, n))
 
+
 with_pool(4, fanout_pool)
 
-# 5. streaming -----------------------------------------------------------------
+# 5. streaming ----------------------------------------------------------------
 
 print("\n== 5. streaming (one-way const messages, batched) ==")
 n = 200000
-k = 10   # rounds per rep
+k = 10  # rounds per rep
 
 # the peer counts arrivals and sends one receipt per n, so the same channel
 # serves the warm-up round and every rep
@@ -276,8 +330,10 @@ while True:
         total = 0
 """
 
+
 def stream_channel(ch):
     batch = [1] * 4096
+
     def stream_round():
         sent = 0
         while sent < n:
@@ -285,33 +341,39 @@ def stream_channel(ch):
             sent += ch.send_batch(batch[:want])
         if ch.recv(timeout=60) != n:
             raise RuntimeError("stream count mismatch")
+
     stream_round()
-    note_rate("streaming", "pyrei channel", k * n,
-              lambda: [stream_round() for _ in range(k)], "msg/s")
+    note_rate(
+        "streaming",
+        "pyrei channel",
+        k * n,
+        lambda: [stream_round() for _ in range(k)],
+        "msg/s",
+    )
+
 
 with_channel(STREAM_PEER, stream_channel)
 
-# 6. parallel map --------------------------------------------------------------
+# 6. parallel map -------------------------------------------------------------
 
 print("\n== 6. parallel map (Pool.map bench_sum x 2000, 4 workers) ==")
 n = 2000
 
 note_rate("map", "in-process", n, lambda: [bench_sum(i) for i in range(n)])
 
+
 def map_pool(p):
     xs = list(range(n))
-    p.map(bench_sum, xs)   # warm-up (bench_sum is stochastic: no assert)
+    p.map(bench_sum, xs)  # warm-up (bench_sum is stochastic: no assert)
     note_rate("map", "pyrei pool", n, lambda: p.map(bench_sum, xs))
+
 
 with_pool(4, map_pool)
 
-# summary ----------------------------------------------------------------------
+# summary ---------------------------------------------------------------------
 
 print("\n== summary ==")
-seen = []
-for scenario, framework, value, unit in results:
-    if scenario not in seen:
-        seen.append(scenario)
+seen = list(dict.fromkeys(scenario for scenario, *_ in results))
 for s in seen:
     for scenario, framework, value, unit in results:
         if scenario == s:

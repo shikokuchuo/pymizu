@@ -18,6 +18,9 @@ _DROP_SOURCE = 0x53  # 'S'
 
 
 def main() -> int:
+    """Run the channel peer; exit 0 on clean completion, 1 if the peer
+    source raised, 2 on bad arguments, attach failure, compile failure,
+    or interrupt."""
     if len(sys.argv) != 2 or not re.fullmatch(
         r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]
     ):
