@@ -3,6 +3,7 @@ death, nested submit, and collect_any/all semantics, over real spawned
 workers (``python -m pyrei.worker``)."""
 
 import os
+import pickle
 import signal
 import subprocess
 import sys
@@ -11,8 +12,6 @@ import time
 from functools import partial
 
 import pytest
-
-import pyrei
 from tests.helpers import (
     busy,
     fanout,
@@ -21,6 +20,8 @@ from tests.helpers import (
     make_unpicklable,
     raise_long,
 )
+
+import pyrei
 
 
 @pytest.fixture
@@ -93,7 +94,8 @@ def test_lambda_submit(pool):
     try:
         import cloudpickle  # noqa: F401
     except ImportError:
-        with pytest.raises(Exception):
+        # 3.11+ raises PicklingError; 3.10 raises AttributeError
+        with pytest.raises((pickle.PickleError, AttributeError)):
             pool.submit(lambda: 1)
     else:
         assert pool.submit(lambda: 41).collect(timeout=5) + 1 == 42
@@ -138,7 +140,8 @@ def test_collect_any_error_index(pool):
     with pytest.raises(pyrei.TaskError) as exc_info:
         pool.collect_any([slow, bad], timeout=10)
     assert exc_info.value.index == 1
-    assert slow.collect(timeout=10) is None   # the other handle stays collectible
+    # the other handle stays collectible
+    assert slow.collect(timeout=10) is None
 
 
 def test_collect_all(pool):
@@ -295,7 +298,7 @@ def test_fork_guard(pool):
     assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
 
 
-@pytest.mark.skipif(os.name == "nt", reason="SIGINT delivery differs on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_collect_interrupt():
     p = pyrei.Pool.create(1)
     p.submit(time.sleep, 3)
@@ -311,7 +314,7 @@ def test_collect_interrupt():
         assert p.stop(timeout=15) is True
 
 
-# -- numpy (results ride the raw tiers) ----------------------------------------
+# -- numpy (results ride the raw tiers) ---------------------------------------
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 

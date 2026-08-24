@@ -18,7 +18,9 @@ _DROP_SOURCE = 0x53  # 'S'
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or re.fullmatch(r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]) is None:
+    if len(sys.argv) != 2 or not re.fullmatch(
+        r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]
+    ):
         sys.stderr.write("pyrei.child: expected a single join token\n")
         return 2
     try:
@@ -27,7 +29,9 @@ def main() -> int:
         sys.stderr.write(f"pyrei.child: attach failed: {exc}\n")
         return 2
     if not drop or drop[0] != _DROP_SOURCE:
-        sys.stderr.write("pyrei.child: foreign channel drop (not Python source)\n")
+        sys.stderr.write(
+            "pyrei.child: foreign channel drop (not Python source)\n"
+        )
         return 2
     try:
         code = compile(drop[1:].decode("utf-8"), "<pyrei-peer>", "exec")

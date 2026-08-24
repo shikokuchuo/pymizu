@@ -10,8 +10,6 @@ import threading
 import time
 
 import pytest
-
-import pyrei
 from tests.helpers import (
     fail_at,
     fail_or_sleep,
@@ -24,6 +22,8 @@ from tests.helpers import (
     sleep_ident,
     square,
 )
+
+import pyrei
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def test_map_nested(pool):
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="SIGINT delivery differs on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_map_interrupt_cancels():
     p = pyrei.Pool.create(1)
     timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
@@ -147,7 +147,7 @@ def test_map_interrupt_cancels():
         assert p.stop(timeout=20) is True
 
 
-# -- numpy x sections (bare bytes in the region) -------------------------------
+# -- numpy x sections (bare bytes in the region) ------------------------------
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 

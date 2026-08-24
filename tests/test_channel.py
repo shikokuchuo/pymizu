@@ -6,7 +6,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 
 import pytest
 
@@ -39,7 +38,7 @@ def echo():
 
 
 def test_version():
-    assert pyrei.__version__ == "0.1.0"
+    assert pyrei.__version__ == "0.1.0.dev0"
     assert pyrei.abi_version() == 1
 
 
@@ -170,7 +169,7 @@ def test_fork_guard(echo):
     assert echo.recv(timeout=5) == 1
 
 
-@pytest.mark.skipif(os.name == "nt", reason="SIGINT delivery differs on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_recv_interrupt():
     ch = pyrei.Channel.create("import time; time.sleep(30)")
     timer = threading.Timer(
@@ -187,7 +186,7 @@ def test_recv_interrupt():
         ch._proc.wait()
 
 
-# -- numpy (the raw tiers) ------------------------------------------------------
+# -- numpy (the raw tiers) ----------------------------------------------------
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 

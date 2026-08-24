@@ -19,7 +19,9 @@ _EXIT_RETIRED = 2
 
 
 def main() -> int:
-    if len(sys.argv) != 3 or re.fullmatch(r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]) is None:
+    if len(sys.argv) != 3 or not re.fullmatch(
+        r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]
+    ):
         sys.stderr.write("pyrei.worker: expected a join token and a slot\n")
         return 2
     try:

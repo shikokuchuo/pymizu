@@ -6,18 +6,33 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install tools
+        run: pip install ruff pyrefly numpy cloudpickle
+      - name: Ruff
+        run: ruff check python tests
+      - name: Pyrefly
+        run: pyrefly check
+
   build:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       # setup.py forces clang-cl on Windows (MSVC C11 atomics unsupported);
       # LLVM is preinstalled on the runners but not on PATH.
@@ -26,10 +41,22 @@ jobs:
         run: echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Build and install
-        run: pip install . pytest numpy
+        run: pip install . pytest numpy coverage
 
       - name: Import smoke
         run: python -c "import pyrei; print(pyrei.__version__, pyrei.__core_version__, pyrei.abi_version())"
 
       - name: Test
-        run: python -m pytest tests/ -q
+        run: coverage run -m pytest tests/ -q
+
+      - name: Coverage report
+        run: |
+          coverage combine
+          coverage report
+          coverage xml
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v7
+        with:
+          fail_ci_error: false

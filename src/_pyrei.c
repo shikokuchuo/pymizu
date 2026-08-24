@@ -641,9 +641,10 @@ static PyObject *utf8_truncate(PyObject *s, size_t n) {
   return out;
 }
 
-/* The single-argument form reads the traceback off the normalized exception
-   instance (the legacy 3-arg form with tb=NULL formats no stack). */
-static PyObject *traceback_text(PyObject *value) {
+/* The 3-arg form with the fetched tb: the single-argument form only reads
+   __traceback__ off the instance on 3.11+; on 3.10 it formats no stack. */
+static PyObject *traceback_text(PyObject *type, PyObject *value,
+                                PyObject *tb) {
   if (rei_traceback_fmt == NULL) {
     PyObject *mod = PyImport_ImportModule("traceback");
     if (mod == NULL) {
@@ -657,7 +658,11 @@ static PyObject *traceback_text(PyObject *value) {
       return PyUnicode_FromString("");
     }
   }
-  PyObject *parts = PyObject_CallFunction(rei_traceback_fmt, "O", value);
+  if (tb == NULL) {
+    tb = Py_None;
+  }
+  PyObject *parts =
+      PyObject_CallFunction(rei_traceback_fmt, "OOO", type, value, tb);
   if (parts == NULL) {
     PyErr_Clear();
     return PyUnicode_FromString("");
@@ -692,7 +697,8 @@ static int publish_exc(rei_result_sink *sink) {
     PyErr_Clear();
     msg = PyUnicode_FromString("<unprintable exception>");
   }
-  PyObject *tbs = value != NULL ? traceback_text(value) : NULL;
+  PyObject *tbs =
+      value != NULL ? traceback_text(type, value, tb) : NULL;
   /* a map runner annotates its error with the in-flight element index: it
      travels as the envelope's fourth element (ordinary task errors stay
      3-tuples); the truncation ladder below never touches it */

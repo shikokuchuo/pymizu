@@ -1,17 +1,27 @@
 # pyrei れい
 
-Lock-free shared-memory channels and task pools for Python.
+[![ci](https://github.com/shikokuchuo/pyrei/actions/workflows/ci.yml/badge.svg)](https://github.com/shikokuchuo/pyrei/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-pyrei moves data between Python processes on the same machine.
-It provides lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
-The hot path stays entirely in user space.
-Communication between processes becomes cheap enough that you can divide work at granularities usually reserved for threads.
+      ________
+     /\       \
+    /  \ pyrei \
+    \  /  れい  /
+     \/_______/
 
-pyrei is the Python binding for [librei](https://github.com/shikokuchuo/librei).
+pyrei is the Python binding to [librei](https://github.com/shikokuchuo/librei), a C library for lock-free shared-memory IPC.
+Parallel computation and data exchange between Python processes: channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+A channel is a two-way message link between a Python process and a helper process that it spawns.
+A pool is a set of worker processes that divide submitted tasks among themselves.
+In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.
+The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
+
+The GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
+pyrei makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
+
 The extension compiles the vendored C core, so no system library is necessary.
-A channel can also connect a Python process to an R process that uses the `rei` package.
 
-Pre-release (v0.1.0).
+Pre-release.
 
 ## Channels
 
@@ -38,7 +48,6 @@ Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.
 `None` crosses as an immediate.
 `bytes` and 1-D contiguous numpy arrays of float64, int32, complex128, or uint8 ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
 Everything else crosses as a pickle protocol 4 stream.
-A channel can also connect a Python process to an R process that uses the `rei` package (R sends numeric vectors and strings; Python reads them as arrays and `str`).
 
 ## Task pools
 
@@ -77,6 +86,17 @@ On `timeout=` expiry the outstanding work is cancelled and the `pyrei.TIMEOUT` s
 Ctrl-C during a map cancels its outstanding tasks.
 A map inside a task runs on the worker's own handle via `pyrei.current_pool()`, at fork/join cost.
 
+## Benchmarks
+
+Headline numbers (Apple M4 Pro, from `benchmarks/rei-bench.py`):
+
+| Benchmark | pyrei |
+|----|----|
+| Trivial task round trip | 3.7 µs |
+| Pipelined tasks, 1 worker | 470,000 tasks/s |
+| 8 MB vector round trip | 1.0 ms |
+| Parallel map of 2,000 elements, 4 workers | 12 ms |
+
 ## Requirements
 
 - Python 3.10 or later, on a 64-bit platform.
@@ -107,7 +127,6 @@ Optional extras:
   `child.py` and `worker.py` are the entry points for spawned processes (`python -m pyrei.child <token>`, `python -m pyrei.worker <suffix> <slot>`).
 - `tests/`: the pytest suite.
   `tests/helpers.py` holds the task callables (pickle sends them by reference, so the workers must import them).
-  If `Rscript` and the installed `rei` package are not present, the cross-language tests skip.
 
 ## License
 

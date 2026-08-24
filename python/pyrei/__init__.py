@@ -7,6 +7,7 @@ import sys as _sys
 import threading as _threading
 import warnings as _warnings
 
+from pyrei import _pyrei
 from pyrei._pyrei import (
     CLOSED,
     FULL,
@@ -26,13 +27,14 @@ from pyrei._pyrei import (
     _channel_new,
     _pool_attach,
     _pool_new,
-    _pool_worker_join,
-    _Task as Task,
     abi_version,
     is_sentinel,
 )
+from pyrei._pyrei import (
+    _Task as Task,
+)
 
-__version__ = "0.1.0"
+__version__ = "0.1.0.dev0"
 
 _DROP_SOURCE = 0x53  # 'S': UTF-8 source text in the peer's language
 _TOKEN_RE = _re.compile(r"[0-9a-f]+_[0-9a-f]+\Z")
@@ -54,6 +56,10 @@ class Channel:
     the peer side attaches with :meth:`attach` — ``python -m pyrei.child``
     does this. Handles do not survive ``fork()``.
     """
+
+    _h: _pyrei._Channel
+    _proc: _subprocess.Popen | None
+    drop: bytes  # set by attach()
 
     def __init__(self):
         raise TypeError("use Channel.create() or Channel.attach()")
@@ -154,7 +160,8 @@ class Channel:
         if not ok:
             _warnings.warn(
                 "pyrei: close timed out waiting for the peer; resources "
-                "release when the handle is garbage collected"
+                "release when the handle is garbage collected",
+                stacklevel=2,
             )
         return ok
 
@@ -209,6 +216,8 @@ class Pool:
     must be an importable reference (the multiprocessing constraint);
     installing cloudpickle lifts that transparently.
     """
+
+    _h: _pyrei._Pool
 
     def __init__(self):
         raise TypeError("use Pool.create() or Pool.attach()")
@@ -391,7 +400,8 @@ class Pool:
         if not ok:
             _warnings.warn(
                 "pyrei: pool stop timed out waiting for workers; they exit "
-                "on their own once they observe shutdown"
+                "on their own once they observe shutdown",
+                stacklevel=2,
             )
         return ok
 

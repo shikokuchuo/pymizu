@@ -115,7 +115,7 @@ def _run_batch(fn, args, kwargs, get, lo, hi, seed_bytes):
             try:
                 out.append(fn(get(i), *args, **kwargs))
             except Exception as e:
-                e._pyrei_map_index = i
+                e._pyrei_map_index = i  # pyrefly: ignore [missing-attribute]
                 raise
         return out
     state = _random.getstate()
@@ -127,7 +127,7 @@ def _run_batch(fn, args, kwargs, get, lo, hi, seed_bytes):
             try:
                 out.append(fn(get(i), *args, **kwargs))
             except Exception as e:
-                e._pyrei_map_index = i
+                e._pyrei_map_index = i  # pyrefly: ignore [missing-attribute]
                 raise
     finally:
         _random.setstate(state)
@@ -154,6 +154,7 @@ def _runner(region_name, ordinal, seed_bytes):
     import pyrei
 
     pool = pyrei.current_pool()
+    assert pool is not None  # a runner always executes inside a task
     ctx = _map_ctx(region_name)
     sig = pool._h._signals()
     hist = []
@@ -364,7 +365,7 @@ def _collect_region(pyrei, capsule, handles, n, remaining, expired):
     Only when every uncollected handle defers does collect park, in
     bounded slices, re-scanning on each return."""
     errs = []
-    died = None
+    died: pyrei.WorkerDiedError | None = None
     runs = []
 
     def consume(k, t):
@@ -449,6 +450,6 @@ def _collect_region(pyrei, capsule, handles, n, remaining, expired):
         raise min(errs, key=lambda e: e.index)
     out = [None] * n
     for hist, vals in runs:
-        for (lo, hi), batch in zip(hist, vals):
+        for (lo, hi), batch in zip(hist, vals, strict=True):
             out[lo:hi] = batch
     return out

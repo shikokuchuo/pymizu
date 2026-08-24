@@ -7,10 +7,10 @@ import subprocess
 import sys
 
 import pytest
+from tests.helpers import square
 
 import pyrei
 from pyrei import _pyrei
-from tests.helpers import square
 
 ECHO_PEER = """
 import pyrei
