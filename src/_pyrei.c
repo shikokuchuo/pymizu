@@ -4335,6 +4335,19 @@ static PyObject *pyrei_prune(PyObject *Py_UNUSED(module),
   return out;
 }
 
+PyDoc_STRVAR(tune_malloc_doc,
+"_tune_malloc() -> None\n\n\
+Apply the core's glibc malloc tuning (larger mmap/trim thresholds) to\n\
+this process. Called by the spawned child/worker entry points; a\n\
+process that set its own GLIBC_TUNABLES is left untouched. No-op off\n\
+glibc.");
+
+static PyObject *pyrei_tune_malloc(PyObject *Py_UNUSED(module),
+                                   PyObject *Py_UNUSED(args)) {
+  rei_tune();
+  Py_RETURN_NONE;
+}
+
 static PyMethodDef pyrei_methods[] = {
   {"_channel_new", (PyCFunction)(void (*)(void)) pyrei_channel_new,
    METH_VARARGS | METH_KEYWORDS, channel_new_doc},
@@ -4351,6 +4364,8 @@ static PyMethodDef pyrei_methods[] = {
   {"is_sentinel", pyrei_is_sentinel, METH_O, is_sentinel_doc},
   {"abi_version", (PyCFunction) pyrei_abi_version, METH_NOARGS, abi_version_doc},
   {"prune", (PyCFunction) pyrei_prune, METH_NOARGS, prune_doc},
+  {"_tune_malloc", (PyCFunction) pyrei_tune_malloc, METH_NOARGS,
+   tune_malloc_doc},
   {NULL, NULL, 0, NULL}
 };
 

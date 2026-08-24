@@ -127,6 +127,24 @@ Optional extras:
 - `pyrei[numpy]`: zero-copy array views and raw-tier array staging.
 - `pyrei[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
+## Linux memory allocator
+
+This section applies only to Linux with glibc.
+
+When pyrei starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
+It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
+This keeps large payloads in fast memory.
+Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
+
+Your own Python process does not change.
+If you want the same settings there, set them before Python starts:
+
+```sh
+export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
+```
+
+If you have set `GLIBC_TUNABLES`, pyrei respects your values.
+
 ## Layout
 
 - `src/_pyrei.c`: the extension module.
