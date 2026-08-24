@@ -129,7 +129,23 @@ changes go upstream to librei and are pulled by re-running the script
   collect; a runner's error envelope carries the in-flight element index
   as a fourth tuple element (ordinary `submit` errors stay 3-tuples);
   element ranges are 0-based half-open `[lo, hi)` throughout the Python
-  side (R is 1-based inclusive).
+  side (R is 1-based inclusive). `Pool.map(template=...)` stages an n x m
+  output area in the region (header `out_*` fields, carved from the pad —
+  the struct stays 128 bytes); runners write results in place
+  (`pymap_write_value`: a matching buffer memcpys, an m == 1 Python
+  scalar converts), and collect is one `_map_gather` memcpy or, with
+  `collect="view"`, a read-only `_MapOutView` exporter that owns the
+  region capsule (unlink defers to view teardown; the stage side drops
+  its reference without `_map_close`). Prepared maps:
+  `Pool.map_prepare` stages once, `Pool.map_run` re-arms in O(1)
+  (`_map_reset` bumps the generation and re-stamps the CLAIM array; the
+  runner payload carries the run's generation so a prior run's
+  straggler fails its first-call CAS), and a view-collected run
+  restages into a fresh region. The element loop is Python
+  (`_run_batch`) — a C batch loop was tried and reverted
+  (2026-08-24): it missed its target (the winsum scaling gap is memory
+  bandwidth, not interpreter overhead) — with `_map_write` on the
+  template path.
 - Commit messages are a single line (subject only, no body).
 - Never push without explicit approval — every push must be approved by
   the user first.

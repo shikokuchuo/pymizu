@@ -89,3 +89,39 @@ benchmarks/rei-bench.py against the phase 1-2 baselines:
 
 The 8 MB row lands at the channel's zero-copy figure (~215 µs), as
 designed.
+
+## 2026-08-24 — template output area (map improvements, phase 1)
+
+`Pool.map(template=...)` stages an n x m output area in the map region:
+runners write results in place and collect is one gather memcpy — or
+none with `collect="view"`. Map-suite run (best of 3, 4
+workers, winsum x n -> n x 2 float64) against the same-day baseline:
+
+| scenario | baseline (plain) | phase 1 |
+|----|----|----|
+| map n=2,000 | 442,188 elts/s | 645,604 copy / 651,935 view |
+| map n=20,000 | 477,594 elts/s | 696,252 copy / 689,039 view |
+
+No regression on the plain path (442k/478k vs the 458k full-suite
+baseline; run-to-run jitter). The remaining gap to in-process scaling is
+the Python element loop — phase 3's target.
+
+## 2026-08-24 — prepared maps (map improvements, phase 2)
+
+`Pool.map_prepare(fn, x, ...)` stages once into a persistent region;
+`Pool.map_run(handle)` re-arms in O(1) (`_map_reset`: generation bump,
+CLAIM re-stamp, cursor/cancel clear — the runner payload now carries the
+run's generation, fencing a prior run's straggler out of the re-armed
+run) and reuses the workers' name-keyed context cache. A view-collected
+run transfers its region to the view and restages fresh on the next run.
+Repeated-map timings (best of 5 x reps, 4 workers):
+
+| scenario | plain | prepared |
+|----|----|----|
+| identity n=50 (x50) | 101.0 µs/map | 19.6 µs/map |
+| identity n=200 (x50) | 74.1 µs/map | 31.2 µs/map |
+| winsum n=200 (x20) | 620 µs/map | 574 µs/map |
+
+The fixed stage/unlink cost was the whole call at small n with a trivial
+fn; with the ~5 µs winsum task compute dominates and the gain is the
+expected ~46 µs/map of staging overhead.

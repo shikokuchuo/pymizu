@@ -16,8 +16,14 @@ nothing.
                             collect all (in-process loop as the anchor)
   5. streaming              one-way const messages: channel send_batch /
                             recv_batch
-  6. parallel map           Pool.map of winsum over 2000 elements,
-                            4 workers (in-process loop as the anchor)
+  6. parallel map           Pool.map, 4 workers, mirroring rei-bench.R's
+                            section 6: the trivial-f overhead regime
+                            (plain / template / seed / prepared, us/elt),
+                            winsum over 2000 elements as the compute
+                            regime (in-process loop as the anchor), a
+                            20,000-element scaling row, a template row at
+                            that size, and the skew regime (1% heavy
+                            elements, ms wall)
 
 Timings are best-of-3 after warm-up; single runs on a busy machine still
 jitter.
@@ -40,7 +46,14 @@ import pyrei
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from benchmarks.tasks import const, identity, winsum  # noqa: E402
+from benchmarks.tasks import (  # noqa: E402
+    const,
+    identity,
+    plus_one,
+    skewed,
+    winsum,
+    winsum_t,
+)
 
 REPS = 3
 results = []
@@ -356,7 +369,68 @@ with_channel(STREAM_PEER, stream_channel)
 
 # 6. parallel map -------------------------------------------------------------
 
-print("\n== 6. parallel map (Pool.map winsum x 2000, 4 workers) ==")
+print("\n== 6. parallel map (f over n elements, 4 workers) ==")
+
+# overhead regime: trivial f, where per-element cost is the whole story
+n = 10000
+xs = np.arange(n, dtype=np.float64)
+k = 10  # map calls per rep: a trivial map is sub-ms, so loop to average
+
+note_us(
+    "map trivial f",
+    "in-process",
+    k * n,
+    lambda: [[plus_one(v) for v in xs] for _ in range(k)],
+    "us/elt",
+)
+
+
+def map_overhead(p):
+    tmpl = np.empty(1)
+    p.map(plus_one, xs)  # warm-up
+    note_us(
+        "map trivial f",
+        "pyrei pool",
+        k * n,
+        lambda: [p.map(plus_one, xs) for _ in range(k)],
+        "us/elt",
+    )
+    note_us(
+        "map trivial f",
+        "pyrei template",
+        k * n,
+        lambda: [p.map(plus_one, xs, template=tmpl) for _ in range(k)],
+        "us/elt",
+    )
+    # deterministic per-element streams: the price of reproducibility
+    note_us(
+        "map trivial f",
+        "pyrei seed",
+        k * n,
+        lambda: [p.map(plus_one, xs, seed=42) for _ in range(k)],
+        "us/elt",
+    )
+    # prepared: stage once, run many — per-run cost is submit + collect,
+    # and back-to-back runs hit the workers' cached map contexts
+    pm = p.map_prepare(plus_one, xs)
+    try:
+        p.map_run(pm)  # warm-up
+        note_us(
+            "map trivial f",
+            "pyrei prepared",
+            k * n,
+            lambda: [p.map_run(pm) for _ in range(k)],
+            "us/elt",
+        )
+    finally:
+        pm.close()
+
+
+with_pool(4, map_overhead)
+
+# compute regime: scenario 4's fan-out work as a single map call — the
+# per-element overhead above amortized against real tasks
+print("\n== 6a. map compute (Pool.map winsum x 2000, 4 workers) ==")
 n = 2000
 
 note_rate("map", "in-process", n, lambda: [winsum(i) for i in range(n)])
@@ -369,6 +443,65 @@ def map_pool(p):
 
 
 with_pool(4, map_pool)
+
+# 6b. map scaling -------------------------------------------------------------
+
+print("\n== 6b. map scaling (Pool.map winsum x 20000, 4 workers) ==")
+n = 20000
+
+note_rate("map 20k", "in-process", n, lambda: [winsum(i) for i in range(n)])
+
+
+def map_pool_20k(p):
+    xs = list(range(n))
+    p.map(winsum, xs)  # warm-up
+    note_rate("map 20k", "pyrei pool", n, lambda: p.map(winsum, xs))
+
+
+with_pool(4, map_pool_20k)
+
+# 6c. template map ------------------------------------------------------------
+
+print("\n== 6c. template map (winsum x 20000 -> n x 2 float64, 4 workers) ==")
+
+
+def map_template(p):
+    xs = list(range(n))
+    tmpl = np.empty(2)
+    p.map(winsum_t, xs, template=tmpl)  # warm-up
+    note_rate(
+        "map template", "pyrei copy", n,
+        lambda: p.map(winsum_t, xs, template=tmpl),
+    )
+    note_rate(
+        "map template", "pyrei view", n,
+        lambda: p.map(winsum_t, xs, template=tmpl, collect="view"),
+    )
+
+
+with_pool(4, map_template)
+
+# 6d. map skew ----------------------------------------------------------------
+
+# skew regime: 1% of elements cost ~100x the rest, clustered at the head —
+# fine self-scheduled claims keep the workers level where a coarse static
+# split concentrates the heavy heads on one worker
+print("\n== 6d. map skew (1% heavy elements x 4000, 4 workers) ==")
+n = 4000
+
+
+def map_skew(p):
+    xs = list(range(n))
+    p.map(skewed, xs)  # warm-up
+    note(
+        "map skewed f",
+        "pyrei pool",
+        best_ms(lambda: p.map(skewed, xs)),
+        "ms wall",
+    )
+
+
+with_pool(4, map_skew)
 
 # summary ---------------------------------------------------------------------
 

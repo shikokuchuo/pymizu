@@ -11,13 +11,16 @@ import time
 
 import pytest
 from tests.helpers import (
+    bad_template,
     fail_at,
     fail_or_sleep,
     identity,
     kill_at,
     nested_map,
     np_scalar_double,
+    pair_up,
     rand_elt,
+    scalar_double,
     scale_add,
     sleep_ident,
     square,
@@ -170,3 +173,171 @@ def test_map_numpy_chunking_invariance(pool):
     want = pool.map(identity, a)
     for chunks in (1, 5, 300):
         assert pool.map(identity, a, chunks=chunks) == want
+
+
+# -- template output areas ----------------------------------------------------
+
+
+def test_map_template_scalar(pool):
+    out = pool.map(scalar_double, list(range(100)), template=np.empty(1))
+    assert isinstance(out, np.ndarray)
+    assert out.shape == (100,)
+    assert out.dtype == np.float64
+    np.testing.assert_array_equal(out, np.arange(100) * 2.0)
+
+
+def test_map_template_m2(pool):
+    out = pool.map(pair_up, list(range(50)), template=np.empty(2))
+    assert out.shape == (50, 2)
+    np.testing.assert_array_equal(out[:, 0], np.arange(50))
+    np.testing.assert_array_equal(out[:, 1], np.arange(50) * 2)
+
+
+def test_map_template_buffer_result(pool):
+    # fn results may be buffers directly (no scalar conversion)
+    out = pool.map(pair_up, list(range(40)), template=np.empty(2), chunks=3)
+    assert out.shape == (40, 2)
+
+
+def test_map_template_view(pool):
+    out = pool.map(
+        scalar_double, list(range(100)), template=np.empty(1), collect="view"
+    )
+    assert isinstance(out, np.ndarray)
+    assert not out.flags.writeable
+    np.testing.assert_array_equal(out, np.arange(100) * 2.0)
+
+
+def test_map_template_mismatch(pool):
+    with pytest.raises(pyrei.TaskError) as exc_info:
+        pool.map(bad_template, list(range(10)), template=np.empty(2))
+    assert exc_info.value.index == 0
+
+
+def test_map_template_seeded(pool):
+    a = pool.map(rand_elt, list(range(50)), seed=42, template=np.empty(1))
+    b = pool.map(rand_elt, list(range(50)), seed=42, template=np.empty(1))
+    np.testing.assert_array_equal(a, b)
+
+
+def test_map_template_empty(pool):
+    out = pool.map(scalar_double, [], template=np.empty(1))
+    assert out.shape == (0,)
+
+
+def test_map_template_int32(pool):
+    out = pool.map(square, [1, 2, 3], template=np.empty(1, dtype=np.int32))
+    assert out.dtype == np.int32
+    assert list(out) == [1, 4, 9]
+
+
+def test_map_template_invalid(pool):
+    with pytest.raises(TypeError):
+        pool.map(square, [1], template="not a buffer")
+    with pytest.raises(ValueError):
+        pool.map(square, [1], template=np.empty(1), collect="list")
+    with pytest.raises(ValueError):
+        pool.map(square, [1], collect="view")
+
+
+# -- prepared maps ------------------------------------------------------------
+
+
+def test_map_prepared_roundtrip(pool):
+    pm = pool.map_prepare(square, list(range(500)))
+    try:
+        want = [i * i for i in range(500)]
+        for _ in range(3):
+            assert pool.map_run(pm) == want
+    finally:
+        pm.close()
+
+
+def test_map_prepared_rearm_fences_stragglers(pool):
+    # repeated runs over the same region: every run returns the full set
+    pm = pool.map_prepare(identity, list(range(2000)), chunks=8)
+    try:
+        for _ in range(5):
+            assert pool.map_run(pm) == list(range(2000))
+    finally:
+        pm.close()
+
+
+def test_map_prepared_template(pool):
+    pm = pool.map_prepare(
+        scalar_double, list(range(100)), template=np.empty(1)
+    )
+    try:
+        for _ in range(3):
+            out = pool.map_run(pm)
+            np.testing.assert_array_equal(out, np.arange(100) * 2.0)
+    finally:
+        pm.close()
+
+
+def test_map_prepared_view_restages(pool):
+    pm = pool.map_prepare(
+        scalar_double, list(range(50)), template=np.empty(1), collect="view"
+    )
+    try:
+        v1 = pool.map_run(pm)
+        np.testing.assert_array_equal(v1, np.arange(50) * 2.0)
+        # the view owns the first region; the second run restages fresh
+        v2 = pool.map_run(pm)
+        np.testing.assert_array_equal(v2, np.arange(50) * 2.0)
+        np.testing.assert_array_equal(v1, np.arange(50) * 2.0)
+    finally:
+        pm.close()
+
+
+def test_map_prepared_error_and_reuse(pool):
+    pm = pool.map_prepare(fail_at, list(range(10)), args=(4,))
+    try:
+        with pytest.raises(pyrei.TaskError) as exc_info:
+            pool.map_run(pm)
+        assert exc_info.value.index == 4
+        # the cancel word fired; the next run's re-arm clears it
+        pm2 = pool.map_prepare(square, list(range(10)))
+        try:
+            assert pool.map_run(pm2) == [i * i for i in range(10)]
+        finally:
+            pm2.close()
+    finally:
+        pm.close()
+
+
+def test_map_prepared_timeout(pool):
+    pm = pool.map_prepare(sleep_ident, [0.4] * 8)
+    try:
+        assert pool.map_run(pm, timeout=0.2) is pyrei.TIMEOUT
+        assert pool.map(square, [2], timeout=15) == [4]
+    finally:
+        pm.close()
+
+
+def test_map_prepared_closed(pool):
+    pm = pool.map_prepare(square, [1, 2])
+    pm.close()
+    pm.close()
+    assert pm.closed
+    with pytest.raises(pyrei.ReiError):
+        pool.map_run(pm)
+
+
+def test_map_prepared_wrong_pool(pool):
+    other = pyrei.Pool.create(1)
+    try:
+        pm = other.map_prepare(square, [1])
+        try:
+            with pytest.raises(ValueError):
+                pool.map_run(pm)
+        finally:
+            pm.close()
+    finally:
+        other.stop()
+
+
+def test_map_prepared_context_manager(pool):
+    with pool.map_prepare(square, [3]) as pm:
+        assert pool.map_run(pm) == [9]
+    assert pm.closed

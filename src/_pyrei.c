@@ -259,6 +259,9 @@ static int wire_type_of(const Py_buffer *v) {
     case 'B': return v->itemsize == 1 ? REI_TYPE_RAW : 0;
     case 'd': return v->itemsize == 8 ? REI_TYPE_REAL : 0;
     case 'i': return v->itemsize == 4 ? REI_TYPE_INT : 0;
+    /* numpy exports int32 as 'l' (C long) on Windows; on LP64 an 'l'
+       buffer is 8 bytes and still falls through */
+    case 'l': return v->itemsize == 4 ? REI_TYPE_INT : 0;
     }
     return 0;
   }

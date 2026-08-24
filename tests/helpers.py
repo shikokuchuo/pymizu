@@ -147,3 +147,20 @@ def is_readonly(a):
 def sum_mixed(xs):
     """A flat container with a buffer leaf: an array and a scalar."""
     return float(xs[0].sum()) + xs[1]
+
+
+def pair_up(v):
+    """A length-2 float64 result per element (template maps, m = 2)."""
+    import numpy as np
+
+    return np.array([v, v * 2], dtype=np.float64)
+
+
+def scalar_double(v):
+    """A plain Python scalar per element (template maps, m = 1)."""
+    return float(v) * 2
+
+
+def bad_template(v):
+    """A result that violates the template (wrong length)."""
+    return [1.0, 2.0, 3.0]

@@ -371,7 +371,9 @@ class Pool:
         chunks: int | None = None,
         seed: int | bytes | bytearray | None = None,
         timeout: float | None = None,
-    ) -> list[_Any] | _pyrei._Sentinel:
+        template: _Any = None,
+        collect: str | None = None,
+    ) -> list[_Any] | _pyrei._Sentinel | _Any:
         """Map ``fn`` over the elements of ``x`` on the pool; return the
         results as a list in input order.
 
@@ -388,6 +390,17 @@ class Pool:
         ``random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))``,
         identical for any chunking, worker count, or steal order.
 
+        ``template`` is an exemplar buffer (e.g. ``numpy.empty(m,
+        dtype=...)``) declaring that every ``fn`` result is ``m`` values
+        of that dtype: results are written in place into a shared
+        ``n x m`` output area and never serialized. Each result must be a
+        matching buffer — or, for ``m == 1``, a plain Python scalar. With
+        a template, ``collect="copy"`` (the default) returns the area as
+        one gathered numpy array (a memoryview without numpy) of shape
+        ``(n, m)`` — ``(n,)`` for ``m == 1``; ``collect="view"`` returns
+        it zero-copy, with the map region's teardown deferred to the
+        view's.
+
         A task error re-raises as TaskError carrying the failing element's
         0-based ``index``; failure is fail-fast (peers stop within about
         one batch). Worker death raises WorkerDiedError carrying the lost
@@ -397,7 +410,49 @@ class Pool:
         """
         from pyrei import _map
 
-        return _map.pool_map(self, fn, x, args, kwargs, chunks, seed, timeout)
+        return _map.pool_map(
+            self, fn, x, args, kwargs, chunks, seed, timeout, template,
+            collect,
+        )
+
+    def map_prepare(
+        self,
+        fn: _Callable[..., _Any],
+        x: _Iterable[_Any],
+        *,
+        args: _Iterable[_Any] = (),
+        kwargs: dict[str, _Any] | None = None,
+        chunks: int | None = None,
+        seed: int | bytes | bytearray | None = None,
+        template: _Any = None,
+        collect: str | None = None,
+    ) -> _Any:
+        """Stage a map once for repeated runs; return a map handle.
+
+        Takes the same arguments as ``map`` (minus ``timeout``, which is
+        per-run). The descriptor pickle, the region create, and the
+        worker-side attach are paid once here; each ``map_run`` re-arms in
+        O(1) and reuses the workers' cached contexts. A run collected with
+        ``collect="view"`` hands its region to the view, so the next run
+        restages into a fresh one. Close the handle (or use it as a
+        context manager) to unlink the region.
+        """
+        from pyrei import _map
+
+        return _map.PreparedMap(
+            self, fn, x, args, kwargs, chunks, seed, template, collect
+        )
+
+    def map_run(self, prepared: _Any, timeout: float | None = None) -> _Any:
+        """Run a map handle from ``map_prepare`` once; return its results
+        (the same shapes and outcome taxonomy as ``map``)."""
+        from pyrei import _map
+
+        if not isinstance(prepared, _map.PreparedMap):
+            raise TypeError("pyrei: not a prepared map handle")
+        if prepared._pool is not self:
+            raise ValueError("pyrei: map handle belongs to another pool")
+        return prepared.run(timeout)
 
     def retire(self, slot: int) -> None:
         """Ask the worker in ``slot`` to exit cleanly (non-blocking)."""

@@ -74,7 +74,7 @@ _CTX_CACHE_MAX = 8
 
 
 class _Ctx:
-    __slots__ = ("capsule", "fn", "args", "kwargs", "get")
+    __slots__ = ("capsule", "fn", "args", "kwargs", "get", "tmpl")
 
     def __init__(
         self,
@@ -83,12 +83,14 @@ class _Ctx:
         args: tuple,
         kwargs: dict,
         get: _Callable[[int], _Any],
+        tmpl: bool,
     ) -> None:
         self.capsule = capsule
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
         self.get = get
+        self.tmpl = tmpl
 
 
 _ctx_cache: dict[str, _Ctx] = {}
@@ -117,7 +119,7 @@ def _map_ctx(name: str) -> _Ctx:
         else:
             fn, args, kwargs, x = desc
             get = x.__getitem__
-        ctx = _Ctx(capsule, fn, args, kwargs, get)
+        ctx = _Ctx(capsule, fn, args, kwargs, get, hdr["out_tag"] != 0)
         _ctx_cache[name] = ctx
     return ctx
 
@@ -171,8 +173,8 @@ def _chunk(blob: bytes, lo: int, hi: int, seed_bytes: bytes | None) -> list:
 
 
 def _runner(
-    region_name: str, ordinal: int, seed_bytes: bytes | None
-) -> tuple[list, list]:
+    region_name: str, ordinal: int, gen: int, seed_bytes: bytes | None
+) -> tuple[list, list | None]:
     """Worker-side morsel runner, riding each runner task. Opens (or
     reuses) the map context, obtains the pool signals worker-locally —
     never from the submitter — and loops batch transitions: claim the next
@@ -180,7 +182,9 @@ def _runner(
     the boundary when flagged, evaluate, and record the batch in the local
     history only after it completes (a batch interrupted by an error is
     never recorded — correctly lost). The history and per-batch value
-    lists ride the runner's single ordinary result publish."""
+    lists ride the runner's single ordinary result publish; on the
+    template path values land in the region's output area instead and the
+    publish carries the history alone."""
     import pyrei
 
     pool = pyrei.current_pool()
@@ -191,7 +195,7 @@ def _runner(
     vals = []
     try:
         while True:
-            nxt = _pyrei._map_next(ctx.capsule, sig, ordinal)
+            nxt = _pyrei._map_next(ctx.capsule, sig, ordinal, gen)
             if nxt is None:
                 break
             lo, hi, help_flag = nxt
@@ -199,18 +203,20 @@ def _runner(
             # concurrent submitters their chunk-boundary interleave back
             if help_flag:
                 pool._h._help_once()
-            vals.append(
-                _run_batch(
-                    ctx.fn, ctx.args, ctx.kwargs, ctx.get, lo, hi, seed_bytes
-                )
+            batch = _run_batch(
+                ctx.fn, ctx.args, ctx.kwargs, ctx.get, lo, hi, seed_bytes
             )
+            if ctx.tmpl:
+                _pyrei._map_write(ctx.capsule, lo, batch)
+            else:
+                vals.append(batch)
             hist.append((lo, hi))
     except Exception:
         # the fail-fast store, ahead of the ERR publish: peers observe it
         # within ~a batch instead of draining the cursor first
         _pyrei._map_cancel_set(ctx.capsule)
         raise
-    return (hist, vals)
+    return (hist, None if ctx.tmpl else vals)
 
 
 def _seed_bytes(seed: int | bytes | bytearray | None) -> bytes | None:
@@ -223,6 +229,50 @@ def _seed_bytes(seed: int | bytes | bytearray | None) -> bytes | None:
     return bytes(seed)
 
 
+def _deadline(
+    timeout: float | None,
+) -> tuple[_Callable[[], float | None], _Callable[[], bool]]:
+    deadline = None if timeout is None else _time.monotonic() + timeout
+
+    def remaining() -> float | None:
+        if deadline is None:
+            return None
+        return max(0.0, deadline - _time.monotonic())
+
+    def expired() -> bool:
+        return deadline is not None and _time.monotonic() >= deadline
+
+    return remaining, expired
+
+
+def _template_probe(template: _Any) -> tuple:
+    """The template gate: an exemplar buffer of a supported dtype carries
+    the output area's wire type and per-element length m together (the
+    mirror of rei's `.template` exemplar)."""
+    probe = _pyrei._map_probe_x(template)
+    if probe is None or probe[1] < 1:
+        raise TypeError(
+            "pyrei: template must be a C-contiguous buffer of a supported "
+            "dtype (float64/int32/complex128/uint8)"
+        )
+    if probe[0] == 15 and _np is None:
+        raise TypeError("pyrei: a complex128 template needs numpy")
+    return probe
+
+
+def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
+    """Assemble the gathered output area: a numpy array (n, m) — (n,) for
+    m == 1 — when numpy is present, else a (cast) memoryview. `raw` is the
+    gather bytes (copy) or the _MapOutView exporter (view)."""
+    if _np is not None:
+        a = _np.frombuffer(raw, dtype=_TAG_NP[tag])
+        return a.reshape(n, m) if m > 1 else a
+    fmt = _TAG_MV[tag]
+    mv = memoryview(raw).cast(fmt)  # pyrefly: ignore [no-matching-overload]
+    # pyrefly: ignore [no-matching-overload]
+    return mv.cast(fmt, [n, m]) if m > 1 else mv
+
+
 def pool_map(
     pool: pyrei.Pool,
     fn: _Callable[..., _Any],
@@ -232,7 +282,9 @@ def pool_map(
     chunks: int | None,
     seed: int | bytes | bytearray | None,
     timeout: float | None,
-) -> list | _pyrei._Sentinel:
+    template: _Any = None,
+    collect: str | None = None,
+) -> list | _pyrei._Sentinel | _Any:
     """The one map path: stage, submit the runners (or blob chunks),
     collect against the single deadline, splice into input order. The
     try/finally backstop cancels outstanding work on KeyboardInterrupt or
@@ -246,6 +298,17 @@ def pool_map(
     kwargs = {} if kwargs is None else dict(kwargs)
     seed_bytes = _seed_bytes(seed)
 
+    tprobe = None if template is None else _template_probe(template)
+    if tprobe is None:
+        if collect not in (None, "list"):
+            raise ValueError("pyrei: collect must be 'list' without template")
+        collect = "list"
+    else:
+        if collect is None:
+            collect = "copy"
+        if collect not in ("copy", "view"):
+            raise ValueError("pyrei: collect must be 'copy' or 'view'")
+
     # the raw-x gate: a C-contiguous buffer of a supported dtype rides the
     # region as bare bytes (complex needs numpy's frombuffer); anything
     # else pickles into the descriptor
@@ -258,7 +321,9 @@ def pool_map(
     else:
         n = probe[1]
     if n == 0:
-        return []
+        if tprobe is None:
+            return []
+        return _wrap_out(b"", tprobe[0], 0, tprobe[1])
     if chunks is not None:
         chunks = int(chunks)
         if chunks < 1:
@@ -271,22 +336,15 @@ def pool_map(
             "tasks first"
         )
 
-    deadline = None if timeout is None else _time.monotonic() + timeout
-
-    def remaining() -> float | None:
-        if deadline is None:
-            return None
-        return max(0.0, deadline - _time.monotonic())
-
-    def expired() -> bool:
-        return deadline is not None and _time.monotonic() >= deadline
+    remaining, expired = _deadline(timeout)
 
     # Region-less probe: does the full chunk payload — the wrapper plus
     # the descriptor blob as an ordinary argument — fit the entry inline
     # budget? Skipped when a raw x alone already exceeds the budget, so a
-    # huge x is never pickled just to learn it does not fit.
+    # huge x is never pickled just to learn it does not fit. The template
+    # path always needs the region (its output area lives there).
     blob = None
-    if probe is None or probe[2] <= inline_entry:
+    if tprobe is None and (probe is None or probe[2] <= inline_entry):
         cand = _pickle.dumps((fn, args, kwargs, x), 4)
         worst = _pickle.dumps((_chunk, (cand, n, n, seed_bytes), {}), 4)
         if len(worst) <= inline_entry:
@@ -328,6 +386,9 @@ def pool_map(
             expired,
             handles,
             box,
+            template,
+            tprobe,
+            collect,
         )
     finally:
         # the interrupt/error/timeout backstop (a clean collect consumed
@@ -417,10 +478,15 @@ def _map_region(
     expired: _Callable[[], bool],
     handles: list,
     box: dict,
-) -> list | _pyrei._Sentinel:
+    template: _Any,
+    tprobe: tuple | None,
+    collect: str,
+) -> list | _pyrei._Sentinel | _Any:
     """The region path: stage, submit one runner per live worker (clamped
     by the morsel count, the free result slots, and the injection ring),
-    collect under the exhausted-runner trim, splice by element position."""
+    collect under the exhausted-runner trim, splice by element position —
+    or, on the template path, gather the output area the runners wrote in
+    place (one copy, or none for a view)."""
     runners = min(max(1, live), free_rs, inj_cap)
     if chunks is None:
         morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP))
@@ -431,23 +497,56 @@ def _map_region(
         (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x), 4
     )
     name, capsule = _pyrei._map_stage(
-        desc, x if probe is not None else None, n, morsel
+        desc, x if probe is not None else None, n, morsel, template
     )
     # hand the region to pool_map's finally backstop (cancel + unlink)
     box["capsule"] = capsule
     r = min(n_morsels, runners)
-    timed_out = False
+    if _submit_runners(
+        pool, name, r, 0, seed_bytes, remaining, expired, handles
+    ):
+        return pyrei.TIMEOUT
+    out = _collect_region(
+        pyrei, capsule, handles, n, remaining, expired, tprobe is not None
+    )
+    if out is pyrei.TIMEOUT or tprobe is None:
+        return out
+    if collect == "view":
+        # ownership of the region transfers to the view: the finally
+        # backstop must not unlink it
+        view = _wrap_out(_pyrei._map_gather_view(capsule), tprobe[0], n,
+                         tprobe[1])
+        box["capsule"] = None
+        return view
+    return _wrap_out(_pyrei._map_gather(capsule), tprobe[0], n, tprobe[1])
+
+
+def _submit_runners(
+    pool: pyrei.Pool,
+    name: str,
+    r: int,
+    gen: int,
+    seed_bytes: bytes | None,
+    remaining: _Callable[[], float | None],
+    expired: _Callable[[], bool],
+    handles: list,
+) -> bool:
+    """Submit the r runner tasks of one run; True when the deadline
+    expired mid-submit (the caller's backstop cancels what landed). The
+    payload carries the run's generation: a stale straggler from a prior
+    run of a prepared map fails its first-call CAS against the re-armed
+    CLAIM word."""
     for k in range(r):
+        # pre-check, not just the verb's: a nested (worker-side) submit
+        # never waits on ring space, so an expired deadline must be caught
+        # here, before the payload is built
         if expired():
-            timed_out = True
-            break
+            return True
         h = pool._h._submit_runner(
-            (_runner, (name, k, seed_bytes), {}), remaining()
+            (_runner, (name, k, gen, seed_bytes), {}), remaining()
         )
         handles.append(h)
-    if timed_out:
-        return pyrei.TIMEOUT
-    return _collect_region(pyrei, capsule, handles, n, remaining, expired)
+    return False
 
 
 def _collect_region(
@@ -457,7 +556,9 @@ def _collect_region(
     n: int,
     remaining: _Callable[[], float | None],
     expired: _Callable[[], bool],
-) -> list | _pyrei._Sentinel:
+    tmpl: bool = False,
+    gen: int = 0,
+) -> list | _pyrei._Sentinel | None:
     """Collect the runner handles under the exhausted-runner trim, in a
     deferred collection order. A runner carries no work of its own, so
     once the cursor exhausts a still-queued runner is dead weight — but
@@ -508,7 +609,7 @@ def _collect_region(
                 return pyrei.TIMEOUT
             # the verdict is the morsel-state code: 2 abandoned, 1
             # running, 0 idle
-            verdict = _pyrei._map_abandon(capsule, k)
+            verdict = _pyrei._map_abandon(capsule, k, gen)
             if verdict == 2:
                 # abandoned: never started and never will — cancel and
                 # drop; a claim that lands anyway loses its first-call
@@ -550,8 +651,187 @@ def _collect_region(
         # that ran already depended on steal order; the fail-fast store
         # only shrinks it sooner
         raise min(errs, key=lambda e: e.index)
+    if tmpl:
+        # results sit in the output area; the caller gathers
+        return None
     out = [None] * n
     for hist, vals in runs:
         for (lo, hi), batch in zip(hist, vals, strict=True):
             out[lo:hi] = batch
     return out
+
+
+class PreparedMap:
+    """A map staged once into a persistent region, run many times
+    (``Pool.map_prepare`` / ``Pool.map_run``). Re-arming is O(1) — a
+    generation bump, a cursor reset, a cancel-word clear — and workers
+    reuse their cached contexts, so a re-run pays neither the descriptor
+    pickle nor the region create nor the worker-side re-attach. A
+    view-collected run hands its region to the view; the next run
+    restages into a fresh one (the mirror of rei)."""
+
+    def __init__(
+        self,
+        pool: pyrei.Pool,
+        fn: _Callable[..., _Any],
+        x: _Any,
+        args: _Any,
+        kwargs: dict | None,
+        chunks: int | None,
+        seed: int | bytes | bytearray | None,
+        template: _Any,
+        collect: str | None,
+    ) -> None:
+        import pyrei
+
+        if not callable(fn):
+            raise TypeError("pyrei: fn must be callable")
+        self._pyrei = pyrei
+        self._pool = pool
+        args = tuple(args)
+        kwargs = {} if kwargs is None else dict(kwargs)
+        self._seed_bytes = _seed_bytes(seed)
+        self._tprobe = None if template is None else _template_probe(template)
+        if self._tprobe is None:
+            if collect not in (None, "list"):
+                raise ValueError(
+                    "pyrei: collect must be 'list' without template"
+                )
+            self._collect_mode = "list"
+        else:
+            if collect is None:
+                collect = "copy"
+            if collect not in ("copy", "view"):
+                raise ValueError("pyrei: collect must be 'copy' or 'view'")
+            self._collect_mode = collect
+        probe = _pyrei._map_probe_x(x)
+        if probe is not None and probe[0] == 15 and _np is None:
+            probe = None
+        if probe is None:
+            x = list(x)
+            n = len(x)
+        else:
+            n = probe[1]
+        if chunks is not None:
+            chunks = int(chunks)
+            if chunks < 1:
+                raise ValueError("pyrei: chunks must be a positive number")
+        self._probe = probe
+        self._x = x
+        self._n = n
+        self._template = template
+        self._desc = _pickle.dumps(
+            (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x),
+            4,
+        )
+        # the geometry is fixed at prepare time; re-runs inherit it
+        live, free_rs, inj_cap, _ = pool._h._map_caps()
+        runners = max(1, min(max(1, live), free_rs, inj_cap))
+        if n == 0:
+            morsel = 1
+        elif chunks is None:
+            morsel = max(
+                1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP)
+            )
+        else:
+            morsel = -(-n // min(n, chunks))
+        self._morsel = morsel
+        self._n_morsels = -(-n // morsel) if n else 0
+        self._capsule = None
+        self._name = None
+        self._gen = 0
+        self._ran = False
+        self._closed = False
+        if n:
+            self._stage()
+
+    def _stage(self) -> None:
+        name, capsule = _pyrei._map_stage(
+            self._desc,
+            self._x if self._probe is not None else None,
+            self._n,
+            self._morsel,
+            self._template,
+        )
+        self._name, self._capsule, self._gen = name, capsule, 0
+
+    def run(self, timeout: float | None = None) -> list | _Any:
+        """Run the prepared map once; return its results (the same shapes
+        and outcome taxonomy as ``Pool.map``)."""
+        pyrei = self._pyrei
+        if self._closed:
+            raise pyrei.ReiError("pyrei: map handle is closed")
+        if self._n == 0:
+            if self._tprobe is None:
+                return []
+            return _wrap_out(b"", self._tprobe[0], 0, self._tprobe[1])
+        if self._capsule is None:
+            # a view-collected run transferred the region: restage fresh
+            self._stage()
+        elif self._ran:
+            self._gen = _pyrei._map_reset(self._capsule)
+        self._ran = True
+        pool = self._pool
+        live, free_rs, inj_cap, _ = pool._h._map_caps()
+        if free_rs == 0:
+            raise pyrei.SlotsExhaustedError(
+                "pyrei: result slots exhausted — collect or cancel "
+                "outstanding tasks first"
+            )
+        remaining, expired = _deadline(timeout)
+        r = min(self._n_morsels, max(1, live), free_rs, inj_cap)
+        handles = []
+        name = self._name
+        assert name is not None  # n > 0 stages at prepare / restage above
+        try:
+            if _submit_runners(
+                pool, name, r, self._gen, self._seed_bytes,
+                remaining, expired, handles,
+            ):
+                return pyrei.TIMEOUT
+            out = _collect_region(
+                pyrei, self._capsule, handles, self._n, remaining, expired,
+                self._tprobe is not None, self._gen,
+            )
+            if out is pyrei.TIMEOUT or self._tprobe is None:
+                return out
+            if self._collect_mode == "view":
+                view = _wrap_out(
+                    _pyrei._map_gather_view(self._capsule),
+                    self._tprobe[0], self._n, self._tprobe[1],
+                )
+                # ownership transferred to the view; the next run restages
+                self._capsule = None
+                return view
+            return _wrap_out(
+                _pyrei._map_gather(self._capsule),
+                self._tprobe[0], self._n, self._tprobe[1],
+            )
+        finally:
+            # the interrupt/error/timeout backstop (a clean collect
+            # consumed every handle: a no-op then); the region survives —
+            # the next run's re-arm clears the cancel word
+            pending = [h for h in handles if h is not None]
+            if pending:
+                if self._capsule is not None:
+                    _pyrei._map_cancel_set(self._capsule)
+                for h in pending:
+                    h.cancel()
+
+    def close(self) -> None:
+        """Unlink the staged region (idempotent; the GC backstop is the
+        capsule destructor)."""
+        self._closed = True
+        if self._capsule is not None:
+            _pyrei._map_close(self._capsule)
+            self._capsule = None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def __enter__(self) -> PreparedMap:
+        return self
+
+    def __exit__(self, *exc: _Any) -> None:
+        self.close()
