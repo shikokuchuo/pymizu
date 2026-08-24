@@ -336,3 +336,26 @@ def test_numpy_result_region(pool):
     assert np.array_equal(b, a)
     d = pool.dump()
     assert any(s["spills"] > 0 for s in d["submitters"])
+
+
+# -- zero-copy views (SHM_VEC) ----------------------------------------------
+
+np = pytest.importorskip("numpy", reason="numpy not installed")
+
+
+def test_shm_vec_result(pool):
+    from tests.helpers import big_array
+
+    t = pool.submit(big_array, 100000)  # 800 KB back as a view
+    b = t.collect(timeout=5)
+    assert isinstance(b, np.ndarray)
+    assert np.array_equal(b, np.arange(100000, dtype=np.float64))
+    assert not b.flags.writeable
+
+
+def test_shm_vec_argument(pool):
+    from tests.helpers import array_sum
+
+    a = np.arange(100000, dtype=np.float64)  # 800 KB there as a view
+    t = pool.submit(array_sum, a)
+    assert t.collect(timeout=5) == float(a.sum())

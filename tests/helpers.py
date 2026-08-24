@@ -40,6 +40,17 @@ def make_unpicklable():
     return Unpicklable()
 
 
+def big_array(n):
+    """A large vector: crosses back as a zero-copy view (SHM_VEC)."""
+    import numpy as np
+
+    return np.arange(n, dtype=np.float64)
+
+
+def array_sum(a):
+    return float(a.sum())
+
+
 def fanout(n):
     """Nested fan-out: submit n subtasks on the worker's own pool handle
     and collect them (nested collect helps instead of parking)."""

@@ -101,8 +101,8 @@ Headline numbers (Apple M4 Pro, from `benchmarks/rei-bench.py`):
 | Benchmark | pyrei |
 |----|----|
 | Trivial task round trip | 2.4 µs |
-| Pipelined tasks, 1 worker | 510,000 tasks/s |
-| 8 MB vector round trip | 1.0 ms |
+| Pipelined tasks, 1 worker | 500,000 tasks/s |
+| 8 MB vector round trip | 0.9 ms |
 | Parallel map of 2,000 elements, 4 workers | 11 ms |
 
 ## Requirements

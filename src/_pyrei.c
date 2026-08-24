@@ -38,6 +38,10 @@ static PyTypeObject ReiChannelType;
 static PyTypeObject ReiPoolType;
 static PyTypeObject ReiTaskType;
 static PyTypeObject ReiCaughtType;
+static PyTypeObject ReiShmViewType;
+static PyTypeObject ReiShmOwnerType;
+
+static PyObject *numpy_module(void);
 
 // Module state -------------------------------------------------------------------
 
@@ -229,10 +233,43 @@ int rei_py_wire_type_of(const Py_buffer *v) {
   return wire_type_of(v);
 }
 
-/* Bare vector bytes: RAWVEC inline within the budget, else one arena chunk
-   as RAWSPILL. There is no SHM_VEC producer in v1, so the arena serves at
-   any size (R caps it at REI_ZC_FLOOR_RAW only because its next tier is
-   zero-copy); a miss falls to pickle. Returns 0 staged, 1 error, -1 pickle. */
+/* SHM_VEC: one REIH layout write into a spill region (free-list pop or
+   fresh create), the name as the payload, aux the wire type | exact used
+   bytes << 8. The producer-loan refcount store rides rei_stage_retain_zc;
+   the layout write zeroes the reserved band ahead of it (a recycled region
+   carries stale bytes). Returns 0 staged, -1 region failure (the caller
+   falls back to a copy tier). */
+static int stage_shm_vec(const Py_buffer *v, int type, rei_slot_hdr *hdr,
+                         uint8_t *payload, rei_handle *h) {
+  size_t n = (size_t) v->len;
+  size_t total = REI_HEADER_SIZE + n;
+  rei_shm *shm;
+  if (rei_stage_spill_get(h, total, &shm) != REI_OK) return -1;
+  uint8_t *base = (uint8_t *) shm->addr;
+  uint32_t magic = REI_MAGIC_VEC;
+  int32_t t32 = type;
+  int64_t len64 = (int64_t) (n / rei_type_elt_size(type)), zero64 = 0;
+  memcpy(base, &magic, 4);
+  memcpy(base + 4, &t32, 4);
+  memcpy(base + 8, &len64, 8);
+  memcpy(base + 16, &zero64, 8);          /* attrs_size */
+  memset(base + 24, 0, REI_HEADER_SIZE - 24);
+  memcpy(base + REI_HEADER_SIZE, v->buf, n);
+  hdr->kind = REI_KIND_SHM_VEC;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = (uint64_t) type | ((uint64_t) total << 8);
+  memcpy(payload, shm->name, shm->name_len);
+  rei_stage_retain_zc(h, shm);
+  return 0;
+}
+
+/* Bare vector bytes: RAWVEC inline within the budget; past it the zero-copy
+   SHM_VEC tier at max(inline budget, REI_ZC_FLOOR), with the copy tiers as
+   the cheaper small end and the churn fallback (R's discipline: the channel
+   arena copy has no region machinery to amortize up to REI_ZC_FLOOR_RAW and
+   is churn-immune at any size; a pool's raw spill is itself a region, so
+   the view's no-copy receive wins from the floor). A region failure falls
+   to the copy tier, then pickle. Returns 0 staged, 1 error, -1 pickle. */
 static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max, rei_handle *h) {
   size_t n = (size_t) v->len;
@@ -243,12 +280,16 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
     hdr->aux = (uint64_t) type;
     return 0;
   }
-  uint64_t off;
-  uint8_t *chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
-  if (chunk == NULL && h->htype == REI_HTYPE_POOL && n <= UINT32_MAX) {
+  size_t zc_gate = (size_t) inline_max > REI_ZC_FLOOR ?
+    (size_t) inline_max : REI_ZC_FLOOR;
+  int churn = h->fl.churn;
+  int zc_ok = !churn && n >= zc_gate;
+  if (h->htype == REI_HTYPE_POOL) {
     /* a pool has no arena: out-of-line frames are always named regions (the
        mirror of R's pool RAWSPILL framing — aux packs the wire type and the
        region name length). A region failure falls to pickle. */
+    if (zc_ok && stage_shm_vec(v, type, hdr, payload, h) == 0) return 0;
+    if (n > UINT32_MAX) return -1;
     rei_shm *shm;
     if (rei_stage_spill_get(h, n, &shm) != REI_OK) return -1;
     memcpy(shm->addr, v->buf, n);
@@ -258,6 +299,14 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
     memcpy(payload, shm->name, shm->name_len);
     rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
     return 0;
+  }
+  uint64_t off;
+  uint8_t *chunk = NULL;
+  if (churn || !zc_ok || n <= REI_ZC_FLOOR_RAW)
+    chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
+  if (chunk == NULL && zc_ok) {
+    if (stage_shm_vec(v, type, hdr, payload, h) == 0) return 0;
+    chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
   }
   if (chunk == NULL) return -1;
   memcpy(chunk, v->buf, n);
@@ -524,18 +573,9 @@ static int py_stage(void *obj, rei_slot_hdr *hdr, uint8_t *payload,
 // Reading ------------------------------------------------------------------------
 
 static PyObject *numpy_empty(void) {
-  if (!rei_numpy_probed) {
-    rei_numpy_probed = 1;
-    PyObject *np = PyImport_ImportModule("numpy");
-    if (np == NULL) {
-      PyErr_Clear();
-      np = Py_None;
-      Py_INCREF(Py_None);
-    }
-    rei_numpy = np;
-  }
-  if (rei_numpy == Py_None) return NULL;
-  return PyObject_GetAttrString(rei_numpy, "empty");   /* new ref */
+  PyObject *np = numpy_module();
+  if (np == NULL) return NULL;
+  return PyObject_GetAttrString(np, "empty");   /* new ref */
 }
 
 /* RAWVEC/RAWSPILL materialize: one memcpy into a fresh numpy array (or a
@@ -582,6 +622,361 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
   PyObject *mv = PyMemoryView_FromObject(ba);
   Py_DECREF(ba);
   return mv;
+}
+
+// Zero-copy views (SHM_VEC / REF) -------------------------------------------
+
+/* The shared mapping owner behind the consumer-side view cache: one per
+   mapped region (page 0 RW for the refcount word, the tail read-only —
+   rei_shm_open_view's split), referenced by the cache and by every live
+   view onto it, so an evicted entry's mapping closes only when its last
+   view is gone (Python refcounting gives the ordering, as with buffer
+   exports). pid is the fork guard: a child-side dealloc must not close a
+   mapping whose loans it never added. */
+typedef struct {
+  PyObject_HEAD
+  rei_shm *shm;
+  long pid;
+} ReiShmOwner;
+
+static void owner_dealloc(ReiShmOwner *self) {
+  if (self->pid == rei_self_pid())
+    rei_shm_close(self->shm, 0);
+  ReiShmOwnerType.tp_free((PyObject *) self);
+}
+
+static PyTypeObject ReiShmOwnerType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pyrei._ShmOwner",
+  .tp_basicsize = sizeof(ReiShmOwner),
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "The shared owner of a view-tier region mapping.",
+  .tp_dealloc = (destructor) owner_dealloc,
+};
+
+static ReiShmOwner *owner_new(rei_shm *shm) {
+  ReiShmOwner *o = (ReiShmOwner *) ReiShmOwnerType.tp_alloc(&ReiShmOwnerType, 0);
+  if (o == NULL) return NULL;
+  o->shm = shm;
+  o->pid = rei_self_pid();
+  return o;
+}
+
+/* Per-handle name -> owner cache (LRU, REI_OPEN_CACHE_MAX entries), the
+   analogue of rei's zc open cache: repeated receives of the same region
+   pay one open/mmap instead of one per view. Only the mapping is cached —
+   names never alias and a region's size is fixed for its lifetime, so the
+   mapping cannot go stale; the REIH header validation in view_wrap_region
+   still runs per read. Hung off binding.ctx (copied per handle at
+   create/attach) and mirrored on the Python handle object for teardown.
+   No locking: verbs are single-threaded per handle role and the GIL
+   serializes the read callbacks. */
+typedef struct {
+  ReiShmOwner *owners[REI_OPEN_CACHE_MAX];
+  char names[REI_OPEN_CACHE_MAX][REI_NAME_MAX];
+  uint64_t stamp[REI_OPEN_CACHE_MAX];
+  uint64_t tick;
+} ReiViewCache;
+
+static ReiShmOwner *view_cache_lookup(ReiViewCache *vc, const char *name) {
+  for (int i = 0; i < REI_OPEN_CACHE_MAX; i++)
+    if (vc->owners[i] != NULL && strcmp(vc->names[i], name) == 0) {
+      vc->stamp[i] = ++vc->tick;
+      return vc->owners[i];
+    }
+  return NULL;
+}
+
+/* The cache takes its own reference; an evicted owner's mapping closes
+   when its last view is gone. */
+static void view_cache_insert(ReiViewCache *vc, const char *name,
+                              ReiShmOwner *owner) {
+  int slot = -1;
+  for (int i = 0; i < REI_OPEN_CACHE_MAX; i++)
+    if (vc->owners[i] == NULL) {
+      slot = i;
+      break;
+    }
+  if (slot < 0) {
+    slot = 0;
+    for (int i = 1; i < REI_OPEN_CACHE_MAX; i++)
+      if (vc->stamp[i] < vc->stamp[slot]) slot = i;
+    Py_DECREF(vc->owners[slot]);
+  }
+  Py_INCREF(owner);
+  vc->owners[slot] = owner;
+  snprintf(vc->names[slot], REI_NAME_MAX, "%s", name);
+  vc->stamp[slot] = ++vc->tick;
+}
+
+static void view_cache_free(ReiViewCache *vc) {
+  if (vc == NULL) return;
+  for (int i = 0; i < REI_OPEN_CACHE_MAX; i++)
+    Py_XDECREF(vc->owners[i]);
+  PyMem_Free(vc);
+}
+
+/* One exporter per wrapped view: holds the region's mapping owner and
+   releases the consumer's refcount loan at tp_dealloc. The view crosses
+   as a buffer: a memoryview — or a numpy array from np.frombuffer — holds
+   a reference that keeps the mapping alive (buffer exports pin via
+   view->obj, so dealloc ordering is the buffer protocol's, not GC
+   timing's). pid is the fork guard: a child-side dealloc must not sub a
+   count it never added. */
+typedef struct {
+  PyObject_HEAD
+  ReiShmOwner *owner;
+  uint8_t *data;          /* the region base + REI_HEADER_SIZE */
+  Py_ssize_t len;         /* data bytes */
+  int type;               /* the wire type tag */
+  long pid;
+  Py_ssize_t shape[1];
+  Py_ssize_t strides[1];
+} ReiShmView;
+
+static const char *view_format(int type) {
+  switch (type) {
+  case REI_TYPE_REAL: return "d";
+  case REI_TYPE_INT:
+  case REI_TYPE_LGL: return "i";
+  case REI_TYPE_CPLX: return "Zd";
+  default: return "B";
+  }
+}
+
+static int view_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
+  ReiShmView *v = (ReiShmView *) obj;
+  if (flags & PyBUF_WRITABLE) {
+    PyErr_SetString(PyExc_BufferError,
+                    "pyrei: shared-memory views are read-only");
+    return -1;
+  }
+  Py_ssize_t elt = (Py_ssize_t) rei_type_elt_size(v->type);
+  v->shape[0] = v->len / elt;
+  v->strides[0] = elt;
+  view->buf = v->data;
+  view->obj = obj;
+  Py_INCREF(obj);
+  view->len = v->len;
+  view->readonly = 1;
+  view->itemsize = elt;
+  view->format = (flags & PyBUF_FORMAT) ? (char *) view_format(v->type) : NULL;
+  view->ndim = 1;
+  view->shape = (flags & PyBUF_ND) ? v->shape : NULL;
+  view->strides = (flags & PyBUF_STRIDES) ? v->strides : NULL;
+  view->suboffsets = NULL;
+  view->internal = NULL;
+  return 0;
+}
+
+static void view_dealloc(ReiShmView *self) {
+  if (self->owner != NULL) {
+    if (self->pid == rei_self_pid())
+      rei_zc_unref(self->owner->shm);   /* the consumer's loan, once-only */
+    Py_DECREF(self->owner);
+  }
+  ReiShmViewType.tp_free((PyObject *) self);
+}
+
+static PyObject *view_refcount(PyObject *obj, void *Py_UNUSED(closure)) {
+  ReiShmView *v = (ReiShmView *) obj;
+  if (v->owner == NULL) Py_RETURN_NONE;
+  return PyLong_FromUnsignedLong(rei_zc_refcount(v->owner->shm));
+}
+
+static PyGetSetDef view_getset[] = {
+  {"refcount", view_refcount, NULL,
+   "The region's cross-process view refcount (introspection).", NULL},
+  {NULL}
+};
+
+static PyBufferProcs view_as_buffer = {
+  .bf_getbuffer = view_getbuffer,
+  .bf_releasebuffer = NULL,
+};
+
+static PyTypeObject ReiShmViewType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pyrei._ShmView",
+  .tp_basicsize = sizeof(ReiShmView),
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A zero-copy view over a shared-memory region (buffer exporter).",
+  .tp_dealloc = (destructor) view_dealloc,
+  .tp_as_buffer = &view_as_buffer,
+  .tp_getset = view_getset,
+};
+
+static PyObject *numpy_module(void) {
+  if (!rei_numpy_probed) {
+    rei_numpy_probed = 1;
+    PyObject *np = PyImport_ImportModule("numpy");
+    if (np == NULL) {
+      PyErr_Clear();
+      np = Py_None;
+      Py_INCREF(Py_None);
+    }
+    rei_numpy = np;
+  }
+  return rei_numpy == Py_None ? NULL : rei_numpy;
+}
+
+/* The user-facing object over the exporter: a numpy array from
+   np.frombuffer when numpy is present (zero-copy; the array's base pins
+   the exporter), else a memoryview. Steals the view reference. */
+static PyObject *view_to_object(PyObject *view, int type) {
+  PyObject *np = numpy_module();
+  if (np != NULL) {
+    const char *dt;
+    switch (type) {
+    case REI_TYPE_REAL: dt = "float64"; break;
+    case REI_TYPE_INT:
+    case REI_TYPE_LGL: dt = "int32"; break;
+    case REI_TYPE_CPLX: dt = "complex128"; break;
+    default: dt = "uint8"; break;
+    }
+    PyObject *fb = PyObject_GetAttrString(np, "frombuffer");
+    if (fb != NULL) {
+      PyObject *args = PyTuple_Pack(1, view);
+      PyObject *kw = Py_BuildValue("{s:s}", "dtype", dt);
+      PyObject *arr = (args != NULL && kw != NULL) ?
+        PyObject_Call(fb, args, kw) : NULL;
+      Py_XDECREF(args);
+      Py_XDECREF(kw);
+      Py_DECREF(fb);
+      if (arr != NULL) {
+        Py_DECREF(view);
+        return arr;
+      }
+      PyErr_Clear();   /* fall back to the memoryview */
+    } else {
+      PyErr_Clear();
+    }
+  }
+  PyObject *mv = PyMemoryView_FromObject(view);
+  Py_DECREF(view);
+  return mv;
+}
+
+/* Validate the REIH header at the region base and wrap it as a view. aux
+   != 0 (the SHM_VEC wire form) cross-checks the staged type and exact byte
+   count against the header. R attributes (names/dim/class) ride the layout
+   but cannot cross to a Python buffer — their presence is an informative
+   error, never a silent drop. Takes over the zc loan on owner's mapping
+   (subbed on failure); the owner reference stays the caller's throughout. */
+static PyObject *view_wrap_region(ReiShmOwner *owner, uint64_t aux) {
+  rei_shm *shm = owner->shm;
+  uint8_t *base = (uint8_t *) rei_shm_addr(shm);
+  int64_t size = (int64_t) rei_shm_size(shm);
+  int type = 0;
+  int64_t length = 0;
+  size_t elt = 0;
+  const char *err = NULL;
+  if (size < (int64_t) REI_HEADER_SIZE) goto corrupt;
+  {
+    uint32_t magic;
+    int32_t t32;
+    int64_t attrs;
+    memcpy(&magic, base, 4);
+    if (magic != REI_MAGIC_VEC) {
+      err = "pyrei: unsupported shared-payload layout (R string/list views "
+            "cannot cross to Python)";
+      goto fail;
+    }
+    memcpy(&t32, base + 4, 4);
+    memcpy(&length, base + 8, 8);
+    memcpy(&attrs, base + 16, 8);
+    type = t32;
+    elt = rei_type_elt_size(type);
+    if (elt == 0 || length < 0 || attrs < 0 ||
+        length > (size - (int64_t) REI_HEADER_SIZE) / (int64_t) elt ||
+        attrs > size - (int64_t) REI_HEADER_SIZE - length * (int64_t) elt)
+      goto corrupt;
+    if (aux != 0 &&
+        ((uint32_t) (aux & 0xff) != (uint32_t) type ||
+         (aux >> 8) != (uint64_t) ((size_t) REI_HEADER_SIZE +
+                                   (size_t) length * elt +
+                                   (size_t) attrs)))
+      goto corrupt;
+    if (attrs != 0) {
+      err = "pyrei: R shared-vector payload carries attributes "
+            "(names/dim/class), which do not cross the view tier";
+      goto fail;
+    }
+  }
+  {
+    ReiShmView *v = (ReiShmView *) ReiShmViewType.tp_alloc(&ReiShmViewType, 0);
+    if (v == NULL) goto fail;
+    Py_INCREF(owner);
+    v->owner = owner;
+    v->data = base + REI_HEADER_SIZE;
+    v->len = (Py_ssize_t) length * (Py_ssize_t) elt;
+    v->type = type;
+    v->pid = rei_self_pid();
+    return view_to_object((PyObject *) v, type);
+  }
+corrupt:
+  err = "pyrei: corrupt payload slot";
+fail:
+  rei_zc_unref(shm);
+  PyErr_SetString(ReiError, err);
+  return NULL;
+}
+
+/* SHM_VEC: the region name in the payload, the staged type and exact byte
+   count in aux. The handle's view cache serves repeat opens of a live
+   mapping (a hit's counted add mirrors rei_shm_open_view's); a miss opens
+   fresh and inserts. A vanished region is the realistic open failure — the
+   consumer-done protocol guarantees the name outlives the frame, so a miss
+   means the producer died; propagate via ctx->gone. */
+static PyObject *read_shm_vec(const uint8_t *name, uint32_t name_len,
+                              uint64_t aux, rei_read_ctx *ctx) {
+  char buf[REI_NAME_MAX];
+  memcpy(buf, name, name_len);
+  buf[name_len] = '\0';
+  ReiViewCache *vc = (ReiViewCache *) ctx->binding_ctx;
+  ReiShmOwner *owner = vc != NULL ? view_cache_lookup(vc, buf) : NULL;
+  if (owner != NULL) {
+    rei_zc_ref(owner->shm);
+    Py_INCREF(owner);
+  } else {
+    rei_shm *shm;
+    if (rei_shm_open_view(&shm, buf) != REI_OK) {
+      ctx->gone = 1;
+      return NULL;
+    }
+    owner = owner_new(shm);
+    if (owner == NULL) {
+      rei_zc_unref(shm);
+      rei_shm_close(shm, 0);
+      return NULL;
+    }
+    if (vc != NULL) view_cache_insert(vc, buf, owner);
+  }
+  PyObject *r = view_wrap_region(owner, aux);
+  Py_DECREF(owner);
+  return r;
+}
+
+/* REF: the /rei_ identifier of an object already in shm — the region name,
+   then an optional [i]... path into a list tree. A path leaf has no buffer
+   view (it lives inside an REIL layout); a bare name resolves to the same
+   wrap as SHM_VEC, the counted add riding rei_shm_open_view. */
+static PyObject *read_ref(const rei_slot_hdr *hdr, const uint8_t *payload,
+                          rei_read_ctx *ctx) {
+  uint32_t name_len = 0;
+  while (name_len < hdr->len && payload[name_len] != '[') name_len++;
+  if (name_len < sizeof(REI_PREFIX_LITERAL) - 1 || name_len >= REI_NAME_MAX ||
+      memcmp(payload, REI_PREFIX_LITERAL,
+             sizeof(REI_PREFIX_LITERAL) - 1) != 0) {
+    PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
+    return NULL;
+  }
+  if (name_len < hdr->len) {
+    PyErr_SetString(ReiError, "pyrei: a view into an R list tree cannot "
+                    "cross to Python");
+    return NULL;
+  }
+  return read_shm_vec(payload, name_len, 0, ctx);
 }
 
 /* Codec read side: strict bounds throughout; anything torn or trailing is
@@ -816,10 +1211,11 @@ static PyObject *read_frame(const rei_slot_hdr *hdr, const uint8_t *payload,
     return read_stream((const uint8_t *) shm->addr, n);
   }
   case REI_KIND_SHM_VEC:
+    if (hdr->len == 0 || hdr->len >= REI_NAME_MAX) break;
+    return read_shm_vec(payload, hdr->len, hdr->aux, ctx);
   case REI_KIND_REF:
-    PyErr_SetString(ReiError, "pyrei: R shared-vector payload (the zero-copy "
-                    "view tier is not implemented yet)");
-    return NULL;
+    if (hdr->len == 0 || hdr->len > 1024) break;   /* the identifier cap */
+    return read_ref(hdr, payload, ctx);
   }
   PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
   return NULL;
@@ -1218,6 +1614,7 @@ typedef struct {
   PyObject_HEAD
   rei_channel *core;
   long self_pid;
+  ReiViewCache *vcache;   /* the binding.ctx view cache, for teardown */
 } ReiChannel;
 
 static void chan_binding(rei_binding *b) {
@@ -1294,11 +1691,12 @@ static int timeout_ms_of(PyObject *arg, double *out) {
   return 0;
 }
 
-static ReiChannel *chan_wrap(rei_channel *c) {
+static ReiChannel *chan_wrap(rei_channel *c, ReiViewCache *vc) {
   ReiChannel *self = (ReiChannel *) ReiChannelType.tp_alloc(&ReiChannelType, 0);
   if (self == NULL) return NULL;
   self->core = c;
   self->self_pid = rei_self_pid();
+  self->vcache = vc;
   return self;
 }
 
@@ -1476,6 +1874,9 @@ static PyObject *Channel_destroy(ReiChannel *self,
   if (self->core != NULL && self->self_pid == rei_self_pid())
     rei_channel_destroy(self->core);
   self->core = NULL;
+  /* destroy first: the core's teardown read paths may consult the binding */
+  view_cache_free(self->vcache);
+  self->vcache = NULL;
   Py_RETURN_NONE;
 }
 
@@ -1599,6 +2000,7 @@ static void Channel_dealloc(ReiChannel *self) {
      forked child's copy never touches the shared region */
   if (self->core != NULL && self->self_pid == rei_self_pid())
     rei_channel_destroy(self->core);
+  view_cache_free(self->vcache);
   ReiChannelType.tp_free((PyObject *) self);
 }
 
@@ -1649,6 +2051,7 @@ typedef struct {
   rei_pool *core;
   long self_pid;
   int role;            /* REI_ROLE_* */
+  ReiViewCache *vcache;
 } ReiPool;
 
 typedef struct {
@@ -1721,12 +2124,13 @@ static PyObject *pool_raise(ReiPool *self) {
   return NULL;
 }
 
-static ReiPool *pool_wrap(rei_pool *p, int role) {
+static ReiPool *pool_wrap(rei_pool *p, int role, ReiViewCache *vc) {
   ReiPool *self = (ReiPool *) ReiPoolType.tp_alloc(&ReiPoolType, 0);
   if (self == NULL) return NULL;
   self->core = p;
   self->self_pid = rei_self_pid();
   self->role = role;
+  self->vcache = vc;
   return self;
 }
 
@@ -2154,6 +2558,8 @@ static PyObject *Pool_destroy(ReiPool *self, PyObject *Py_UNUSED(args)) {
   if (self->core != NULL && self->self_pid == rei_self_pid())
     rei_pool_destroy(self->core);
   self->core = NULL;
+  view_cache_free(self->vcache);
+  self->vcache = NULL;
   Py_RETURN_NONE;
 }
 
@@ -2491,6 +2897,7 @@ static void Pool_dealloc(ReiPool *self) {
      releases its slot; a forked child's copy never touches the region */
   if (self->core != NULL && self->self_pid == rei_self_pid())
     rei_pool_destroy(self->core);
+  view_cache_free(self->vcache);
   ReiPoolType.tp_free((PyObject *) self);
 }
 
@@ -2807,8 +3214,14 @@ static PyObject *pyrei_channel_new(PyObject *Py_UNUSED(module),
   opts.flags = spin ? REI_FLAG_SPIN : 0;
   opts.drop = drop.len > 0 ? (const uint8_t *) drop.buf : NULL;
   opts.drop_size = (uint64_t) drop.len;
+  ReiViewCache *vc = (ReiViewCache *) PyMem_Calloc(1, sizeof(ReiViewCache));
+  if (vc == NULL) {
+    PyBuffer_Release(&drop);
+    return PyErr_NoMemory();
+  }
   rei_binding b;
   chan_binding(&b);
+  b.ctx = vc;
   rei_channel *c;
   rei_status st;
   Py_BEGIN_ALLOW_THREADS
@@ -2816,10 +3229,16 @@ static PyObject *pyrei_channel_new(PyObject *Py_UNUSED(module),
   Py_END_ALLOW_THREADS
   PyBuffer_Release(&drop);
   if (st != REI_OK) {
+    view_cache_free(vc);
     raise_tls();
     return NULL;
   }
-  return (PyObject *) chan_wrap(c);
+  ReiChannel *self = chan_wrap(c, vc);
+  if (self == NULL) {
+    rei_channel_destroy(c);
+    view_cache_free(vc);
+  }
+  return (PyObject *) self;
 }
 
 PyDoc_STRVAR(channel_attach_doc,
@@ -2841,20 +3260,25 @@ static PyObject *pyrei_channel_attach(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pyrei: malformed join token");
     return NULL;
   }
+  ReiViewCache *vc = (ReiViewCache *) PyMem_Calloc(1, sizeof(ReiViewCache));
+  if (vc == NULL) return PyErr_NoMemory();
   rei_binding b;
   chan_binding(&b);
+  b.ctx = vc;
   rei_channel *c;
   rei_status st;
   Py_BEGIN_ALLOW_THREADS
   st = rei_channel_attach(&c, token, &b);
   Py_END_ALLOW_THREADS
   if (st != REI_OK) {
+    view_cache_free(vc);
     raise_tls();
     return NULL;
   }
-  ReiChannel *self = chan_wrap(c);
+  ReiChannel *self = chan_wrap(c, vc);
   if (self == NULL) {
     rei_channel_destroy(c);
+    view_cache_free(vc);
     return NULL;
   }
   /* borrowed drop bytes, valid until destroy — copy out for the caller */
@@ -2944,18 +3368,27 @@ static PyObject *pyrei_pool_new(PyObject *Py_UNUSED(module),
   opts.per_worker_cap = (uint32_t) deq;
   opts.result_slots = (uint32_t) rslots;
   opts.slot_size = (uint32_t) slot;
+  ReiViewCache *vc = (ReiViewCache *) PyMem_Calloc(1, sizeof(ReiViewCache));
+  if (vc == NULL) return PyErr_NoMemory();
   rei_binding b;
   pool_binding(&b, 0);
+  b.ctx = vc;
   rei_pool *p;
   rei_status st;
   Py_BEGIN_ALLOW_THREADS
   st = rei_pool_create(&p, &opts, &b);
   Py_END_ALLOW_THREADS
   if (st != REI_OK) {
+    view_cache_free(vc);
     raise_tls();
     return NULL;
   }
-  return (PyObject *) pool_wrap(p, REI_ROLE_CONTROLLER);
+  ReiPool *self = pool_wrap(p, REI_ROLE_CONTROLLER, vc);
+  if (self == NULL) {
+    rei_pool_destroy(p);
+    view_cache_free(vc);
+  }
+  return (PyObject *) self;
 }
 
 PyDoc_STRVAR(pool_attach_doc,
@@ -2971,18 +3404,27 @@ static PyObject *pyrei_pool_attach(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pyrei: malformed join token");
     return NULL;
   }
+  ReiViewCache *vc = (ReiViewCache *) PyMem_Calloc(1, sizeof(ReiViewCache));
+  if (vc == NULL) return PyErr_NoMemory();
   rei_binding b;
   pool_binding(&b, 0);
+  b.ctx = vc;
   rei_pool *p;
   rei_status st;
   Py_BEGIN_ALLOW_THREADS
   st = rei_pool_attach(&p, token, &b);
   Py_END_ALLOW_THREADS
   if (st != REI_OK) {
+    view_cache_free(vc);
     raise_tls();
     return NULL;
   }
-  return (PyObject *) pool_wrap(p, REI_ROLE_SUBMITTER);
+  ReiPool *self = pool_wrap(p, REI_ROLE_SUBMITTER, vc);
+  if (self == NULL) {
+    rei_pool_destroy(p);
+    view_cache_free(vc);
+  }
+  return (PyObject *) self;
 }
 
 PyDoc_STRVAR(pool_worker_join_doc,
@@ -3001,18 +3443,27 @@ static PyObject *pyrei_pool_worker_join(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pyrei: malformed join token");
     return NULL;
   }
+  ReiViewCache *vc = (ReiViewCache *) PyMem_Calloc(1, sizeof(ReiViewCache));
+  if (vc == NULL) return PyErr_NoMemory();
   rei_binding b;
   pool_binding(&b, 1);
+  b.ctx = vc;
   rei_pool *p;
   rei_status st;
   Py_BEGIN_ALLOW_THREADS
   st = rei_pool_worker_join(&p, token, (uint32_t) slot, &b);
   Py_END_ALLOW_THREADS
   if (st != REI_OK) {
+    view_cache_free(vc);
     raise_tls();
     return NULL;
   }
-  return (PyObject *) pool_wrap(p, REI_ROLE_WORKER);
+  ReiPool *self = pool_wrap(p, REI_ROLE_WORKER, vc);
+  if (self == NULL) {
+    rei_pool_destroy(p);
+    view_cache_free(vc);
+  }
+  return (PyObject *) self;
 }
 
 PyDoc_STRVAR(is_sentinel_doc,
@@ -3085,6 +3536,8 @@ PyInit__pyrei(void)
   if (PyType_Ready(&ReiChannelType) < 0) return NULL;
   if (PyType_Ready(&ReiPoolType) < 0) return NULL;
   if (PyType_Ready(&ReiTaskType) < 0) return NULL;
+  if (PyType_Ready(&ReiShmViewType) < 0) return NULL;
+  if (PyType_Ready(&ReiShmOwnerType) < 0) return NULL;
 
   /* cloudpickle when installed, stock pickle otherwise; both read each
      other's protocol-4 streams */

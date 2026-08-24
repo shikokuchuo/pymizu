@@ -1,7 +1,9 @@
 """Channel tests: echo round-trips, batching, spill, and the sentinel
 discipline, over real spawned peers (``python -m pyrei.child``)."""
 
+import gc
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -293,3 +295,233 @@ def test_numpy_gate_fallbacks(echo):
         b = echo.recv(timeout=5)
         assert b.dtype == a.dtype and b.shape == a.shape
         assert np.array_equal(b, a)
+
+
+# -- zero-copy views (SHM_VEC) ----------------------------------------------
+
+
+def _exporter(arr):
+    base = getattr(arr, "base", None)
+    while base is not None and not hasattr(base, "refcount"):
+        base = getattr(base, "base", None)
+    return base
+
+
+def test_shm_vec_roundtrip(echo):
+    # past REI_ZC_FLOOR_RAW the copy tiers give way to a zero-copy view
+    a = np.arange(100000, dtype=np.float64)  # 800 KB
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    assert isinstance(b, np.ndarray)
+    assert b.dtype == np.float64
+    assert np.array_equal(b, a)
+    assert not b.flags.writeable
+    assert _exporter(b) is not None  # a view over the shared pages, not a copy
+
+
+def test_shm_vec_bytes(echo):
+    a = bytes(range(256)) * 2000  # 512 KB
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    assert bytes(b) == a
+    assert _exporter(b) is not None
+
+
+def test_shm_vec_refcount(echo):
+    a = np.arange(100000, dtype=np.float64)
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    exp = _exporter(b)
+    # our view's loan; the producer's drops at its next reap point
+    assert exp.refcount >= 1
+    del b, exp
+    gc.collect()
+    assert echo.send(a) is True  # the region recycles; the peer lives on
+    assert np.array_equal(echo.recv(timeout=5), a)
+
+
+def test_shm_vec_small_stays_copy(echo):
+    a = np.arange(1000, dtype=np.float64)  # 8 KB: below the zc floor
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    assert np.array_equal(b, a)
+    assert _exporter(b) is None  # a plain copy
+
+
+# -- the consumer-side view cache -------------------------------------------
+
+
+def test_view_cache_recycled_name(echo):
+    # a released region rejoins the producer's free list and reuses its
+    # name: repeat reads hit the cached mapping and must see new content
+    for i in range(10):
+        a = np.full(100000, i, dtype=np.float64)
+        assert echo.send(a) is True
+        b = echo.recv(timeout=5)
+        assert _exporter(b) is not None
+        assert np.array_equal(b, a)
+        del b
+        gc.collect()
+
+
+def test_view_cache_eviction_with_live_views(echo):
+    # more distinct live regions than REI_OPEN_CACHE_MAX (16): evicted
+    # owners keep their mappings until the last view is gone
+    xs = [np.full(100000, i, dtype=np.float64) for i in range(20)]
+    views = []
+    for a in xs:
+        assert echo.send(a) is True
+        views.append(echo.recv(timeout=5))
+    for a, b in zip(xs, views, strict=True):
+        assert np.array_equal(b, a)
+        if sys.platform != "linux":
+            assert _exporter(b) is not None
+    # Linux: holding this many live views trips the producer's churn flag
+    # (a free-list miss with an unreclaimable lent ledger), and staging
+    # falls back to the copy tiers by design — the view assertion above
+    # would fail on the copies, so it is macOS/Windows-only
+
+
+def test_view_survives_channel_destroy(echo):
+    a = np.arange(100000, dtype=np.float64)
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    assert _exporter(b) is not None
+    echo.destroy()
+    assert np.array_equal(b, a)  # the live view pins the mapping
+
+
+# -- R interop (the view tier against an rei peer) --------------------------
+
+_RSCRIPT = shutil.which("Rscript")
+
+
+def _r_available():
+    if _RSCRIPT is None:
+        return False
+    return (
+        subprocess.run(
+            [_RSCRIPT, "-e", "library(rei)"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+r_only = pytest.mark.skipif(
+    not _r_available(), reason="R with rei not installed"
+)
+
+_R_ECHO = """
+repeat {
+  x <- rei_recv(ch, timeout = 30)
+  if (inherits(x, "rei_sentinel")) break
+  rei_send(ch, x)
+}
+"""
+
+
+def _r_channel(expr_src):
+    # the drop is the peer's bootstrap expression as an REI_DROP_R-tagged
+    # serialize stream; the launcher runs the R-side peer entry
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".rds", delete=False) as f:
+        path = f.name
+    try:
+        subprocess.run(
+            [
+                _RSCRIPT,
+                "-e",
+                f'con <- file("{path}", "wb");'
+                f" serialize(quote({expr_src}), con, xdr = FALSE); close(con)",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        with open(path, "rb") as f:
+            drop = f.read()
+    finally:
+        os.unlink(path)
+    h = pyrei._pyrei._channel_new(
+        16384, 256, 4 * 1024 * 1024, False, b"R" + drop
+    )
+    proc = subprocess.Popen([_RSCRIPT, "-e", f'rei:::peer_main("{h.token}")'])
+    if not h.ready_wait(30):
+        h.destroy()
+        proc.kill()
+        raise pyrei.StartupError("pyrei: R peer failed to attach")
+    ch = pyrei.Channel._wrap(h)
+    ch._proc = proc
+    return ch
+
+
+@r_only
+def test_r_interop_shm_vec_echo():
+    # Python produces SHM_VEC; R receives a view and re-sends it, which
+    # crosses back as REF — resolved to a view over the same region
+    ch = _r_channel(_R_ECHO)
+    try:
+        a = np.arange(1000000, dtype=np.float64)  # 8 MB
+        assert ch.send(a) is True
+        b = ch.recv(timeout=10)
+        assert isinstance(b, np.ndarray)
+        assert np.array_equal(b, a)
+        assert _exporter(b) is not None
+    finally:
+        ch.close()
+
+
+@r_only
+def test_r_interop_view_cache_sharing():
+    # R re-sends its view twice: both cross as REF naming the same region,
+    # so the second read hits the view cache — one mapping, one address
+    ch = _r_channel(
+        "{ x <- rei_recv(ch, timeout = 30)\n"
+        "  rei_send(ch, x)\n"
+        "  rei_send(ch, x)\n" + _R_ECHO + " }"
+    )
+    try:
+        a = np.arange(1000000, dtype=np.float64)
+        assert ch.send(a) is True
+        b1 = ch.recv(timeout=10)
+        b2 = ch.recv(timeout=10)
+        assert _exporter(b1) is not None and _exporter(b2) is not None
+        assert np.array_equal(b1, a) and np.array_equal(b2, a)
+        assert b1.ctypes.data == b2.ctypes.data
+    finally:
+        ch.close()
+
+
+@r_only
+def test_r_interop_r_produces():
+    # R produces SHM_VEC (a plain vector stages as a layout region)
+    ch = _r_channel(
+        "{ rei_send(ch, cumsum(rep(1.0, 1000000)))\n" + _R_ECHO + " }"
+    )
+    try:
+        b = ch.recv(timeout=10)
+        assert isinstance(b, np.ndarray)
+        assert b.dtype == np.float64
+        assert np.array_equal(b, np.arange(1, 1000001, dtype=np.float64))
+        assert _exporter(b) is not None
+    finally:
+        ch.close()
+
+
+@r_only
+def test_r_interop_attrs_rejected():
+    # attributes (names/dim/class) cannot cross to a Python buffer
+    src = (
+        "{ y <- cumsum(rep(1.0, 1000000));"
+        " names(y) <- paste0('n', seq_along(y)); rei_send(ch, y)\n"
+        + _R_ECHO
+        + " }"
+    )
+    ch = _r_channel(src)
+    try:
+        with pytest.raises(pyrei.ReiError, match="attributes"):
+            ch.recv(timeout=10)
+    finally:
+        ch.close()

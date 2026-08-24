@@ -58,10 +58,14 @@ changes go upstream to librei and are pulled by re-running the script
 ## Conventions
 
 - Staging tier order (`stage_impl` in `src/_pyrei.c`): `None` -> NIL;
-  buffer-protocol objects -> RAWVEC/RAWSPILL behind the O(1) gate (pool
-  handles frame RAWSPILL as a named region, the mirror of R's pool
-  framing); an exact-type `str` within the inline budget -> STR1 (UTF-8
-  payload, `REI_CE_UTF8` aux; lone surrogates fall through); then the
+  buffer-protocol objects -> RAWVEC/RAWSPILL/SHM_VEC behind the O(1) gate
+  (past max(inline budget, `REI_ZC_FLOOR`) a buffer stages as SHM_VEC — one
+  REIH layout write into a spill region, `rei_stage_retain_zc` storing the
+  producer-loan refcount; the channel keeps the arena copy below
+  `REI_ZC_FLOOR_RAW` and under churn, the pool frames RAWSPILL as a named
+  region, the mirror of R's pool framing); an exact-type `str` within the
+  inline budget -> STR1 (UTF-8 payload, `REI_CE_UTF8` aux; lone surrogates
+  fall through); then the
   compact binary codec (`PYREI_CODEC_MAGIC` 0x50 streams: bool,
   int64-bounded int, float, str, bytes, and one flat list/tuple/dict level
   of those, capped at 64 elements — exact-type checks throughout so
@@ -69,6 +73,19 @@ changes go upstream to librei and are pulled by re-running the script
   pickle protocol 4 over INLINE/ARENA/SHM_RAW. Reads dispatch on the first
   byte across the three magics; R streams get an informative "R payload"
   error.
+- Zero-copy views (SHM_VEC/REF reads): `_ShmView`, one exporter per view,
+  holds the region's `_ShmOwner` (the shared mapping owner) and subs the
+  refcount in `tp_dealloc` (a fork guard skips a child's sub); it exports a
+  read-only 1-D buffer, so the user object — a numpy array via
+  `np.frombuffer` or a memoryview — pins the mapping through the buffer
+  protocol. REIS/REIL layouts, REF paths into list trees, and R attributes
+  (names/dim/class) on a layout are informative errors, never silent drops.
+  A per-handle consumer view cache (`ReiViewCache`, LRU,
+  `REI_OPEN_CACHE_MAX` entries, hung off `binding.ctx` and mirrored on the
+  handle object for teardown after destroy) maps region name to owner: a
+  hit does the counted add (`rei_zc_ref`) without a fresh open/mmap; only
+  the mapping is cached — the REIH header validation runs per read. An
+  evicted owner's mapping closes when its last view is gone.
 - Pickle protocol pinned to 4 (homogeneous pools can mix Python point
   versions). Task callables must be importable references under stock
   pickle; cloudpickle lifts that when installed. The channel peer program

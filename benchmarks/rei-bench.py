@@ -10,8 +10,8 @@ nothing.
                             800 KB / 8 MB, 1 worker: data both ways.
                             Slots are sized to the payload where the 2^20
                             slot_size cap allows, so 8 KB and 800 KB ride
-                            in-slot (RAWVEC) and 8 MB takes the spill tier
-                            (a RAWSPILL region per payload)
+                            in-slot (RAWVEC) and 8 MB takes the zero-copy
+                            tier (an SHM_VEC view per payload)
   4. parallel fan-out       small compute tasks, 4 workers: fire all,
                             collect all (in-process loop as the anchor)
   5. streaming              one-way const messages: channel send_batch /
