@@ -18,7 +18,6 @@ A pool is a set of worker processes that divide submitted tasks among themselves
 In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.
 
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
-
 The GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
 pyrei makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
 
@@ -44,10 +43,13 @@ ch.close()
 
 `Channel.create()` spawns a peer process (`python -m pyrei.child <token>`) and connects both ends over a lock-free ring pair.
 The peer program is a Python source string, evaluated with `ch` bound to the peer-side handle.
+
 Sends never block for ring space.
 Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.TIMEOUT`, `pyrei.CLOSED`, `pyrei.PEER_GONE` — tested by identity (`x is pyrei.TIMEOUT`), never raised.
+
 `None` crosses as an immediate.
 `bytes` and 1-D contiguous numpy arrays of float64, int32, complex128, or uint8 ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
+Strings cross as raw UTF-8; booleans, numbers, and flat containers of them ride a compact binary codec.
 Everything else crosses as a pickle protocol 4 stream.
 
 ## Task pools
@@ -62,9 +64,11 @@ with pyrei.Pool.create(4) as pool:
 
 `Pool.create()` spawns worker processes (`python -m pyrei.worker <token> <slot>`) that claim tasks from per-submitter injection rings and steal work from each other.
 A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.
+
 A task callable rides pickle: under stock pickle it must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently.
 A task error re-raises on collect as `pyrei.TaskError`, carrying the remote type name and traceback text — a constructed, bounded envelope, never a pickled exception instance.
 A cancellation raises `pyrei.CancelledError`; the death of the executing worker raises `pyrei.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
+
 `Pool.collect_any()` and `Pool.collect_all()` wait on several handles at once.
 Inside a task, `pyrei.current_pool()` returns the worker's own handle: a nested submit pushes onto the worker's deque, and a nested collect helps instead of parking, so nested fan-outs never deadlock the pool.
 
@@ -77,10 +81,13 @@ with pyrei.Pool.create(4) as pool:
 
 `Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input order.
 One call stages `fn`, the constant `args=`/`kwargs=`, and `x` exactly once — a shared region, or inline in chunk tasks when small — then submits one runner task per live worker.
+
 Runners self-schedule adaptively sized element batches off a shared cursor: a trivial `fn` runs in large batches at near-zero scheduling overhead; an expensive or skewed one self-limits to fine claims that keep the workers balanced.
 A 1-D C-contiguous buffer of float64, int32, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing `x`.
 `chunks=` overrides the scheduling granularity outright.
+
 `seed=` (an int or bytes) derives deterministic per-element streams of the stdlib `random` module: element `i` runs under `random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))`, so results are identical for any chunking, worker count, or steal order.
+
 An error raised by `fn` re-raises as `pyrei.TaskError` carrying the failing element's 0-based `index`; failure is fail-fast — peers stop within about one batch.
 Worker death raises `pyrei.WorkerDiedError` carrying the lost element ranges as `lost` (0-based half-open pairs, conservative).
 On `timeout=` expiry the outstanding work is cancelled and the `pyrei.TIMEOUT` sentinel is returned, never raised.
@@ -93,10 +100,10 @@ Headline numbers (Apple M4 Pro, from `benchmarks/rei-bench.py`):
 
 | Benchmark | pyrei |
 |----|----|
-| Trivial task round trip | 3.7 µs |
-| Pipelined tasks, 1 worker | 470,000 tasks/s |
+| Trivial task round trip | 2.4 µs |
+| Pipelined tasks, 1 worker | 510,000 tasks/s |
 | 8 MB vector round trip | 1.0 ms |
-| Parallel map of 2,000 elements, 4 workers | 12 ms |
+| Parallel map of 2,000 elements, 4 workers | 11 ms |
 
 ## Requirements
 

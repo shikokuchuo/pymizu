@@ -8,6 +8,7 @@ import sys
 import threading
 
 import pytest
+from tests.helpers import StrSubclass
 
 import pyrei
 
@@ -53,6 +54,77 @@ def test_echo_roundtrip(echo):
         [1, "a", None],
         {"k": (1, 2)},
         list(range(100000)),  # past the inline budget: ARENA / SHM_RAW
+    ]
+    for x in payloads:
+        assert echo.send(x) is True
+        assert echo.recv(timeout=5) == x
+
+
+def test_codec_roundtrip(echo):
+    # the compact-codec subset: scalars and one flat container level
+    payloads = [
+        True,
+        False,
+        0,
+        -1,
+        2**63 - 1,
+        -(2**63),
+        3.14,
+        -0.0,
+        float("inf"),
+        "",
+        "hello",
+        "héllo ☃",
+        [],
+        (),
+        {},
+        [1, -2, 3],
+        (True, 1, 2.5, "x", b"y"),
+        ["a"] * 64,  # at the container cap
+        {"k": 1, 2: "v", 3.5: (b"z",)[0]},
+        list(range(1000)),  # codec stream past the inline budget
+    ]
+    for x in payloads:
+        assert echo.send(x) is True
+        out = echo.recv(timeout=5)
+        assert out == x
+        assert type(out) is type(x)
+
+
+def test_str1_roundtrip(echo):
+    # Python str stages as STR1 within the inline budget (UTF-8 payload,
+    # cetype aux) — the mirror of R's length-1 string tier
+    for x in ["", "hello", "héllo ☃", "x" * 4096]:
+        assert echo.send(x) is True
+        out = echo.recv(timeout=5)
+        assert out == x
+        assert type(out) is str
+
+
+def test_str_fallbacks(echo):
+    # past the inline budget a str rides the codec; a str subclass keeps
+    # its pickle semantics (importable from tests.helpers: stock pickle
+    # sends it by reference, and the echo peer must import it too)
+    big = "abc123 ☃" * 5000  # ~45 KB, past the inline budget
+    assert echo.send(big) is True
+    assert echo.recv(timeout=5) == big
+    sub = StrSubclass("subclass")
+    assert echo.send(sub) is True
+    out = echo.recv(timeout=5)
+    assert out == sub
+    assert type(out) is StrSubclass
+
+
+def test_codec_fallback(echo):
+    # outside the subset: rides pickle, still round-trips
+    payloads = [
+        None,
+        2**63,  # past int64
+        [1, [2]],  # nested container
+        {"k": {"v": 1}},
+        [None, 1],  # None is not a codec scalar
+        list(range(65)),  # over the container cap
+        "\ud800",  # lone surrogate: no UTF-8 encoding
     ]
     for x in payloads:
         assert echo.send(x) is True

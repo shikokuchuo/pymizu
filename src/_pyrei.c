@@ -268,6 +268,199 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
   return 0;
 }
 
+// Fast-path codec --------------------------------------------------------------
+
+/* The compact codec: the hot subset (bool, int, float, str, bytes, and one
+   flat container level of those, capped) framed as a tiny binary stream —
+   the analogue of R's compact codec. Anything outside the subset falls
+   back to pickle, the same discipline as R's codec rejecting ALTREP.
+   Streams carry a magic first byte so readers dispatch on it; the
+   first-byte namespace is shared (pickle protocol 4 is 0x80, R's codec is
+   'S', R native streams 'B'/'X'/'A'). Integers are int64, little-endian;
+   all supported platforms are little-endian. */
+#define PYREI_CODEC_MAGIC 0x50   /* 'P' */
+#define PYREI_CODEC_CAP 64       /* container element cap: staging stays bounded */
+
+enum {
+  PYREI_TAG_BOOL = 'b', PYREI_TAG_INT = 'i', PYREI_TAG_FLOAT = 'f',
+  PYREI_TAG_STR = 's', PYREI_TAG_BYTES = 'y',
+  PYREI_TAG_LIST = 'l', PYREI_TAG_TUPLE = 't', PYREI_TAG_DICT = 'd'
+};
+
+/* Exact-type checks throughout: a subclass (IntEnum, a str subclass) keeps
+   its semantics on the pickle path. */
+static int codec_tag_of(PyObject *o) {
+  if (PyBool_Check(o)) return PYREI_TAG_BOOL;
+  if (PyLong_CheckExact(o)) return PYREI_TAG_INT;
+  if (PyFloat_CheckExact(o)) return PYREI_TAG_FLOAT;
+  if (PyUnicode_CheckExact(o)) return PYREI_TAG_STR;
+  if (PyBytes_CheckExact(o)) return PYREI_TAG_BYTES;
+  return 0;
+}
+
+/* Size pass, 0 ok / -1 reject (not in the subset, an int past int64, a
+   lone-surrogate str, over the cap). Never sets an error. */
+static int codec_scalar_size(PyObject *o, uint64_t *sz) {
+  switch (codec_tag_of(o)) {
+  case PYREI_TAG_BOOL: *sz += 2; return 0;
+  case PYREI_TAG_INT: {
+    long long v = PyLong_AsLongLong(o);
+    if (v == -1 && PyErr_Occurred()) {
+      PyErr_Clear();   /* OverflowError: an exotic int rides pickle */
+      return -1;
+    }
+    *sz += 9;
+    return 0;
+  }
+  case PYREI_TAG_FLOAT: *sz += 9; return 0;
+  case PYREI_TAG_STR: {
+    Py_ssize_t n;
+    if (PyUnicode_AsUTF8AndSize(o, &n) == NULL) {
+      PyErr_Clear();   /* lone surrogates ride pickle */
+      return -1;
+    }
+    *sz += 5 + (uint64_t) n;
+    return 0;
+  }
+  case PYREI_TAG_BYTES:
+    *sz += 5 + (uint64_t) PyBytes_GET_SIZE(o);
+    return 0;
+  }
+  return -1;
+}
+
+static int codec_size(PyObject *o, uint64_t *sz) {
+  if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
+    Py_ssize_t n = PyList_CheckExact(o) ? PyList_GET_SIZE(o) :
+      PyTuple_GET_SIZE(o);
+    if (n > PYREI_CODEC_CAP) return -1;
+    *sz += 5;
+    for (Py_ssize_t i = 0; i < n; i++) {
+      PyObject *it = PyList_CheckExact(o) ? PyList_GET_ITEM(o, i) :
+        PyTuple_GET_ITEM(o, i);
+      if (codec_scalar_size(it, sz) < 0) return -1;
+    }
+    return 0;
+  }
+  if (PyDict_CheckExact(o)) {
+    if (PyDict_Size(o) > PYREI_CODEC_CAP) return -1;
+    *sz += 5;
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(o, &pos, &k, &v)) {
+      if (codec_scalar_size(k, sz) < 0) return -1;
+      if (codec_scalar_size(v, sz) < 0) return -1;
+    }
+    return 0;
+  }
+  return codec_scalar_size(o, sz);
+}
+
+static void codec_put32(uint8_t **p, uint32_t v) {
+  (*p)[0] = (uint8_t) v;
+  (*p)[1] = (uint8_t) (v >> 8);
+  (*p)[2] = (uint8_t) (v >> 16);
+  (*p)[3] = (uint8_t) (v >> 24);
+  *p += 4;
+}
+
+static void codec_put64(uint8_t **p, uint64_t v) {
+  for (int i = 0; i < 8; i++) (*p)[i] = (uint8_t) (v >> (8 * i));
+  *p += 8;
+}
+
+/* The size pass already validated everything, so the write pass cannot
+   fail. */
+static void codec_put_scalar(uint8_t **p, PyObject *o) {
+  switch (codec_tag_of(o)) {
+  case PYREI_TAG_BOOL:
+    *(*p)++ = PYREI_TAG_BOOL;
+    *(*p)++ = (uint8_t) (o == Py_True);
+    return;
+  case PYREI_TAG_INT: {
+    *(*p)++ = PYREI_TAG_INT;
+    long long v = PyLong_AsLongLong(o);
+    codec_put64(p, (uint64_t) v);
+    return;
+  }
+  case PYREI_TAG_FLOAT: {
+    *(*p)++ = PYREI_TAG_FLOAT;
+    double d = PyFloat_AS_DOUBLE(o);
+    uint64_t u;
+    memcpy(&u, &d, 8);
+    codec_put64(p, u);
+    return;
+  }
+  case PYREI_TAG_STR: {
+    *(*p)++ = PYREI_TAG_STR;
+    Py_ssize_t n;
+    const char *s = PyUnicode_AsUTF8AndSize(o, &n);
+    codec_put32(p, (uint32_t) n);
+    memcpy(*p, s, (size_t) n);
+    *p += n;
+    return;
+  }
+  default: {   /* PYREI_TAG_BYTES */
+    *(*p)++ = PYREI_TAG_BYTES;
+    Py_ssize_t n = PyBytes_GET_SIZE(o);
+    codec_put32(p, (uint32_t) n);
+    memcpy(*p, PyBytes_AS_STRING(o), (size_t) n);
+    *p += n;
+    return;
+  }
+  }
+}
+
+static void codec_put(uint8_t **p, PyObject *o) {
+  if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
+    int is_list = PyList_CheckExact(o) != 0;
+    Py_ssize_t n = is_list ? PyList_GET_SIZE(o) : PyTuple_GET_SIZE(o);
+    *(*p)++ = (uint8_t) (is_list ? PYREI_TAG_LIST : PYREI_TAG_TUPLE);
+    codec_put32(p, (uint32_t) n);
+    for (Py_ssize_t i = 0; i < n; i++)
+      codec_put_scalar(p, is_list ? PyList_GET_ITEM(o, i) :
+                       PyTuple_GET_ITEM(o, i));
+    return;
+  }
+  if (PyDict_CheckExact(o)) {
+    *(*p)++ = PYREI_TAG_DICT;
+    codec_put32(p, (uint32_t) PyDict_Size(o));
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(o, &pos, &k, &v)) {
+      codec_put_scalar(p, k);
+      codec_put_scalar(p, v);
+    }
+    return;
+  }
+  codec_put_scalar(p, o);
+}
+
+/* Try the codec; returns 0 staged, 1 error, -1 fall back to pickle. The
+   inline path encodes straight into the slot payload — no allocation. */
+static int stage_codec(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
+                       uint32_t inline_max, rei_handle *h) {
+  uint64_t sz = 1;   /* the magic byte */
+  if (codec_size(obj, &sz) < 0) return -1;
+  if (sz <= (uint64_t) inline_max) {
+    payload[0] = PYREI_CODEC_MAGIC;
+    uint8_t *p = payload + 1;
+    codec_put(&p, obj);
+    hdr->kind = REI_KIND_INLINE;
+    hdr->len = (uint32_t) sz;
+    hdr->aux = 0;
+    return 0;
+  }
+  uint8_t *buf = (uint8_t *) malloc((size_t) sz);
+  if (buf == NULL) return -1;   /* pickle's own allocation failure reports */
+  buf[0] = PYREI_CODEC_MAGIC;
+  uint8_t *p = buf + 1;
+  codec_put(&p, obj);
+  int rc = stage_bytes(buf, (size_t) sz, hdr, payload, inline_max, h);
+  free(buf);
+  return rc;
+}
+
 static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
                       uint32_t inline_max, rei_handle *h) {
   if (obj == Py_None) {
@@ -275,6 +468,23 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
     hdr->len = 0;
     hdr->aux = 0;
     return 0;
+  }
+  if (PyUnicode_CheckExact(obj)) {
+    /* STR1, the mirror of R's length-1 string tier: UTF-8 bytes in the
+       payload, aux the cetype mark (Python str has no encoding of its own;
+       UTF-8 is the canonical crossing). Inline-budget gate, matching rei's
+       cap. Exact-type check: a str subclass keeps its pickle semantics. */
+    Py_ssize_t n;
+    const char *s = PyUnicode_AsUTF8AndSize(obj, &n);
+    if (s == NULL)
+      PyErr_Clear();   /* lone surrogates fall through to codec/pickle */
+    else if (n <= (Py_ssize_t) inline_max) {
+      memcpy(payload, s, (size_t) n);
+      hdr->kind = REI_KIND_STR1;
+      hdr->len = (uint32_t) n;
+      hdr->aux = REI_CE_UTF8;
+      return 0;
+    }
   }
   if (PyObject_CheckBuffer(obj)) {
     Py_buffer v;
@@ -289,6 +499,8 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
       PyErr_Clear();
     }
   }
+  int crc = stage_codec(obj, hdr, payload, inline_max, h);
+  if (crc >= 0) return crc;
   PyObject *stream =
     PyObject_CallFunction(rei_dumps, "Oi", obj, 4);   /* protocol pinned */
   if (stream == NULL) return 1;
@@ -372,9 +584,149 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
   return mv;
 }
 
+/* Codec read side: strict bounds throughout; anything torn or trailing is
+   a corrupt slot. */
+static uint32_t codec_get32(const uint8_t **p) {
+  uint32_t v = (uint32_t) (*p)[0] | ((uint32_t) (*p)[1] << 8) |
+    ((uint32_t) (*p)[2] << 16) | ((uint32_t) (*p)[3] << 24);
+  *p += 4;
+  return v;
+}
+
+static uint64_t codec_get64(const uint8_t **p) {
+  uint64_t v = 0;
+  for (int i = 0; i < 8; i++) v |= (uint64_t) (*p)[i] << (8 * i);
+  *p += 8;
+  return v;
+}
+
+static PyObject *codec_read_scalar(const uint8_t **p, const uint8_t *end) {
+  if (*p >= end) return NULL;
+  switch (*(*p)++) {
+  case PYREI_TAG_BOOL: {
+    if ((size_t) (end - *p) < 1) return NULL;
+    int v = *(*p)++;
+    if (v > 1) return NULL;
+    return PyBool_FromLong(v);
+  }
+  case PYREI_TAG_INT: {
+    if ((size_t) (end - *p) < 8) return NULL;
+    int64_t v = (int64_t) codec_get64(p);
+    return PyLong_FromLongLong(v);
+  }
+  case PYREI_TAG_FLOAT: {
+    if ((size_t) (end - *p) < 8) return NULL;
+    uint64_t u = codec_get64(p);
+    double d;
+    memcpy(&d, &u, 8);
+    return PyFloat_FromDouble(d);
+  }
+  case PYREI_TAG_STR: {
+    if ((size_t) (end - *p) < 4) return NULL;
+    uint32_t n = codec_get32(p);
+    if ((size_t) (end - *p) < n) return NULL;
+    PyObject *s = PyUnicode_DecodeUTF8((const char *) *p, (Py_ssize_t) n,
+                                       NULL);
+    if (s == NULL) return NULL;
+    *p += n;
+    return s;
+  }
+  case PYREI_TAG_BYTES: {
+    if ((size_t) (end - *p) < 4) return NULL;
+    uint32_t n = codec_get32(p);
+    if ((size_t) (end - *p) < n) return NULL;
+    PyObject *b = PyBytes_FromStringAndSize((const char *) *p,
+                                            (Py_ssize_t) n);
+    if (b == NULL) return NULL;
+    *p += n;
+    return b;
+  }
+  }
+  return NULL;
+}
+
+static PyObject *codec_read(const uint8_t *src, size_t n) {
+  const uint8_t *p = src + 1, *end = src + n;
+  if (p >= end) goto corrupt;
+  int tag = *p++;
+  PyObject *out = NULL;
+  switch (tag) {
+  case PYREI_TAG_LIST:
+  case PYREI_TAG_TUPLE: {
+    if ((size_t) (end - p) < 4) goto corrupt;
+    uint32_t count = codec_get32(&p);
+    if (count > PYREI_CODEC_CAP) goto corrupt;
+    out = tag == PYREI_TAG_LIST ? PyList_New((Py_ssize_t) count) :
+      PyTuple_New((Py_ssize_t) count);
+    if (out == NULL) return NULL;
+    for (uint32_t i = 0; i < count; i++) {
+      PyObject *it = codec_read_scalar(&p, end);
+      if (it == NULL) {
+        if (!PyErr_Occurred()) goto corrupt_obj;
+        Py_DECREF(out);
+        return NULL;
+      }
+      if (tag == PYREI_TAG_LIST)
+        PyList_SET_ITEM(out, (Py_ssize_t) i, it);
+      else
+        PyTuple_SET_ITEM(out, (Py_ssize_t) i, it);
+    }
+    break;
+  }
+  case PYREI_TAG_DICT: {
+    if ((size_t) (end - p) < 4) goto corrupt;
+    uint32_t count = codec_get32(&p);
+    if (count > PYREI_CODEC_CAP) goto corrupt;
+    out = PyDict_New();
+    if (out == NULL) return NULL;
+    for (uint32_t i = 0; i < count; i++) {
+      PyObject *k = codec_read_scalar(&p, end);
+      PyObject *v = k != NULL ? codec_read_scalar(&p, end) : NULL;
+      if (k == NULL || v == NULL) {
+        Py_XDECREF(k);
+        Py_XDECREF(v);
+        if (!PyErr_Occurred()) goto corrupt_obj;
+        Py_DECREF(out);
+        return NULL;
+      }
+      int rc = PyDict_SetItem(out, k, v);
+      Py_DECREF(k);
+      Py_DECREF(v);
+      if (rc < 0) {
+        Py_DECREF(out);
+        return NULL;
+      }
+    }
+    break;
+  }
+  case PYREI_TAG_BOOL:
+  case PYREI_TAG_INT:
+  case PYREI_TAG_FLOAT:
+  case PYREI_TAG_STR:
+  case PYREI_TAG_BYTES:
+    p--;   /* the scalar reader consumes its own tag */
+    out = codec_read_scalar(&p, end);
+    if (out == NULL) {
+      if (!PyErr_Occurred()) goto corrupt;
+      return NULL;
+    }
+    break;
+  default:
+    goto corrupt;
+  }
+  if (p != end) goto corrupt_obj;
+  return out;
+corrupt_obj:
+  Py_XDECREF(out);
+corrupt:
+  PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
+  return NULL;
+}
+
 /* A serialized-stream frame (INLINE / ARENA / SHM_RAW bytes). Our streams
-   are pickle protocol 4, first byte 0x80. 'S' is the R compact codec, 'B' /
-   'X' / 'A' the R serialize formats — no codec interop in v1. */
+   are pickle protocol 4 (first byte 0x80) or the compact codec
+   (PYREI_CODEC_MAGIC). 'S' is the R compact codec, 'B' / 'X' / 'A' the R
+   serialize formats — no codec interop in v1. */
 static PyObject *read_stream(const uint8_t *src, size_t n) {
   if (n == 0) {
     PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
@@ -384,6 +736,8 @@ static PyObject *read_stream(const uint8_t *src, size_t n) {
   case 0x80:
     return PyObject_CallFunction(rei_loads, "y#", (const char *) src,
                                  (Py_ssize_t) n);
+  case PYREI_CODEC_MAGIC:
+    return codec_read(src, n);
   case 'S': case 'B': case 'X': case 'A':
     PyErr_SetString(ReiError, "pyrei: R payload (no codec interop) - "
                     "send Python values from a pyrei peer");

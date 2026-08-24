@@ -117,3 +117,8 @@ def fanout_with_thread(n, interval=0.005):
         stop.set()
         t.join()
     return out, len(beats)
+
+
+class StrSubclass(str):
+    """A str subclass: staging must keep its pickle semantics (the exact-type
+    checks route it past STR1 and the codec)."""

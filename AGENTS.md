@@ -17,8 +17,11 @@ package). The governing design document is the ipc plan in the librei repo
 
 ## Layout
 
-- `src/_pyrei.c` — the extension module (`pyrei._pyrei`): handle objects,
-  stage/read callbacks, verb wrappers.
+- `src/_pyrei.c` — the extension module (`pyrei._pyrei`): the `_Channel` /
+  `_Pool` / `_Task` handles, stage/read/check callbacks, verb wrappers,
+  sentinel singletons, the exception hierarchy (incl. `TaskError` with
+  remote_type/remote_traceback, `WorkerDiedError` with slot/pid), and the
+  `_Caught` outcome box the collect veneer unwraps and raises.
 - `src/vendor/librei/` — vendored librei core (generated; see below).
 - `python/pyrei/` — the Python package. `child.py` / `worker.py` are the
   spawned-process entries: `python -m pyrei.child <token>` and
@@ -26,6 +29,8 @@ package). The governing design document is the ipc plan in the librei repo
 - `tests/` — pytest. Cross-language cases skip unless `Rscript` and the
   installed R `rei` package are present (the `skip_if_no_child_rei()`
   mirror).
+- `benchmarks/rei-bench.py` — report-only suite (asserts nothing); records
+  are appended to `benchmarks/notes.md`.
 
 ## Build and test
 
@@ -33,6 +38,8 @@ package). The governing design document is the ipc plan in the librei repo
 pip install .          # builds the extension (setuptools backend)
 pip install -e .       # editable
 python -m pytest tests/
+ruff check python tests benchmarks   # lint (config in pyproject.toml)
+pyrefly check                        # typecheck
 ```
 
 `setup.py` holds the explicit `ext_modules` source list (`_pyrei.c` + the
@@ -50,10 +57,27 @@ changes go upstream to librei and are pulled by re-running the script
 
 ## Conventions
 
+- Staging tier order (`stage_impl` in `src/_pyrei.c`): `None` -> NIL;
+  buffer-protocol objects -> RAWVEC/RAWSPILL behind the O(1) gate (pool
+  handles frame RAWSPILL as a named region, the mirror of R's pool
+  framing); an exact-type `str` within the inline budget -> STR1 (UTF-8
+  payload, `REI_CE_UTF8` aux; lone surrogates fall through); then the
+  compact binary codec (`PYREI_CODEC_MAGIC` 0x50 streams: bool,
+  int64-bounded int, float, str, bytes, and one flat list/tuple/dict level
+  of those, capped at 64 elements — exact-type checks throughout so
+  subclasses keep their pickle semantics, anything else falls back); then
+  pickle protocol 4 over INLINE/ARENA/SHM_RAW. Reads dispatch on the first
+  byte across the three magics; R streams get an informative "R payload"
+  error.
 - Pickle protocol pinned to 4 (homogeneous pools can mix Python point
   versions). Task callables must be importable references under stock
   pickle; cloudpickle lifts that when installed. The channel peer program
   is always a UTF-8 source string (REI_DROP_SOURCE drop).
+- A task error crosses as the worker's constructed, bounded (type,
+  message, traceback) envelope — never a pickled exception instance; an
+  unpicklable result recovers as the task's ERR.
+- `pyrei.current_pool()` binds the worker's own handle inside a task
+  (nested submit/collect).
 - Join tokens: `<pid hex>_<counter hex>`, validated against
   `^[0-9a-f]+_[0-9a-f]+$`; children prepend their compiled-in `/rei_`
   prefix.
@@ -82,36 +106,22 @@ changes go upstream to librei and are pulled by re-running the script
 - Never push without explicit approval — every push must be approved by
   the user first.
 
-## Status
+## Testing
 
-The channel, the pool, and the parallel map (`Pool.map`: region + blob
-paths, morsel protocol, adaptive batching, doorbell help, fail-fast
-cancel, timeout sentinel, worker-death lost ranges, per-element seeding of
-the worker's stdlib `random` via SHA-256(seed ‖ i)) are implemented and
-tested. `_pyrei.c` holds the
-`_Channel` / `_Pool` / `_Task` handles, the stage/read/check callbacks
-(buffer-protocol -> RAWVEC/RAWSPILL behind the O(1) gate — pool handles
-frame RAWSPILL as a named region, the mirror of R's pool framing — pickle
-protocol 4 fallback over INLINE/ARENA/SHM_RAW; copy-out reads, STR1 decode,
-informative "R payload" errors), the worker's exec callback (the
-constructed, bounded (type, message, traceback) error envelope — never a
-pickled exception instance; an unpicklable result recovers as the task's
-ERR), the around-park GIL hook for worker handles, the `_Caught` outcome
-box the collect veneer unwraps and raises, the sentinel singletons, and the
-exception hierarchy (incl. TaskError with remote_type/remote_traceback,
-WorkerDiedError with slot/pid). `pyrei.Channel` / `pyrei.Pool` are the
-facades; `python -m pyrei.child` and `python -m pyrei.worker` are the
-spawned-process entries; `pyrei.current_pool()` binds the worker's own
-handle inside a task (nested submit/collect). The pytest suite (channel:
-echo, batching, spill, sentinels, peer death, fork guard, SIGINT, numpy
-tiers; pool: submit/collect, the outcome taxonomy, batching, worker death,
-nested submit incl. the GIL park-hook liveness case, collect_any/all,
-retire/spawn, attach; map: round-trip/order, chunking invariance, blob and
-region paths, numpy x sections, the outcome taxonomy, fail-fast, timeout,
-worker death, seed determinism, nested maps, SIGINT) is green and runs in
-CI on the three OSes. Deferred: the MORH zero-copy view reader
-(SHM_VEC/REF), the R-side pickle-marker recognition and source-drop path,
-the cross-language tests, and the trace hook (`rei_pool_set_trace`) land
-with the cross-language commit; the map's template/output-area path,
-prepared maps (generation re-arm, in-place x swap), and numpy global-RNG
-seeding are later follow-ups. License: MIT.
+- Task callables used in pool tests live in `tests/helpers.py`, not in the
+  test modules: pickle sends them by reference, so the spawned workers
+  must import them. The root `conftest.py` puts the repo root on
+  `sys.path`, making `tests.helpers` importable to both the test process
+  and the workers (whose `sys.path[0]` is the repo root).
+- Coverage runs as `coverage run -m pytest tests/`; `conftest.py` arms the
+  spawned child/worker interpreters via `COVERAGE_PROCESS_START` so they
+  measure themselves too.
+
+## CI
+
+`.github/workflows/ci.yml`: a lint leg (ruff + pyrefly), an sdist leg (the
+sdist must carry the vendored C core and build standalone), and a build
+matrix over ubuntu/macos/windows x Python 3.10/3.14 that installs, runs an
+import smoke, and measures coverage (uploaded from ubuntu only).
+
+License: MIT.
