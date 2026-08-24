@@ -369,7 +369,11 @@ class Pool:
         args: _Iterable[_Any] = (),
         kwargs: dict[str, _Any] | None = None,
         chunks: int | None = None,
-        seed: int | bytes | bytearray | None = None,
+        seed: int
+        | bytes
+        | bytearray
+        | tuple[int | bytes | bytearray, int]
+        | None = None,
         timeout: float | None = None,
         template: _Any = None,
         collect: str | None = None,
@@ -388,7 +392,9 @@ class Pool:
         bytes) derives deterministic per-element streams of the stdlib
         ``random`` module: element ``i`` runs under
         ``random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))``,
-        identical for any chunking, worker count, or steal order.
+        identical for any chunking, worker count, or steal order. Pass
+        ``seed=(seed, offset)`` to shift every element's stream by
+        ``offset`` positions, for maps split across runs or processes.
 
         ``template`` is an exemplar buffer (e.g. ``numpy.empty(m,
         dtype=...)``) declaring that every ``fn`` result is ``m`` values
@@ -423,7 +429,11 @@ class Pool:
         args: _Iterable[_Any] = (),
         kwargs: dict[str, _Any] | None = None,
         chunks: int | None = None,
-        seed: int | bytes | bytearray | None = None,
+        seed: int
+        | bytes
+        | bytearray
+        | tuple[int | bytes | bytearray, int]
+        | None = None,
         template: _Any = None,
         collect: str | None = None,
     ) -> _Any:

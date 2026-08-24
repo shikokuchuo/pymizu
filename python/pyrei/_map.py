@@ -13,10 +13,13 @@ deserialized.
 
 Seeding: ``seed`` derives deterministic per-element streams of the stdlib
 ``random`` module — element ``i`` runs under
-``random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))``, with the
-worker's prior RNG state saved and restored around each batch. Because the
+``random.seed(SHA-256(seed_bytes + (i + offset).to_bytes(8, "little")))``,
+with the worker's prior RNG state saved and restored around each batch.
+``seed`` may be a ``(seed, offset)`` pair to shift every element's stream
+by ``offset`` positions (maps split across runs or processes). Because the
 streams are per-element, results are identical for any chunking, worker
-count, or steal order.
+count, or steal order. The spec rides the task payloads as a
+``(seed_bytes, offset)`` tuple.
 """
 
 from __future__ import annotations
@@ -131,7 +134,7 @@ def _run_batch(
     get: _Callable[[int], _Any],
     lo: int,
     hi: int,
-    seed_bytes: bytes | None,
+    seed_spec: tuple[bytes, int] | None,
 ) -> list:
     """One batch's element loop: fn(elt, *args, **kwargs) over [lo, hi).
     An escaping error is annotated with the in-flight element index (the
@@ -140,7 +143,7 @@ def _run_batch(
     stream before its call; the worker's own RNG state is restored around
     the batch either way."""
     out = []
-    if seed_bytes is None:
+    if seed_spec is None:
         for i in range(lo, hi):
             try:
                 out.append(fn(get(i), *args, **kwargs))
@@ -148,11 +151,14 @@ def _run_batch(
                 e._pyrei_map_index = i  # pyrefly: ignore [missing-attribute]
                 raise
         return out
+    seed_bytes, offset = seed_spec
     state = _random.getstate()
     try:
         for i in range(lo, hi):
             _random.seed(
-                _hashlib.sha256(seed_bytes + i.to_bytes(8, "little")).digest()
+                _hashlib.sha256(
+                    seed_bytes + (i + offset).to_bytes(8, "little")
+                ).digest()
             )
             try:
                 out.append(fn(get(i), *args, **kwargs))
@@ -164,16 +170,21 @@ def _run_batch(
     return out
 
 
-def _chunk(blob: bytes, lo: int, hi: int, seed_bytes: bytes | None) -> list:
+def _chunk(
+    blob: bytes, lo: int, hi: int, seed_spec: tuple[bytes, int] | None
+) -> list:
     """Worker-side blob-path chunk task: the inline descriptor blob (the
     sizes this path admits make a per-chunk unpickle negligible, so there
     is no cache), the 0-based half-open element range, and the seed."""
     fn, args, kwargs, x = _pickle.loads(blob)
-    return _run_batch(fn, args, kwargs, x.__getitem__, lo, hi, seed_bytes)
+    return _run_batch(fn, args, kwargs, x.__getitem__, lo, hi, seed_spec)
 
 
 def _runner(
-    region_name: str, ordinal: int, gen: int, seed_bytes: bytes | None
+    region_name: str,
+    ordinal: int,
+    gen: int,
+    seed_spec: tuple[bytes, int] | None,
 ) -> tuple[list, list | None]:
     """Worker-side morsel runner, riding each runner task. Opens (or
     reuses) the map context, obtains the pool signals worker-locally —
@@ -204,7 +215,7 @@ def _runner(
             if help_flag:
                 pool._h._help_once()
             batch = _run_batch(
-                ctx.fn, ctx.args, ctx.kwargs, ctx.get, lo, hi, seed_bytes
+                ctx.fn, ctx.args, ctx.kwargs, ctx.get, lo, hi, seed_spec
             )
             if ctx.tmpl:
                 _pyrei._map_write(ctx.capsule, lo, batch)
@@ -219,14 +230,32 @@ def _runner(
     return (hist, None if ctx.tmpl else vals)
 
 
-def _seed_bytes(seed: int | bytes | bytearray | None) -> bytes | None:
+def _seed_spec(
+    seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
+) -> tuple[bytes, int] | None:
+    """Normalize the public ``seed`` argument to the carried spec: a
+    ``(seed_bytes, offset)`` tuple, element ``i`` drawing stream
+    ``i + offset`` (the ``.seed = c(seed, offset)`` mirror)."""
     if seed is None:
         return None
+    offset = 0
+    if isinstance(seed, tuple):
+        if len(seed) != 2:
+            raise TypeError(
+                "pyrei: seed must be an int, bytes, or a (seed, offset) pair"
+            )
+        seed, offset = seed
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+        ):
+            raise TypeError("pyrei: seed offset must be a non-negative int")
     if isinstance(seed, bool) or not isinstance(seed, (int, bytes, bytearray)):
         raise TypeError("pyrei: seed must be an int or bytes")
     if isinstance(seed, int):
-        return str(seed).encode("ascii")
-    return bytes(seed)
+        return str(seed).encode("ascii"), offset
+    return bytes(seed), offset
 
 
 def _deadline(
@@ -280,7 +309,7 @@ def pool_map(
     args: _Any,
     kwargs: dict | None,
     chunks: int | None,
-    seed: int | bytes | bytearray | None,
+    seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
     timeout: float | None,
     template: _Any = None,
     collect: str | None = None,
@@ -296,7 +325,7 @@ def pool_map(
         raise TypeError("pyrei: fn must be callable")
     args = tuple(args)
     kwargs = {} if kwargs is None else dict(kwargs)
-    seed_bytes = _seed_bytes(seed)
+    seed_spec = _seed_spec(seed)
 
     tprobe = None if template is None else _template_probe(template)
     if tprobe is None:
@@ -346,7 +375,7 @@ def pool_map(
     blob = None
     if tprobe is None and (probe is None or probe[2] <= inline_entry):
         cand = _pickle.dumps((fn, args, kwargs, x), 4)
-        worst = _pickle.dumps((_chunk, (cand, n, n, seed_bytes), {}), 4)
+        worst = _pickle.dumps((_chunk, (cand, n, n, seed_spec), {}), 4)
         if len(worst) <= inline_entry:
             blob = cand
 
@@ -359,7 +388,7 @@ def pool_map(
                 pyrei,
                 blob,
                 n,
-                seed_bytes,
+                seed_spec,
                 chunks,
                 live,
                 free_rs,
@@ -377,7 +406,7 @@ def pool_map(
             x,
             probe,
             n,
-            seed_bytes,
+            seed_spec,
             chunks,
             live,
             free_rs,
@@ -408,7 +437,7 @@ def _map_blob(
     pyrei,
     blob: bytes,
     n: int,
-    seed_bytes: bytes | None,
+    seed_spec: tuple[bytes, int] | None,
     chunks: int | None,
     live: int,
     free_rs: int,
@@ -437,7 +466,7 @@ def _map_blob(
             break
         hi = lo + sizes[k]
         h = pool._h.submit(
-            (_chunk, (blob, lo, hi, seed_bytes), {}), remaining()
+            (_chunk, (blob, lo, hi, seed_spec), {}), remaining()
         )
         handles.append(h)
         lo = hi
@@ -469,7 +498,7 @@ def _map_region(
     x: _Any,
     probe: tuple | None,
     n: int,
-    seed_bytes: bytes | None,
+    seed_spec: tuple[bytes, int] | None,
     chunks: int | None,
     live: int,
     free_rs: int,
@@ -503,7 +532,7 @@ def _map_region(
     box["capsule"] = capsule
     r = min(n_morsels, runners)
     if _submit_runners(
-        pool, name, r, 0, seed_bytes, remaining, expired, handles
+        pool, name, r, 0, seed_spec, remaining, expired, handles
     ):
         return pyrei.TIMEOUT
     out = _collect_region(
@@ -526,7 +555,7 @@ def _submit_runners(
     name: str,
     r: int,
     gen: int,
-    seed_bytes: bytes | None,
+    seed_spec: tuple[bytes, int] | None,
     remaining: _Callable[[], float | None],
     expired: _Callable[[], bool],
     handles: list,
@@ -543,7 +572,7 @@ def _submit_runners(
         if expired():
             return True
         h = pool._h._submit_runner(
-            (_runner, (name, k, gen, seed_bytes), {}), remaining()
+            (_runner, (name, k, gen, seed_spec), {}), remaining()
         )
         handles.append(h)
     return False
@@ -678,7 +707,11 @@ class PreparedMap:
         args: _Any,
         kwargs: dict | None,
         chunks: int | None,
-        seed: int | bytes | bytearray | None,
+        seed: int
+        | bytes
+        | bytearray
+        | tuple[int | bytes | bytearray, int]
+        | None,
         template: _Any,
         collect: str | None,
     ) -> None:
@@ -690,7 +723,7 @@ class PreparedMap:
         self._pool = pool
         args = tuple(args)
         kwargs = {} if kwargs is None else dict(kwargs)
-        self._seed_bytes = _seed_bytes(seed)
+        self._seed_spec = _seed_spec(seed)
         self._tprobe = None if template is None else _template_probe(template)
         if self._tprobe is None:
             if collect not in (None, "list"):
@@ -785,7 +818,7 @@ class PreparedMap:
         assert name is not None  # n > 0 stages at prepare / restage above
         try:
             if _submit_runners(
-                pool, name, r, self._gen, self._seed_bytes,
+                pool, name, r, self._gen, self._seed_spec,
                 remaining, expired, handles,
             ):
                 return pyrei.TIMEOUT

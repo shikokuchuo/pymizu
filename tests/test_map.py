@@ -120,6 +120,20 @@ def test_map_seed_determinism(pool):
     assert a != d
 
 
+def test_map_seed_offset(pool):
+    # the split-map contract: seed=(s, n) over x[n:] continues seed=s —
+    # element i of the shifted map draws stream i + n of the base map
+    whole = pool.map(rand_elt, list(range(70)), seed=42)
+    head = pool.map(rand_elt, list(range(70))[:50], seed=42)
+    rest = pool.map(rand_elt, list(range(70))[50:], seed=(42, 50))
+    assert head + rest == whole
+    assert rest != whole[:20]
+    with pytest.raises(TypeError, match="offset"):
+        pool.map(rand_elt, [1], seed=(42, -1))
+    with pytest.raises(TypeError, match="pair"):
+        pool.map(rand_elt, [1], seed=(1, 2, 3))
+
+
 def test_map_seed_restores_worker_rng(pool):
     # a seeded map restores the worker's own random state around its
     # batches: an unseeded task afterwards still draws from that stream
