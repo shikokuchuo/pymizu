@@ -456,16 +456,26 @@ class Pool:
             self, fn, x, args, kwargs, chunks, seed, template, collect
         )
 
-    def map_run(self, prepared: _Any, timeout: float | None = None) -> _Any:
+    def map_run(
+        self,
+        prepared: _Any,
+        x: _Any = None,
+        timeout: float | None = None,
+    ) -> _Any:
         """Run a map handle from ``map_prepare`` once; return its results
-        (the same shapes and outcome taxonomy as ``map``)."""
+        (the same shapes and outcome taxonomy as ``map``).
+
+        ``x`` replaces the staged data for this and later runs: a
+        raw-buffer replacement of the same dtype and length swaps in
+        place (a memcpy over the region, no restage); anything else
+        restages transparently."""
         from pyrei import _map
 
         if not isinstance(prepared, _map.PreparedMap):
             raise TypeError("pyrei: not a prepared map handle")
         if prepared._pool is not self:
             raise ValueError("pyrei: map handle belongs to another pool")
-        return prepared.run(timeout)
+        return prepared.run(x, timeout)
 
     def retire(self, slot: int) -> None:
         """Ask the worker in ``slot`` to exit cleanly (non-blocking)."""

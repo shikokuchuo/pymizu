@@ -937,6 +937,42 @@ static PyObject *py_map_reset(PyObject *Py_UNUSED(module), PyObject *caps) {
   return PyLong_FromUnsignedLong((unsigned long) gen);
 }
 
+PyDoc_STRVAR(map_swap_x_doc,
+"_map_swap_x(capsule, x) -> None\n\n\
+Prepared-map in-place x swap: memcpy a raw-buffer replacement of the\n\
+staged wire type and byte length over the region's x section (the owner\n\
+mapping is writable). Safe because a raw-buffer x is sliced from the\n\
+mapping per batch and never cached worker-side. Errors on any mismatch —\n\
+the Python side restages instead of swapping.");
+
+static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
+  PyObject *caps, *x_obj;
+  if (!PyArg_ParseTuple(args, "OO:_map_swap_x", &caps, &x_obj)) return NULL;
+  rei_pymap *mh = pymap_get(caps);
+  if (mh == NULL) return NULL;
+  if (mh->h.x_kind != REI_PYMAP_X_RAWBUF) {
+    PyErr_SetString(ReiErr, "pyrei: map region has no x section");
+    return NULL;
+  }
+  Py_buffer xbuf;
+  if (PyObject_GetBuffer(x_obj, &xbuf,
+                         PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0)
+    return NULL;
+  int tag = rei_py_wire_type_of(&xbuf);
+  if (tag == 0 || (uint32_t) tag != mh->h.x_tag ||
+      (uint64_t) xbuf.len != mh->h.x_len) {
+    PyBuffer_Release(&xbuf);
+    PyErr_SetString(ReiErr,
+                    "pyrei: replacement x must match the staged type and "
+                    "length");
+    return NULL;
+  }
+  memcpy((unsigned char *) mh->shm->addr + mh->h.x_off, xbuf.buf,
+         (size_t) mh->h.x_len);
+  PyBuffer_Release(&xbuf);
+  Py_RETURN_NONE;
+}
+
 /* Worker-death lost set, in element space: issued = [0, cursor) clamped to
    n, lost = issued minus the union of the collected batch histories — a
    batch in no history was issued but never completed (its claimant died,
@@ -1082,6 +1118,7 @@ static PyMethodDef pymap_methods[] = {
   {"_map_cancel_get", (PyCFunction) py_map_cancel_get, METH_O,
    map_cancel_get_doc},
   {"_map_reset", (PyCFunction) py_map_reset, METH_O, map_reset_doc},
+  {"_map_swap_x", (PyCFunction) py_map_swap_x, METH_VARARGS, map_swap_x_doc},
   {"_map_lost", (PyCFunction) py_map_lost, METH_VARARGS, map_lost_doc},
   {"_map_probe_x", (PyCFunction) py_map_probe_x, METH_O, map_probe_x_doc},
   {"_map_write", (PyCFunction) py_map_write, METH_VARARGS, map_write_doc},

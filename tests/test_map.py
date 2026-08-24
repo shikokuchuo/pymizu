@@ -329,6 +329,58 @@ def test_map_prepared_timeout(pool):
         pm.close()
 
 
+def test_map_prepared_swap_x(pool):
+    pm = pool.map_prepare(identity, np.arange(100, dtype=np.float64))
+    try:
+        name = pm._name
+        out = pool.map_run(pm)
+        assert [float(v) for v in out] == [float(v) for v in np.arange(100)]
+        # same dtype and length: an in-place swap — the region is reused
+        x2 = np.arange(100, dtype=np.float64) * 10
+        out = pool.map_run(pm, x=x2)
+        assert [float(v) for v in out] == [float(v) for v in x2]
+        assert pm._name == name
+    finally:
+        pm.close()
+
+
+def test_map_prepared_swap_x_template(pool):
+    pm = pool.map_prepare(
+        scalar_double, np.arange(100, dtype=np.float64), template=np.empty(1)
+    )
+    try:
+        np.testing.assert_array_equal(pool.map_run(pm), np.arange(100) * 2.0)
+        name = pm._name
+        out = pool.map_run(pm, x=np.ones(100))
+        np.testing.assert_array_equal(out, np.ones(100) * 2.0)
+        assert pm._name == name
+    finally:
+        pm.close()
+
+
+def test_map_prepared_replace_x_restages(pool):
+    pm = pool.map_prepare(identity, np.arange(50, dtype=np.float64))
+    try:
+        pool.map_run(pm)
+        name = pm._name
+        # a dtype change restages even at the same length
+        out = pool.map_run(pm, x=np.arange(50, dtype=np.int32))
+        assert [int(v) for v in out] == list(range(50))
+        assert pm._name != name
+        # a different length restages
+        out = pool.map_run(pm, x=np.arange(10, dtype=np.float64))
+        assert [float(v) for v in out] == [float(v) for v in np.arange(10)]
+        # a non-buffer x restages onto the descriptor path
+        assert pool.map_run(pm, x=[1, 2, 3]) == [1, 2, 3]
+        # and a raw-buffer x stages again afterwards
+        out = pool.map_run(pm, x=np.ones(4))
+        assert [float(v) for v in out] == [1.0] * 4
+        # an empty replacement short-circuits
+        assert pool.map_run(pm, x=[]) == []
+    finally:
+        pm.close()
+
+
 def test_map_prepared_closed(pool):
     pm = pool.map_prepare(square, [1, 2])
     pm.close()

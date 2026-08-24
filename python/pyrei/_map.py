@@ -737,6 +737,28 @@ class PreparedMap:
             if collect not in ("copy", "view"):
                 raise ValueError("pyrei: collect must be 'copy' or 'view'")
             self._collect_mode = collect
+        if chunks is not None:
+            chunks = int(chunks)
+            if chunks < 1:
+                raise ValueError("pyrei: chunks must be a positive number")
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+        self._chunks = chunks
+        self._template = template
+        self._set_x(x)
+        self._capsule = None
+        self._name = None
+        self._gen = 0
+        self._ran = False
+        self._closed = False
+        if self._n:
+            self._stage()
+
+    def _set_x(self, x: _Any) -> None:
+        """(Re)target the map at x: probe for the raw section, rebuild the
+        descriptor, and recompute the morsel geometry from the pool's
+        current caps."""
         probe = _pyrei._map_probe_x(x)
         if probe is not None and probe[0] == 15 and _np is None:
             probe = None
@@ -745,21 +767,18 @@ class PreparedMap:
             n = len(x)
         else:
             n = probe[1]
-        if chunks is not None:
-            chunks = int(chunks)
-            if chunks < 1:
-                raise ValueError("pyrei: chunks must be a positive number")
         self._probe = probe
         self._x = x
         self._n = n
-        self._template = template
         self._desc = _pickle.dumps(
-            (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x),
+            (self._fn, self._args, self._kwargs)
+            if probe is not None
+            else (self._fn, self._args, self._kwargs, x),
             4,
         )
-        # the geometry is fixed at prepare time; re-runs inherit it
-        live, free_rs, inj_cap, _ = pool._h._map_caps()
+        live, free_rs, inj_cap, _ = self._pool._h._map_caps()
         runners = max(1, min(max(1, live), free_rs, inj_cap))
+        chunks = self._chunks
         if n == 0:
             morsel = 1
         elif chunks is None:
@@ -770,13 +789,34 @@ class PreparedMap:
             morsel = -(-n // min(n, chunks))
         self._morsel = morsel
         self._n_morsels = -(-n // morsel) if n else 0
+
+    def _swap_x(self, x: _Any) -> None:
+        """Replace the staged x: an in-place memcpy over the region's x
+        section when both the staged and the replacement x are raw-buffer
+        eligible with the same wire type and element count (a raw x is
+        sliced from the mapping per batch, never cached worker-side, so
+        the swap is invisible to the workers) — anything else drops the
+        staged state and the next run restages (a descriptor-carried x IS
+        cached worker-side, so a shape or kind change must re-key the
+        region)."""
+        probe = _pyrei._map_probe_x(x)
+        if probe is not None and probe[0] == 15 and _np is None:
+            probe = None
+        if (
+            self._capsule is not None
+            and self._probe is not None
+            and probe is not None
+            and probe[0] == self._probe[0]
+            and probe[1] == self._n
+        ):
+            _pyrei._map_swap_x(self._capsule, x)
+            self._x = x
+            return
+        self._set_x(x)
+        # drop the staged region: the capsule destructor unlinks it, and a
+        # straggler against it dies at its stale-generation claim word
         self._capsule = None
         self._name = None
-        self._gen = 0
-        self._ran = False
-        self._closed = False
-        if n:
-            self._stage()
 
     def _stage(self) -> None:
         name, capsule = _pyrei._map_stage(
@@ -788,12 +828,22 @@ class PreparedMap:
         )
         self._name, self._capsule, self._gen = name, capsule, 0
 
-    def run(self, timeout: float | None = None) -> list | _Any:
+    def run(self, x: _Any = None, timeout: float | None = None) -> list | _Any:
         """Run the prepared map once; return its results (the same shapes
-        and outcome taxonomy as ``Pool.map``)."""
+        and outcome taxonomy as ``Pool.map``).
+
+        ``x`` replaces the staged data for this and later runs. When both
+        the staged and the replacement x are raw-buffer eligible with the
+        same dtype and length, the swap is an in-place memcpy over the
+        region's x section — the iterate-over-same-shape loop (optimizer
+        steps, simulation sweeps) runs at memcpy cost, skipping the region
+        create and the worker-side re-attach. Any other x restages
+        transparently on this run."""
         pyrei = self._pyrei
         if self._closed:
             raise pyrei.ReiError("pyrei: map handle is closed")
+        if x is not None:
+            self._swap_x(x)
         if self._n == 0:
             if self._tprobe is None:
                 return []
