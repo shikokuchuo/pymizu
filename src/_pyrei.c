@@ -578,6 +578,16 @@ static void *py_read(const rei_slot_hdr *hdr, const uint8_t *payload,
   return (void *) obj;
 }
 
+/* The batch-verb sink (recv_batch_fn / collect_all_fn): each read product
+   lands in the pre-built list as it is produced, so the partial prefix is
+   owned by the list on every exit path. The verb runs with the GIL
+   released — reacquire per item, as py_read does. */
+static void list_sink(void *ctx, size_t i, void *obj) {
+  PyGILState_STATE gil = PyGILState_Ensure();
+  PyList_SET_ITEM((PyObject *) ctx, (Py_ssize_t) i, (PyObject *) obj);
+  PyGILState_Release(gil);
+}
+
 /* The check hook: Ctrl-C becomes KeyboardInterrupt. Runs on the verb-calling
    thread only (the core's contract), which released the GIL around the verb —
    reacquire for PyErr_CheckSignals. A pending signal sets the exception on
@@ -1027,22 +1037,22 @@ static PyObject *Channel_recv_batch(ReiChannel *self, PyObject *args,
   if (c == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  void **objs = PyMem_Malloc((size_t) n * sizeof(void *));
-  if (objs == NULL) return PyErr_NoMemory();
+  PyObject *out = PyList_New((Py_ssize_t) n);
+  if (out == NULL) return NULL;
   size_t count = 0;
   rei_status st;
   Py_BEGIN_ALLOW_THREADS
-  st = rei_channel_recv_batch(c, objs, (size_t) n, &count, ms);
+  st = rei_channel_recv_batch_fn(c, (size_t) n, &count, list_sink, out, ms);
   Py_END_ALLOW_THREADS
   if (st == REI_OK) {
-    PyObject *out = PyList_New((Py_ssize_t) count);
-    if (out != NULL)
-      for (size_t i = 0; i < count; i++)
-        PyList_SET_ITEM(out, (Py_ssize_t) i, (PyObject *) objs[i]);
-    PyMem_Free(objs);
+    if (count < (size_t) n &&
+        PyList_SetSlice(out, (Py_ssize_t) count, (Py_ssize_t) n, NULL) < 0) {
+      Py_DECREF(out);
+      return NULL;
+    }
     return out;
   }
-  PyMem_Free(objs);
+  Py_DECREF(out);
   return status_or_raise(self, st, Py_None);
 }
 
@@ -1628,39 +1638,34 @@ static PyObject *Pool_collect_all(ReiPool *self, PyObject *args,
                     "pyrei: task handles must belong to this pool handle");
     return NULL;
   }
-  void **vals = PyMem_Malloc(n * sizeof(void *));
-  if (vals == NULL) {
+  PyObject *out = PyList_New((Py_ssize_t) n);
+  if (out == NULL) {
     PyMem_Free(ts);
-    return PyErr_NoMemory();
+    return NULL;
   }
   size_t err_idx = 0;
   rei_status st;
   POOL_ALLOW_THREADS(self);
-  st = rei_pool_collect_all(self->core, ts, n, vals, &err_idx, ms);
+  st = rei_pool_collect_all_fn(self->core, ts, n, list_sink, out, &err_idx,
+                               ms);
   POOL_RESUME();
   PyMem_Free(ts);
   if (st == REI_TIMEOUT) {
-    PyMem_Free(vals);
+    Py_DECREF(out);
     Py_INCREF(SentTimeout);
     return SentTimeout;
   }
   if (st == REI_ERR) {
-    PyMem_Free(vals);
+    Py_DECREF(out);
     return pool_raise(self);
   }
   if (err_idx < n) {
     /* the first non-OK by position: its box, with the 0-based index */
-    PyObject *box = (PyObject *) vals[err_idx];
-    for (size_t i = 0; i < err_idx; i++)
-      Py_DECREF((PyObject *) vals[i]);
-    PyMem_Free(vals);
+    PyObject *box = PyList_GET_ITEM(out, (Py_ssize_t) err_idx);
+    Py_INCREF(box);
+    Py_DECREF(out);
     return caught_or_value(box, err_idx, 1);
   }
-  PyObject *out = PyList_New((Py_ssize_t) n);
-  if (out != NULL)
-    for (size_t i = 0; i < n; i++)
-      PyList_SET_ITEM(out, (Py_ssize_t) i, (PyObject *) vals[i]);
-  PyMem_Free(vals);
   return out;
 }
 
