@@ -4164,6 +4164,37 @@ static PyObject *pyrei_abi_version(PyObject *Py_UNUSED(module),
   return PyLong_FromUnsignedLong((unsigned long) REI_ABI_VERSION);
 }
 
+PyDoc_STRVAR(prune_doc,
+"prune() -> list[str]\n\n\
+Reap the /rei_ shared-memory regions dead processes leave behind.\n\
+Returns the region names removed; empty when none — always empty on\n\
+Windows, where a mapping cannot outlive its creator.");
+
+static PyObject *pyrei_prune(PyObject *Py_UNUSED(module),
+                             PyObject *Py_UNUSED(args)) {
+  int n = 0;
+  char **list = rei_shm_reap(&n);
+  PyObject *out = PyList_New(n);
+  if (out == NULL) {
+    for (int i = 0; i < n; i++) free(list[i]);
+    free(list);
+    return NULL;
+  }
+  for (int i = 0; i < n; i++) {
+    PyObject *s = PyUnicode_FromString(list[i]);
+    free(list[i]);
+    if (s == NULL) {
+      for (i++; i < n; i++) free(list[i]);
+      free(list);
+      Py_DECREF(out);
+      return NULL;
+    }
+    PyList_SET_ITEM(out, i, s);
+  }
+  free(list);
+  return out;
+}
+
 static PyMethodDef pyrei_methods[] = {
   {"_channel_new", (PyCFunction)(void (*)(void)) pyrei_channel_new,
    METH_VARARGS | METH_KEYWORDS, channel_new_doc},
@@ -4179,6 +4210,7 @@ static PyMethodDef pyrei_methods[] = {
   {"_read_stream", pyrei_read_stream, METH_O, read_stream_doc},
   {"is_sentinel", pyrei_is_sentinel, METH_O, is_sentinel_doc},
   {"abi_version", (PyCFunction) pyrei_abi_version, METH_NOARGS, abi_version_doc},
+  {"prune", (PyCFunction) pyrei_prune, METH_NOARGS, prune_doc},
   {NULL, NULL, 0, NULL}
 };
 
