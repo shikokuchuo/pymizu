@@ -133,3 +133,17 @@ def fanout_with_thread(n, interval=0.005):
 class StrSubclass(str):
     """A str subclass: staging must keep its pickle semantics (the exact-type
     checks route it past STR1 and the codec)."""
+
+
+def echo(*a, **k):
+    return a, k
+
+
+def is_readonly(a):
+    """True when the argument arrived as a read-only zero-copy view."""
+    return not a.flags.writeable
+
+
+def sum_mixed(xs):
+    """A flat container with a buffer leaf: an array and a scalar."""
+    return float(xs[0].sum()) + xs[1]

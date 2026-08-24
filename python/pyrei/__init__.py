@@ -32,6 +32,7 @@ from pyrei._pyrei import (
     _channel_new,
     _pool_attach,
     _pool_new,
+    _task_frame,
     abi_version,
     is_sentinel,
 )
@@ -317,10 +318,14 @@ class Pool:
         Blocks only for injection-ring space, up to ``timeout`` seconds
         (None waits indefinitely): SubmitTimeoutError on expiry,
         SlotsExhaustedError / StoppedError on the fatal outcomes.
+
+        A buffer-protocol argument (e.g. a numpy array) past the
+        zero-copy floor crosses as a read-only view over shared pages,
+        not a writable copy.
         """
         if not callable(fn):
             raise TypeError("pyrei: fn must be callable")
-        return self._h.submit((fn, args, kwargs), timeout)
+        return self._h.submit(_task_frame(fn, args, kwargs), timeout)
 
     def submit_batch(
         self,
@@ -338,7 +343,7 @@ class Pool:
         for fn in fns:
             if not callable(fn):
                 raise TypeError("pyrei: batch items must be callable")
-            payloads.append((fn, (), {}))
+            payloads.append(_task_frame(fn, (), {}))
         return self._h.submit_batch(payloads, timeout)
 
     def collect_any(

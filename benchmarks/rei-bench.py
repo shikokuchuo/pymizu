@@ -16,7 +16,7 @@ nothing.
                             collect all (in-process loop as the anchor)
   5. streaming              one-way const messages: channel send_batch /
                             recv_batch
-  6. parallel map           Pool.map of bench_sum over 2000 elements,
+  6. parallel map           Pool.map of winsum over 2000 elements,
                             4 workers (in-process loop as the anchor)
 
 Timings are best-of-3 after warm-up; single runs on a busy machine still
@@ -40,7 +40,7 @@ import pyrei
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from benchmarks.tasks import bench_sum, const, identity  # noqa: E402
+from benchmarks.tasks import const, identity, winsum  # noqa: E402
 
 REPS = 3
 results = []
@@ -290,15 +290,15 @@ for size, n, args in payloads:
 
 # 4. parallel fan-out ---------------------------------------------------------
 
-print("\n== 4. parallel fan-out (bench_sum x 2000, 4 workers) ==")
+print("\n== 4. parallel fan-out (winsum x 2000, 4 workers) ==")
 n = 2000
 
-note_rate("fan-out", "in-process", n, lambda: [bench_sum(i) for i in range(n)])
+note_rate("fan-out", "in-process", n, lambda: [winsum(i) for i in range(n)])
 
 
 def fanout_pool(p):
     def fire():
-        return p.submit(bench_sum, 0)
+        return p.submit(winsum, 0)
 
     def reap(t):
         return t.collect(timeout=30)
@@ -356,16 +356,16 @@ with_channel(STREAM_PEER, stream_channel)
 
 # 6. parallel map -------------------------------------------------------------
 
-print("\n== 6. parallel map (Pool.map bench_sum x 2000, 4 workers) ==")
+print("\n== 6. parallel map (Pool.map winsum x 2000, 4 workers) ==")
 n = 2000
 
-note_rate("map", "in-process", n, lambda: [bench_sum(i) for i in range(n)])
+note_rate("map", "in-process", n, lambda: [winsum(i) for i in range(n)])
 
 
 def map_pool(p):
     xs = list(range(n))
-    p.map(bench_sum, xs)  # warm-up (bench_sum is stochastic: no assert)
-    note_rate("map", "pyrei pool", n, lambda: p.map(bench_sum, xs))
+    p.map(winsum, xs)  # warm-up
+    note_rate("map", "pyrei pool", n, lambda: p.map(winsum, xs))
 
 
 with_pool(4, map_pool)

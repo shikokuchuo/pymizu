@@ -65,14 +65,25 @@ changes go upstream to librei and are pulled by re-running the script
   `REI_ZC_FLOOR_RAW` and under churn, the pool frames RAWSPILL as a named
   region, the mirror of R's pool framing); an exact-type `str` within the
   inline budget -> STR1 (UTF-8 payload, `REI_CE_UTF8` aux; lone surrogates
-  fall through); then the
+  fall through); then a `_TaskFrame`
+  (the `Pool.submit` payload marker — a tuple subclass built only through
+  the `_task_frame` factory) -> the structured frame codec
+  (`PYREI_TAG_TASK` in the codec stream: fn by module+qualname reference —
+  exact function/builtin, no `<` in the qualname, module not `__main__` —
+  or its own protocol-4 pickle; args/kwargs as codec scalars, None, one
+  flat container level, or buffer leaves — inline bytes, or past the zc
+  floor a SHM_VEC region named by a BUFREF leaf, at most one per frame and
+  the stream then inline-only, because the core's staging seam holds a
+  single spill checkout; a BUFREF argument arrives as a read-only view);
+  then the
   compact binary codec (`PYREI_CODEC_MAGIC` 0x50 streams: bool,
-  int64-bounded int, float, str, bytes, and one flat list/tuple/dict level
+  int64-bounded int, float, str, bytes, None, and one flat
+  list/tuple/dict level
   of those, capped at 64 elements — exact-type checks throughout so
   subclasses keep their pickle semantics, anything else falls back); then
   pickle protocol 4 over INLINE/ARENA/SHM_RAW. Reads dispatch on the first
   byte across the three magics; R streams get an informative "R payload"
-  error.
+  error. `_read_stream` exposes the stream parser for tests.
 - Zero-copy views (SHM_VEC/REF reads): `_ShmView`, one exporter per view,
   holds the region's `_ShmOwner` (the shared mapping owner) and subs the
   refcount in `tp_dealloc` (a fork guard skips a child's sub); it exports a

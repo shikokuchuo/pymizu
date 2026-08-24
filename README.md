@@ -18,6 +18,7 @@ A pool is a set of worker processes that divide submitted tasks among themselves
 In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.
 
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
+
 The GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
 pyrei makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
 
@@ -100,10 +101,10 @@ Headline numbers (Apple M4 Pro, from `benchmarks/rei-bench.py`):
 
 | Benchmark | pyrei |
 |----|----|
-| Trivial task round trip | 2.4 µs |
-| Pipelined tasks, 1 worker | 500,000 tasks/s |
-| 8 MB vector round trip | 0.9 ms |
-| Parallel map of 2,000 elements, 4 workers | 11 ms |
+| Trivial task round trip | 0.7 µs |
+| Pipelined tasks, 1 worker | 1,900,000 tasks/s |
+| 8 MB vector round trip | 206 µs |
+| Parallel map of 2,000 elements, 4 workers | 4.4 ms |
 
 ## Requirements
 

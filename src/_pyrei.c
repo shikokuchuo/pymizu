@@ -17,6 +17,13 @@
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <methodobject.h>   /* PyCFunction_CheckExact */
+
+/* The exact function-type check, without funcobject.h: its location moves
+   across versions (top-level on 3.10, cpython/ on 3.13+), and the symbol
+   is all we need — a public export, redeclared as the header would. */
+PyAPI_DATA(PyTypeObject) PyFunction_Type;
+#define PyFunction_CheckExact(op) Py_IS_TYPE((op), &PyFunction_Type)
 
 #include <math.h>
 #include <string.h>
@@ -40,6 +47,7 @@ static PyTypeObject ReiTaskType;
 static PyTypeObject ReiCaughtType;
 static PyTypeObject ReiShmViewType;
 static PyTypeObject ReiShmOwnerType;
+static PyTypeObject ReiTaskFrameType;
 
 static PyObject *numpy_module(void);
 
@@ -143,6 +151,37 @@ static PyObject *caught_new(PyObject *exc) {   /* steals exc */
   }
   c->exc = exc;
   return (PyObject *) c;
+}
+
+// Task frames (the Pool.submit payload marker) --------------------------------
+
+/* A plain tuple subclass, items 0/1/2 = fn/args/kwargs, no extra fields.
+   The subclass marks pool task payloads for the structured frame codec;
+   a user sending a plain (fn, args, kwargs) tuple over a channel keeps
+   pickle semantics. Not exported as a type — the facade builds frames
+   through the _task_frame factory, so users cannot build frames that
+   bypass pickle semantics on channels. GC/traverse/free inherit from
+   tuple. */
+/* tp_base is set in PyInit: &PyTuple_Type is not a compile-time constant
+   on Windows (dllimport). */
+static PyTypeObject ReiTaskFrameType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pyrei._TaskFrame",
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A pool task payload marked for the structured frame codec.",
+};
+
+static PyObject *task_frame_new(PyObject *fn, PyObject *args,
+                                PyObject *kwargs) {
+  PyObject *f = ReiTaskFrameType.tp_alloc(&ReiTaskFrameType, 3);
+  if (f == NULL) return NULL;
+  Py_INCREF(fn);
+  Py_INCREF(args);
+  Py_INCREF(kwargs);
+  PyTuple_SET_ITEM(f, 0, fn);
+  PyTuple_SET_ITEM(f, 1, args);
+  PyTuple_SET_ITEM(f, 2, kwargs);
+  return f;
 }
 
 // Errors -------------------------------------------------------------------------
@@ -333,7 +372,11 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
 enum {
   PYREI_TAG_BOOL = 'b', PYREI_TAG_INT = 'i', PYREI_TAG_FLOAT = 'f',
   PYREI_TAG_STR = 's', PYREI_TAG_BYTES = 'y',
-  PYREI_TAG_LIST = 'l', PYREI_TAG_TUPLE = 't', PYREI_TAG_DICT = 'd'
+  PYREI_TAG_LIST = 'l', PYREI_TAG_TUPLE = 't', PYREI_TAG_DICT = 'd',
+  PYREI_TAG_NONE = 'n',      /* None inside frames/containers */
+  PYREI_TAG_TASK = 'k',      /* the (fn, args, kwargs) task frame */
+  PYREI_TAG_BUFFER = 'Y',    /* a buffer-protocol leaf, inline bytes */
+  PYREI_TAG_BUFREF = 'r'     /* a buffer leaf by reference (SHM_VEC name) */
 };
 
 /* Exact-type checks throughout: a subclass (IntEnum, a str subclass) keeps
@@ -350,6 +393,10 @@ static int codec_tag_of(PyObject *o) {
 /* Size pass, 0 ok / -1 reject (not in the subset, an int past int64, a
    lone-surrogate str, over the cap). Never sets an error. */
 static int codec_scalar_size(PyObject *o, uint64_t *sz) {
+  if (o == Py_None) {
+    *sz += 1;
+    return 0;
+  }
   switch (codec_tag_of(o)) {
   case PYREI_TAG_BOOL: *sz += 2; return 0;
   case PYREI_TAG_INT: {
@@ -421,6 +468,10 @@ static void codec_put64(uint8_t **p, uint64_t v) {
 /* The size pass already validated everything, so the write pass cannot
    fail. */
 static void codec_put_scalar(uint8_t **p, PyObject *o) {
+  if (o == Py_None) {
+    *(*p)++ = PYREI_TAG_NONE;
+    return;
+  }
   switch (codec_tag_of(o)) {
   case PYREI_TAG_BOOL:
     *(*p)++ = PYREI_TAG_BOOL;
@@ -510,6 +561,338 @@ static int stage_codec(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
   return rc;
 }
 
+// Task frames ------------------------------------------------------------------
+
+/* The facade marks pool task payloads as _TaskFrame (a tuple subclass:
+   items 0/1/2 are fn/args/kwargs), and they stage as a PYREI_TAG_TASK
+   stream — the structured frame codec that keeps a task off the
+   whole-tuple pickle path. fn crosses by reference (module + qualname,
+   the mirror of pickle's importable-reference semantics, which pyrei
+   already requires of task callables) or as its own protocol-4 pickle;
+   args/kwargs elements are codec scalars, None, one flat container level
+   of those, or buffer leaves — inline bytes, or past the zero-copy floor
+   a SHM_VEC region referenced by name (BUFREF, the leaf-level analogue of
+   R's REF-inside-a-payload). The core's staging seam holds exactly one
+   uncommitted spill checkout (fl->staging), so a frame carries at most
+   one BUFREF leaf, and a frame carrying one must otherwise fit the inline
+   budget (the stream cannot also spill); a second large buffer or an
+   oversized rest falls the whole frame back to pickle, today's behavior.
+   A BUFREF leaf's fn argument arrives as a read-only view — the channel
+   view tier's crossing contract. */
+
+/* The by-reference gate: an exact function or builtin whose qualname is a
+   plain attribute path (no '<locals>', no '<lambda>') in a module that is
+   not '__main__' — the worker's __main__ is pyrei.worker, not the
+   submitter's script, so a same-named attribute there would resolve
+   successfully but wrongly. Returns 0 with owned references, -1 not
+   referenceable (no error set). */
+static int fn_ref_parts(PyObject *fn, PyObject **mod_out, PyObject **qual_out) {
+  if (!PyFunction_CheckExact(fn) && !PyCFunction_CheckExact(fn)) return -1;
+  PyObject *mod = PyObject_GetAttrString(fn, "__module__");
+  if (mod == NULL) {
+    PyErr_Clear();
+    return -1;
+  }
+  PyObject *qual = PyObject_GetAttrString(fn, "__qualname__");
+  if (qual == NULL) {
+    PyErr_Clear();
+    Py_DECREF(mod);
+    return -1;
+  }
+  int ok = PyUnicode_CheckExact(mod) && PyUnicode_CheckExact(qual);
+  if (ok) {
+    const char *m = PyUnicode_AsUTF8(mod);
+    const char *q = PyUnicode_AsUTF8(qual);
+    ok = m != NULL && q != NULL && strcmp(m, "__main__") != 0 &&
+         strchr(q, '<') == NULL;
+    if (m == NULL || q == NULL) PyErr_Clear();
+  }
+  if (!ok) {
+    Py_DECREF(mod);
+    Py_DECREF(qual);
+    return -1;
+  }
+  *mod_out = mod;
+  *qual_out = qual;
+  return 0;
+}
+
+typedef struct {
+  uint64_t sz;
+  uint32_t inline_max;
+  int churn;              /* snapshot at stage start: the passes agree */
+  int bufref;             /* a BUFREF leaf is planned (one per frame) */
+  int fn_kind;            /* 0 by reference, 1 pickled */
+  PyObject *fn_mod;       /* kind 0 (owned) */
+  PyObject *fn_qual;      /* kind 0 (owned) */
+  PyObject *fn_pickled;   /* kind 1 (owned) */
+} frame_plan;
+
+static void frame_plan_clear(frame_plan *fp) {
+  Py_XDECREF(fp->fn_mod);
+  Py_XDECREF(fp->fn_qual);
+  Py_XDECREF(fp->fn_pickled);
+}
+
+/* Buffer leaf, size pass: the same gate as stage_raw (wire_type_of, the
+   zc floor, the churn snapshot). 0 ok, -1 reject. */
+static int frame_buf_size(PyObject *o, frame_plan *fp) {
+  Py_buffer v;
+  if (PyObject_GetBuffer(o, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) {
+    PyErr_Clear();
+    return -1;
+  }
+  int type = wire_type_of(&v);
+  size_t n = (size_t) v.len;
+  PyBuffer_Release(&v);
+  if (type == 0 || n > (SIZE_MAX >> 9)) return -1;
+  size_t zc_gate = (size_t) fp->inline_max > REI_ZC_FLOOR ?
+    (size_t) fp->inline_max : REI_ZC_FLOOR;
+  if (!fp->churn && n >= zc_gate) {
+    if (fp->bufref) return -1;   /* one staging checkout per frame */
+    fp->bufref = 1;
+    fp->sz += 11 + REI_NAME_MAX;   /* tag, type, count, name_len, name */
+  } else {
+    fp->sz += 10 + (uint64_t) n;
+  }
+  return 0;
+}
+
+/* A leaf that is not a container: a codec scalar (None included) or a
+   buffer. */
+static int frame_flat_size(PyObject *o, frame_plan *fp) {
+  if (codec_scalar_size(o, &fp->sz) == 0) return 0;
+  return frame_buf_size(o, fp);
+}
+
+static int frame_leaf_size(PyObject *o, frame_plan *fp) {
+  if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
+    Py_ssize_t n = PyList_CheckExact(o) ? PyList_GET_SIZE(o) :
+      PyTuple_GET_SIZE(o);
+    if (n > PYREI_CODEC_CAP) return -1;
+    fp->sz += 5;
+    for (Py_ssize_t i = 0; i < n; i++)
+      if (frame_flat_size(PyList_CheckExact(o) ? PyList_GET_ITEM(o, i) :
+                          PyTuple_GET_ITEM(o, i), fp) < 0)
+        return -1;
+    return 0;
+  }
+  if (PyDict_CheckExact(o)) {
+    if (PyDict_Size(o) > PYREI_CODEC_CAP) return -1;
+    fp->sz += 5;
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(o, &pos, &k, &v)) {
+      if (!PyUnicode_CheckExact(k) || codec_scalar_size(k, &fp->sz) < 0)
+        return -1;
+      if (frame_flat_size(v, fp) < 0) return -1;
+    }
+    return 0;
+  }
+  return frame_flat_size(o, fp);
+}
+
+/* The size pass: validate everything, decide fn's encoding, count the
+   bytes. 0 ok, -1 reject (fall back to pickle, never an error), 1 error
+   (an unpicklable fn — today's whole-tuple pickle failure surfaced at
+   submit). */
+static int frame_size(PyObject *frame, frame_plan *fp, uint32_t inline_max,
+                      rei_handle *h) {
+  memset(fp, 0, sizeof(*fp));
+  fp->sz = 2;   /* magic + task tag */
+  fp->inline_max = inline_max;
+  fp->churn = h->fl.churn;
+  PyObject *fn = PyTuple_GET_ITEM(frame, 0);
+  PyObject *args = PyTuple_GET_ITEM(frame, 1);
+  PyObject *kwargs = PyTuple_GET_ITEM(frame, 2);
+  if (!PyTuple_CheckExact(args) || !PyDict_CheckExact(kwargs)) return -1;
+  if (fn_ref_parts(fn, &fp->fn_mod, &fp->fn_qual) == 0) {
+    fp->fn_kind = 0;
+    fp->sz += 1;
+    codec_scalar_size(fp->fn_mod, &fp->sz);    /* validated UTF-8 already */
+    codec_scalar_size(fp->fn_qual, &fp->sz);
+  } else {
+    fp->fn_kind = 1;
+    fp->fn_pickled = PyObject_CallFunction(rei_dumps, "Oi", fn, 4);
+    if (fp->fn_pickled == NULL) return 1;
+    fp->sz += 6 + (uint64_t) PyBytes_GET_SIZE(fp->fn_pickled);
+  }
+  Py_ssize_t na = PyTuple_GET_SIZE(args);
+  if (na > PYREI_CODEC_CAP) goto reject;
+  fp->sz += 5;
+  for (Py_ssize_t i = 0; i < na; i++)
+    if (frame_leaf_size(PyTuple_GET_ITEM(args, i), fp) < 0) goto reject;
+  if (PyDict_Size(kwargs) > PYREI_CODEC_CAP) goto reject;
+  fp->sz += 5;
+  {
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(kwargs, &pos, &k, &v)) {
+      if (!PyUnicode_CheckExact(k) || codec_scalar_size(k, &fp->sz) < 0)
+        goto reject;
+      if (frame_leaf_size(v, fp) < 0) goto reject;
+    }
+  }
+  /* a BUFREF leaf holds the stage's single spill checkout, so the stream
+     itself must stay inline (it cannot also spill) */
+  if (fp->bufref && fp->sz > (uint64_t) inline_max) goto reject;
+  return 0;
+reject:
+  frame_plan_clear(fp);
+  return -1;
+}
+
+/* Buffer leaf, write pass: the size pass validated and decided, so only
+   the BUFREF spill get can fail (a churn race) — return -1 to abandon the
+   stage. Nothing is retained yet at that point (the failed get leaves no
+   checkout, and a frame carries at most one BUFREF leaf), so the pickle
+   fallback starts clean. */
+static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+                           rei_handle *h) {
+  Py_buffer v;
+  if (PyObject_GetBuffer(o, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) {
+    PyErr_Clear();
+    return -1;
+  }
+  int type = wire_type_of(&v);
+  size_t n = (size_t) v.len;
+  size_t zc_gate = (size_t) fp->inline_max > REI_ZC_FLOOR ?
+    (size_t) fp->inline_max : REI_ZC_FLOOR;
+  int rc = 0;
+  if (!fp->churn && n >= zc_gate) {
+    /* the stage_shm_vec body minus the slot-header writes: one REIH
+       layout write into a spill region, retained ZC (the producer loan
+       releases at the frame's collect; the region recycles when the
+       cross-process refcount hits zero) */
+    rei_shm *shm;
+    if (rei_stage_spill_get(h, REI_HEADER_SIZE + n, &shm) != REI_OK) {
+      rc = -1;
+      goto out;
+    }
+    uint8_t *base = (uint8_t *) shm->addr;
+    uint32_t magic = REI_MAGIC_VEC;
+    int32_t t32 = type;
+    int64_t len64 = (int64_t) (n / rei_type_elt_size(type)), zero64 = 0;
+    memcpy(base, &magic, 4);
+    memcpy(base + 4, &t32, 4);
+    memcpy(base + 8, &len64, 8);
+    memcpy(base + 16, &zero64, 8);
+    memset(base + 24, 0, REI_HEADER_SIZE - 24);
+    memcpy(base + REI_HEADER_SIZE, v.buf, n);
+    rei_stage_retain_zc(h, shm);
+    *(*p)++ = PYREI_TAG_BUFREF;
+    *(*p)++ = (uint8_t) type;
+    codec_put64(p, (uint64_t) n);
+    *(*p)++ = (uint8_t) shm->name_len;
+    memcpy(*p, shm->name, shm->name_len);
+    *p += shm->name_len;
+  } else {
+    *(*p)++ = PYREI_TAG_BUFFER;
+    *(*p)++ = (uint8_t) type;
+    codec_put64(p, (uint64_t) n);
+    memcpy(*p, v.buf, n);
+    *p += n;
+  }
+out:
+  PyBuffer_Release(&v);
+  return rc;
+}
+
+static int frame_flat_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+                            rei_handle *h) {
+  if (o == Py_None || codec_tag_of(o) != 0) {
+    codec_put_scalar(p, o);
+    return 0;
+  }
+  return frame_buf_write(p, o, fp, h);
+}
+
+static int frame_leaf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+                            rei_handle *h) {
+  if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
+    int is_list = PyList_CheckExact(o) != 0;
+    Py_ssize_t n = is_list ? PyList_GET_SIZE(o) : PyTuple_GET_SIZE(o);
+    *(*p)++ = (uint8_t) (is_list ? PYREI_TAG_LIST : PYREI_TAG_TUPLE);
+    codec_put32(p, (uint32_t) n);
+    for (Py_ssize_t i = 0; i < n; i++)
+      if (frame_flat_write(p, is_list ? PyList_GET_ITEM(o, i) :
+                           PyTuple_GET_ITEM(o, i), fp, h) < 0)
+        return -1;
+    return 0;
+  }
+  if (PyDict_CheckExact(o)) {
+    *(*p)++ = PYREI_TAG_DICT;
+    codec_put32(p, (uint32_t) PyDict_Size(o));
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(o, &pos, &k, &v)) {
+      codec_put_scalar(p, k);
+      if (frame_flat_write(p, v, fp, h) < 0) return -1;
+    }
+    return 0;
+  }
+  return frame_flat_write(p, o, fp, h);
+}
+
+/* Try the frame codec; returns 0 staged, 1 error, -1 fall back to
+   pickle. */
+static int stage_task_frame(PyObject *frame, rei_slot_hdr *hdr,
+                            uint8_t *payload, uint32_t inline_max,
+                            rei_handle *h) {
+  frame_plan fp;
+  int rc = frame_size(frame, &fp, inline_max, h);
+  if (rc != 0) return rc;
+  uint8_t *buf = payload;
+  if (fp.sz > (uint64_t) inline_max) {
+    buf = (uint8_t *) malloc((size_t) fp.sz);
+    if (buf == NULL) {
+      frame_plan_clear(&fp);
+      return -1;   /* pickle's own allocation failure reports */
+    }
+  }
+  uint8_t *p = buf;
+  *p++ = PYREI_CODEC_MAGIC;
+  *p++ = PYREI_TAG_TASK;
+  *p++ = (uint8_t) fp.fn_kind;
+  if (fp.fn_kind == 0) {
+    codec_put_scalar(&p, fp.fn_mod);
+    codec_put_scalar(&p, fp.fn_qual);
+  } else {
+    codec_put_scalar(&p, fp.fn_pickled);
+  }
+  PyObject *args = PyTuple_GET_ITEM(frame, 1);
+  PyObject *kwargs = PyTuple_GET_ITEM(frame, 2);
+  Py_ssize_t na = PyTuple_GET_SIZE(args);
+  *p++ = PYREI_TAG_TUPLE;
+  codec_put32(&p, (uint32_t) na);
+  rc = 0;
+  for (Py_ssize_t i = 0; rc == 0 && i < na; i++)
+    rc = frame_leaf_write(&p, PyTuple_GET_ITEM(args, i), &fp, h);
+  if (rc == 0) {
+    *p++ = PYREI_TAG_DICT;
+    codec_put32(&p, (uint32_t) PyDict_Size(kwargs));
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (rc == 0 && PyDict_Next(kwargs, &pos, &k, &v)) {
+      codec_put_scalar(&p, k);
+      rc = frame_leaf_write(&p, v, &fp, h);
+    }
+  }
+  if (rc == 0) {
+    size_t n = (size_t) (p - buf);
+    if (buf == payload) {
+      hdr->kind = REI_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = 0;
+    } else {
+      rc = stage_bytes(buf, n, hdr, payload, inline_max, h);
+    }
+  }
+  if (buf != payload) free(buf);
+  frame_plan_clear(&fp);
+  return rc;
+}
+
 static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
                       uint32_t inline_max, rei_handle *h) {
   if (obj == Py_None) {
@@ -547,6 +930,27 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
     } else {
       PyErr_Clear();
     }
+  }
+  if (Py_TYPE(obj) == &ReiTaskFrameType) {
+    /* before the codec: the codec's exact-type tuple check would reject
+       the subclass anyway, and the direct order skips a wasted pass */
+    int frc = stage_task_frame(obj, hdr, payload, inline_max, h);
+    if (frc >= 0) return frc;
+    /* the fallback pickles a plain tuple: a pickled _TaskFrame would not
+       reconstruct on the worker (the type is not importable there) */
+    PyObject *plain = PyTuple_Pack(3, PyTuple_GET_ITEM(obj, 0),
+                                   PyTuple_GET_ITEM(obj, 1),
+                                   PyTuple_GET_ITEM(obj, 2));
+    if (plain == NULL) return 1;
+    PyObject *stream =
+      PyObject_CallFunction(rei_dumps, "Oi", plain, 4);
+    Py_DECREF(plain);
+    if (stream == NULL) return 1;
+    int rc = stage_bytes((const uint8_t *) PyBytes_AS_STRING(stream),
+                         (size_t) PyBytes_GET_SIZE(stream),
+                         hdr, payload, inline_max, h);
+    Py_DECREF(stream);
+    return rc;
   }
   int crc = stage_codec(obj, hdr, payload, inline_max, h);
   if (crc >= 0) return crc;
@@ -998,6 +1402,8 @@ static uint64_t codec_get64(const uint8_t **p) {
 static PyObject *codec_read_scalar(const uint8_t **p, const uint8_t *end) {
   if (*p >= end) return NULL;
   switch (*(*p)++) {
+  case PYREI_TAG_NONE:
+    Py_RETURN_NONE;
   case PYREI_TAG_BOOL: {
     if ((size_t) (end - *p) < 1) return NULL;
     int v = *(*p)++;
@@ -1040,12 +1446,238 @@ static PyObject *codec_read_scalar(const uint8_t **p, const uint8_t *end) {
   return NULL;
 }
 
-static PyObject *codec_read(const uint8_t *src, size_t n) {
+/* Frame leaf readers (the task-frame wire tags). NULL with no error set
+   is a corrupt stream; NULL with ctx->gone is a vanished BUFREF region —
+   both propagate unchanged through the frame readers. */
+static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
+                                 rei_read_ctx *ctx) {
+  if (*p >= end) return NULL;
+  switch (**p) {
+  case PYREI_TAG_BUFFER: {
+    if ((size_t) (end - *p) < 10) return NULL;
+    (*p)++;
+    int type = *(*p)++;
+    uint64_t n = codec_get64(p);
+    if (n > UINT32_MAX || (uint64_t) (end - *p) < n) return NULL;
+    PyObject *r = read_raw(*p, (uint32_t) n, type);
+    if (r != NULL) *p += n;
+    return r;
+  }
+  case PYREI_TAG_BUFREF: {
+    if ((size_t) (end - *p) < 11) return NULL;
+    (*p)++;
+    uint64_t type = *(*p)++;
+    uint64_t n = codec_get64(p);
+    uint32_t name_len = *(*p)++;
+    if (name_len == 0 || name_len >= REI_NAME_MAX ||
+        (size_t) (end - *p) < name_len || n > (UINT64_MAX >> 8))
+      return NULL;
+    /* the SHM_VEC aux shape: the staged type and the exact byte count */
+    uint64_t aux = type | ((REI_HEADER_SIZE + n) << 8);
+    PyObject *r = read_shm_vec(*p, name_len, aux, ctx);
+    if (r != NULL) *p += name_len;
+    return r;
+  }
+  default:
+    return codec_read_scalar(p, end);
+  }
+}
+
+static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
+                                 rei_read_ctx *ctx) {
+  if (*p >= end) return NULL;
+  int tag = **p;
+  if (tag == PYREI_TAG_LIST || tag == PYREI_TAG_TUPLE) {
+    (*p)++;
+    if ((size_t) (end - *p) < 4) return NULL;
+    uint32_t count = codec_get32(p);
+    if (count > PYREI_CODEC_CAP) return NULL;
+    PyObject *out = tag == PYREI_TAG_LIST ? PyList_New((Py_ssize_t) count) :
+      PyTuple_New((Py_ssize_t) count);
+    if (out == NULL) return NULL;
+    for (uint32_t i = 0; i < count; i++) {
+      PyObject *it = frame_read_flat(p, end, ctx);
+      if (it == NULL) {
+        Py_DECREF(out);
+        return NULL;
+      }
+      if (tag == PYREI_TAG_LIST)
+        PyList_SET_ITEM(out, (Py_ssize_t) i, it);
+      else
+        PyTuple_SET_ITEM(out, (Py_ssize_t) i, it);
+    }
+    return out;
+  }
+  if (tag == PYREI_TAG_DICT) {
+    (*p)++;
+    if ((size_t) (end - *p) < 4) return NULL;
+    uint32_t count = codec_get32(p);
+    if (count > PYREI_CODEC_CAP) return NULL;
+    PyObject *out = PyDict_New();
+    if (out == NULL) return NULL;
+    for (uint32_t i = 0; i < count; i++) {
+      PyObject *k = codec_read_scalar(p, end);
+      if (k != NULL && !PyUnicode_Check(k)) {
+        Py_DECREF(k);
+        k = NULL;
+      }
+      PyObject *v = k != NULL ? frame_read_flat(p, end, ctx) : NULL;
+      if (k == NULL || v == NULL) {
+        Py_XDECREF(k);
+        Py_XDECREF(v);
+        Py_DECREF(out);
+        return NULL;
+      }
+      int rc = PyDict_SetItem(out, k, v);
+      Py_DECREF(k);
+      Py_DECREF(v);
+      if (rc < 0) {
+        Py_DECREF(out);
+        return NULL;
+      }
+    }
+    return out;
+  }
+  return frame_read_flat(p, end, ctx);
+}
+
+/* A by-reference fn: import the module (sys.modules-cached), then walk
+   the qualname attribute path. A resolution failure (a missing module on
+   the worker) raises normally — inside py_exec's read_impl call it
+   becomes the task's ERR envelope via the publish_exc discipline. */
+static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
+  const char *name = PyUnicode_AsUTF8(mod);
+  if (name == NULL) return NULL;
+  PyObject *obj = PyImport_ImportModule(name);
+  if (obj == NULL) return NULL;
+  Py_ssize_t qi = 0, qn = PyUnicode_GetLength(qual);
+  if (qn < 0) {
+    Py_DECREF(obj);
+    return NULL;
+  }
+  while (qi < qn) {
+    Py_ssize_t dot = qi;
+    while (dot < qn && PyUnicode_ReadChar(qual, dot) != '.') dot++;
+    if (dot < 0) break;
+    PyObject *part = PyUnicode_Substring(qual, qi, dot);
+    if (part == NULL) {
+      Py_DECREF(obj);
+      return NULL;
+    }
+    PyObject *next = PyObject_GetAttr(obj, part);
+    Py_DECREF(part);
+    Py_DECREF(obj);
+    if (next == NULL) return NULL;
+    obj = next;
+    qi = dot + 1;
+  }
+  return obj;
+}
+
+/* The task frame: fn kind byte (0 by reference, 1 pickled), the args
+   tuple, the kwargs dict. Decodes to a plain exact-type
+   (fn, args, kwargs) tuple, so py_exec's shape validation is unchanged. */
+static PyObject *frame_read_task(const uint8_t **p, const uint8_t *end,
+                                 rei_read_ctx *ctx) {
+  if ((size_t) (end - *p) < 1) return NULL;
+  int kind = *(*p)++;
+  PyObject *fn = NULL;
+  if (kind == 0) {
+    PyObject *mod = codec_read_scalar(p, end);
+    PyObject *qual = mod != NULL ? codec_read_scalar(p, end) : NULL;
+    if (qual == NULL) {
+      Py_XDECREF(mod);
+      return NULL;
+    }
+    if (PyUnicode_Check(mod) && PyUnicode_Check(qual))
+      fn = fn_resolve(mod, qual);
+    Py_DECREF(mod);
+    Py_DECREF(qual);
+  } else if (kind == 1) {
+    PyObject *b = codec_read_scalar(p, end);
+    if (b == NULL) return NULL;
+    if (!PyBytes_Check(b)) {
+      Py_DECREF(b);
+      return NULL;
+    }
+    fn = PyObject_CallFunction(rei_loads, "y#", PyBytes_AS_STRING(b),
+                               PyBytes_GET_SIZE(b));
+    Py_DECREF(b);
+  } else {
+    return NULL;
+  }
+  if (fn == NULL) return NULL;
+  /* args: a tuple of leaves (elements may be one container level);
+     kwargs: a dict of str keys to leaves */
+  PyObject *args = NULL, *kwargs = NULL;
+  if ((size_t) (end - *p) < 5 || *(*p)++ != PYREI_TAG_TUPLE) goto fail;
+  {
+    uint32_t na = codec_get32(p);
+    if (na > PYREI_CODEC_CAP) goto fail;
+    args = PyTuple_New((Py_ssize_t) na);
+    if (args == NULL) goto fail;
+    for (uint32_t i = 0; i < na; i++) {
+      PyObject *it = frame_read_leaf(p, end, ctx);
+      if (it == NULL) goto fail;
+      PyTuple_SET_ITEM(args, (Py_ssize_t) i, it);
+    }
+  }
+  if ((size_t) (end - *p) < 5 || *(*p)++ != PYREI_TAG_DICT) goto fail;
+  {
+    uint32_t nk = codec_get32(p);
+    if (nk > PYREI_CODEC_CAP) goto fail;
+    kwargs = PyDict_New();
+    if (kwargs == NULL) goto fail;
+    for (uint32_t i = 0; i < nk; i++) {
+      PyObject *k = codec_read_scalar(p, end);
+      if (k != NULL && !PyUnicode_Check(k)) {
+        Py_DECREF(k);
+        k = NULL;
+      }
+      PyObject *v = k != NULL ? frame_read_leaf(p, end, ctx) : NULL;
+      if (k == NULL || v == NULL) {
+        Py_XDECREF(k);
+        Py_XDECREF(v);
+        goto fail;
+      }
+      int rc = PyDict_SetItem(kwargs, k, v);
+      Py_DECREF(k);
+      Py_DECREF(v);
+      if (rc < 0) goto fail;
+    }
+  }
+  PyObject *out = PyTuple_New(3);
+  if (out == NULL) {
+    Py_DECREF(fn);
+    Py_DECREF(args);
+    Py_DECREF(kwargs);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, fn);
+  PyTuple_SET_ITEM(out, 1, args);
+  PyTuple_SET_ITEM(out, 2, kwargs);
+  return out;
+fail:
+  Py_DECREF(fn);
+  Py_XDECREF(args);
+  Py_XDECREF(kwargs);
+  return NULL;
+}
+
+static PyObject *codec_read(const uint8_t *src, size_t n, rei_read_ctx *ctx) {
   const uint8_t *p = src + 1, *end = src + n;
   if (p >= end) goto corrupt;
   int tag = *p++;
   PyObject *out = NULL;
   switch (tag) {
+  case PYREI_TAG_TASK:
+    out = frame_read_task(&p, end, ctx);
+    if (out == NULL) {
+      if (ctx != NULL && ctx->gone && !PyErr_Occurred()) return NULL;
+      if (!PyErr_Occurred()) goto corrupt;
+      return NULL;
+    }
+    break;
   case PYREI_TAG_LIST:
   case PYREI_TAG_TUPLE: {
     if ((size_t) (end - p) < 4) goto corrupt;
@@ -1122,7 +1754,8 @@ corrupt:
    are pickle protocol 4 (first byte 0x80) or the compact codec
    (PYREI_CODEC_MAGIC). 'S' is the R compact codec, 'B' / 'X' / 'A' the R
    serialize formats — no codec interop in v1. */
-static PyObject *read_stream(const uint8_t *src, size_t n) {
+static PyObject *read_stream(const uint8_t *src, size_t n,
+                             rei_read_ctx *ctx) {
   if (n == 0) {
     PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
     return NULL;
@@ -1132,7 +1765,7 @@ static PyObject *read_stream(const uint8_t *src, size_t n) {
     return PyObject_CallFunction(rei_loads, "y#", (const char *) src,
                                  (Py_ssize_t) n);
   case PYREI_CODEC_MAGIC:
-    return codec_read(src, n);
+    return codec_read(src, n, ctx);
   case 'S': case 'B': case 'X': case 'A':
     PyErr_SetString(ReiError, "pyrei: R payload (no codec interop) - "
                     "send Python values from a pyrei peer");
@@ -1196,10 +1829,10 @@ static PyObject *read_frame(const rei_slot_hdr *hdr, const uint8_t *payload,
   }
   case REI_KIND_INLINE:
     if (hdr->len > limit) break;
-    return read_stream(payload, hdr->len);
+    return read_stream(payload, hdr->len, ctx);
   case REI_KIND_ARENA:
     /* resolved stream bytes; limit is the arena-validated length */
-    return read_stream(payload, limit);
+    return read_stream(payload, limit, ctx);
   case REI_KIND_SHM_RAW: {
     if (hdr->len == 0 || hdr->len >= REI_NAME_MAX) break;
     rei_shm *shm = rei_read_region(ctx, payload, hdr->len);
@@ -1208,7 +1841,7 @@ static PyObject *read_frame(const rei_slot_hdr *hdr, const uint8_t *payload,
        stream it carries, and the slack bytes are a previous payload's */
     size_t n = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
       (size_t) hdr->aux : shm->size;
-    return read_stream((const uint8_t *) shm->addr, n);
+    return read_stream((const uint8_t *) shm->addr, n, ctx);
   }
   case REI_KIND_SHM_VEC:
     if (hdr->len == 0 || hdr->len >= REI_NAME_MAX) break;
@@ -3466,6 +4099,49 @@ static PyObject *pyrei_pool_worker_join(PyObject *Py_UNUSED(module),
   return (PyObject *) self;
 }
 
+PyDoc_STRVAR(task_frame_doc,
+"_task_frame(fn, args, kwargs) -> tuple\n\n\
+The Pool.submit payload marker: a (fn, args, kwargs) tuple tagged for\n\
+the structured frame codec. Facade use only.");
+
+static PyObject *pyrei_task_frame(PyObject *Py_UNUSED(module),
+                                  PyObject *const *args,
+                                  Py_ssize_t nargs) {
+  if (nargs != 3 || !PyTuple_Check(args[1]) || !PyDict_Check(args[2])) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pyrei: _task_frame expects (fn, args tuple, kwargs dict)");
+    return NULL;
+  }
+  return task_frame_new(args[0], args[1], args[2]);
+}
+
+PyDoc_STRVAR(read_stream_doc,
+"_read_stream(stream) -> object\n\n\
+Decode a serialized-stream frame (the read side's parser, exposed for\n\
+the test suite: corrupt-stream and wire-dispatch coverage).");
+
+static PyObject *pyrei_read_stream(PyObject *Py_UNUSED(module),
+                                   PyObject *arg) {
+  if (!PyBytes_Check(arg)) {
+    PyErr_SetString(PyExc_TypeError, "pyrei: expected a bytes stream");
+    return NULL;
+  }
+  rei_read_ctx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  ctx.size = (uint32_t) sizeof(ctx);
+  ctx.outcome = REI_RS_OK;
+  ctx.died_slot = -1;
+  PyObject *r = read_stream((const uint8_t *) PyBytes_AS_STRING(arg),
+                            (size_t) PyBytes_GET_SIZE(arg), &ctx);
+  if (r == NULL && !PyErr_Occurred()) {
+    if (ctx.gone)
+      PyErr_SetString(ReiError, "pyrei: referenced region is gone");
+    else
+      PyErr_SetString(ReiError, "pyrei: corrupt payload slot");
+  }
+  return r;
+}
+
 PyDoc_STRVAR(is_sentinel_doc,
 "is_sentinel(x) -> bool\n\n\
 Provenance, not shape: True only for the exact sentinel singletons this\n\
@@ -3495,6 +4171,9 @@ static PyMethodDef pyrei_methods[] = {
   {"_pool_attach", (PyCFunction) pyrei_pool_attach, METH_O, pool_attach_doc},
   {"_pool_worker_join", (PyCFunction) pyrei_pool_worker_join, METH_VARARGS,
    pool_worker_join_doc},
+  {"_task_frame", (PyCFunction)(void (*)(void)) pyrei_task_frame,
+   METH_FASTCALL, task_frame_doc},
+  {"_read_stream", pyrei_read_stream, METH_O, read_stream_doc},
   {"is_sentinel", pyrei_is_sentinel, METH_O, is_sentinel_doc},
   {"abi_version", (PyCFunction) pyrei_abi_version, METH_NOARGS, abi_version_doc},
   {NULL, NULL, 0, NULL}
@@ -3538,6 +4217,8 @@ PyInit__pyrei(void)
   if (PyType_Ready(&ReiTaskType) < 0) return NULL;
   if (PyType_Ready(&ReiShmViewType) < 0) return NULL;
   if (PyType_Ready(&ReiShmOwnerType) < 0) return NULL;
+  ReiTaskFrameType.tp_base = &PyTuple_Type;
+  if (PyType_Ready(&ReiTaskFrameType) < 0) return NULL;
 
   /* cloudpickle when installed, stock pickle otherwise; both read each
      other's protocol-4 streams */

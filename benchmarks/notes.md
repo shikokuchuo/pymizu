@@ -64,3 +64,28 @@ its last view is gone. Same ad-hoc measurement as the phase-3 table
 |----|----|
 | channel, 800 KB payload | ~19 µs/rt |
 | channel, 8 MB payload | ~215 µs/rt |
+
+## 2026-08-24 — structured task-frame codec (phase 5)
+
+Pool task payloads stage as a PYREI_TAG_TASK stream in the compact codec:
+fn by (module, qualname) reference — or its own protocol-4 pickle when not
+referenceable — and args/kwargs as codec scalars, None, one flat container
+level, or buffer leaves (inline bytes; past max(inline budget,
+REI_ZC_FLOOR) a SHM_VEC region referenced by name, the BUFREF leaf, one
+per frame — the core's staging seam holds a single spill checkout). A
+BUFREF argument arrives as a read-only view. Full-suite run of
+benchmarks/rei-bench.py against the phase 1-2 baselines:
+
+| scenario | phase 1-2 | phase 5 |
+|----|----|----|
+| sequential rt, pool | 2.4 µs/task | 0.7 µs/task |
+| pipelined, pool | 512,295 tasks/s | 1,923,786 tasks/s |
+| pipelined, pool batch | 541,327 tasks/s | 1,223,383 tasks/s |
+| payload 8,000 B | 11.3 µs/task | 2.5 µs/task |
+| payload 800,000 B | 94.8 µs/task | 58.3 µs/task |
+| payload 8,000,000 B | 976.4 µs/task | 209.5 µs/task |
+| fan-out x 2000, 4 workers | 179,539 tasks/s | 189,943 tasks/s |
+| map x 2000, 4 workers | 11.4 ms wall | 174,129 tasks/s |
+
+The 8 MB row lands at the channel's zero-copy figure (~215 µs), as
+designed.
