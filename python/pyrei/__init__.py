@@ -529,6 +529,23 @@ class Pool:
         """A read-only debugging snapshot of the whole pool region (dict)."""
         return self._h.dump()
 
+    def stats(self) -> dict:
+        """Cumulative per-worker and per-submitter counters since each
+        participant joined (dict with ``workers`` and ``submitters``
+        lists)."""
+        return self._h.stats()
+
+    def trace(self, fn: _Callable[[str, str], None] | None) -> None:
+        """Register a hook called as ``fn(event, id)`` at each task
+        lifecycle event this process observes: ``"submit"`` on the
+        submitting thread; ``"start"``, ``"done"``, ``"error"``,
+        ``"drop"``, ``"rehome"`` on worker handles. ``id`` is
+        ``"<submitter slot>:<counter>"``, stable across processes.
+        Registration is per-handle and per-process; ``None`` removes the
+        hook. A hook exception is written as unraisable, never propagated
+        into the pool."""
+        self._h.set_trace(fn)
+
     def __enter__(self) -> Pool:
         return self
 

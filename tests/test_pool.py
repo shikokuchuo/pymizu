@@ -4,6 +4,7 @@ workers (``python -m pyrei.worker``)."""
 
 import os
 import pickle
+import re
 import signal
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from tests.helpers import (
     identity,
     make_unpicklable,
     raise_long,
+    trace_to_file,
 )
 
 import pyrei
@@ -201,6 +203,60 @@ def test_status_and_dump(pool):
     assert len(d["workers"]) == 2
     assert d["workers"][0]["status"] == "live"
     assert "local" in d and "collect_parks" in d["local"]
+
+
+def test_stats(pool):
+    assert pool.submit(busy, 1).collect(timeout=15) == 2
+    # worker counters publish at park/fairness-tick cadence, so poll
+    deadline = time.monotonic() + 10
+    while True:
+        st = pool.stats()
+        if sum(x["tasks"] for x in st["workers"]) >= 1:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert len(st["workers"]) == 2
+    w = st["workers"][0]
+    assert w["status"] == "live"
+    for key in ("pid", "steals", "injections", "parks", "helps", "deque"):
+        assert key in w
+    s = [x for x in st["submitters"] if x["status"] == "live"]
+    assert len(s) == 1
+    assert s[0]["injected"] >= 1
+    assert s[0]["queued"] == s[0]["injected"] - s[0]["claimed"]
+    for key in ("pid", "claimed", "spills", "spill_reuse"):
+        assert key in s[0]
+
+
+def test_trace(pool):
+    events = []
+    pool.trace(lambda ev, tid: events.append((ev, tid)))
+    t = pool.submit(busy, 1)
+    assert t.collect(timeout=15) == 2
+    assert len(events) == 1
+    assert events[0][0] == "submit"
+    assert re.fullmatch(r"\d+:\d+", events[0][1])
+    pool.trace(None)
+    pool.submit(busy, 2).collect(timeout=15)
+    assert len(events) == 1
+    with pytest.raises(TypeError, match="callable or None"):
+        pool.trace(42)
+
+
+def test_trace_worker_side(tmp_path):
+    with pyrei.Pool.create(1) as p:
+        out = tmp_path / "trace.log"
+        assert p.submit(trace_to_file, str(out)).collect(timeout=15) is True
+        assert p.submit(busy, 1).collect(timeout=15) == 2
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if out.exists() and len(out.read_text().splitlines()) >= 3:
+                break
+            time.sleep(0.05)
+        events = [line.split(" ", 1) for line in out.read_text().splitlines()]
+        # the install task's own "done" fires after the hook registers
+        assert [ev for ev, _ in events] == ["done", "start", "done"]
+        assert all(re.fullmatch(r"\d+:\d+", tid) for _, tid in events)
 
 
 def test_stop_idempotent_and_stopped(pool):

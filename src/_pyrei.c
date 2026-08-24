@@ -26,6 +26,7 @@ PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #define PyFunction_CheckExact(op) Py_IS_TYPE((op), &PyFunction_Type)
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "rei.h"
@@ -2688,6 +2689,7 @@ typedef struct {
   long self_pid;
   int role;            /* REI_ROLE_* */
   ReiViewCache *vcache;
+  PyObject *trace_fn;  /* the registered trace callable, or NULL */
 } ReiPool;
 
 typedef struct {
@@ -2767,7 +2769,33 @@ static ReiPool *pool_wrap(rei_pool *p, int role, ReiViewCache *vc) {
   self->self_pid = rei_self_pid();
   self->role = role;
   self->vcache = vc;
+  self->trace_fn = NULL;
   return self;
+}
+
+/* Task-lifecycle trace trampoline. Emit sites run on worker threads and on
+   hot paths with the GIL released (submitter verbs), so the GIL is
+   reacquired per call; a hook exception can never propagate into the
+   core. */
+static void pool_trace_cb(rei_trace_event event, uint64_t task_id,
+                          void *ctx) {
+  static const char *const events[] = {
+    "submit", "start", "done", "error", "drop", "rehome"
+  };
+  ReiPool *self = (ReiPool *) ctx;
+  PyGILState_STATE gs = PyGILState_Ensure();
+  PyObject *fn = self->trace_fn;
+  if (fn != NULL) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%u:%llu", (unsigned) (task_id >> 48),
+             (unsigned long long) (task_id & ((1ull << 48) - 1)));
+    PyObject *r = PyObject_CallFunction(fn, "ss", events[event], buf);
+    if (r == NULL)
+      PyErr_WriteUnraisable(fn);
+    else
+      Py_DECREF(r);
+  }
+  PyGILState_Release(gs);
 }
 
 /* A collected value is either the task's result or a _Caught box carrying
@@ -3196,6 +3224,7 @@ static PyObject *Pool_destroy(ReiPool *self, PyObject *Py_UNUSED(args)) {
   self->core = NULL;
   view_cache_free(self->vcache);
   self->vcache = NULL;
+  Py_CLEAR(self->trace_fn);
   Py_RETURN_NONE;
 }
 
@@ -3508,6 +3537,114 @@ fail_no_raise:
   return NULL;
 }
 
+PyDoc_STRVAR(pool_stats_doc,
+"stats() -> dict\n\n\
+Cumulative per-worker and per-submitter counters since each participant\n\
+joined: tasks, steals, injections, parks, helps, and deque depth\n\
+(workers); injected, claimed, spills, spill_reuse, and queued\n\
+(submitters). Read-only; states can move mid-fill.");
+
+static PyObject *Pool_stats(ReiPool *self, PyObject *Py_UNUSED(args)) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  rei_pool_dump d;
+  if (rei_pool_dump_get(p, &d) != REI_OK) return pool_raise(self);
+  PyObject *out = PyDict_New();
+  PyObject *workers = NULL, *submitters = NULL;
+  if (out == NULL) return NULL;
+  workers = PyList_New((Py_ssize_t) d.n_workers);
+  submitters = PyList_New((Py_ssize_t) d.n_submitters);
+  if (workers == NULL || submitters == NULL) goto fail;
+  for (uint32_t i = 0; i < d.n_workers; i++) {
+    const rei_worker_stat *w = &d.workers[i];
+    int s = w->status;
+    int64_t dep = w->deque_bottom - w->deque_top;
+    PyObject *r = PyDict_New();
+    int ok = r != NULL &&
+             dict_set(r, "slot", i) == 0 &&
+             dict_set_str(r, "status",
+                          s >= 0 && s < 5 ? wk_states[s] : "unknown") == 0 &&
+             dict_set_sll(r, "pid", (long long) w->pid) == 0 &&
+             dict_set(r, "tasks", (unsigned long long) w->tasks) == 0 &&
+             dict_set(r, "steals", (unsigned long long) w->steals) == 0 &&
+             dict_set(r, "injections",
+                      (unsigned long long) w->injections) == 0 &&
+             dict_set(r, "parks", (unsigned long long) w->parks) == 0 &&
+             dict_set(r, "helps", (unsigned long long) w->helps) == 0 &&
+             dict_set(r, "deque",
+                      (unsigned long long) (dep > 0 ? dep : 0)) == 0;
+    if (!ok) {
+      Py_XDECREF(r);
+      goto fail;
+    }
+    PyList_SET_ITEM(workers, (Py_ssize_t) i, r);
+  }
+  for (uint32_t j = 0; j < d.n_submitters; j++) {
+    const rei_sub_stat *s = &d.submitters[j];
+    int st = s->status;
+    PyObject *r = PyDict_New();
+    int ok = r != NULL &&
+             dict_set(r, "slot", j) == 0 &&
+             dict_set_str(r, "status",
+                          st >= 0 && st < 3 ? sub_states[st] :
+                          "unknown") == 0 &&
+             dict_set_sll(r, "pid", (long long) s->pid) == 0 &&
+             dict_set(r, "injected",
+                      (unsigned long long) s->injected) == 0 &&
+             dict_set(r, "claimed", (unsigned long long) s->claimed) == 0 &&
+             dict_set(r, "spills", (unsigned long long) s->spills) == 0 &&
+             dict_set(r, "spill_reuse",
+                      (unsigned long long) s->spill_reuse) == 0 &&
+             dict_set(r, "queued",
+                      (unsigned long long) (s->injected - s->claimed)) == 0;
+    if (!ok) {
+      Py_XDECREF(r);
+      goto fail;
+    }
+    PyList_SET_ITEM(submitters, (Py_ssize_t) j, r);
+  }
+  if (PyDict_SetItemString(out, "workers", workers) < 0 ||
+      PyDict_SetItemString(out, "submitters", submitters) < 0)
+    goto fail;
+  Py_DECREF(workers);
+  Py_DECREF(submitters);
+  return out;
+fail:
+  Py_XDECREF(workers);
+  Py_XDECREF(submitters);
+  Py_DECREF(out);
+  return NULL;
+}
+
+PyDoc_STRVAR(pool_set_trace_doc,
+"set_trace(fn) -> None\n\n\
+Register a per-handle task-lifecycle hook called as fn(event, id) at each\n\
+event this process observes: 'submit' on the submitting thread; 'start',\n\
+'done', 'error', 'drop', 'rehome' on worker handles. id is\n\
+'<submitter slot>:<counter>'. None removes the hook.");
+
+static PyObject *Pool_set_trace(ReiPool *self, PyObject *fn) {
+  rei_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (fn == Py_None) {
+    rei_pool_set_trace(p, NULL, NULL);
+    Py_CLEAR(self->trace_fn);
+    Py_RETURN_NONE;
+  }
+  if (!PyCallable_Check(fn)) {
+    PyErr_SetString(PyExc_TypeError, "pyrei: expected a callable or None");
+    return NULL;
+  }
+  Py_INCREF(fn);
+  Py_XSETREF(self->trace_fn, fn);
+  if (rei_pool_set_trace(p, pool_trace_cb, self) != REI_OK) {
+    rei_pool_set_trace(p, NULL, NULL);
+    Py_CLEAR(self->trace_fn);
+    return pool_raise(self);
+  }
+  Py_RETURN_NONE;
+}
+
 static PyObject *Pool_token_get(ReiPool *self, void *Py_UNUSED(closure)) {
   rei_pool *p = pool_get(self);
   if (p == NULL) return NULL;
@@ -3534,6 +3671,7 @@ static void Pool_dealloc(ReiPool *self) {
   if (self->core != NULL && self->self_pid == rei_self_pid())
     rei_pool_destroy(self->core);
   view_cache_free(self->vcache);
+  Py_XDECREF(self->trace_fn);
   ReiPoolType.tp_free((PyObject *) self);
 }
 
@@ -3650,6 +3788,8 @@ static PyMethodDef Pool_methods[] = {
   {"lame_duck", (PyCFunction) Pool_lame_duck, METH_NOARGS, pool_lame_duck_doc},
   {"status", (PyCFunction) Pool_status, METH_NOARGS, pool_status_doc},
   {"dump", (PyCFunction) Pool_dump, METH_NOARGS, pool_dump_doc},
+  {"stats", (PyCFunction) Pool_stats, METH_NOARGS, pool_stats_doc},
+  {"set_trace", (PyCFunction) Pool_set_trace, METH_O, pool_set_trace_doc},
   {"_map_caps", (PyCFunction) Pool_map_caps, METH_NOARGS, pool_map_caps_doc},
   {"_signals", (PyCFunction) Pool_signals, METH_NOARGS, pool_signals_doc},
   {"_help_once", (PyCFunction) Pool_help_once, METH_NOARGS,

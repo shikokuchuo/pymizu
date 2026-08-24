@@ -164,3 +164,16 @@ def scalar_double(v):
 def bad_template(v):
     """A result that violates the template (wrong length)."""
     return [1.0, 2.0, 3.0]
+
+
+def trace_to_file(path):
+    """Install a trace hook appending events to a file, on the worker's own
+    pool handle (worker-side tracing must be installed from a task)."""
+    import pyrei
+
+    def hook(ev, tid):
+        with open(path, "a") as f:
+            f.write(f"{ev} {tid}\n")
+
+    pyrei.current_pool().trace(hook)
+    return True
