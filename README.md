@@ -97,14 +97,29 @@ A map inside a task runs on the worker's own handle via `pyrei.current_pool()`, 
 
 ## Benchmarks
 
-Headline numbers (Apple M4 Pro, from `benchmarks/rei-bench.py`):
+Headline numbers against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/rei-stdlib-bench.py`):
 
-| Benchmark | pyrei |
-|----|----|
-| Trivial task round trip | 0.7 µs |
-| Pipelined tasks, 1 worker | 1,900,000 tasks/s |
-| 8 MB vector round trip | 206 µs |
-| Parallel map of 2,000 elements, 4 workers | 4.4 ms |
+Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled payloads):
+
+| Benchmark | pyrei | ProcessPoolExecutor | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.7 µs | 90.2 µs | 129x |
+| Pipelined throughput, 1 worker | 2,190,000 tasks/s | 18,700 tasks/s | 117x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 69.4 µs/elt | 173x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
+
+Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
+
+| Benchmark | pyrei | ThreadPoolExecutor | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
+| Pipelined throughput, 1 worker | 2,190,000 tasks/s | 407,000 tasks/s | 5.4x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.5 µs/elt | 6.3x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
+
+`benchmarks/rei-bench.py` runs the pyrei rows standalone.
+
+\* elt = element; microseconds of wall time per map element.
 
 ## Requirements
 

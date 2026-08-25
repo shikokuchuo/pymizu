@@ -125,3 +125,27 @@ Repeated-map timings (best of 5 x reps, 4 workers):
 The fixed stage/unlink cost was the whole call at small n with a trivial
 fn; with the ~5 µs winsum task compute dominates and the gain is the
 expected ~46 µs/map of staging overhead.
+
+## 2026-08-25 — stdlib comparison
+
+`benchmarks/rei-stdlib-bench.py` (pyrei against the stdlib
+concurrent.futures executors, matched scenarios; Python 3.14.2, macOS
+arm64), most favourable of four runs per row; the thread-pool column
+added 2026-08-25 (best of two runs):
+
+| scenario | pyrei | cf process pool | cf thread pool |
+|----|----|----|----|
+| sequential rt | 0.7 µs/task | 90.2 µs/task | 9.5 µs/task |
+| pipelined, pool | 2,191,501 tasks/s | 18,728 tasks/s | 407,192 tasks/s |
+| payload 8,000 B | 2.4 µs/task | 115.7 µs/task | 9.6 µs/task |
+| payload 800,000 B | 59.4 µs/task | 385.3 µs/task | 9.4 µs/task |
+| payload 8,000,000 B | 202.9 µs/task | 3,284.2 µs/task | 9.3 µs/task |
+| fan-out x 2000, 4 workers | 277,047 tasks/s | 16,270 tasks/s | 39,921 tasks/s |
+| map trivial f x 10000 | 0.4 µs/elt | 69.4 µs/elt | 2.5 µs/elt |
+| map winsum x 2000 | 468,329 elts/s | 15,533 elts/s | 39,627 elts/s |
+| map skewed f x 4000 | 6.7 ms wall | 261.2 ms wall | 49.6 ms wall |
+
+Threads take the payload rows (an in-process handoff serializes
+nothing) and the trivial-task rows beat the process pool (no pickling),
+but the GIL caps CPU-bound work at one core: fan-out and map land at
+~40k tasks/s against pyrei's 277k/468k on 4 workers.
