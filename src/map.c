@@ -19,7 +19,7 @@
 
 #include "pymap.h"
 #include "rei.h"
-#include "internal.h"
+#include "rei_ext.h"
 
 #define REI_PYMAP_MAGIC 0x4D525950u   /* "PYRM" */
 
@@ -277,10 +277,9 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   }
 
   rei_shm *shm;
-  int rc = rei_shm_create_heap(&shm, (size_t) off);
-  if (rc != REI_ERRCAT_NONE) {
+  if (rei_shm_create(&shm, (size_t) off) != REI_OK) {
     const char *summary, *hint;
-    rei_err_describe(rc, &summary, &hint);
+    rei_err_describe(rei_last_error_category(), &summary, &hint);
     PyErr_Format(ReiShmErr, "pyrei: cannot create map region (%llu bytes): "
                  "%s%s%s", (unsigned long long) off, summary,
                  hint[0] != '\0' ? ". " : "", hint);
@@ -411,8 +410,8 @@ ERR result (or the cancel drop absorbs it on the timeout path).");
 static PyObject *py_map_open(PyObject *Py_UNUSED(module), PyObject *arg) {
   const char *name = PyUnicode_AsUTF8(arg);
   if (name == NULL) return NULL;
-  rei_shm *shm = rei_shm_open_rw_heap(name, 0);
-  if (shm == NULL) {
+  rei_shm *shm;
+  if (rei_shm_open_rw(&shm, name, 0) != REI_OK) {
     PyErr_Format(ReiShmErr, "pyrei: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
     return NULL;

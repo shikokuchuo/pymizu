@@ -49,9 +49,13 @@ setuptools' msvc backend resolves cl.exe itself and ignores CC.
 ## Vendoring
 
 `tools/vendor-librei.sh` (pin in the script) flattens librei's `rei.h`,
-`internal.h`, and all core TUs into `src/vendor/librei/`, with a VENDOR
-shasum record and a self-grep gate for stray sora/mori remnants. The pin
-tracks the R package's pin. Vendored files are never edited by hand —
+`rei_ext.h`, `internal.h`, and all core TUs into `src/vendor/librei/`,
+with a VENDOR shasum record and a self-grep gate for stray sora/mori
+remnants. The pin tracks the R package's pin. The package's own TUs
+(`_pyrei.c`, `map.c`) compile against `rei_ext.h` — the binding-author
+tier, version-pinned per librei minor release, may change without
+deprecation — never `internal.h` (only the vendored core TUs include
+it). Vendored files are never edited by hand —
 changes go upstream to librei and are pulled by re-running the script
 (`LIBREI_SRC=~/r/librei tools/vendor-librei.sh` for a local checkout).
 

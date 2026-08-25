@@ -30,7 +30,7 @@ PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #include <string.h>
 
 #include "rei.h"
-#include "internal.h"
+#include "rei_ext.h"
 #include "pymap.h"
 
 #define REI_STR_(x) #x
@@ -325,9 +325,11 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
   }
   size_t zc_gate = (size_t) inline_max > REI_ZC_FLOOR ?
     (size_t) inline_max : REI_ZC_FLOOR;
-  int churn = h->fl.churn;
-  int zc_ok = !churn && n >= zc_gate;
-  if (h->htype == REI_HTYPE_POOL) {
+  /* the churn read is an extern call: gate it behind the size check so
+     it runs only for payloads already proven large (zc_ok => !churn,
+     so the arena-first condition below needs no separate churn term) */
+  int zc_ok = n >= zc_gate && !rei_handle_churn(h);
+  if (rei_handle_kind(h) == REI_HTYPE_POOL) {
     /* a pool has no arena: out-of-line frames are always named regions (the
        mirror of R's pool RAWSPILL framing — aux packs the wire type and the
        region name length). A region failure falls to pickle. */
@@ -345,7 +347,7 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
   }
   uint64_t off;
   uint8_t *chunk = NULL;
-  if (churn || !zc_ok || n <= REI_ZC_FLOOR_RAW)
+  if (!zc_ok || n <= REI_ZC_FLOOR_RAW)
     chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
   if (chunk == NULL && zc_ok) {
     if (stage_shm_vec(v, type, hdr, payload, h) == 0) return 0;
@@ -705,7 +707,7 @@ static int frame_size(PyObject *frame, frame_plan *fp, uint32_t inline_max,
   memset(fp, 0, sizeof(*fp));
   fp->sz = 2;   /* magic + task tag */
   fp->inline_max = inline_max;
-  fp->churn = h->fl.churn;
+  fp->churn = rei_handle_churn(h);
   PyObject *fn = PyTuple_GET_ITEM(frame, 0);
   PyObject *args = PyTuple_GET_ITEM(frame, 1);
   PyObject *kwargs = PyTuple_GET_ITEM(frame, 2);
