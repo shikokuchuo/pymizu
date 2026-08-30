@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install tools
-        run: pip install ruff pyrefly numpy cloudpickle
+        run: pip install ruff pyrefly numpy cloudpickle pyarrow
       - name: Ruff
         run: ruff check python tests benchmarks
       - name: Pyrefly
@@ -61,7 +61,7 @@ jobs:
         run: echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Build and install
-        run: pip install . pytest numpy coverage
+        run: pip install . pytest numpy pyarrow coverage
 
       - name: Import smoke
         run: python -c "import pyrei; print(pyrei.__version__, pyrei.__core_version__, pyrei.abi_version())"
@@ -79,4 +79,4 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v7
         with:
-          fail_ci_error: false
+          fail_ci_if_error: false

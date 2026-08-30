@@ -49,7 +49,9 @@ Sends never block for ring space.
 Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.TIMEOUT`, `pyrei.CLOSED`, `pyrei.PEER_GONE` — tested by identity (`x is pyrei.TIMEOUT`), never raised.
 
 `None` crosses as an immediate.
-`bytes` and 1-D contiguous numpy arrays of float64, int32, complex128, or uint8 ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
+`bytes` and 1-D contiguous numpy arrays ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
+float64, int32, complex128, and uint8 cross unchanged; every other fixed-width numeric dtype (bool, int64, float32, ...) converts once at send time into the nearest R-compatible wire type — see the [dtype matrix](#the-dtype-matrix).
+Arrow arrays (anything with `__arrow_c_array__`: pyarrow, polars, a duckdb result column) cross the same way, with Arrow nulls becoming R missing values.
 Strings cross as raw UTF-8; booleans, numbers, and flat containers of them ride a compact binary codec.
 Everything else crosses as a pickle protocol 4 stream.
 
@@ -157,11 +159,70 @@ The reverse direction is also possible: an R host spawns a Python peer with `rei
 
 What crosses the language boundary:
 
-- numpy float64, int32, and uint8 arrays arrive in R as numeric, integer, and raw vectors — and back.
+- A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector — and back.
+  See the dtype matrix below.
+- An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`.
+  Anything with `__arrow_c_array__` works (pyarrow, polars, a duckdb result column).
 - `bytes` stages as a raw vector.
 - Strings cross both ways (`str` rides the shared STR1 tier); `NA_character_` arrives as `None`.
 - A large R atomic vector arrives as a zero-copy, read-only numpy view over the shared pages — no copy, no parse.
+  Without numpy it arrives as a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: `pa.array(view)`, `pl.from_arrow(view)`.
 - Python-only payloads do not cross: R declines pyrei's compact codec streams and pickled objects with an informative error.
+
+### The dtype matrix
+
+Conversion happens once, at send time, fused into the copy that staging always is.
+Identity rows (float64, int32, complex128, uint8) are a plain memcpy.
+
+| Python sends | R receives | Notes |
+|----|----|----|
+| `bytes` / uint8 | raw | Arrow uint8 with nulls: `TypeError` (R raw has no NA) |
+| int8 / int16 / uint16 | integer | widened, exact |
+| int32 | integer | |
+| uint32 | double | widened, exact |
+| int64 / uint64 | double | exact to ±2^53; past it, `NA` plus one warning |
+| float32 / float64 | double | |
+| bool | logical | |
+| complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
+| Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
+| Arrow strings, temporal, dictionary, nested | — | `TypeError` at send time |
+| Arrow ChunkedArray / Table | — | `TypeError` at send time; `combine_chunks()` first |
+
+NA semantics:
+
+- R's missing values are sentinels in the data: `INT_MIN` for integer/logical, a specific NaN payload (`NA_real_`) for double.
+  Python to R: Arrow nulls convert to the sentinels, so R sees correct `NA`s.
+  R to Python: no Arrow nulls are synthesized — `NA_integer_` reads as `-2147483648`, `NA_real_` as a NaN.
+- A genuine int32 value of `-2147483648` collides with the NA sentinel and reads as `NA` in R.
+  numpy sends stay silent (as before); an Arrow send with a validity bitmap warns once.
+- Python-side compute treats `NA_real_` as a NaN value; whether the exact payload survives arithmetic is platform-dependent — do not rely on it either way.
+
+Round trips are stable after the first hop, and a pure pass-through echo is bit-exact (an untouched received view re-stages as untouched bytes, so even the `NA_real_` payload survives a relay).
+
+| Python sends | R sees | Back in Python | |
+|----|----|----|----|
+| uint8 | raw | uint8 | exact |
+| int8 / int16 / uint16 | integer | int32 | widened, values exact |
+| int32 | integer | int32 | exact |
+| uint32 | double | float64 | exact |
+| int64 / uint64, ≤ ±2^53 | double | float64 | dtype lost, values exact |
+| int64 / uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
+| float32 | double | float64 | widened, values exact |
+| float64 | double | float64 | exact |
+| bool | logical | int32 0/1 | dtype lost |
+| complex64 / complex128 | complex | complex128 | exact |
+
+| R sends | Python sees | Back in R | |
+|----|----|----|----|
+| integer | int32 | integer | exact |
+| double | float64 | double | exact |
+| raw | uint8 | raw | exact |
+| complex | complex128 | complex | exact |
+| logical | int32 | **integer** | the tag does not survive the Python hop (values do) |
+
+The channel/pool split: channels convert; pools are Python-both-ends by construction, so pool task results keep the lossless pickle path for every dtype.
+Python-to-Python channels also convert — the peer's language is unknowable at send time.
+For an exact Python-to-Python channel send of a non-identity dtype, nest the array in a tuple or list: it keeps the pickle path.
 
 ## Requirements
 

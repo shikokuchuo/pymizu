@@ -47,6 +47,22 @@ def big_array(n):
     return np.arange(n, dtype=np.float64)
 
 
+def ret_int64_array():
+    """A numpy int64 array: a non-identity dtype for the raw tiers (pool
+    results keep the lossless pickle path — the conversion pass is
+    channel-scoped)."""
+    import numpy as np
+
+    return np.array([1, 2, 3], dtype=np.int64)
+
+
+def ret_arrow_nulls():
+    """A pyarrow array with a null (pool results keep the pickle path)."""
+    import pyarrow as pa
+
+    return pa.array([1, None, 3], type=pa.int32())
+
+
 def array_sum(a):
     return float(a.sum())
 

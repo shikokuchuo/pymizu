@@ -283,18 +283,22 @@ def test_numpy_rawspill(echo):
 
 def test_numpy_gate_fallbacks(echo):
     # 2-D, non-contiguous, and unmappable dtypes fall to pickle, which
-    # preserves shape and dtype exactly
+    # preserves shape and dtype exactly. (Mappable-but-non-identity
+    # dtypes — int64, bool — convert instead: see test_arrow.py.)
     cases = [
         np.arange(12, dtype=np.float64).reshape(3, 4),
         np.arange(20, dtype=np.float64)[::2],
-        np.arange(5, dtype=np.int64),
-        np.array([True, False]),
     ]
     for a in cases:
         assert echo.send(a) is True
         b = echo.recv(timeout=5)
         assert b.dtype == a.dtype and b.shape == a.shape
         assert np.array_equal(b, a)
+    # a big-endian array is never misread as native: it falls to pickle,
+    # and numpy's pickle normalizes the byte order (values stay correct)
+    a = np.arange(5, dtype=np.int16).astype(">i2")
+    assert echo.send(a) is True
+    assert np.array_equal(echo.recv(timeout=5), a)
 
 
 # -- zero-copy views (SHM_VEC) ----------------------------------------------

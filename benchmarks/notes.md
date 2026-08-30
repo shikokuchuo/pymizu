@@ -149,3 +149,27 @@ Threads take the payload rows (an in-process handoff serializes
 nothing) and the trivial-task rows beat the process pool (no pickling),
 but the GIL caps CPU-bound work at one core: fan-out and map land at
 ~40k tasks/s against pyrei's 277k/468k on 4 workers.
+
+## 2026-08-30 — conversion staging pass (Arrow / numpy interop)
+
+The conversion pass (every fixed-width numeric dtype crosses; Arrow
+validity bitmaps honored) fuses conversion into the stage copy. The
+section 7 scenario of rei-bench.py: 8 MB one-way sends against an acking
+sink peer, so the measured cost is the send-side stage (the sink's read
+of a view-tier payload is a cheap wrap). This record: best of 10 x 50
+sends, Python 3.14.2, macOS arm64:
+
+| row | us/send | vs memcpy |
+|----|----|----|
+| stage memcpy (bytes) | 100.5 | 1.00x |
+| stage identity (float64) | 101.6 | 1.01x |
+| stage widen (int64 -> float64, range-checked) | 278.4 | 2.77x |
+| stage masked (float64, all-valid bitmap, null_count -1) | 113.5 | 1.13x |
+| stage masked+scan (int32, + INT_MIN count) | 138.4 | 1.38x |
+
+The word-wise masked loop lands at ~1.1x memcpy on the all-valid-bitmap
+shape (the ~1.2x target): the bitmap word reads are 1/64th of the data
+volume and the 64-lane runs stay memcpy. The masked int32 row pays for
+the genuine-INT_MIN count (a second vectorized pass over the
+destination). Widening rows are scalar conversion loops — ~2.8x memcpy,
+acceptable: those dtypes could not cross at all before.

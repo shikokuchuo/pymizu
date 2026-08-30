@@ -503,6 +503,86 @@ def map_skew(p):
 
 with_pool(4, map_skew)
 
+# 7. conversion staging (the numpy / Arrow conversion pass) -------------------
+
+print("\n== 7. conversion staging (8 MB one-way sends, channel) ==")
+
+# one-way sends against an acking sink: the measured cost is the send-side
+# stage (the sink's read of a view-tier payload is a cheap wrap)
+SINK_PEER = """
+import pyrei
+while True:
+    x = ch.recv()
+    if x is pyrei.CLOSED or x is pyrei.PEER_GONE:
+        break
+    ch.send(True)
+"""
+
+
+def arrow_masked(arr, ptype):
+    """An all-valid-bitmap Arrow array with null_count "unknown" (-1): the
+    masked conversion loop's fast-path shape. pyarrow computes the count
+    eagerly on export, so patch each exported struct back to -1."""
+    import ctypes
+
+    import pyarrow as pa
+
+    class ArrowArray(ctypes.Structure):
+        _fields_ = [
+            ("length", ctypes.c_int64), ("null_count", ctypes.c_int64),
+            ("offset", ctypes.c_int64), ("n_buffers", ctypes.c_int64),
+            ("n_children", ctypes.c_int64), ("buffers", ctypes.c_void_p),
+            ("children", ctypes.c_void_p), ("dictionary", ctypes.c_void_p),
+            ("release", ctypes.c_void_p), ("private_data", ctypes.c_void_p),
+        ]
+
+    lib = ctypes.pythonapi
+    lib.PyCapsule_GetPointer.restype = ctypes.c_void_p
+    lib.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    mask = pa.py_buffer(b"\xff" * ((len(arr) + 7) // 8))
+    data = pa.py_buffer(arr.tobytes())
+    a = pa.Array.from_buffers(ptype, len(arr), [mask, data], null_count=-1)
+
+    class Producer:
+        def __arrow_c_array__(self):
+            caps = a.__arrow_c_array__()
+            ap = lib.PyCapsule_GetPointer(caps[1], b"arrow_array")
+            ArrowArray.from_address(ap).null_count = -1
+            return caps
+
+    return Producer()
+
+
+try:
+    import pyarrow as pa
+
+    size = 1000000  # 8 MB as float64/int64
+    n = 30
+
+    def convert_channel(ch):
+        base = np.arange(size, dtype=np.float64)
+        cases = [
+            ("stage memcpy", base.tobytes()),
+            ("stage identity", base),
+            ("stage widen", base.astype(np.int64)),
+            ("stage masked", arrow_masked(base, pa.float64())),
+            ("stage masked+scan",
+             arrow_masked(base.astype(np.int32), pa.int32())),
+        ]
+        for label, x in cases:
+
+            def rep(x=x):
+                for _ in range(n):
+                    ch.send(x)
+                    ch.recv(timeout=30)
+
+            warmup(rep, n=3)
+            note_us(label, "pyrei channel", n, rep, "us/send")
+
+    with_channel(SINK_PEER, convert_channel)
+except ImportError:
+    print("  pyarrow not installed: skipped")
+
 # summary ---------------------------------------------------------------------
 
 print("\n== summary ==")

@@ -198,6 +198,36 @@ static int raise_tls(void) {
   return -1;
 }
 
+// Arrow C Data Interface ---------------------------------------------------------
+
+/* The stable C ABI structs, defined locally per the spec (the layout is
+   frozen; no headers, no dependency). Both the import front-end (a
+   producer's __arrow_c_array__) and the view's export dunder use them. */
+typedef struct ArrowSchema {
+  const char *format;
+  const char *name;
+  const char *metadata;
+  int64_t flags;
+  int64_t n_children;
+  struct ArrowSchema **children;
+  struct ArrowSchema *dictionary;
+  void (*release)(struct ArrowSchema *);
+  void *private_data;
+} ArrowSchema;
+
+typedef struct ArrowArray {
+  int64_t length;
+  int64_t null_count;
+  int64_t offset;
+  int64_t n_buffers;
+  int64_t n_children;
+  const void **buffers;
+  struct ArrowArray **children;
+  struct ArrowArray *dictionary;
+  void (*release)(struct ArrowArray *);
+  void *private_data;
+} ArrowArray;
+
 // Staging ------------------------------------------------------------------------
 
 /* Frame n bytes over the INLINE / ARENA / SHM_RAW tiers — the reference
@@ -276,18 +306,18 @@ int rei_py_wire_type_of(const Py_buffer *v) {
   return wire_type_of(v);
 }
 
-/* SHM_VEC: one REIH layout write into a spill region (free-list pop or
-   fresh create), the name as the payload, aux the wire type | exact used
-   bytes << 8. The producer-loan refcount store rides rei_stage_retain_zc;
-   the layout write zeroes the reserved band ahead of it (a recycled region
-   carries stale bytes). Returns 0 staged, -1 region failure (the caller
-   falls back to a copy tier). */
-static int stage_shm_vec(const Py_buffer *v, int type, rei_slot_hdr *hdr,
-                         uint8_t *payload, rei_handle *h) {
-  size_t n = (size_t) v->len;
+/* SHM_VEC reserve: the REIH layout header into a spill region (free-list
+   pop or fresh create), the name as the payload, aux the wire type |
+   exact used bytes << 8; the data area is the returned destination. The
+   producer-loan refcount store rides rei_stage_retain_zc; the header
+   write zeroes the reserved band ahead of it (a recycled region carries
+   stale bytes). Returns the destination, NULL on region failure (the
+   caller falls back to a copy tier). */
+static uint8_t *reserve_shm_vec(size_t n, int type, rei_slot_hdr *hdr,
+                                uint8_t *payload, rei_handle *h) {
   size_t total = REI_HEADER_SIZE + n;
   rei_shm *shm;
-  if (rei_stage_spill_get(h, total, &shm) != REI_OK) return -1;
+  if (rei_stage_spill_get(h, total, &shm) != REI_OK) return NULL;
   uint8_t *base = (uint8_t *) shm->addr;
   uint32_t magic = REI_MAGIC_VEC;
   int32_t t32 = type;
@@ -297,31 +327,32 @@ static int stage_shm_vec(const Py_buffer *v, int type, rei_slot_hdr *hdr,
   memcpy(base + 8, &len64, 8);
   memcpy(base + 16, &zero64, 8);          /* attrs_size */
   memset(base + 24, 0, REI_HEADER_SIZE - 24);
-  memcpy(base + REI_HEADER_SIZE, v->buf, n);
   hdr->kind = REI_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) type | ((uint64_t) total << 8);
   memcpy(payload, shm->name, shm->name_len);
   rei_stage_retain_zc(h, shm);
-  return 0;
+  return base + REI_HEADER_SIZE;
 }
 
-/* Bare vector bytes: RAWVEC inline within the budget; past it the zero-copy
-   SHM_VEC tier at max(inline budget, REI_ZC_FLOOR), with the copy tiers as
-   the cheaper small end and the churn fallback (R's discipline: the channel
-   arena copy has no region machinery to amortize up to REI_ZC_FLOOR_RAW and
-   is churn-immune at any size; a pool's raw spill is itself a region, so
-   the view's no-copy receive wins from the floor). A region failure falls
-   to the copy tier, then pickle. Returns 0 staged, 1 error, -1 pickle. */
-static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
-                     uint8_t *payload, uint32_t inline_max, rei_handle *h) {
-  size_t n = (size_t) v->len;
+/* The raw-tier reserve: claim n bytes of destination on the tier the size
+   dictates — RAWVEC inline within the budget; past it the zero-copy
+   SHM_VEC tier at max(inline budget, REI_ZC_FLOOR), with the copy tiers
+   as the cheaper small end and the churn fallback (R's discipline: the
+   channel arena copy has no region machinery to amortize up to
+   REI_ZC_FLOOR_RAW and is churn-immune at any size; a pool's raw spill is
+   itself a region, so the view's no-copy receive wins from the floor).
+   Fills the slot/REIH headers and returns the destination pointer; the
+   write half (a memcpy or a conversion) cannot fail. NULL on reservation
+   failure: the caller falls back to a copy tier, then pickle. */
+static uint8_t *stage_reserve(size_t n, int type, rei_slot_hdr *hdr,
+                              uint8_t *payload, uint32_t inline_max,
+                              rei_handle *h) {
   if (n <= (size_t) inline_max) {
-    memcpy(payload, v->buf, n);
     hdr->kind = REI_KIND_RAWVEC;
     hdr->len = (uint32_t) n;
     hdr->aux = (uint64_t) type;
-    return 0;
+    return payload;
   }
   size_t zc_gate = (size_t) inline_max > REI_ZC_FLOOR ?
     (size_t) inline_max : REI_ZC_FLOOR;
@@ -333,33 +364,518 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
     /* a pool has no arena: out-of-line frames are always named regions (the
        mirror of R's pool RAWSPILL framing — aux packs the wire type and the
        region name length). A region failure falls to pickle. */
-    if (zc_ok && stage_shm_vec(v, type, hdr, payload, h) == 0) return 0;
-    if (n > UINT32_MAX) return -1;
+    if (zc_ok) {
+      uint8_t *dst = reserve_shm_vec(n, type, hdr, payload, h);
+      if (dst != NULL) return dst;
+    }
+    if (n > UINT32_MAX) return NULL;
     rei_shm *shm;
-    if (rei_stage_spill_get(h, n, &shm) != REI_OK) return -1;
-    memcpy(shm->addr, v->buf, n);
+    if (rei_stage_spill_get(h, n, &shm) != REI_OK) return NULL;
     hdr->kind = REI_KIND_RAWSPILL;
     hdr->len = (uint32_t) n;
     hdr->aux = (uint64_t) type | ((uint64_t) shm->name_len << 8);
     memcpy(payload, shm->name, shm->name_len);
     rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
-    return 0;
+    return (uint8_t *) shm->addr;
   }
   uint64_t off;
   uint8_t *chunk = NULL;
   if (!zc_ok || n <= REI_ZC_FLOOR_RAW)
     chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
   if (chunk == NULL && zc_ok) {
-    if (stage_shm_vec(v, type, hdr, payload, h) == 0) return 0;
+    uint8_t *dst = reserve_shm_vec(n, type, hdr, payload, h);
+    if (dst != NULL) return dst;
     chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
   }
-  if (chunk == NULL) return -1;
-  memcpy(chunk, v->buf, n);
+  if (chunk == NULL) return NULL;
   hdr->kind = REI_KIND_RAWSPILL;
   hdr->len = (uint32_t) n;
   hdr->aux = (uint64_t) type;
   memcpy(payload, &off, sizeof(off));
+  return chunk;
+}
+
+/* Identity staging: reserve, then one memcpy. Returns 0 staged, -1
+   pickle. */
+static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
+                     uint8_t *payload, uint32_t inline_max, rei_handle *h) {
+  size_t n = (size_t) v->len;
+  uint8_t *dst = stage_reserve(n, type, hdr, payload, inline_max, h);
+  if (dst == NULL) return -1;
+  memcpy(dst, v->buf, n);
   return 0;
+}
+
+// Conversion staging -------------------------------------------------------------
+
+/* Every fixed-width numeric dtype crosses to R, converted once at stage
+   time, fused into the copy that staging always is. One converter table,
+   two front-ends: PEP 3118 buffer format chars (numpy) and Arrow C Data
+   Interface format strings (pyarrow, polars). Identity rows are a plain
+   memcpy; the rest convert straight into the reservation — no temp
+   buffer (a temp pays a second full memcpy plus a large malloc precisely
+   on the spill tiers, where arrays are largest). Channel handles only —
+   the gate is at the call sites: pools are Python-both-ends by
+   construction and keep the lossless pickle path for non-identity
+   dtypes. */
+
+/* R's missing-value sentinels: INT_MIN for INT/LGL, and NA_real_ — a
+   NaN with payload 0x07A2 — for REAL. The R ABI fixes the bit pattern;
+   pyrei cannot include R headers. Little-endian throughout (all
+   supported platforms are; the codec relies on it). */
+static void store_na_real(uint8_t *p) {
+  const uint64_t bits = 0x7FF80000000007A2ULL;
+  memcpy(p, &bits, 8);
+}
+
+enum {
+  CVT_COPY = 0,   /* identity: one memcpy per run */
+  CVT_I8_INT,     /* sign-widen */
+  CVT_I16_INT,
+  CVT_U16_INT,    /* zero-widen */
+  CVT_U32_REAL,   /* exact */
+  CVT_I64_REAL,   /* range-checked: past +/-2^53 -> NA_real_ + warn */
+  CVT_U64_REAL,
+  CVT_F32_REAL,   /* exact */
+  CVT_BOOL8_LGL,  /* one byte per source lane (numpy '?') -> int32 0/1 */
+  CVT_BIT_LGL,    /* one bit per source lane (Arrow 'b') -> int32 0/1 */
+  CVT_C64_CPLX    /* float re/im -> double re/im */
+};
+
+typedef struct {
+  int wire;         /* the REI_TYPE_* the row produces */
+  int cvt;
+  uint8_t w_in;     /* source element bytes (0: bit-packed, CVT_BIT_LGL) */
+  uint8_t w_out;
+} cvt_row;
+
+static const cvt_row CVT_ROW_U8 = { REI_TYPE_RAW, CVT_COPY, 1, 1 };
+static const cvt_row CVT_ROW_I8 = { REI_TYPE_INT, CVT_I8_INT, 1, 4 };
+static const cvt_row CVT_ROW_I16 = { REI_TYPE_INT, CVT_I16_INT, 2, 4 };
+static const cvt_row CVT_ROW_U16 = { REI_TYPE_INT, CVT_U16_INT, 2, 4 };
+static const cvt_row CVT_ROW_I32 = { REI_TYPE_INT, CVT_COPY, 4, 4 };
+static const cvt_row CVT_ROW_U32 = { REI_TYPE_REAL, CVT_U32_REAL, 4, 8 };
+static const cvt_row CVT_ROW_I64 = { REI_TYPE_REAL, CVT_I64_REAL, 8, 8 };
+static const cvt_row CVT_ROW_U64 = { REI_TYPE_REAL, CVT_U64_REAL, 8, 8 };
+static const cvt_row CVT_ROW_F32 = { REI_TYPE_REAL, CVT_F32_REAL, 4, 8 };
+static const cvt_row CVT_ROW_F64 = { REI_TYPE_REAL, CVT_COPY, 8, 8 };
+static const cvt_row CVT_ROW_BOOL8 = { REI_TYPE_LGL, CVT_BOOL8_LGL, 1, 4 };
+static const cvt_row CVT_ROW_BOOLBIT = { REI_TYPE_LGL, CVT_BIT_LGL, 0, 4 };
+static const cvt_row CVT_ROW_C64 = { REI_TYPE_CPLX, CVT_C64_CPLX, 8, 16 };
+static const cvt_row CVT_ROW_C128 = { REI_TYPE_CPLX, CVT_COPY, 16, 16 };
+
+/* Key the table by a PEP 3118 (char, itemsize) pair — as wire_type_of
+   does (numpy exports int64 as 8-byte 'l' on LP64, 'q' on Windows;
+   int32 as 4-byte 'l' on Windows). Byte-order prefixes: '=' and '<' are
+   accepted (all supported platforms are little-endian, and ctypes
+   buffers export '<i'); '>' and '!' reject — a big-endian array must
+   never be misread as native. */
+static const cvt_row *cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
+  if (f == NULL) return itemsize == 1 ? &CVT_ROW_U8 : NULL;
+  if (f[0] == '=' || f[0] == '<') f++;
+  if (f[1] == '\0') {
+    switch (f[0]) {
+    case 'B': return itemsize == 1 ? &CVT_ROW_U8 : NULL;
+    case 'b': return itemsize == 1 ? &CVT_ROW_I8 : NULL;
+    case 'h': return itemsize == 2 ? &CVT_ROW_I16 : NULL;
+    case 'H': return itemsize == 2 ? &CVT_ROW_U16 : NULL;
+    case 'i': return itemsize == 4 ? &CVT_ROW_I32 : NULL;
+    case 'l': return itemsize == 4 ? &CVT_ROW_I32 :
+      itemsize == 8 ? &CVT_ROW_I64 : NULL;
+    case 'q': return itemsize == 8 ? &CVT_ROW_I64 : NULL;
+    case 'I': return itemsize == 4 ? &CVT_ROW_U32 : NULL;
+    case 'L': return itemsize == 4 ? &CVT_ROW_U32 :
+      itemsize == 8 ? &CVT_ROW_U64 : NULL;
+    case 'Q': return itemsize == 8 ? &CVT_ROW_U64 : NULL;
+    case 'f': return itemsize == 4 ? &CVT_ROW_F32 : NULL;
+    case 'd': return itemsize == 8 ? &CVT_ROW_F64 : NULL;
+    case '?': return itemsize == 1 ? &CVT_ROW_BOOL8 : NULL;
+    }
+    return NULL;
+  }
+  if (f[0] == 'Z' && f[2] == '\0') {
+    if (f[1] == 'f') return itemsize == 8 ? &CVT_ROW_C64 : NULL;
+    if (f[1] == 'd') return itemsize == 16 ? &CVT_ROW_C128 : NULL;
+  }
+  return NULL;
+}
+
+/* Key the table by an Arrow C Data Interface format string (every
+   supported row is a single character). */
+static const cvt_row *cvt_for_arrow(const char *f) {
+  if (f[1] != '\0') return NULL;
+  switch (f[0]) {
+  case 'C': return &CVT_ROW_U8;
+  case 'c': return &CVT_ROW_I8;
+  case 's': return &CVT_ROW_I16;
+  case 'S': return &CVT_ROW_U16;
+  case 'i': return &CVT_ROW_I32;
+  case 'I': return &CVT_ROW_U32;
+  case 'l': return &CVT_ROW_I64;
+  case 'L': return &CVT_ROW_U64;
+  case 'f': return &CVT_ROW_F32;
+  case 'g': return &CVT_ROW_F64;
+  case 'b': return &CVT_ROW_BOOLBIT;
+  }
+  return NULL;
+}
+
+/* The warning counts, emitted only after the write half completes (never
+   mid-write: under warnings-as-errors a raise must not leave a claimed
+   reservation half-written — the write finishes, the warning raises, and
+   the core rolls the unpublished reservation back). */
+typedef struct {
+  uint64_t n_range;   /* int64/uint64 past +/-2^53 -> NA_real_ */
+  uint64_t n_intmin;  /* masked int32 only: a genuine INT_MIN reads as NA */
+} cvt_warn;
+
+/* Convert a run of n valid elements. Per-element memcpy keeps every
+   access alignment-safe (a contiguous buffer can still be
+   element-misaligned — np.frombuffer with a byte offset); fixed-size
+   memcpys compile to single load/store pairs. */
+static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
+                    const cvt_row *row, cvt_warn *warn) {
+  switch (row->cvt) {
+  case CVT_COPY:
+    memcpy(dst, src, n * row->w_out);
+    break;
+  case CVT_I8_INT:
+    for (size_t i = 0; i < n; i++) {
+      int8_t v;
+      memcpy(&v, src + i, 1);
+      int32_t o = v;
+      memcpy(dst + 4 * i, &o, 4);
+    }
+    break;
+  case CVT_I16_INT:
+    for (size_t i = 0; i < n; i++) {
+      int16_t v;
+      memcpy(&v, src + 2 * i, 2);
+      int32_t o = v;
+      memcpy(dst + 4 * i, &o, 4);
+    }
+    break;
+  case CVT_U16_INT:
+    for (size_t i = 0; i < n; i++) {
+      uint16_t v;
+      memcpy(&v, src + 2 * i, 2);
+      int32_t o = v;
+      memcpy(dst + 4 * i, &o, 4);
+    }
+    break;
+  case CVT_U32_REAL:
+    for (size_t i = 0; i < n; i++) {
+      uint32_t v;
+      memcpy(&v, src + 4 * i, 4);
+      double o = (double) v;
+      memcpy(dst + 8 * i, &o, 8);
+    }
+    break;
+  case CVT_I64_REAL:
+    for (size_t i = 0; i < n; i++) {
+      int64_t v;
+      memcpy(&v, src + 8 * i, 8);
+      if (v > 9007199254740992LL || v < -9007199254740992LL) {   /* +/-2^53 */
+        store_na_real(dst + 8 * i);
+        warn->n_range++;
+      } else {
+        double o = (double) v;
+        memcpy(dst + 8 * i, &o, 8);
+      }
+    }
+    break;
+  case CVT_U64_REAL:
+    for (size_t i = 0; i < n; i++) {
+      uint64_t v;
+      memcpy(&v, src + 8 * i, 8);
+      if (v > 9007199254740992ULL) {
+        store_na_real(dst + 8 * i);
+        warn->n_range++;
+      } else {
+        double o = (double) v;
+        memcpy(dst + 8 * i, &o, 8);
+      }
+    }
+    break;
+  case CVT_F32_REAL:
+    for (size_t i = 0; i < n; i++) {
+      float v;
+      memcpy(&v, src + 4 * i, 4);
+      double o = v;
+      memcpy(dst + 8 * i, &o, 8);
+    }
+    break;
+  case CVT_BOOL8_LGL:
+    for (size_t i = 0; i < n; i++) {
+      int32_t o = src[i] != 0;
+      memcpy(dst + 4 * i, &o, 4);
+    }
+    break;
+  case CVT_C64_CPLX:
+    for (size_t i = 0; i < n; i++) {
+      float re, im;
+      memcpy(&re, src + 8 * i, 4);
+      memcpy(&im, src + 8 * i + 4, 4);
+      double o[2] = { re, im };
+      memcpy(dst + 16 * i, o, 16);
+    }
+    break;
+  }
+}
+
+/* Fill n lanes with the wire type's missing sentinel. */
+static void cvt_fill_na(uint8_t *dst, size_t n, int wire) {
+  if (wire == REI_TYPE_REAL) {
+    for (size_t i = 0; i < n; i++) store_na_real(dst + 8 * i);
+  } else {
+    const int32_t na = INT32_MIN;   /* INT and LGL share the sentinel */
+    for (size_t i = 0; i < n; i++) memcpy(dst + 4 * i, &na, 4);
+  }
+}
+
+/* Load lanes (<= 64) validity bits starting at bit position pos (Arrow
+   LSB-first bit order), reading only the bytes that cover them. */
+static uint64_t bitmap_word(const uint8_t *bm, uint64_t pos, size_t lanes) {
+  const uint8_t *p = bm + (pos >> 3);
+  unsigned sh = (unsigned) (pos & 7);
+  if (sh == 0 && lanes == 64) {
+    uint64_t w;
+    memcpy(&w, p, 8);
+    return w;
+  }
+  size_t nbytes = (sh + lanes + 7) >> 3;
+  uint64_t lo = 0, hi = 0;
+  for (size_t j = 0; j < nbytes; j++) {
+    if (j < 8) lo |= (uint64_t) p[j] << (8 * j);
+    else hi = p[j];   /* j == 8: only when sh > 0 and lanes == 64 */
+  }
+  uint64_t w = sh != 0 ? (lo >> sh) | (hi << (64 - sh)) : lo;
+  if (lanes < 64) w &= ((uint64_t) 1 << lanes) - 1;
+  return w;
+}
+
+/* The masked variant (Arrow nulls): word-wise over the validity bitmap —
+   an all-ones word a 64-lane convert, a zero word a 64-sentinel fill,
+   mixed the per-lane select. off is the element offset: a bit offset
+   into the bitmap (the word reads absorb it). Genuine INT_MIN values are
+   counted on the int32 identity row (they read as NA_integer_ in R); the
+   other rows cannot produce one. */
+static void convert_masked(uint8_t *dst, const uint8_t *src,
+                           const uint8_t *valid, uint64_t off, size_t n,
+                           const cvt_row *row, cvt_warn *warn) {
+  const size_t wo = row->w_out, wi = row->w_in;
+  const int count_min = row->wire == REI_TYPE_INT && row->cvt == CVT_COPY;
+  size_t i = 0;
+  while (i < n) {
+    size_t lanes = n - i < 64 ? n - i : 64;
+    uint64_t w = bitmap_word(valid, off + i, lanes);
+    uint64_t full = lanes == 64 ? UINT64_MAX : ((uint64_t) 1 << lanes) - 1;
+    if (w == full) {
+      if (count_min) {
+        /* copy, then scan the destination (dst is int32-aligned on every
+           tier: the inline payload is 16-byte aligned, arena chunks and
+           region data areas 64). The count rides a local — a warn->
+           store per lane would alias-block vectorization */
+        cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
+        const int32_t *d = (const int32_t *) (dst + i * wo);
+        uint64_t cnt = 0;
+        for (size_t j = 0; j < lanes; j++) cnt += d[j] == INT32_MIN;
+        warn->n_intmin += cnt;
+      } else {
+        cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
+      }
+    } else if (w == 0) {
+      cvt_fill_na(dst + i * wo, lanes, row->wire);
+    } else {
+      for (size_t j = 0; j < lanes; j++) {
+        if ((w >> j) & 1) {
+          cvt_run(dst + (i + j) * wo, src + (i + j) * wi, 1, row, warn);
+          if (count_min) {
+            int32_t v;
+            memcpy(&v, dst + (i + j) * wo, 4);
+            warn->n_intmin += v == INT32_MIN;
+          }
+        } else {
+          cvt_fill_na(dst + (i + j) * wo, 1, row->wire);
+        }
+      }
+    }
+    i += lanes;
+  }
+}
+
+/* Arrow bool: the data buffer is bit-packed too, so off is a bit offset
+   into both bitmaps; a lane's value is its data bit ANDed with validity. */
+static void convert_bit_lgl(uint8_t *dst, const uint8_t *data,
+                            const uint8_t *valid, uint64_t off, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    size_t lanes = n - i < 64 ? n - i : 64;
+    uint64_t dbits = bitmap_word(data, off + i, lanes);
+    uint64_t vbits = valid != NULL ? bitmap_word(valid, off + i, lanes) :
+      (lanes == 64 ? UINT64_MAX : ((uint64_t) 1 << lanes) - 1);
+    uint64_t vals = dbits & vbits;
+    for (size_t j = 0; j < lanes; j++) {
+      int32_t o = (vbits >> j) & 1 ? (int32_t) ((vals >> j) & 1) : INT32_MIN;
+      memcpy(dst + 4 * (i + j), &o, 4);
+    }
+    i += lanes;
+  }
+}
+
+/* The conversion stage: reserve n_out bytes on the raw tiers, then one
+   fused convert straight into the destination. valid != NULL runs the
+   masked variant (Arrow nulls); off is the element offset (the bit
+   offset into the validity bitmap and, for CVT_BIT_LGL, the data).
+   Returns 0 staged, 1 error (a warning raised as an error), -1
+   reservation failure (fall to pickle). */
+static int stage_convert(const uint8_t *src, size_t nelts,
+                         const cvt_row *row, const uint8_t *valid,
+                         uint64_t off, rei_slot_hdr *hdr, uint8_t *payload,
+                         uint32_t inline_max, rei_handle *h) {
+  uint8_t *dst = stage_reserve(nelts * row->w_out, row->wire, hdr, payload,
+                               inline_max, h);
+  if (dst == NULL) return -1;
+  cvt_warn warn = { 0, 0 };
+  if (row->cvt == CVT_BIT_LGL) {
+    convert_bit_lgl(dst, src, valid, off, nelts);
+  } else if (valid != NULL) {
+    convert_masked(dst, src, valid, off, nelts, row, &warn);
+  } else {
+    cvt_run(dst, src, nelts, row, &warn);
+  }
+  if (warn.n_range != 0 &&
+      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                       "pyrei: %llu integer value(s) beyond +/-2^53 convert "
+                       "to NA on the R side",
+                       (unsigned long long) warn.n_range) < 0)
+    return 1;
+  if (warn.n_intmin != 0 &&
+      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                       "pyrei: %llu int32 value(s) of -2147483648 read as "
+                       "NA_integer_ in R",
+                       (unsigned long long) warn.n_intmin) < 0)
+    return 1;
+  return 0;
+}
+
+/* The buffer-protocol front-end: key the table by the (char, itemsize)
+   pair. 0 staged, 1 error, -1 not convertible (fall to pickle). The
+   channel-handle gate is the caller's. */
+static int stage_convert_buffer(const Py_buffer *v, rei_slot_hdr *hdr,
+                                uint8_t *payload, uint32_t inline_max,
+                                rei_handle *h) {
+  if (v->ndim > 1) return -1;
+  const cvt_row *row = cvt_for_buffer(v->format, v->itemsize);
+  if (row == NULL) return -1;
+  return stage_convert((const uint8_t *) v->buf,
+                       (size_t) v->len / row->w_in, row, NULL, 0,
+                       hdr, payload, inline_max, h);
+}
+
+/* The Arrow import front-end. Validate before touching a buffer (all
+   O(1), once per stage), then feed the data buffer to the conversion
+   pass. Returns 0 staged, 1 error, -1 not an Arrow producer. */
+static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
+                                rei_slot_hdr *hdr, uint8_t *payload,
+                                uint32_t inline_max, rei_handle *h) {
+  /* a consumed or moved struct has release == NULL (the spec's move
+     semantics); a NULL bitmap is conformant only with no nulls */
+  if (schema->release == NULL || array->release == NULL ||
+      schema->format == NULL || array->length < 0 || array->offset < 0 ||
+      array->null_count < -1 || array->null_count > array->length ||
+      array->n_buffers < 2 || array->buffers == NULL ||
+      (array->buffers[1] == NULL && array->length != 0) ||
+      (array->buffers[0] == NULL && array->null_count > 0)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pyrei: invalid Arrow C Data Interface export");
+    return 1;
+  }
+  if (schema->n_children != 0 || array->n_children != 0) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pyrei: nested Arrow types cannot cross");
+    return 1;
+  }
+  if (schema->dictionary != NULL) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pyrei: dictionary-encoded Arrow arrays cannot cross "
+                    "(the indices would import as values); decode first");
+    return 1;
+  }
+  const cvt_row *row = cvt_for_arrow(schema->format);
+  if (row == NULL) {
+    PyErr_Format(PyExc_TypeError,
+                 "pyrei: unsupported Arrow format '%s' (fixed-width numeric "
+                 "and bool arrays cross)", schema->format);
+    return 1;
+  }
+  /* a zero-length array short-circuits without touching the buffers:
+     they may all be NULL, and memcpy(dst, NULL, 0) is UB */
+  if (array->length == 0)
+    return stage_convert(NULL, 0, row, NULL, 0, hdr, payload, inline_max, h);
+  /* the fast path iff there is no bitmap to read: the spec allows
+     null_count == -1 ("not yet computed") with a non-NULL bitmap, and a
+     NULL bitmap only when the count is 0, so key on the pointer */
+  const uint8_t *valid = (const uint8_t *) array->buffers[0];
+  if (valid != NULL && array->null_count == 0) valid = NULL;
+  if (valid != NULL && row->wire == REI_TYPE_RAW) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pyrei: Arrow nulls cannot cross in a uint8 array "
+                    "(R raw vectors have no NA)");
+    return 1;
+  }
+  const uint8_t *data = (const uint8_t *) array->buffers[1];
+  uint64_t off = (uint64_t) array->offset;
+  size_t nelts = (size_t) array->length;
+  if (row->cvt == CVT_BIT_LGL)
+    return stage_convert(data, nelts, row, valid, off, hdr, payload,
+                         inline_max, h);
+  return stage_convert(data + off * row->w_in, nelts, row, valid, off,
+                       hdr, payload, inline_max, h);
+}
+
+static int stage_arrow(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
+                       uint32_t inline_max, rei_handle *h) {
+  if (!PyObject_HasAttrString(obj, "__arrow_c_array__")) {
+    /* a stream-only producer (ChunkedArray, Table) would pickle into a
+       downstream "Python payload" decline — name the remedy instead */
+    if (PyObject_HasAttrString(obj, "__arrow_c_stream__")) {
+      PyErr_SetString(PyExc_TypeError,
+                      "pyrei: chunked Arrow objects (ChunkedArray, Table) "
+                      "cannot cross; combine_chunks() into a single array "
+                      "first");
+      return 1;
+    }
+    return -1;
+  }
+  PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_array__");
+  if (fn == NULL) return 1;
+  PyObject *pair = PyObject_CallNoArgs(fn);
+  Py_DECREF(fn);
+  if (pair == NULL) return 1;   /* the object claimed the interface */
+  if (!PyTuple_Check(pair) || PyTuple_GET_SIZE(pair) != 2) {
+    Py_DECREF(pair);
+    PyErr_SetString(PyExc_TypeError, "pyrei: __arrow_c_array__ must return "
+                    "a (schema, array) capsule pair");
+    return 1;
+  }
+  /* PyCapsule_GetPointer rejects misnamed capsules by the API */
+  ArrowSchema *schema = (ArrowSchema *) PyCapsule_GetPointer(
+    PyTuple_GET_ITEM(pair, 0), "arrow_schema");
+  ArrowArray *array = (ArrowArray *) PyCapsule_GetPointer(
+    PyTuple_GET_ITEM(pair, 1), "arrow_array");
+  if (schema == NULL || array == NULL) {
+    Py_DECREF(pair);
+    return 1;
+  }
+  int rc = stage_arrow_capsules(schema, array, hdr, payload, inline_max, h);
+  /* staging is synchronous — nothing aliases the producer's buffers:
+     release the imported structs immediately (the capsules own the
+     struct memory; release frees the producer's private resources) */
+  if (schema->release != NULL) schema->release(schema);
+  if (array->release != NULL) array->release(array);
+  Py_DECREF(pair);
+  return rc;
 }
 
 // Fast-path codec --------------------------------------------------------------
@@ -930,10 +1446,16 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
        a zero-copy view echoing back — stages fine; contiguity is verified
        as strides == NULL instead */
     if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
-      int type = v.strides == NULL ? wire_type_of(&v) : 0;
       int rc = -1;
-      if (type != 0)
-        rc = stage_raw(&v, type, hdr, payload, inline_max, h);
+      if (v.strides == NULL) {
+        int type = wire_type_of(&v);
+        if (type != 0)
+          rc = stage_raw(&v, type, hdr, payload, inline_max, h);
+        else if (rei_handle_kind(h) != REI_HTYPE_POOL)
+          /* the conversion pass is channel-scoped: pools are
+             Python-both-ends and keep the lossless pickle path */
+          rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);
+      }
       PyBuffer_Release(&v);
       if (rc >= 0) return rc;
     } else {
@@ -963,6 +1485,12 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
   }
   int crc = stage_codec(obj, hdr, payload, inline_max, h);
   if (crc >= 0) return crc;
+  if (rei_handle_kind(h) != REI_HTYPE_POOL) {
+    /* after the codec: its exact-type checks reject Arrow producers
+       cheaply, so the scalar hot path never pays the attribute probe */
+    int arc = stage_arrow(obj, hdr, payload, inline_max, h);
+    if (arc >= 0) return arc;
+  }
   PyObject *stream =
     PyObject_CallFunction(rei_dumps, "Oi", obj, 4);   /* protocol pinned */
   if (stream == NULL) return 1;
@@ -1203,6 +1731,158 @@ static PyGetSetDef view_getset[] = {
   {NULL}
 };
 
+// Arrow export (the view's __arrow_c_array__) ------------------------------------
+
+/* The export holds its own mapping and its own zc loan: rei_shm_open_view
+   at export (the counted add rides the open, exactly like a view-cache
+   hit), rei_zc_unref + rei_shm_close at release. private_data carries no
+   Python reference, so the release callback is pure C — callable from any
+   thread at any time (a foreign consumer may release from a non-Python
+   thread or after interpreter shutdown), with no GIL and no
+   finalization edge. */
+typedef struct {
+  rei_shm *shm;
+  long pid;             /* the fork guard, mirroring view_dealloc */
+} arrow_loan;
+
+static void arrow_schema_release(ArrowSchema *s) {
+  s->release = NULL;   /* the format is a string literal; nothing to free */
+}
+
+static void arrow_array_release(ArrowArray *a) {
+  arrow_loan *loan = (arrow_loan *) a->private_data;
+  if (loan != NULL) {
+    if (loan->pid == rei_self_pid()) rei_zc_unref(loan->shm);
+    rei_shm_close(loan->shm, 0);
+    free(loan);
+  }
+  free((void *) a->buffers);
+  a->buffers = NULL;
+  a->private_data = NULL;
+  a->release = NULL;
+}
+
+/* The capsules own the struct memory; release (the consumer's call, or
+   the destructor's for an unconsumed export) owns the buffers array and
+   the loan. */
+static void arrow_schema_cap_free(PyObject *cap) {
+  ArrowSchema *s = (ArrowSchema *) PyCapsule_GetPointer(cap, "arrow_schema");
+  if (s == NULL) {
+    PyErr_Clear();
+    return;
+  }
+  if (s->release != NULL) s->release(s);
+  free(s);
+}
+
+static void arrow_array_cap_free(PyObject *cap) {
+  ArrowArray *a = (ArrowArray *) PyCapsule_GetPointer(cap, "arrow_array");
+  if (a == NULL) {
+    PyErr_Clear();
+    return;
+  }
+  if (a->release != NULL) a->release(a);
+  free(a);
+}
+
+PyDoc_STRVAR(arrow_c_array_doc,
+"__arrow_c_array__(requested_schema=None) -> (schema capsule, array capsule)\n\n\
+Export the view through the Arrow C Data Interface: any Arrow consumer\n\
+(pyarrow, polars, duckdb) wraps the shared pages zero-copy. The export\n\
+holds its own mapping and refcount loan, released by the consumer's\n\
+release callback. R's NA sentinels have no Arrow nulls: NA_integer_\n\
+reads as INT_MIN, NA_real_ as a NaN payload.");
+
+static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
+                                    PyObject *kw) {
+  static char *kwlist[] = {"requested_schema", NULL};
+  PyObject *requested = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:__arrow_c_array__",
+                                   kwlist, &requested))
+    return NULL;
+  /* requested_schema is ignored: the view has exactly one Arrow
+     representation per wire type, so the spec's sanctioned fallback for
+     an unsupported-but-compatible request — the default export — is the
+     only answer. The capsule is borrowed; never released here. */
+  ReiShmView *v = (ReiShmView *) obj;
+  const char *fmt;
+  switch (v->type) {
+  case REI_TYPE_INT:
+  case REI_TYPE_LGL:
+    fmt = "i";   /* Arrow bool is bit-packed: LGL cannot zero-copy as bool */
+    break;
+  case REI_TYPE_REAL: fmt = "g"; break;
+  case REI_TYPE_RAW: fmt = "C"; break;
+  default:
+    PyErr_SetString(PyExc_TypeError,
+                    "pyrei: complex vectors have no standard Arrow type");
+    return NULL;
+  }
+  if (v->owner == NULL) {
+    PyErr_SetString(ReiError, "pyrei: the view has no region");
+    return NULL;
+  }
+  /* a fresh mapping of the same region (pages shared); the counted add
+     rides the open. Cannot fail while the view lives — its own loan
+     keeps the region lent and its name resolvable — unless a dead
+     producer's force-reclaim unlinked the name: then a clean ReiError
+     (the view itself keeps working; its mapping survives unlink). */
+  rei_shm *shm;
+  if (rei_shm_open_view(&shm, rei_shm_name(v->owner->shm)) != REI_OK) {
+    raise_tls();
+    return NULL;
+  }
+  /* capsule-wrap each struct immediately (release = NULL until fully
+     initialized): on any error the destructors clean up — structs and
+     the buffers array are never freed by hand once wrapped */
+  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
+  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
+  const void **buffers = (const void **) calloc(2, sizeof(void *));
+  arrow_loan *loan = (arrow_loan *) malloc(sizeof(arrow_loan));
+  PyObject *scap = schema != NULL ?
+    PyCapsule_New(schema, "arrow_schema", arrow_schema_cap_free) : NULL;
+  PyObject *acap = array != NULL ?
+    PyCapsule_New(array, "arrow_array", arrow_array_cap_free) : NULL;
+  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
+    if (scap == NULL) free(schema);
+    if (acap == NULL) free(array);
+    Py_XDECREF(scap);
+    Py_XDECREF(acap);
+    free(buffers);
+    free(loan);
+    rei_zc_unref(shm);
+    rei_shm_close(shm, 0);
+    if (!PyErr_Occurred()) PyErr_NoMemory();
+    return NULL;
+  }
+  loan->shm = shm;
+  loan->pid = rei_self_pid();
+  schema->format = fmt;
+  schema->release = arrow_schema_release;
+  array->length =
+    (int64_t) (v->len / (Py_ssize_t) rei_type_elt_size(v->type));
+  array->n_buffers = 2;
+  array->buffers = buffers;
+  buffers[1] = (const uint8_t *) rei_shm_addr(shm) + REI_HEADER_SIZE;
+  array->private_data = loan;
+  array->release = arrow_array_release;
+  PyObject *out = PyTuple_New(2);
+  if (out == NULL) {
+    Py_DECREF(scap);
+    Py_DECREF(acap);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, scap);
+  PyTuple_SET_ITEM(out, 1, acap);
+  return out;
+}
+
+static PyMethodDef view_methods[] = {
+  {"__arrow_c_array__", (PyCFunction)(void (*)(void)) view_arrow_c_array,
+   METH_VARARGS | METH_KEYWORDS, arrow_c_array_doc},
+  {NULL}
+};
+
 static PyBufferProcs view_as_buffer = {
   .bf_getbuffer = view_getbuffer,
   .bf_releasebuffer = NULL,
@@ -1217,6 +1897,7 @@ static PyTypeObject ReiShmViewType = {
   .tp_dealloc = (destructor) view_dealloc,
   .tp_as_buffer = &view_as_buffer,
   .tp_getset = view_getset,
+  .tp_methods = view_methods,
 };
 
 static PyObject *numpy_module(void) {
@@ -1235,7 +1916,9 @@ static PyObject *numpy_module(void) {
 
 /* The user-facing object over the exporter: a numpy array from
    np.frombuffer when numpy is present (zero-copy; the array's base pins
-   the exporter), else a memoryview. Steals the view reference. */
+   the exporter), else the view itself — a read-only buffer exporter
+   (memoryview() and np.frombuffer() accept it) that also carries the
+   __arrow_c_array__ dunder. Steals the view reference. */
 static PyObject *view_to_object(PyObject *view, int type) {
   PyObject *np = numpy_module();
   if (np != NULL) {
@@ -1260,14 +1943,12 @@ static PyObject *view_to_object(PyObject *view, int type) {
         Py_DECREF(view);
         return arr;
       }
-      PyErr_Clear();   /* fall back to the memoryview */
+      PyErr_Clear();   /* fall back to the view itself */
     } else {
       PyErr_Clear();
     }
   }
-  PyObject *mv = PyMemoryView_FromObject(view);
-  Py_DECREF(view);
-  return mv;
+  return view;
 }
 
 /* Validate the REIH header at the region base and wrap it as a view. aux
