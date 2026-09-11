@@ -391,7 +391,7 @@ class Pool:
         small), then submits one *runner* task per live worker; runners
         self-schedule adaptively sized element batches off a shared
         cursor. A C-contiguous buffer of a supported dtype
-        (float64/int32/complex128/uint8) travels as bare bytes — workers
+        (float64/int32/int64/complex128/uint8) travels as bare bytes — workers
         wrap it once and index per element. ``chunks`` overrides the
         morsel count (the scheduling granularity). ``seed`` (an int or
         bytes) derives deterministic per-element streams of the stdlib

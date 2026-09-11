@@ -227,10 +227,7 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
       goto fail_bufs;
     t_tag = rei_py_wire_type_of(&tbuf);
     size_t elt = rei_type_elt_size(t_tag);
-    /* REI_TYPE_INT64 stays rejected for now: buffer-valued results would
-       memcpy fine, but an m == 1 scalar result would format 'B' in the
-       error — full support rides the rei-side template follow-up */
-    if (t_tag == 0 || t_tag == REI_TYPE_INT64 || elt == 0 ||
+    if (t_tag == 0 || elt == 0 ||
         tbuf.len < (Py_ssize_t) elt ||
         (size_t) tbuf.len % elt != 0) {
       PyBuffer_Release(&tbuf);
@@ -496,6 +493,7 @@ static const char *pymap_tag_format(uint32_t tag) {
   case REI_TYPE_REAL: return "d";
   case REI_TYPE_INT:
   case REI_TYPE_LGL: return "i";
+  case REI_TYPE_INT64: return "q";
   case REI_TYPE_CPLX: return "Zd";
   default: return "B";
   }
@@ -572,6 +570,19 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
         if (w < -(long) 0x80000000 || w > (long) 0x7FFFFFFF) break;
         int32_t i32 = (int32_t) w;
         memcpy(dst, &i32, 4);
+        return 0;
+      }
+      break;
+    case REI_TYPE_INT64:
+      if (PyLong_Check(v)) {
+        long long w = PyLong_AsLongLong(v);
+        if (w == -1 && PyErr_Occurred()) {
+          /* out of range takes the template-mismatch error below */
+          if (!PyErr_ExceptionMatches(PyExc_OverflowError)) return -1;
+          PyErr_Clear();
+          break;
+        }
+        memcpy(dst, &w, 8);
         return 0;
       }
       break;

@@ -172,6 +172,13 @@ def pair_up(v):
     return np.array([v, v * 2], dtype=np.float64)
 
 
+def pair_up_i64(v):
+    """A length-2 int64 result per element (template maps, m = 2)."""
+    import numpy as np
+
+    return np.array([v, v * 2], dtype=np.int64)
+
+
 def scalar_double(v):
     """A plain Python scalar per element (template maps, m = 1)."""
     return float(v) * 2
@@ -180,6 +187,11 @@ def scalar_double(v):
 def bad_template(v):
     """A result that violates the template (wrong length)."""
     return [1.0, 2.0, 3.0]
+
+
+def huge_int(v):
+    """An int past INT64_MAX (int64 template mismatch)."""
+    return 1 << 63
 
 
 def trace_to_file(path):

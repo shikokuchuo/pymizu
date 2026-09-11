@@ -14,11 +14,13 @@ from tests.helpers import (
     bad_template,
     fail_at,
     fail_or_sleep,
+    huge_int,
     identity,
     kill_at,
     nested_map,
     np_scalar_double,
     pair_up,
+    pair_up_i64,
     rand_elt,
     scalar_double,
     scale_add,
@@ -250,6 +252,42 @@ def test_map_template_int32(pool):
     out = pool.map(square, [1, 2, 3], template=np.empty(1, dtype=np.int32))
     assert out.dtype == np.int32
     assert list(out) == [1, 4, 9]
+
+
+def test_map_template_int64_scalar(pool):
+    out = pool.map(square, [1, 2, 3], template=np.empty(1, dtype=np.int64))
+    assert out.dtype == np.int64
+    assert list(out) == [1, 4, 9]
+
+
+def test_map_template_int64_buffer_result(pool):
+    out = pool.map(
+        pair_up_i64, list(range(40)), template=np.empty(2, dtype=np.int64)
+    )
+    assert out.shape == (40, 2)
+    assert out.dtype == np.int64
+    np.testing.assert_array_equal(out[:, 0], np.arange(40))
+    np.testing.assert_array_equal(out[:, 1], np.arange(40) * 2)
+
+
+def test_map_template_int64_view(pool):
+    out = pool.map(
+        square,
+        list(range(50)),
+        template=np.empty(1, dtype=np.int64),
+        collect="view",
+    )
+    assert isinstance(out, np.ndarray)
+    assert out.dtype == np.int64
+    assert not out.flags.writeable
+    np.testing.assert_array_equal(out, np.arange(50) ** 2)
+
+
+def test_map_template_int64_mismatch(pool):
+    # an int past INT64_MAX fails the element write as a template mismatch
+    with pytest.raises(pyrei.TaskError) as exc_info:
+        pool.map(huge_int, [1, 2, 3], template=np.empty(1, dtype=np.int64))
+    assert exc_info.value.index == 0
 
 
 def test_map_template_invalid(pool):

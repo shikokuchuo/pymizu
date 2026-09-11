@@ -283,7 +283,7 @@ def _template_probe(template: _Any) -> tuple:
     if probe is None or probe[1] < 1:
         raise TypeError(
             "pyrei: template must be a C-contiguous buffer of a supported "
-            "dtype (float64/int32/complex128/uint8)"
+            "dtype (float64/int32/int64/complex128/uint8)"
         )
     if probe[0] == 15 and _np is None:
         raise TypeError("pyrei: a complex128 template needs numpy")
