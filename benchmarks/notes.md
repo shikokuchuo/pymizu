@@ -185,3 +185,15 @@ identity tier (float64 identity 102.5, bytes memcpy 107.8) — replacing
 the per-element range-check loop, whose cost the uint64 widen row still
 shows at 257.0 us/send; stage masked int64 115.8 us/send (masked float64
 116.5). Full suite 190 pass, 1 skip (1 pre-existing environment skip).
+
+## 2026-09-11: int64 map templates (regression check)
+
+161b358 admits int64 templates (tag 32; "q" tag-format row; m == 1
+scalar conversion). rei-bench.py, this host, two runs; section 7 settles
+into the recorded bands: stage int64 111.9/102.0 us/send (recorded 99.7
+— identity-tier parity: memcpy 101.1/104.6, identity 108.2/106.5),
+masked int64 110.7/117.2 (recorded 115.8), widen 306.5/290.9 (uint64,
+the untouched loop), masked+scan 140.5/140.6. Run 1's masked-float64
+outlier (169.2) settled to 119.6 — transient. Map rows: winsum 2k
+480,745 tasks/s (recorded 468k), 20k 473,275, template copy/view
+679k/692k tasks/s, skew 7.3 ms wall.
