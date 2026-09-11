@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install tools
-        run: pip install ruff pyrefly numpy cloudpickle pyarrow
+        run: pip install ruff pyrefly numpy cloudpickle pyarrow polars
       - name: Ruff
         run: ruff check python tests benchmarks
       - name: Pyrefly
@@ -61,7 +61,24 @@ jobs:
         run: echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Build and install
-        run: pip install . pytest numpy pyarrow coverage
+        run: pip install . pytest numpy pyarrow polars cloudpickle coverage
+
+      # The cross-language tests need an Rscript with the installed rei
+      # package (their fixture probe-skips otherwise); Linux legs only.
+      - name: Set up R (cross-language tests)
+        if: runner.os == 'Linux'
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install the rei R package (cross-language tests)
+        if: runner.os == 'Linux'
+        env:
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          install.packages(c("bit64", "pak"))
+          pak::pak("shikokuchuo/rei")
+        shell: Rscript {0}
 
       - name: Import smoke
         run: python -c "import pyrei; print(pyrei.__version__, pyrei.__core_version__, pyrei.abi_version())"
