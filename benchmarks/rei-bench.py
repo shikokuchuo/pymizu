@@ -564,8 +564,13 @@ try:
         cases = [
             ("stage memcpy", base.tobytes()),
             ("stage identity", base),
-            ("stage widen", base.astype(np.int64)),
+            # int64 is a wire type now: the identity memcpy, not a widening
+            # conversion loop — uint64 keeps the widen row
+            ("stage int64", base.astype(np.int64)),
+            ("stage widen", base.astype(np.uint64)),
             ("stage masked", arrow_masked(base, pa.float64())),
+            ("stage masked int64",
+             arrow_masked(base.astype(np.int64), pa.int64())),
             ("stage masked+scan",
              arrow_masked(base.astype(np.int32), pa.int32())),
         ]

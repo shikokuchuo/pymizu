@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="e90df3bde7d2e7a2aebef6a41c23a70fc5e1b6d2"  # librei: Recognize the pyrei codec magic in the keeperless gate
+PIN="a96807fe2425a1f08b8c9b2be3302c6cdf3a4fae"  # librei: Add REI_TYPE_INT64 wire tag
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"

@@ -290,9 +290,11 @@ static int wire_type_of(const Py_buffer *v) {
     case 'B': return v->itemsize == 1 ? REI_TYPE_RAW : 0;
     case 'd': return v->itemsize == 8 ? REI_TYPE_REAL : 0;
     case 'i': return v->itemsize == 4 ? REI_TYPE_INT : 0;
-    /* numpy exports int32 as 'l' (C long) on Windows; on LP64 an 'l'
-       buffer is 8 bytes and still falls through */
-    case 'l': return v->itemsize == 4 ? REI_TYPE_INT : 0;
+    /* numpy exports int64 as 8-byte 'l' (C long) on LP64, 'q' on
+       Windows; int32 as 4-byte 'l' on Windows */
+    case 'l': return v->itemsize == 4 ? REI_TYPE_INT :
+      v->itemsize == 8 ? REI_TYPE_INT64 : 0;
+    case 'q': return v->itemsize == 8 ? REI_TYPE_INT64 : 0;
     }
     return 0;
   }
@@ -434,7 +436,6 @@ enum {
   CVT_I16_INT,
   CVT_U16_INT,    /* zero-widen */
   CVT_U32_REAL,   /* exact */
-  CVT_I64_REAL,   /* range-checked: past +/-2^53 -> NA_real_ + warn */
   CVT_U64_REAL,
   CVT_F32_REAL,   /* exact */
   CVT_BOOL8_LGL,  /* one byte per source lane (numpy '?') -> int32 0/1 */
@@ -455,7 +456,7 @@ static const cvt_row CVT_ROW_I16 = { REI_TYPE_INT, CVT_I16_INT, 2, 4 };
 static const cvt_row CVT_ROW_U16 = { REI_TYPE_INT, CVT_U16_INT, 2, 4 };
 static const cvt_row CVT_ROW_I32 = { REI_TYPE_INT, CVT_COPY, 4, 4 };
 static const cvt_row CVT_ROW_U32 = { REI_TYPE_REAL, CVT_U32_REAL, 4, 8 };
-static const cvt_row CVT_ROW_I64 = { REI_TYPE_REAL, CVT_I64_REAL, 8, 8 };
+static const cvt_row CVT_ROW_I64 = { REI_TYPE_INT64, CVT_COPY, 8, 8 };
 static const cvt_row CVT_ROW_U64 = { REI_TYPE_REAL, CVT_U64_REAL, 8, 8 };
 static const cvt_row CVT_ROW_F32 = { REI_TYPE_REAL, CVT_F32_REAL, 4, 8 };
 static const cvt_row CVT_ROW_F64 = { REI_TYPE_REAL, CVT_COPY, 8, 8 };
@@ -525,7 +526,7 @@ static const cvt_row *cvt_for_arrow(const char *f) {
    reservation half-written — the write finishes, the warning raises, and
    the core rolls the unpublished reservation back). */
 typedef struct {
-  uint64_t n_range;   /* int64/uint64 past +/-2^53 -> NA_real_ */
+  uint64_t n_range;   /* uint64 past 2^53 -> NA_real_ */
   uint64_t n_intmin;  /* masked int32 only: a genuine INT_MIN reads as NA */
 } cvt_warn;
 
@@ -571,19 +572,6 @@ static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
       memcpy(dst + 8 * i, &o, 8);
     }
     break;
-  case CVT_I64_REAL:
-    for (size_t i = 0; i < n; i++) {
-      int64_t v;
-      memcpy(&v, src + 8 * i, 8);
-      if (v > 9007199254740992LL || v < -9007199254740992LL) {   /* +/-2^53 */
-        store_na_real(dst + 8 * i);
-        warn->n_range++;
-      } else {
-        double o = (double) v;
-        memcpy(dst + 8 * i, &o, 8);
-      }
-    }
-    break;
   case CVT_U64_REAL:
     for (size_t i = 0; i < n; i++) {
       uint64_t v;
@@ -627,6 +615,9 @@ static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
 static void cvt_fill_na(uint8_t *dst, size_t n, int wire) {
   if (wire == REI_TYPE_REAL) {
     for (size_t i = 0; i < n; i++) store_na_real(dst + 8 * i);
+  } else if (wire == REI_TYPE_INT64) {
+    const int64_t na = INT64_MIN;   /* reads as NA_integer64_ in R */
+    for (size_t i = 0; i < n; i++) memcpy(dst + 8 * i, &na, 8);
   } else {
     const int32_t na = INT32_MIN;   /* INT and LGL share the sentinel */
     for (size_t i = 0; i < n; i++) memcpy(dst + 4 * i, &na, 4);
@@ -1537,8 +1528,13 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
     case REI_TYPE_REAL: dt = "float64"; break;
     case REI_TYPE_INT:
     case REI_TYPE_LGL: dt = "int32"; break;
+    case REI_TYPE_INT64: dt = "int64"; break;
     case REI_TYPE_CPLX: dt = "complex128"; break;
-    default: dt = "uint8"; break;
+    case REI_TYPE_RAW: dt = "uint8"; break;
+    default:
+      PyErr_Format(ReiError, "pyrei: unknown wire type %d", type);
+      Py_DECREF(empty);
+      return NULL;
     }
     PyObject *args = PyTuple_Pack(1, PyLong_FromSize_t(nelts));
     PyObject *kw = Py_BuildValue("{s:s}", "dtype", dt);
@@ -1680,6 +1676,7 @@ static const char *view_format(int type) {
   case REI_TYPE_REAL: return "d";
   case REI_TYPE_INT:
   case REI_TYPE_LGL: return "i";
+  case REI_TYPE_INT64: return "q";
   case REI_TYPE_CPLX: return "Zd";
   default: return "B";
   }
@@ -1812,6 +1809,7 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
     fmt = "i";   /* Arrow bool is bit-packed: LGL cannot zero-copy as bool */
     break;
   case REI_TYPE_REAL: fmt = "g"; break;
+  case REI_TYPE_INT64: fmt = "l"; break;
   case REI_TYPE_RAW: fmt = "C"; break;
   default:
     PyErr_SetString(PyExc_TypeError,
@@ -1927,8 +1925,13 @@ static PyObject *view_to_object(PyObject *view, int type) {
     case REI_TYPE_REAL: dt = "float64"; break;
     case REI_TYPE_INT:
     case REI_TYPE_LGL: dt = "int32"; break;
+    case REI_TYPE_INT64: dt = "int64"; break;
     case REI_TYPE_CPLX: dt = "complex128"; break;
-    default: dt = "uint8"; break;
+    case REI_TYPE_RAW: dt = "uint8"; break;
+    default:
+      PyErr_Format(ReiError, "pyrei: unknown wire type %d", type);
+      Py_DECREF(view);
+      return NULL;
     }
     PyObject *fb = PyObject_GetAttrString(np, "frombuffer");
     if (fb != NULL) {

@@ -59,8 +59,9 @@ _TAG_NP = {
     13: "int32",
     10: "int32",
     15: "complex128",
+    32: "int64",
 }
-_TAG_MV = {24: "B", 14: "d", 13: "i", 10: "i"}
+_TAG_MV = {24: "B", 14: "d", 13: "i", 10: "i", 32: "q"}
 
 # Morsel geometry (frozen by the R package's gate sweep): target ~256
 # morsels per runner, clamped to a constant grain.

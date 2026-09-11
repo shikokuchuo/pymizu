@@ -173,3 +173,15 @@ volume and the 64-lane runs stay memcpy. The masked int32 row pays for
 the genuine-INT_MIN count (a second vectorized pass over the
 destination). Widening rows are scalar conversion loops — ~2.8x memcpy,
 acceptable: those dtypes could not cross at all before.
+
+## 2026-09-11: int64 is a native wire tag (REI_TYPE_INT64)
+
+int64 buffers take the memcpy raw tier (`wire_type_of` maps 8-byte
+'l'/'q'); the range-checked widening loop survives only for uint64, and
+the masked-Arrow int64 fill writes the INT64_MIN sentinel (8-byte lanes)
+via the new `cvt_fill_na` case. This host, standalone run of the
+channel-stage table (1e6-element sends): stage int64 99.7 us/send — the
+identity tier (float64 identity 102.5, bytes memcpy 107.8) — replacing
+the per-element range-check loop, whose cost the uint64 widen row still
+shows at 257.0 us/send; stage masked int64 115.8 us/send (masked float64
+116.5). Full suite 190 pass, 1 skip (1 pre-existing environment skip).

@@ -176,10 +176,17 @@ def test_map_numpy_x(pool):
 
 
 def test_map_numpy_dtypes(pool):
-    for dt in (np.float64, np.int32, np.complex128, np.uint8):
+    for dt in (np.float64, np.int32, np.complex128, np.uint8, np.int64):
         a = np.arange(100, dtype=dt)
         out = pool.map(identity, a)
         assert [complex(v) for v in out] == [complex(v) for v in a]
+
+
+def test_map_numpy_int64_x(pool):
+    # values past 2^53: the 64-bit width is exercised, not just the dtype
+    a = np.arange(100, dtype=np.int64) * 2**53 + 1
+    out = pool.map(identity, a)
+    assert [int(v) for v in out] == [int(v) for v in a]
 
 
 def test_map_numpy_chunking_invariance(pool):

@@ -48,9 +48,9 @@ def big_array(n):
 
 
 def ret_int64_array():
-    """A numpy int64 array: a non-identity dtype for the raw tiers (pool
-    results keep the lossless pickle path — the conversion pass is
-    channel-scoped)."""
+    """A numpy int64 array: an identity dtype for the raw tiers (pool
+    results ride the memcpy raw tier — the conversion pass is
+    channel-scoped, and int64 no longer needs it)."""
     import numpy as np
 
     return np.array([1, 2, 3], dtype=np.int64)

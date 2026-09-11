@@ -284,7 +284,7 @@ def test_numpy_rawspill(echo):
 def test_numpy_gate_fallbacks(echo):
     # 2-D, non-contiguous, and unmappable dtypes fall to pickle, which
     # preserves shape and dtype exactly. (Mappable-but-non-identity
-    # dtypes — int64, bool — convert instead: see test_arrow.py.)
+    # dtypes — uint64, bool — convert instead: see test_arrow.py.)
     cases = [
         np.arange(12, dtype=np.float64).reshape(3, 4),
         np.arange(20, dtype=np.float64)[::2],

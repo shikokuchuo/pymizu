@@ -92,7 +92,14 @@ changes go upstream to librei and are pulled by re-running the script
   pickle protocol 4 over INLINE/ARENA/SHM_RAW. The buffer gate requests
   `PyBUF_ND | PyBUF_FORMAT` and verifies C-contiguity as `strides == NULL`
   — never `PyBUF_C_CONTIGUOUS`, which implies WRITABLE and would reject a
-  read-only view echoing back. Reads dispatch on the first byte across the
+  read-only view echoing back. The gate's dtype map (`wire_type_of`) is
+  width-exact: uint8/float64/int32/int64/complex128 as
+  RAW/REAL/INT/INT64/CPLX — int64 is a native wire tag
+  (`REI_TYPE_INT64` 32; `INT64_MIN` is the missing
+  sentinel, no per-element scan), not a conversion. The conversion pass
+  (`cvt_for_buffer`/`cvt_for_arrow`) is channel-scoped and now serves
+  only the non-identity dtypes (uint64 past 2^53 warns to `NA_real_`;
+  narrow ints widen; bool byte-expands). Reads dispatch on the first byte across the
   three magics; R streams get an informative "R payload" error.
   `_read_stream` exposes the stream parser for tests.
 - Zero-copy views (SHM_VEC/REF reads): `_ShmView`, one exporter per view,

@@ -93,6 +93,57 @@ rei::rei_send(ch, i)
     assert s[0] == 1.0 and s[-1] == 1999999.0
 
 
+def test_r_peer_int64_roundtrip(r_rei):
+    """int64 is a native wire type: numpy int64 crosses bit-identically,
+    landing in R as an integer64 vector (bit64's layout) — no conversion."""
+    np = pytest.importorskip("numpy")
+    ch = pyrei.Channel.create(R_ECHO, launcher=r_rei)
+    try:
+        for x in [
+            np.array([0, 1, -1, 2**53 + 1, -(2**53) - 1], dtype=np.int64),
+            np.arange(2000000, dtype=np.int64) * 2**32,  # 16 MB: SHM_VEC
+        ]:
+            assert ch.send(x) is True
+            got = ch.recv(30)
+            assert isinstance(got, np.ndarray)
+            assert got.dtype == np.int64
+            assert np.array_equal(got, x)
+    finally:
+        ch.close()
+
+
+def test_r_peer_int64_na_sentinel(r_rei):
+    """INT64_MIN is NA_integer64_ (the documented sentinel) both ways. The
+    R side asserts the wire bits, so the check needs no bit64 install; when
+    bit64 is loadable it also confirms the is.na() semantics."""
+    np = pytest.importorskip("numpy")
+    src = r"""
+i64le <- function(v) writeBin(unclass(v), raw(), size = 8L, endian = "little")
+fromle <- function(r) readBin(r, "double", size = 8L, endian = "little",
+                              n = length(r) %/% 8L)
+x <- rei::rei_recv(ch, timeout = 30)
+ok <- inherits(x, "integer64") && length(x) == 2L &&
+  identical(i64le(x), as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x80,
+                              7, 0, 0, 0, 0, 0, 0, 0)))
+if (requireNamespace("bit64", quietly = TRUE)) {
+  ok <- ok && is.na(x[1L]) && !is.na(x[2L])
+}
+# R -> Python: an NA_integer64_ (INT64_MIN bits) and a value past 2^53
+v <- structure(fromle(as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x80,
+                               1, 0, 0, 0, 0, 0, 0x20, 0))),
+               class = "integer64")
+rei::rei_send(ch, if (isTRUE(ok)) v else "R check failed")
+"""
+    ch = pyrei.Channel.create(src, launcher=r_rei)
+    try:
+        assert ch.send(np.array([-(2**63), 7], dtype=np.int64)) is True
+        got = ch.recv(30)
+        assert isinstance(got, np.ndarray) and got.dtype == np.int64
+        assert list(got) == [-(2**63), 2**53 + 1]
+    finally:
+        ch.close()
+
+
 def test_r_peer_string_and_na(r_rei):
     src = """
 rei::rei_send(ch, "hello world")

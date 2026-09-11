@@ -227,7 +227,11 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
       goto fail_bufs;
     t_tag = rei_py_wire_type_of(&tbuf);
     size_t elt = rei_type_elt_size(t_tag);
-    if (t_tag == 0 || elt == 0 || tbuf.len < (Py_ssize_t) elt ||
+    /* REI_TYPE_INT64 stays rejected for now: buffer-valued results would
+       memcpy fine, but an m == 1 scalar result would format 'B' in the
+       error — full support rides the rei-side template follow-up */
+    if (t_tag == 0 || t_tag == REI_TYPE_INT64 || elt == 0 ||
+        tbuf.len < (Py_ssize_t) elt ||
         (size_t) tbuf.len % elt != 0) {
       PyBuffer_Release(&tbuf);
       PyErr_SetString(ReiErr, "pyrei: invalid map template");

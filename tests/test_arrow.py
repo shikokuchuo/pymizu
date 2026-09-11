@@ -28,8 +28,11 @@ while True:
 
 # The R checker peer: read a spec string, read a vector, assert its type
 # and values (NA positions included), echo it back — or send the error
-# message instead of the echo.
+# message instead of the echo. The int64 specs assert the bit patterns
+# (little-endian int64 encodings riding REALSXP storage), so the checker
+# needs no bit64 install.
 R_CHECK = r"""
+i64le <- function(v) writeBin(unclass(v), raw(), size = 8L, endian = "little")
 repeat {
   spec <- rei::rei_recv(ch, timeout = 30)
   if (inherits(spec, "rei_sentinel")) break
@@ -42,17 +45,36 @@ repeat {
       dbl = stopifnot(is.double(x), identical(x, c(-1, 2, 3))),
       dblpos = stopifnot(is.double(x), identical(x, c(1, 2, 3))),
       u32max = stopifnot(is.double(x), identical(x, c(0, 1, 4294967295))),
-      i64edge = stopifnot(is.double(x),
-                          identical(x, c(9007199254740992,
-                                         -9007199254740992))),
+      i64 = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(0xff, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xff, 0xff,
+                                    2, 0, 0, 0, 0, 0, 0, 0,
+                                    3, 0, 0, 0, 0, 0, 0, 0)))),
+      i64edge = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(0, 0, 0, 0, 0, 0, 0x20, 0,
+                                    0, 0, 0, 0, 0, 0, 0xe0, 0xff)))),
+      i64big = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(1, 0, 0, 0, 0, 0, 0x20, 0,
+                                    0xff, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xdf, 0xff)))),
+      i64na24 = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(2, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0x80,
+                                    4, 0, 0, 0, 0, 0, 0, 0)))),
+      i64na2 = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(1, 0, 0, 0, 0, 0, 0x20, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0x80)))),
       over1 = stopifnot(is.double(x), length(x) == 1L, is.na(x)),
       lgl = stopifnot(is.logical(x), identical(x, c(TRUE, FALSE, TRUE))),
       cplx = stopifnot(is.complex(x), identical(x, c(1+2i, -3+0.5i))),
       intna = stopifnot(is.integer(x), identical(x, c(1L, NA_integer_, 3L))),
       lglena = stopifnot(is.logical(x), identical(x, c(TRUE, NA, FALSE))),
       dblna = stopifnot(is.double(x), identical(x, c(1.5, NA_real_, 3.5))),
-      dblna24 = stopifnot(is.double(x), identical(x, c(2, NA, 4))),
-      dblna2 = stopifnot(is.double(x), length(x) == 2L, all(is.na(x))),
       intmin = stopifnot(is.integer(x), length(x) == 3L,
                          is.na(x[1]), identical(x[2:3], c(1L, NA_integer_))),
       int5 = stopifnot(is.integer(x),
@@ -164,7 +186,7 @@ def test_numpy_dtype_matrix(rcheck):
         ("intpos", np.array([1, 2, 3], dtype=np.uint16)),
         ("int", np.array([-1, 2, 3], dtype=np.int32)),
         ("u32max", np.array([0, 1, 4294967295], dtype=np.uint32)),
-        ("dbl", np.array([-1, 2, 3], dtype=np.int64)),
+        ("i64", np.array([-1, 2, 3], dtype=np.int64)),
         ("dblpos", np.array([1, 2, 3], dtype=np.uint64)),
         ("dbl", np.array([-1, 2, 3], dtype=np.float32)),
         ("dbl", np.array([-1.0, 2.0, 3.0], dtype=np.float64)),
@@ -178,23 +200,32 @@ def test_numpy_dtype_matrix(rcheck):
 
 def test_numpy_echo_dtypes(rcheck):
     # the echo's dtype reports the R-side wire type (R re-stages what it
-    # received): int64 arrives as float64 (R numeric), bool as int32 (R
+    # received): int64 arrives as int64 (R integer64), bool as int32 (R
     # logical reads width-compatibly)
-    b = r_case(rcheck, "dbl", np.array([-1, 2, 3], dtype=np.int64))
-    assert b.dtype == np.float64
+    b = r_case(rcheck, "i64", np.array([-1, 2, 3], dtype=np.int64))
+    assert b.dtype == np.int64
     b = r_case(rcheck, "lgl", np.array([True, False, True]))
     assert b.dtype == np.int32
     assert list(b) == [1, 0, 1]
 
 
-def test_int64_range_check(rcheck):
-    # exactly +/-2^53 stays exact
-    b = r_case(rcheck, "i64edge", np.array([2**53, -(2**53)], dtype=np.int64))
-    assert np.array_equal(b, [2**53, -(2**53)])
-    # past it: NA on the R side plus exactly one warning
-    with pytest.warns(RuntimeWarning, match="beyond"):
-        b = r_case(rcheck, "over1", np.array([2**53 + 1], dtype=np.int64))
-    assert np.isnan(b[0])
+def test_int64_exact_and_sentinel(rcheck):
+    # int64 is a native wire type: values past 2^53 cross exactly, no
+    # warning (the copy tier is a pure memcpy)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        b = r_case(rcheck, "i64edge",
+                   np.array([2**53, -(2**53)], dtype=np.int64))
+        assert np.array_equal(b, [2**53, -(2**53)])
+        b = r_case(rcheck, "i64big",
+                   np.array([2**53 + 1, -(2**53) - 1], dtype=np.int64))
+        assert np.array_equal(b, [2**53 + 1, -(2**53) - 1])
+        # INT64_MIN is the missing sentinel (documented): a genuine one
+        # reads as NA_integer64_ in R and echoes back as INT64_MIN
+        b = r_case(rcheck, "i64na2",
+                   np.array([2**53 + 1, -(2**63)], dtype=np.int64))
+        assert list(b) == [2**53 + 1, -(2**63)]
+    # uint64 stays lossy: past 2^53 warns and converts to NA_real_
     with pytest.warns(RuntimeWarning, match="beyond"):
         r_case(rcheck, "over1", np.array([2**53 + 1], dtype=np.uint64))
 
@@ -205,7 +236,7 @@ def test_range_warning_as_error(echo):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
-            echo.send(np.array([2**53 + 1], dtype=np.int64))
+            echo.send(np.array([2**53 + 1], dtype=np.uint64))
     assert echo.send(np.array([1.0, 2.0])) is True
     assert np.array_equal(echo.recv(timeout=5), [1.0, 2.0])
 
@@ -232,13 +263,16 @@ def test_arrow_import_nulls(rcheck):
 
 
 def test_arrow_masked_int64(rcheck):
-    # in-range values widen exactly, the null is NA, no warning
+    # values cross exactly, the null lane writes INT64_MIN (reads as
+    # NA_integer64_ in R) — no warning: the copy tier is a pure memcpy
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        r_case(rcheck, "dblna24", pa.array([2, None, 4], type=pa.int64()))
-    # an out-of-range valid value under a mask: exactly one warning
-    with pytest.warns(RuntimeWarning, match="beyond"):
-        r_case(rcheck, "dblna2", pa.array([2**53 + 1, None], type=pa.int64()))
+        b = r_case(rcheck, "i64na24", pa.array([2, None, 4], type=pa.int64()))
+        assert list(b) == [2, -(2**63), 4]
+        # an out-of-range valid value under a mask: exact, still no warning
+        b = r_case(rcheck, "i64na2",
+                   pa.array([2**53 + 1, None], type=pa.int64()))
+        assert list(b) == [2**53 + 1, -(2**63)]
 
 
 def test_arrow_masked_intmin(rcheck):
@@ -331,7 +365,8 @@ def test_arrow_invalid_capsules(echo):
 
 def test_pool_results_keep_pickle(pool):
     # the conversion pass is channel-scoped: pool results are
-    # Python-both-ends by construction and round-trip losslessly
+    # Python-both-ends by construction and round-trip losslessly (int64
+    # on the memcpy raw tier, an Arrow table on the pickle path)
     out = pool.submit(ret_int64_array).collect(timeout=30)
     assert out.dtype == np.int64
     assert list(out) == [1, 2, 3]
@@ -341,13 +376,17 @@ def test_pool_results_keep_pickle(pool):
 
 
 def test_py_py_channel_normalizes(echo):
-    # a channel peer's language is unknowable at stage time: non-identity
-    # dtypes convert on Py->Py channels too. The escape hatch for an exact
-    # Py->Py send: nest the array in a container (keeps the pickle path)
+    # a channel peer's language is unknowable at stage time: non-wire
+    # dtypes convert on Py->Py channels too (int64 is a wire type and
+    # crosses exactly; uint64 still converts). The escape hatch for an
+    # exact Py->Py send of a converting dtype: nest the array in a
+    # container (keeps the pickle path)
     assert echo.send(np.array([1, 2, 3], dtype=np.int64)) is True
+    assert echo.recv(timeout=5).dtype == np.int64
+    assert echo.send(np.array([1, 2, 3], dtype=np.uint64)) is True
     assert echo.recv(timeout=5).dtype == np.float64
-    assert echo.send((np.array([1, 2, 3], dtype=np.int64),)) is True
-    assert echo.recv(timeout=5)[0].dtype == np.int64
+    assert echo.send((np.array([1, 2, 3], dtype=np.uint64),)) is True
+    assert echo.recv(timeout=5)[0].dtype == np.uint64
     # Arrow nulls convert to the NA sentinel, indistinguishable from a
     # genuine INT_MIN on the Python side
     assert echo.send(pa.array([1, None, 3], type=pa.int32())) is True
