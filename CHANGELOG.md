@@ -15,13 +15,15 @@ Initial pre-release.
   serialization-free raw tier for `bytes` and 1-D contiguous numpy arrays,
   pickle protocol 4 fallback, sentinel outcomes (`FULL`, `TIMEOUT`,
   `CLOSED`, `PEER_GONE`), and OS-notification peer-death detection.
-- Channels accept buffers of every fixed-width numeric dtype: bool,
-  int8/16, uint16/32/64, int64, float32, and complex64 convert to the
-  nearest R-compatible type at send time. An int64 or uint64 value with a
-  magnitude larger than 2^53 becomes `NA`, and the send issues a
-  `RuntimeWarning`. Pool results keep the lossless pickle path, because
-  pools are Python at both ends. On a channel, a tuple or a list around
-  an array keeps its exact pickle path.
+- Channels accept buffers of every fixed-width numeric dtype. int64 is a
+  native wire type: it crosses bit-identically and lands in R as an
+  `integer64` vector (bit64's layout), with `INT64_MIN` as the missing
+  sentinel. bool, int8/16, uint16/32/64, float32, and complex64 convert
+  to the nearest R-compatible type at send time. A uint64 value past 2^53
+  in magnitude becomes `NA`, and the send issues a `RuntimeWarning`. Pool
+  results keep the lossless pickle path, because pools are Python at both
+  ends. On a channel, a tuple or a list around an array keeps its exact
+  pickle path.
 - Arrow interop: `channel.send()` accepts an Arrow array from any producer
   with `__arrow_c_array__` (pyarrow, polars, duckdb). Arrow nulls become R
   missing values. A received zero-copy view exports to an Arrow consumer

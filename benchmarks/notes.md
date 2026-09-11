@@ -197,3 +197,22 @@ the untouched loop), masked+scan 140.5/140.6. Run 1's masked-float64
 outlier (169.2) settled to 119.6 — transient. Map rows: winsum 2k
 480,745 tasks/s (recorded 468k), 20k 473,275, template copy/view
 679k/692k tasks/s, skew 7.3 ms wall.
+
+## 2026-09-11 — stdlib comparison refresh
+
+`benchmarks/rei-stdlib-bench.py` on this host (Python 3.14.2), most
+favourable of four runs per row, as on 2026-08-25. Pipelined throughput
+improved: 2.39M tasks/s (recorded 2.19M; worst of the four runs 2.24M).
+All other pyrei rows inside their recorded bands. README tables updated.
+
+| scenario | pyrei | cf process pool | cf thread pool |
+|----|----|----|----|
+| sequential rt | 0.7 µs/task | 94.2 µs/task | 8.9 µs/task |
+| pipelined, pool | 2,391,677 tasks/s | 18,517 tasks/s | 405,020 tasks/s |
+| payload 8,000 B | 2.7 µs/task | 111.9 µs/task | 9.6 µs/task |
+| payload 800,000 B | 59.8 µs/task | 382.5 µs/task | 9.4 µs/task |
+| payload 8,000,000 B | 212.2 µs/task | 3,532.3 µs/task | 8.6 µs/task |
+| fan-out x 2000, 4 workers | 284,929 tasks/s | 16,168 tasks/s | 40,509 tasks/s |
+| map trivial f x 10000 | 0.4 µs/elt | 70.3 µs/elt | 2.6 µs/elt |
+| map winsum x 2000 | 453,446 elts/s | 15,333 elts/s | 40,399 elts/s |
+| map skewed f x 4000 | 6.8 ms wall | 263.0 ms wall | 49.3 ms wall |

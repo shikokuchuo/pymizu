@@ -50,7 +50,7 @@ Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.
 
 `None` crosses as an immediate.
 `bytes` and 1-D contiguous numpy arrays ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
-float64, int32, complex128, and uint8 cross unchanged; every other fixed-width numeric dtype (bool, int64, float32, ...) converts once at send time into the nearest R-compatible wire type — see the [dtype matrix](#the-dtype-matrix).
+float64, int32, int64, complex128, and uint8 cross unchanged; every other fixed-width numeric dtype (bool, uint64, float32, ...) converts once at send time into the nearest R-compatible wire type — see the [dtype matrix](#the-dtype-matrix).
 Arrow arrays (anything with `__arrow_c_array__`: pyarrow, polars, a duckdb result column) cross the same way, with Arrow nulls becoming R missing values.
 Strings cross as raw UTF-8; booleans, numbers, and flat containers of them ride a compact binary codec.
 Everything else crosses as a pickle protocol 4 stream.
@@ -86,7 +86,7 @@ with pyrei.Pool.create(4) as pool:
 One call stages `fn`, the constant `args=`/`kwargs=`, and `x` exactly once — a shared region, or inline in chunk tasks when small — then submits one runner task per live worker.
 
 Runners self-schedule adaptively sized element batches off a shared cursor: a trivial `fn` runs in large batches at near-zero scheduling overhead; an expensive or skewed one self-limits to fine claims that keep the workers balanced.
-A 1-D C-contiguous buffer of float64, int32, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing `x`.
+A 1-D C-contiguous buffer of float64, int32, int64, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing `x`.
 `chunks=` overrides the scheduling granularity outright.
 
 `seed=` (an int or bytes) derives deterministic per-element streams of the stdlib `random` module: element `i` runs under `random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))`, so results are identical for any chunking, worker count, or steal order.
@@ -105,9 +105,9 @@ Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled pay
 
 | Benchmark | pyrei | ProcessPoolExecutor | Speedup |
 |----|----|----|----|
-| Trivial task round trip | 0.7 µs | 90.2 µs | 129x |
-| Pipelined throughput, 1 worker | 2,190,000 tasks/s | 18,700 tasks/s | 117x |
-| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 69.4 µs/elt | 173x |
+| Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
+| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 70.3 µs/elt | 176x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
 
 Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
@@ -115,8 +115,8 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 | Benchmark | pyrei | ThreadPoolExecutor | Speedup |
 |----|----|----|----|
 | Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
-| Pipelined throughput, 1 worker | 2,190,000 tasks/s | 407,000 tasks/s | 5.4x |
-| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.5 µs/elt | 6.3x |
+| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
 
 `benchmarks/rei-bench.py` runs the pyrei rows standalone.
@@ -172,7 +172,7 @@ What crosses the language boundary:
 ### The dtype matrix
 
 Conversion happens once, at send time, fused into the copy that staging always is.
-Identity rows (float64, int32, complex128, uint8) are a plain memcpy.
+Identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.
 
 | Python sends | R receives | Notes |
 |----|----|----|
@@ -180,7 +180,8 @@ Identity rows (float64, int32, complex128, uint8) are a plain memcpy.
 | int8 / int16 / uint16 | integer | widened, exact |
 | int32 | integer | |
 | uint32 | double | widened, exact |
-| int64 / uint64 | double | exact to ±2^53; past it, `NA` plus one warning |
+| int64 | integer64 (bit64's layout) | native wire type, bit-exact; `INT64_MIN` reads as `NA` |
+| uint64 | double | exact to ±2^53; past it, `NA` plus one warning |
 | float32 / float64 | double | |
 | bool | logical | |
 | complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
@@ -190,11 +191,11 @@ Identity rows (float64, int32, complex128, uint8) are a plain memcpy.
 
 NA semantics:
 
-- R's missing values are sentinels in the data: `INT_MIN` for integer/logical, a specific NaN payload (`NA_real_`) for double.
+- R's missing values are sentinels in the data: `INT_MIN` for integer/logical, `INT64_MIN` for integer64, a specific NaN payload (`NA_real_`) for double.
   Python to R: Arrow nulls convert to the sentinels, so R sees correct `NA`s.
-  R to Python: no Arrow nulls are synthesized — `NA_integer_` reads as `-2147483648`, `NA_real_` as a NaN.
-- A genuine int32 value of `-2147483648` collides with the NA sentinel and reads as `NA` in R.
-  numpy sends stay silent (as before); an Arrow send with a validity bitmap warns once.
+  R to Python: no Arrow nulls are synthesized — `NA_integer_` reads as `-2147483648`, `NA_integer64_` as `-9223372036854775808`, `NA_real_` as a NaN.
+- A genuine int32 value of `-2147483648` collides with the NA sentinel and reads as `NA` in R; likewise an int64 value of `-9223372036854775808` (`INT64_MIN`) reads as `NA_integer64_`.
+  numpy sends stay silent; an Arrow int32 send with a validity bitmap warns once — int64 sends are never scanned, so that collision stays silent too.
 - Python-side compute treats `NA_real_` as a NaN value; whether the exact payload survives arithmetic is platform-dependent — do not rely on it either way.
 
 Round trips are stable after the first hop, and a pure pass-through echo is bit-exact (an untouched received view re-stages as untouched bytes, so even the `NA_real_` payload survives a relay).
@@ -205,8 +206,9 @@ Round trips are stable after the first hop, and a pure pass-through echo is bit-
 | int8 / int16 / uint16 | integer | int32 | widened, values exact |
 | int32 | integer | int32 | exact |
 | uint32 | double | float64 | exact |
-| int64 / uint64, ≤ ±2^53 | double | float64 | dtype lost, values exact |
-| int64 / uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
+| int64 | integer64 | int64 | exact |
+| uint64, ≤ ±2^53 | double | float64 | dtype lost, values exact |
+| uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
 | float32 | double | float64 | widened, values exact |
 | float64 | double | float64 | exact |
 | bool | logical | int32 0/1 | dtype lost |
@@ -215,6 +217,7 @@ Round trips are stable after the first hop, and a pure pass-through echo is bit-
 | R sends | Python sees | Back in R | |
 |----|----|----|----|
 | integer | int32 | integer | exact |
+| integer64 (bit64) | int64 | integer64 | exact |
 | double | float64 | double | exact |
 | raw | uint8 | raw | exact |
 | complex | complex128 | complex | exact |
@@ -227,10 +230,8 @@ For an exact Python-to-Python channel send of a non-identity dtype, nest the arr
 ## Requirements
 
 - Python 3.10 or later, on a 64-bit platform.
-- Linux: kernel 5.3 or later (`pidfd_open`, no fallback).
-- Windows: the build uses clang-cl.
-  MSVC does not support the C11 atomics that the core needs.
-  `setup.py` forces clang-cl through a `build_ext` override.
+- Linux: kernel 5.3 or later.
+- Windows: the build requires clang-cl.
 
 ## Install
 

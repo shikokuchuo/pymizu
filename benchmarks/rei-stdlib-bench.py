@@ -389,6 +389,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # the guard is load-bearing: spawn re-imports the main module in
+    # the guard is required: spawn re-imports the main module in
     # every ProcessPoolExecutor worker
     main()
