@@ -597,7 +597,9 @@ def test_export_polars_smoke(echo):
     a = np.arange(100000, dtype=np.float64)
     assert echo.send(a) is True
     view = _exporter(echo.recv(timeout=5))
-    s = pl.from_arrow(view)
+    # the Arrow-array entry point for a flat producer (from_arrow builds a
+    # DataFrame and demands a struct)
+    s = pl.Series(view)
     assert s.len() == 100000
     assert s[0] == 0.0 and s[-1] == 99999.0
 
