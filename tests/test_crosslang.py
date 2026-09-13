@@ -172,6 +172,23 @@ rei::rei_send(ch, if (is.character(x)) x else "no error")
         ch.close()
 
 
+def test_r_peer_serialized_payload_consumed(r_rei):
+    """An R native-serialize stream is declined and consumed (the
+    REI_READ_CONSUME contract): the recv raises, and a retried recv sees
+    the NEXT slot — before 0.3.0 the ring wedged behind the failed slot."""
+    src = """
+rei::rei_send(ch, new.env())   # the codec rejects environments: R serialize
+rei::rei_send(ch, "after")
+"""
+    ch = pyrei.Channel.create(src, launcher=r_rei)
+    try:
+        with pytest.raises(pyrei.ReiError, match="R payload"):
+            ch.recv(30)
+        assert ch.recv(30) == "after"
+    finally:
+        ch.close()
+
+
 def test_r_host_python_peer(r_rei):
     """The other direction: an R host, a Python peer spawned through
     python -m pyrei.child, assertions on the R side."""

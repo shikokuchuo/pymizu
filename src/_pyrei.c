@@ -321,17 +321,10 @@ static uint8_t *reserve_shm_vec(size_t n, int type, rei_slot_hdr *hdr,
   rei_shm *shm;
   if (rei_stage_spill_get(h, total, &shm) != REI_OK) return NULL;
   uint8_t *base = (uint8_t *) shm->addr;
-  uint32_t magic = REI_MAGIC_VEC;
-  int32_t t32 = type;
-  int64_t len64 = (int64_t) (n / rei_type_elt_size(type)), zero64 = 0;
-  memcpy(base, &magic, 4);
-  memcpy(base + 4, &t32, 4);
-  memcpy(base + 8, &len64, 8);
-  memcpy(base + 16, &zero64, 8);          /* attrs_size */
-  memset(base + 24, 0, REI_HEADER_SIZE - 24);
+  rei_reih_write(base, type, (int64_t) (n / rei_type_elt_size(type)));
   hdr->kind = REI_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = (uint64_t) type | ((uint64_t) total << 8);
+  hdr->aux = rei_aux_shm_vec(type, (uint64_t) total);
   memcpy(payload, shm->name, shm->name_len);
   rei_stage_retain_zc(h, shm);
   return base + REI_HEADER_SIZE;
@@ -375,7 +368,7 @@ static uint8_t *stage_reserve(size_t n, int type, rei_slot_hdr *hdr,
     if (rei_stage_spill_get(h, n, &shm) != REI_OK) return NULL;
     hdr->kind = REI_KIND_RAWSPILL;
     hdr->len = (uint32_t) n;
-    hdr->aux = (uint64_t) type | ((uint64_t) shm->name_len << 8);
+    hdr->aux = rei_aux_rawspill_pool(type, shm->name_len);
     memcpy(payload, shm->name, shm->name_len);
     rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
     return (uint8_t *) shm->addr;
@@ -421,14 +414,10 @@ static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
    construction and keep the lossless pickle path for non-identity
    dtypes. */
 
-/* R's missing-value sentinels: INT_MIN for INT/LGL, and NA_real_ — a
-   NaN with payload 0x07A2 — for REAL. The R ABI fixes the bit pattern;
-   pyrei cannot include R headers. Little-endian throughout (all
-   supported platforms are; the codec relies on it). */
-static void store_na_real(uint8_t *p) {
-  const uint64_t bits = 0x7FF80000000007A2ULL;
-  memcpy(p, &bits, 8);
-}
+/* R's missing-value sentinels are the core's REI_NA_* wire constants
+   (the R ABI fixes the bit patterns; pyrei cannot include R headers).
+   Little-endian throughout (all supported platforms are; the codec
+   relies on it). */
 
 enum {
   CVT_COPY = 0,   /* identity: one memcpy per run */
@@ -577,7 +566,7 @@ static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
       uint64_t v;
       memcpy(&v, src + 8 * i, 8);
       if (v > 9007199254740992ULL) {
-        store_na_real(dst + 8 * i);
+        rei_store_na_real(dst + 8 * i);
         warn->n_range++;
       } else {
         double o = (double) v;
@@ -614,12 +603,12 @@ static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
 /* Fill n lanes with the wire type's missing sentinel. */
 static void cvt_fill_na(uint8_t *dst, size_t n, int wire) {
   if (wire == REI_TYPE_REAL) {
-    for (size_t i = 0; i < n; i++) store_na_real(dst + 8 * i);
+    for (size_t i = 0; i < n; i++) rei_store_na_real(dst + 8 * i);
   } else if (wire == REI_TYPE_INT64) {
-    const int64_t na = INT64_MIN;   /* reads as NA_integer64_ in R */
+    const int64_t na = REI_NA_INT64;   /* reads as NA_integer64_ in R */
     for (size_t i = 0; i < n; i++) memcpy(dst + 8 * i, &na, 8);
   } else {
-    const int32_t na = INT32_MIN;   /* INT and LGL share the sentinel */
+    const int32_t na = REI_NA_INT32;   /* INT and LGL share the sentinel */
     for (size_t i = 0; i < n; i++) memcpy(dst + 4 * i, &na, 4);
   }
 }
@@ -1283,14 +1272,7 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
       goto out;
     }
     uint8_t *base = (uint8_t *) shm->addr;
-    uint32_t magic = REI_MAGIC_VEC;
-    int32_t t32 = type;
-    int64_t len64 = (int64_t) (n / rei_type_elt_size(type)), zero64 = 0;
-    memcpy(base, &magic, 4);
-    memcpy(base + 4, &t32, 4);
-    memcpy(base + 8, &len64, 8);
-    memcpy(base + 16, &zero64, 8);
-    memset(base + 24, 0, REI_HEADER_SIZE - 24);
+    rei_reih_write(base, type, (int64_t) (n / rei_type_elt_size(type)));
     memcpy(base + REI_HEADER_SIZE, v.buf, n);
     rei_stage_retain_zc(h, shm);
     *(*p)++ = PYREI_TAG_BUFREF;
@@ -1493,9 +1475,11 @@ static int stage_impl(PyObject *obj, rei_slot_hdr *hdr, uint8_t *payload,
 }
 
 /* The binding's stage_fn, registered on every channel handle. The veneer
-   released the GIL around the verb; reacquire. */
+   released the GIL around the verb; reacquire. ctx (the view cache) is
+   read-side only — staging pins nothing. */
 static int py_stage(void *obj, rei_slot_hdr *hdr, uint8_t *payload,
-                    uint32_t inline_max, rei_handle *h) {
+                    uint32_t inline_max, rei_handle *h, void *ctx) {
+  (void) ctx;
   PyGILState_STATE gil = PyGILState_Ensure();
   int rc = stage_impl((PyObject *) obj, hdr, payload, inline_max, h);
   PyGILState_Release(gil);
@@ -1966,28 +1950,24 @@ static PyObject *view_wrap_region(ReiShmOwner *owner, uint64_t aux) {
   int64_t size = (int64_t) rei_shm_size(shm);
   int type = 0;
   int64_t length = 0;
-  size_t elt = 0;
   const char *err = NULL;
-  if (size < (int64_t) REI_HEADER_SIZE) goto corrupt;
-  {
+  if (size >= (int64_t) REI_HEADER_SIZE) {
     uint32_t magic;
-    int32_t t32;
-    int64_t attrs;
     memcpy(&magic, base, 4);
     if (magic != REI_MAGIC_VEC) {
       err = "pyrei: unsupported shared-payload layout (R string/list views "
             "cannot cross to Python)";
       goto fail;
     }
-    memcpy(&t32, base + 4, 4);
-    memcpy(&length, base + 8, 8);
+  }
+  /* size, magic, wire type, and the extents ride the core's REIH check;
+     attribute policy stays here */
+  if (rei_reih_check(base, (size_t) size, &type, &length) != 0)
+    goto corrupt;
+  size_t elt = rei_type_elt_size(type);
+  {
+    int64_t attrs;
     memcpy(&attrs, base + 16, 8);
-    type = t32;
-    elt = rei_type_elt_size(type);
-    if (elt == 0 || length < 0 || attrs < 0 ||
-        length > (size - (int64_t) REI_HEADER_SIZE) / (int64_t) elt ||
-        attrs > size - (int64_t) REI_HEADER_SIZE - length * (int64_t) elt)
-      goto corrupt;
     if (aux != 0 &&
         ((uint32_t) (aux & 0xff) != (uint32_t) type ||
          (aux >> 8) != (uint64_t) ((size_t) REI_HEADER_SIZE +
@@ -2166,7 +2146,7 @@ static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
         (size_t) (end - *p) < name_len || n > (UINT64_MAX >> 8))
       return NULL;
     /* the SHM_VEC aux shape: the staged type and the exact byte count */
-    uint64_t aux = type | ((REI_HEADER_SIZE + n) << 8);
+    uint64_t aux = rei_aux_shm_vec((int) type, REI_HEADER_SIZE + n);
     PyObject *r = read_shm_vec(*p, name_len, aux, ctx);
     if (r != NULL) *p += name_len;
     return r;
@@ -2460,10 +2440,14 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
   case PYREI_CODEC_MAGIC:
     return codec_read(src, n, ctx);
   case REI_CODEC_MAGIC: case 'B': case 'X': case 'A':
+    /* foreign stream: consume the slot (a plain failure would wedge the
+       ring behind it); the verb surfaces REI_ERR with this message */
+    ctx->flags |= REI_READ_CONSUME;
     PyErr_SetString(ReiError, "pyrei: R payload (no codec interop) - "
                     "send Python values from a pyrei peer");
     return NULL;
   default:
+    ctx->flags |= REI_READ_CONSUME;
     PyErr_SetString(ReiError, "pyrei: unrecognized payload");
     return NULL;
   }
@@ -2881,18 +2865,11 @@ infra:
    never releases it. */
 static int py_exec(const rei_slot_hdr *hdr, const uint8_t *payload,
                    size_t limit, rei_result_sink *sink, int catching,
-                   void *ctx) {
+                   rei_read_ctx *ctx) {
   (void) catching;
-  rei_read_ctx rctx;
-  memset(&rctx, 0, sizeof(rctx));
-  rctx.size = (uint32_t) sizeof(rctx);
-  rctx.outcome = REI_RS_OK;
-  rctx.died_slot = -1;
-  rctx.handle = (rei_handle *) sink->p;
-  rctx.binding_ctx = ctx;
-  PyObject *task = read_impl(hdr, payload, limit, &rctx);
+  PyObject *task = read_impl(hdr, payload, limit, ctx);
   if (task == NULL) {
-    if (rctx.gone) {
+    if (ctx->gone) {
       /* the enqueuer died and its region went along: the task can never
          run anywhere — it fails as DIED, and the drain continues */
       rei_result_publish_died(sink);
@@ -3000,8 +2977,8 @@ static PyObject *status_or_raise(ReiChannel *self, rei_status st,
   }
 }
 
-/* seconds (None / non-finite waits indefinitely, <= 0 polls) to the core's
-   timeout_ms (0 polls, < 0 indefinite). */
+/* seconds (None waits indefinitely) to the core's timeout_ms; the
+   double conversion itself is the core's rei_timeout_ms. */
 static int timeout_ms_of(PyObject *arg, double *out) {
   if (arg == Py_None) {
     *out = -1;
@@ -3009,11 +2986,7 @@ static int timeout_ms_of(PyObject *arg, double *out) {
   }
   double t = PyFloat_AsDouble(arg);
   if (t == -1 && PyErr_Occurred()) return -1;
-  if (!isfinite(t)) {
-    *out = -1;
-    return 0;
-  }
-  *out = t <= 0 ? 0 : t * 1000;
+  *out = rei_timeout_ms(t);
   return 0;
 }
 
