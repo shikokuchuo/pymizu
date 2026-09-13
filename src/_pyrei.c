@@ -308,94 +308,23 @@ int rei_py_wire_type_of(const Py_buffer *v) {
   return wire_type_of(v);
 }
 
-/* SHM_VEC reserve: the REIH layout header into a spill region (free-list
-   pop or fresh create), the name as the payload, aux the wire type |
-   exact used bytes << 8; the data area is the returned destination. The
-   producer-loan refcount store rides rei_stage_retain_zc; the header
-   write zeroes the reserved band ahead of it (a recycled region carries
-   stale bytes). Returns the destination, NULL on region failure (the
-   caller falls back to a copy tier). */
-static uint8_t *reserve_shm_vec(size_t n, int type, rei_slot_hdr *hdr,
-                                uint8_t *payload, rei_handle *h) {
-  size_t total = REI_HEADER_SIZE + n;
-  rei_shm *shm;
-  if (rei_stage_spill_get(h, total, &shm) != REI_OK) return NULL;
-  uint8_t *base = (uint8_t *) shm->addr;
-  rei_reih_write(base, type, (int64_t) (n / rei_type_elt_size(type)));
-  hdr->kind = REI_KIND_SHM_VEC;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = rei_aux_shm_vec(type, (uint64_t) total);
-  memcpy(payload, shm->name, shm->name_len);
-  rei_stage_retain_zc(h, shm);
-  return base + REI_HEADER_SIZE;
-}
-
-/* The raw-tier reserve: claim n bytes of destination on the tier the size
-   dictates — RAWVEC inline within the budget; past it the zero-copy
-   SHM_VEC tier at max(inline budget, REI_ZC_FLOOR), with the copy tiers
-   as the cheaper small end and the churn fallback (R's discipline: the
-   channel arena copy has no region machinery to amortize up to
-   REI_ZC_FLOOR_RAW and is churn-immune at any size; a pool's raw spill is
-   itself a region, so the view's no-copy receive wins from the floor).
-   Fills the slot/REIH headers and returns the destination pointer; the
-   write half (a memcpy or a conversion) cannot fail. NULL on reservation
-   failure: the caller falls back to a copy tier, then pickle. */
-static uint8_t *stage_reserve(size_t n, int type, rei_slot_hdr *hdr,
-                              uint8_t *payload, uint32_t inline_max,
-                              rei_handle *h) {
-  if (n <= (size_t) inline_max) {
-    hdr->kind = REI_KIND_RAWVEC;
-    hdr->len = (uint32_t) n;
-    hdr->aux = (uint64_t) type;
-    return payload;
-  }
-  size_t zc_gate = (size_t) inline_max > REI_ZC_FLOOR ?
-    (size_t) inline_max : REI_ZC_FLOOR;
-  /* the churn read is an extern call: gate it behind the size check so
-     it runs only for payloads already proven large (zc_ok => !churn,
-     so the arena-first condition below needs no separate churn term) */
-  int zc_ok = n >= zc_gate && !rei_handle_churn(h);
-  if (rei_handle_kind(h) == REI_HTYPE_POOL) {
-    /* a pool has no arena: out-of-line frames are always named regions (the
-       mirror of R's pool RAWSPILL framing — aux packs the wire type and the
-       region name length). A region failure falls to pickle. */
-    if (zc_ok) {
-      uint8_t *dst = reserve_shm_vec(n, type, hdr, payload, h);
-      if (dst != NULL) return dst;
-    }
-    if (n > UINT32_MAX) return NULL;
-    rei_shm *shm;
-    if (rei_stage_spill_get(h, n, &shm) != REI_OK) return NULL;
-    hdr->kind = REI_KIND_RAWSPILL;
-    hdr->len = (uint32_t) n;
-    hdr->aux = rei_aux_rawspill_pool(type, shm->name_len);
-    memcpy(payload, shm->name, shm->name_len);
-    rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
-    return (uint8_t *) shm->addr;
-  }
-  uint64_t off;
-  uint8_t *chunk = NULL;
-  if (!zc_ok || n <= REI_ZC_FLOOR_RAW)
-    chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
-  if (chunk == NULL && zc_ok) {
-    uint8_t *dst = reserve_shm_vec(n, type, hdr, payload, h);
-    if (dst != NULL) return dst;
-    chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off);
-  }
-  if (chunk == NULL) return NULL;
-  hdr->kind = REI_KIND_RAWSPILL;
-  hdr->len = (uint32_t) n;
-  hdr->aux = (uint64_t) type;
-  memcpy(payload, &off, sizeof(off));
-  return chunk;
-}
+/* The raw-tier reserve is the core's (rei_stage_raw): RAWVEC inline within
+   the budget; past it the zero-copy SHM_VEC tier at max(inline budget,
+   REI_ZC_FLOOR), with the copy tiers as the cheaper small end and the churn
+   fallback (the channel arena copy has no region machinery to amortize up
+   to REI_ZC_FLOOR_RAW and is churn-immune at any size; a pool's raw spill
+   is itself a region, so the view's no-copy receive wins from the floor).
+   The reservation fills the slot/REIH headers and returns the destination
+   pointer; the write half (a memcpy or a conversion) cannot fail. NULL on
+   reservation failure: the caller falls back to a copy tier, then pickle. */
 
 /* Identity staging: reserve, then one memcpy. Returns 0 staged, -1
    pickle. */
 static int stage_raw(const Py_buffer *v, int type, rei_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max, rei_handle *h) {
   size_t n = (size_t) v->len;
-  uint8_t *dst = stage_reserve(n, type, hdr, payload, inline_max, h);
+  uint8_t *dst = rei_stage_raw(h, (uint64_t) n, type, hdr, payload,
+                               inline_max);
   if (dst == NULL) return -1;
   memcpy(dst, v->buf, n);
   return 0;
@@ -713,8 +642,8 @@ static int stage_convert(const uint8_t *src, size_t nelts,
                          const cvt_row *row, const uint8_t *valid,
                          uint64_t off, rei_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max, rei_handle *h) {
-  uint8_t *dst = stage_reserve(nelts * row->w_out, row->wire, hdr, payload,
-                               inline_max, h);
+  uint8_t *dst = rei_stage_raw(h, (uint64_t) (nelts * row->w_out),
+                               row->wire, hdr, payload, inline_max);
   if (dst == NULL) return -1;
   cvt_warn warn = { 0, 0 };
   if (row->cvt == CVT_BIT_LGL) {

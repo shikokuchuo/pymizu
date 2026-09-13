@@ -21,62 +21,17 @@
 #include "rei.h"
 #include "rei_ext.h"
 
-#define REI_PYMAP_MAGIC 0x4D525950u   /* "PYRM" */
+#define REI_PYMAP_MAGIC 0x4D525950u   /* "PYRM" — this binding's morsel tag */
 
 static PyObject *ReiErr;   /* pyrei.ReiError (borrowed at registration) */
 static PyObject *ReiShmErr;   /* pyrei.ShmError */
 
-enum { REI_PYMAP_X_DESC = 0, REI_PYMAP_X_RAWBUF };
-
-/* Map-descriptor region header. Not pool wire format — it rides its own
-   region, keyed by the same ABI version — but the same rules apply: the
-   struct is the layout, 64-byte-aligned sections follow it. */
-typedef struct rei_pymap_hdr_s {
-  uint32_t magic;
-  uint32_t version;
-  uint32_t flags;            /* reserved, 0 */
-  uint32_t x_kind;           /* REI_PYMAP_X_DESC / REI_PYMAP_X_RAWBUF */
-  uint32_t x_tag;            /* RAWBUF section wire type (REI_TYPE_*) */
-  uint32_t pad0;
-  uint64_t n;                /* map elements */
-  uint64_t desc_off, desc_len;
-  uint64_t x_off, x_len;
-  uint64_t morsel_size;      /* elements per morsel */
-  uint64_t n_morsels;        /* ceiling(n / morsel_size) */
-  uint64_t state_off;        /* morsel state section offset */
-  uint32_t claim_n;          /* CLAIM word count (runner ordinal bound) */
-  uint32_t out_tag;          /* template element wire type; 0 = no output area */
-  uint32_t out_elt;          /* template element size, bytes */
-  uint32_t pad1;
-  uint64_t out_m;            /* template length: values per element */
-  uint64_t out_off;          /* output area offset (n * out_m * out_elt bytes) */
-  uint8_t  pad[8];
-} rei_pymap_hdr;
-
-typedef char rei_pymap_hdr_assert[(sizeof(rei_pymap_hdr) == 128) ? 1 : -1];
-
-/* Morsel state section, identical to R's: one cache line for the cancel
-   word and run generation counter (read-mostly), one for the shared cursor
-   (the ticket dispenser, alone so runner RMW traffic never touches the
-   cancel line), then the CLAIM array — one word per runner *ordinal*,
-   packing (generation << 2) | state so the lane claim and the generation
-   fence are one atomic. Issue is a plain relaxed fetch_add; ordering rides
-   the task claim/publish chain. Completion is never recorded here: runners
-   publish their batch histories through their ordinary results, and the
-   lost set on death is arithmetic over them. */
-#define REI_PYMAP_CANCEL_OFF ((uint64_t) 0)
-#define REI_PYMAP_GEN_OFF    ((uint64_t) 4)
-#define REI_PYMAP_CURSOR_OFF ((uint64_t) 64)
-#define REI_PYMAP_CLAIM_OFF  ((uint64_t) 128)
-#define REI_PYMAP_GEN_MASK   ((uint32_t) 0x3FFFFFFF)
-
-enum { REI_PY_MORSEL_IDLE = 0, REI_PY_MORSEL_RUNNING, REI_PY_MORSEL_ABANDONED };
-
-/* Batch sizing policy constants (frozen by the R package's gate sweep):
-   k targets a 200 us batch duration, growing at most 2x per step and
-   shrinking immediately on overshoot, clamped to the 64-morsel cap. */
-#define REI_PYMAP_T_TARGET  200e-6
-#define REI_PYMAP_BATCH_CAP 64
+/* The map region's protocol half — the 128-byte header, the morsel-state
+   words, the claim CAS, the AIMD batch sizing, reset/trim, and the lost-set
+   scan — is the core's morsel module (vendor/librei/morsel.c, rei_morsel_*):
+   the struct is the layout. This file keeps the language-coupled half: the
+   pickled descriptor, the x-section view, the batch loop's value writes,
+   and the gather. */
 
 // Map handle -------------------------------------------------------------------
 
@@ -89,16 +44,11 @@ enum { REI_PY_MORSEL_IDLE = 0, REI_PY_MORSEL_RUNNING, REI_PY_MORSEL_ABANDONED };
    together. */
 typedef struct rei_pymap_s {
   rei_shm *shm;
-  rei_pymap_hdr h;
+  rei_morsel_hdr h;
   int owner;             /* stage side: the destructor unlinks */
   /* Batch sizing state (map_next), process-private and never wire state,
      reset at each run's first-call CLAIM CAS. */
-  int32_t  run_r;        /* ordinal whose ramp this is (-1 = none) */
-  uint64_t k;            /* current batch size, morsels */
-  uint64_t k_last;       /* morsels issued last transition */
-  double   t_last;       /* rei_now() at the last issue */
-  double   cost;         /* est. seconds per morsel (0 = unknown) */
-  int      skip;         /* last interval contained a help: no update */
+  rei_morsel_sizer sizer;
 } rei_pymap;
 
 static void pymap_free(rei_pymap *mh) {
@@ -129,27 +79,6 @@ static rei_pymap *pymap_get(PyObject *caps) {
     return NULL;
   }
   return mh;
-}
-
-static _Atomic uint32_t *pymap_cancel_word(rei_pymap *mh) {
-  return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_PYMAP_CANCEL_OFF);
-}
-
-static _Atomic uint32_t *pymap_gen_word(rei_pymap *mh) {
-  return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_PYMAP_GEN_OFF);
-}
-
-static _Atomic uint64_t *pymap_cursor_word(rei_pymap *mh) {
-  return (_Atomic uint64_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_PYMAP_CURSOR_OFF);
-}
-
-static _Atomic uint32_t *pymap_claim_word(rei_pymap *mh, uint32_t r) {
-  return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_PYMAP_CLAIM_OFF +
-     (uint64_t) r * 4);
 }
 
 static int pymap_ordinal(rei_pymap *mh, PyObject *ord, uint32_t *out) {
@@ -238,52 +167,26 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
     PyBuffer_Release(&tbuf);   /* the exemplar carries shape only */
   }
 
-  rei_pymap_hdr h;
-  memset(&h, 0, sizeof(h));
-  h.magic = REI_PYMAP_MAGIC;
-  h.version = REI_ABI_VERSION;
-  h.n = (uint64_t) n_ll;
-  h.desc_off = sizeof(rei_pymap_hdr);
-  h.desc_len = (uint64_t) desc.len;
-  h.morsel_size = (uint64_t) ms_ll;
-  h.n_morsels = (h.n + h.morsel_size - 1) / h.morsel_size;
-  h.claim_n = REI_MAX_WORKERS;
-  uint64_t off = REI_ALIGN64(sizeof(rei_pymap_hdr) + h.desc_len);
-  if (have_x) {
-    h.x_kind = REI_PYMAP_X_RAWBUF;
-    h.x_tag = (uint32_t) x_tag;
-    h.x_off = off;
-    h.x_len = (uint64_t) xbuf.len;
-    off = REI_ALIGN64(off + h.x_len);
-  }
-  /* morsel state after the descriptor / x sections; a fresh region is
-     zero-filled, so cancel, generation, cursor and every CLAIM word
-     ((0 << 2) | IDLE) start armed for generation 0 */
-  h.state_off = off;
-  off = REI_ALIGN64(off + REI_PYMAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
-  if (have_t) {
-    size_t elt = rei_type_elt_size(t_tag);
-    if (n_ll > (((uint64_t) 1 << 46) - off) / (t_m * (uint64_t) elt)) {
-      PyErr_SetString(ReiShmErr, "pyrei: map region too large");
-      goto fail_bufs;
-    }
-    h.out_tag = (uint32_t) t_tag;
-    h.out_elt = (uint32_t) elt;
-    h.out_m = t_m;
-    h.out_off = off;
-    off += (uint64_t) n_ll * t_m * (uint64_t) elt;
-  }
-  if (off > ((uint64_t) 1 << 46)) {
+  /* the binding-side checks above pre-validate the geometry, so a layout
+     refusal is always a size overflow */
+  rei_morsel_hdr h;
+  uint64_t size = rei_morsel_layout(&h, REI_PYMAP_MAGIC, (uint64_t) n_ll,
+                                    (uint64_t) ms_ll, (uint64_t) desc.len,
+                                    have_x ? (uint32_t) x_tag : 0,
+                                    have_x ? (uint64_t) xbuf.len : 0,
+                                    have_t ? (uint32_t) t_tag : 0, t_m,
+                                    REI_MAX_WORKERS);
+  if (size == 0) {
     PyErr_SetString(ReiShmErr, "pyrei: map region too large");
     goto fail_bufs;
   }
 
   rei_shm *shm;
-  if (rei_shm_create(&shm, (size_t) off) != REI_OK) {
+  if (rei_shm_create(&shm, (size_t) size) != REI_OK) {
     const char *summary, *hint;
     rei_err_describe(rei_last_error_category(), &summary, &hint);
     PyErr_Format(ReiShmErr, "pyrei: cannot create map region (%llu bytes): "
-                 "%s%s%s", (unsigned long long) off, summary,
+                 "%s%s%s", (unsigned long long) size, summary,
                  hint[0] != '\0' ? ". " : "", hint);
     goto fail_bufs;
   }
@@ -303,8 +206,7 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   mh->shm = shm;
   mh->h = h;
   mh->owner = 1;
-  mh->run_r = -1;
-  mh->k = 1;
+  rei_morsel_sizer_init(&mh->sizer);
   PyObject *caps = PyCapsule_New(mh, REI_PY_MAP_CAPSULE, pymap_capsule_free);
   if (caps == NULL) {
     pymap_free(mh);
@@ -356,51 +258,6 @@ static PyObject *py_map_close(PyObject *Py_UNUSED(module), PyObject *caps) {
 
 // Worker-side context -------------------------------------------------------------
 
-static const char *pymap_hdr_validate(const rei_shm *shm, rei_pymap_hdr *out) {
-  if (shm->size < sizeof(rei_pymap_hdr))
-    return "region is smaller than a map header";
-  rei_pymap_hdr h;
-  memcpy(&h, shm->addr, sizeof(h));
-  if (h.magic != REI_PYMAP_MAGIC)
-    return "bad magic: not a pyrei map region";
-  if (h.version != REI_ABI_VERSION)
-    return "ABI version mismatch: worker and submitter were built against "
-           "different rei wire formats";
-  if (h.n == 0 || h.n > ((uint64_t) 1 << 48))
-    return "element count out of range";
-  if (h.desc_off < sizeof(rei_pymap_hdr) || h.desc_off > shm->size ||
-      h.desc_len == 0 || h.desc_len > shm->size - h.desc_off)
-    return "descriptor lies outside the region";
-  if (h.morsel_size == 0 ||
-      h.n_morsels != (h.n + h.morsel_size - 1) / h.morsel_size)
-    return "morsel geometry is inconsistent";
-  if (h.claim_n == 0 || h.claim_n > (1u << 16) ||
-      h.state_off < sizeof(rei_pymap_hdr) || (h.state_off & 63) != 0 ||
-      h.state_off > shm->size ||
-      REI_PYMAP_CLAIM_OFF + (uint64_t) h.claim_n * 4 > shm->size - h.state_off)
-    return "morsel state section lies outside the region";
-  if (h.x_kind == REI_PYMAP_X_RAWBUF) {
-    size_t elt = rei_type_elt_size((int) h.x_tag);
-    if (elt == 0 || h.x_off > shm->size || h.x_len > shm->size - h.x_off ||
-        h.x_len != h.n * elt)
-      return "x section lies outside the region";
-  } else if (h.x_kind != REI_PYMAP_X_DESC) {
-    return "unknown x section kind";
-  }
-  if (h.out_tag != 0) {
-    size_t elt = rei_type_elt_size((int) h.out_tag);
-    uint64_t state_end = REI_ALIGN64(
-      h.state_off + REI_PYMAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
-    if (elt == 0 || (uint64_t) h.out_elt != elt || h.out_m == 0 ||
-        h.out_m > ((uint64_t) 1 << 32) || h.out_off != state_end ||
-        h.out_off > shm->size ||
-        h.n > (shm->size - h.out_off) / (h.out_m * elt))
-      return "output area lies outside the region";
-  }
-  if (out != NULL) *out = h;
-  return NULL;
-}
-
 PyDoc_STRVAR(map_open_doc,
 "_map_open(region_name) -> capsule\n\n\
 Attach a map region (worker side): writable always — every runner CASes\n\
@@ -418,8 +275,9 @@ static PyObject *py_map_open(PyObject *Py_UNUSED(module), PyObject *arg) {
                  "submitter died or the map ended", name);
     return NULL;
   }
-  rei_pymap_hdr h;
-  const char *err = pymap_hdr_validate(shm, &h);
+  rei_morsel_hdr h;
+  const char *err = rei_morsel_hdr_check(shm->addr, shm->size,
+                                         REI_PYMAP_MAGIC, &h);
   if (err != NULL) {
     rei_shm_close(shm, 0);
     PyErr_Format(ReiErr, "pyrei: invalid map region: %s", err);
@@ -432,8 +290,7 @@ static PyObject *py_map_open(PyObject *Py_UNUSED(module), PyObject *arg) {
   }
   mh->shm = shm;
   mh->h = h;
-  mh->run_r = -1;
-  mh->k = 1;
+  rei_morsel_sizer_init(&mh->sizer);
   return PyCapsule_New(mh, REI_PY_MAP_CAPSULE, pymap_capsule_free);
 }
 
@@ -448,11 +305,11 @@ static PyObject *py_map_header(PyObject *Py_UNUSED(module), PyObject *caps) {
   return Py_BuildValue("{s:K,s:I,s:I,s:K,s:K,s:I,s:I,s:K}",
                        "n", (unsigned long long) mh->h.n,
                        "x_kind", mh->h.x_kind,
-                       "x_tag", mh->h.x_tag,
+                       "x_tag", mh->h.x_type,
                        "morsel_size", (unsigned long long) mh->h.morsel_size,
                        "n_morsels", (unsigned long long) mh->h.n_morsels,
                        "claim_n", mh->h.claim_n,
-                       "out_tag", mh->h.out_tag,
+                       "out_tag", mh->h.out_type,
                        "out_m", (unsigned long long) mh->h.out_m);
 }
 
@@ -477,7 +334,7 @@ together).");
 static PyObject *py_map_x_view(PyObject *Py_UNUSED(module), PyObject *caps) {
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.x_kind != REI_PYMAP_X_RAWBUF) {
+  if (mh->h.x_kind != REI_MORSEL_X_RAW) {
     PyErr_SetString(ReiErr, "pyrei: map region has no x section");
     return NULL;
   }
@@ -523,7 +380,7 @@ static void pymap_annotate_index(uint64_t index) {
 static void pymap_raise_value(rei_pymap *mh, uint64_t index) {
   PyErr_Format(ReiErr,
                "pyrei: map values must match the template (format '%s', "
-               "length %llu)", pymap_tag_format(mh->h.out_tag),
+               "length %llu)", pymap_tag_format(mh->h.out_type),
                (unsigned long long) mh->h.out_m);
   pymap_annotate_index(index);
 }
@@ -538,7 +395,7 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
   if (PyObject_CheckBuffer(v)) {
     Py_buffer b;
     if (PyObject_GetBuffer(v, &b, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) == 0) {
-      int ok = rei_py_wire_type_of(&b) == (int) mh->h.out_tag &&
+      int ok = rei_py_wire_type_of(&b) == (int) mh->h.out_type &&
                (uint64_t) b.len == (uint64_t) nbytes;
       if (ok) memcpy(dst, b.buf, (size_t) b.len);
       PyBuffer_Release(&b);
@@ -548,7 +405,7 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
     }
   }
   if (mh->h.out_m == 1 && !PyObject_CheckBuffer(v)) {
-    switch (mh->h.out_tag) {
+    switch (mh->h.out_type) {
     case REI_TYPE_REAL:
       if (PyFloat_Check(v)) {
         double d = PyFloat_AS_DOUBLE(v);
@@ -624,7 +481,7 @@ static PyObject *py_map_write(PyObject *Py_UNUSED(module), PyObject *args) {
     return NULL;
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.out_tag == 0) {
+  if (mh->h.out_type == 0) {
     PyErr_SetString(ReiErr, "pyrei: map region has no output area");
     return NULL;
   }
@@ -655,7 +512,7 @@ the whole cross-process gather is this one memcpy.");
 static PyObject *py_map_gather(PyObject *Py_UNUSED(module), PyObject *caps) {
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.out_tag == 0) {
+  if (mh->h.out_type == 0) {
     PyErr_SetString(ReiErr, "pyrei: map region has no output area");
     return NULL;
   }
@@ -737,7 +594,7 @@ static PyObject *py_map_gather_view(PyObject *Py_UNUSED(module),
                                     PyObject *caps) {
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.out_tag == 0) {
+  if (mh->h.out_type == 0) {
     PyErr_SetString(ReiErr, "pyrei: map region has no output area");
     return NULL;
   }
@@ -747,7 +604,7 @@ static PyObject *py_map_gather_view(PyObject *Py_UNUSED(module),
   v->capsule = caps;
   v->data = (uint8_t *) mh->shm->addr + mh->h.out_off;
   v->len = (Py_ssize_t) (mh->h.n * mh->h.out_m * mh->h.out_elt);
-  v->tag = mh->h.out_tag;
+  v->tag = mh->h.out_type;
   return (PyObject *) v;
 }
 
@@ -786,79 +643,16 @@ static PyObject *py_map_next(PyObject *Py_UNUSED(module), PyObject *args) {
       return NULL;
     }
   }
-  gen &= REI_PYMAP_GEN_MASK;
-
-  /* first transition: CAS (gen << 2)|IDLE -> RUNNING — the one atomic
-     that both claims the lane and fences the generation. It fails alike
-     against ABANDONED (lost to the trim); RUNNING at our generation means
-     this very task already claimed it, so later transitions fall straight
-     through. */
-  _Atomic uint32_t *cw = pymap_claim_word(mh, r);
-  uint32_t running = (gen << 2) | REI_PY_MORSEL_RUNNING;
-  uint32_t w = atomic_load_explicit(cw, memory_order_acquire);
-  if (w == ((gen << 2) | REI_PY_MORSEL_IDLE) &&
-      atomic_compare_exchange_strong_explicit(cw, &w, running,
-                                              memory_order_seq_cst,
-                                              memory_order_acquire))
-    w = running;
-  if (w != running) Py_RETURN_NONE;
-
-  if (mh->run_r != (int32_t) r) {
-    /* run boundary through this ctx: relearn over a fresh ramp */
-    mh->run_r = (int32_t) r;
-    mh->k = 1;
-    mh->k_last = 0;
-    mh->cost = 0;
-    mh->skip = 0;
-  }
-
-  if (atomic_load_explicit(pymap_cancel_word(mh), memory_order_acquire) != 0)
+  /* the core's batch transition: generation-fenced lane claim, cancel and
+     pool-signal checks, AIMD sizing, cursor issue */
+  uint64_t m, k;
+  int help;
+  if (!rei_morsel_next(mh->shm->addr, &mh->h, &mh->sizer, r, gen, s, 0,
+                       rei_now(), &m, &k, &help))
     Py_RETURN_NONE;
 
-  int help = 0;
-  if (s != NULL) {
-    /* a runner is the one place a worker sits for a whole map without
-       touching its step loop, where these words are consumed: None
-       unwinds it there within ~a batch instead of at cursor exhaustion */
-    if (atomic_load_explicit(s->shutdown, memory_order_relaxed) != 0 ||
-        atomic_load_explicit(s->owner_dead, memory_order_relaxed) != 0)
-      Py_RETURN_NONE;
-    help = atomic_load_explicit(s->help_wanted, memory_order_relaxed) != 0;
-  }
-
-  double now = rei_now();
-  if (mh->k_last > 0) {
-    if (mh->skip) {
-      mh->skip = 0;   /* interval contained a helped foreign task */
-    } else {
-      double per = (now - mh->t_last) / (double) mh->k_last;
-      mh->cost = per > 1e-9 ? per : 1e-9;   /* clock-floor trivial f */
-    }
-    if (mh->cost > 0) {
-      double want = REI_PYMAP_T_TARGET / mh->cost;
-      uint64_t wk = want >= 1 ? (uint64_t) want : 1;
-      /* grow at most 2x per step toward the target; shrink immediately on
-         overshoot; clamp to the batch cap */
-      mh->k = wk >= mh->k * 2 ? mh->k * 2 : wk;
-      if (mh->k > REI_PYMAP_BATCH_CAP) mh->k = REI_PYMAP_BATCH_CAP;
-    }
-  }
-  uint64_t k = mh->k;
-
-  /* relaxed issue: atomicity (unique claim) is all the shared state
-     provides; ordering rides the task claim/publish chain. Overshoot of
-     up to k is harmless — a runner stops at its first exhausted issue. */
-  uint64_t m = atomic_fetch_add_explicit(pymap_cursor_word(mh), k,
-                                         memory_order_relaxed);
-  if (m >= mh->h.n_morsels) Py_RETURN_NONE;
-  if (k > mh->h.n_morsels - m) k = mh->h.n_morsels - m;   /* final grant */
-  mh->k_last = k;
-  mh->t_last = now;
-  if (help) mh->skip = 1;
-
-  uint64_t lo = m * mh->h.morsel_size;
-  uint64_t hi = (m + k) * mh->h.morsel_size;
-  if (hi > mh->h.n) hi = mh->h.n;
+  uint64_t lo, hi;
+  rei_morsel_span_of(&mh->h, m, k, &lo, &hi);   /* 0-based half-open */
   return Py_BuildValue("(KKi)", (unsigned long long) lo,
                        (unsigned long long) hi, help);
 }
@@ -880,20 +674,8 @@ static PyObject *py_map_abandon(PyObject *Py_UNUSED(module), PyObject *args) {
   if (mh == NULL) return NULL;
   uint32_t r;
   if (pymap_ordinal(mh, ord, &r) < 0) return NULL;
-  _Atomic uint32_t *cw = pymap_claim_word(mh, r);
-  gen &= REI_PYMAP_GEN_MASK;
-  int armed =
-    atomic_load_explicit(pymap_cursor_word(mh), memory_order_acquire) >=
-      mh->h.n_morsels ||
-    atomic_load_explicit(pymap_cancel_word(mh), memory_order_acquire) != 0;
-  uint32_t w = atomic_load_explicit(cw, memory_order_acquire);
-  if (armed)
-    while (w == ((gen << 2) | REI_PY_MORSEL_IDLE))
-      if (atomic_compare_exchange_strong_explicit(
-            cw, &w, (gen << 2) | REI_PY_MORSEL_ABANDONED,
-            memory_order_seq_cst, memory_order_acquire))
-        return PyLong_FromLong(REI_PY_MORSEL_ABANDONED);
-  return PyLong_FromLong((long) (w & 3u));
+  return PyLong_FromLong(
+    rei_morsel_abandon(mh->shm->addr, &mh->h, r, gen));
 }
 
 PyDoc_STRVAR(map_cancel_set_doc,
@@ -908,8 +690,8 @@ static PyObject *py_map_cancel_set(PyObject *Py_UNUSED(module),
   if (p == NULL) PyErr_Clear();   /* foreign capsule: no-op */
   if (p == NULL || p == REI_PYMAP_CLOSED)
     Py_RETURN_NONE;   /* closed or foreign: no-op (runs from unwind paths) */
-  atomic_store_explicit(pymap_cancel_word((rei_pymap *) p), 1u,
-                        memory_order_seq_cst);
+  rei_pymap *mh = (rei_pymap *) p;
+  rei_morsel_cancel_set(mh->shm->addr, &mh->h);
   Py_RETURN_NONE;
 }
 
@@ -920,8 +702,7 @@ static PyObject *py_map_cancel_get(PyObject *Py_UNUSED(module),
                                    PyObject *caps) {
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  return PyBool_FromLong(
-    atomic_load_explicit(pymap_cancel_word(mh), memory_order_acquire) != 0);
+  return PyBool_FromLong(rei_morsel_cancel_get(mh->shm->addr, &mh->h));
 }
 
 /* Prepared-run re-arm, O(1) in n (no per-morsel state exists to clear):
@@ -940,16 +721,8 @@ word. Returns the new generation for the run's runner payloads.");
 static PyObject *py_map_reset(PyObject *Py_UNUSED(module), PyObject *caps) {
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  uint32_t gen = (atomic_fetch_add_explicit(pymap_gen_word(mh), 1u,
-                                            memory_order_seq_cst) + 1) &
-    REI_PYMAP_GEN_MASK;
-  for (uint32_t r = 0; r < mh->h.claim_n; r++)
-    atomic_store_explicit(pymap_claim_word(mh, r),
-                          (gen << 2) | REI_PY_MORSEL_IDLE,
-                          memory_order_seq_cst);
-  atomic_store_explicit(pymap_cursor_word(mh), 0, memory_order_seq_cst);
-  atomic_store_explicit(pymap_cancel_word(mh), 0u, memory_order_seq_cst);
-  return PyLong_FromUnsignedLong((unsigned long) gen);
+  return PyLong_FromUnsignedLong(
+    (unsigned long) rei_morsel_reset(mh->shm->addr, &mh->h));
 }
 
 PyDoc_STRVAR(map_swap_x_doc,
@@ -965,7 +738,7 @@ static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
   if (!PyArg_ParseTuple(args, "OO:_map_swap_x", &caps, &x_obj)) return NULL;
   rei_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.x_kind != REI_PYMAP_X_RAWBUF) {
+  if (mh->h.x_kind != REI_MORSEL_X_RAW) {
     PyErr_SetString(ReiErr, "pyrei: map region has no x section");
     return NULL;
   }
@@ -974,7 +747,7 @@ static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
                          PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0)
     return NULL;
   int tag = rei_py_wire_type_of(&xbuf);
-  if (tag == 0 || (uint32_t) tag != mh->h.x_tag ||
+  if (tag == 0 || (uint32_t) tag != mh->h.x_type ||
       (uint64_t) xbuf.len != mh->h.x_len) {
     PyBuffer_Release(&xbuf);
     PyErr_SetString(ReiErr,
@@ -995,13 +768,7 @@ static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
    it publishes only at exhaustion. histories is a list of per-runner
    lists of (lo, hi) 0-based half-open element ranges. Returns a list of
    (lo, hi) tuples. */
-typedef struct rei_pyrange_s { uint64_t lo, hi; } rei_pyrange;
-
-static int rei_pyrange_cmp(const void *a, const void *b) {
-  uint64_t x = ((const rei_pyrange *) a)->lo;
-  uint64_t y = ((const rei_pyrange *) b)->lo;
-  return (x > y) - (x < y);
-}
+typedef rei_morsel_span rei_pyrange;
 
 PyDoc_STRVAR(map_lost_doc,
 "_map_lost(capsule, histories) -> list of (lo, hi)\n\n\
@@ -1050,35 +817,34 @@ static PyObject *py_map_lost(PyObject *Py_UNUSED(module), PyObject *args) {
     }
     Py_DECREF(hist);
   }
-  qsort(b, (size_t) total, sizeof(*b), rei_pyrange_cmp);
-  uint64_t cur = atomic_load_explicit(pymap_cursor_word(mh),
-                                      memory_order_acquire);
-  if (cur > mh->h.n_morsels) cur = mh->h.n_morsels;
-  uint64_t issued = cur * mh->h.morsel_size;
+  uint64_t issued = rei_morsel_cursor(mh->shm->addr, &mh->h) *
+    mh->h.morsel_size;
   if (issued > mh->h.n) issued = mh->h.n;
 
-  PyObject *out = PyList_New(0);
-  if (out == NULL) goto fail_b;
-  uint64_t pos = 0;
-  for (Py_ssize_t i = 0; i <= total; i++) {
-    /* one gap per step: before range i, then the tail before `issued` */
-    uint64_t next = i < total ? b[i].lo : issued;
-    if (next > pos) {
-      uint64_t glo = pos, ghi = next;
-      if (ghi > issued) ghi = issued;
-      if (ghi > glo) {
-        PyObject *r = Py_BuildValue("(KK)", (unsigned long long) glo,
-                                    (unsigned long long) ghi);
-        if (r == NULL || PyList_Append(out, r) < 0) {
-          Py_XDECREF(r);
-          Py_DECREF(out);
-          goto fail_b;
-        }
-        Py_DECREF(r);
-      }
-    }
-    if (i < total && b[i].hi > pos) pos = b[i].hi;
+  /* at most one gap per span plus the tail */
+  rei_pyrange *gaps = PyMem_Malloc(((size_t) total + 1) * sizeof(*gaps));
+  if (gaps == NULL) {
+    PyErr_NoMemory();
+    goto fail_b;
   }
+  size_t ngaps = rei_morsel_lost(b, (size_t) total, issued, gaps);
+  PyObject *out = PyList_New(0);
+  if (out == NULL) {
+    PyMem_Free(gaps);
+    goto fail_b;
+  }
+  for (size_t i = 0; i < ngaps; i++) {
+    PyObject *r = Py_BuildValue("(KK)", (unsigned long long) gaps[i].lo,
+                                (unsigned long long) gaps[i].hi);
+    if (r == NULL || PyList_Append(out, r) < 0) {
+      Py_XDECREF(r);
+      Py_DECREF(out);
+      PyMem_Free(gaps);
+      goto fail_b;
+    }
+    Py_DECREF(r);
+  }
+  PyMem_Free(gaps);
   PyMem_Free(b);
   Py_DECREF(seq);
   return out;
