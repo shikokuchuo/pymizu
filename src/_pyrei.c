@@ -1898,10 +1898,10 @@ static PyObject *view_wrap_region(ReiShmOwner *owner, uint64_t aux) {
     int64_t attrs;
     memcpy(&attrs, base + 16, 8);
     if (aux != 0 &&
-        ((uint32_t) (aux & 0xff) != (uint32_t) type ||
-         (aux >> 8) != (uint64_t) ((size_t) REI_HEADER_SIZE +
-                                   (size_t) length * elt +
-                                   (size_t) attrs)))
+        ((uint32_t) rei_aux_type(aux) != (uint32_t) type ||
+         rei_aux_hi(aux) != (uint64_t) ((size_t) REI_HEADER_SIZE +
+                                        (size_t) length * elt +
+                                        (size_t) attrs)))
       goto corrupt;
     if (attrs != 0) {
       err = "pyrei: R shared-vector payload carries attributes "
@@ -2391,12 +2391,12 @@ static PyObject *read_frame(const rei_slot_hdr *hdr, const uint8_t *payload,
     if (hdr->len > limit) break;
     return read_raw(payload, hdr->len, (int) hdr->aux);
   case REI_KIND_RAWSPILL:
-    if (hdr->aux >> 8) {
+    if (rei_aux_hi(hdr->aux)) {
       /* pool framing: the region name in the payload, its length and the
          wire type packed in aux (the channel's arena framing of this kind
          is resolved by the transport, never reaching here) */
-      uint32_t name_len = (uint32_t) (hdr->aux >> 8);
-      int type = (int) (hdr->aux & 0xff);
+      uint32_t name_len = (uint32_t) rei_aux_hi(hdr->aux);
+      int type = rei_aux_type(hdr->aux);
       if (name_len == 0 || name_len >= REI_NAME_MAX) break;
       rei_shm *shm = rei_read_region(ctx, payload, name_len);
       if (shm == NULL) return NULL;          /* ctx->gone set */

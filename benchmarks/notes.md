@@ -216,3 +216,28 @@ All other pyrei rows inside their recorded bands. README tables updated.
 | map trivial f x 10000 | 0.4 µs/elt | 70.3 µs/elt | 2.6 µs/elt |
 | map winsum x 2000 | 453,446 elts/s | 15,333 elts/s | 40,399 elts/s |
 | map skewed f x 4000 | 6.8 ms wall | 263.0 ms wall | 49.3 ms wall |
+
+## 2026-09-13: Phase B policy extraction (regression check)
+
+librei f1296a7 (rei_stage_raw + the rei_morsel_* map protocol); pyrei
+adopts both (3a9c12b). Golden (hdr, payload) capture A/B: 264/264 rows
+identical pre/post adoption. rei-bench.py, this host: payload 8k 2.5
+us/task, 800k 59.5, 8M 217.0; streaming 21.3M msg/s; map trivial f 0.4
+us/elt, template copy/view 679k/694k tasks/s, skew 7.1 ms wall; stage rows
+identity 102.3 / int64 105.6 / widen 256.9 / masked 131.6 / masked+scan
+149.2 us/send — all inside the recorded bands. 197 pass (incl. crosslang
+against the Phase-B rei), ruff + pyrefly clean. (Recorded from the
+pre-rewrite run on 4433556; the entry itself fell out of the 3a9c12b
+rewrite and is restored here.)
+
+## 2026-09-13: aux decode pair + symbol drop (regression check)
+
+librei 1cedd42 (rei_handle_binding_ctx drop) + 5d1b54c (rei_aux_type /
+rei_aux_hi decode pair); pyrei 0a5417d adopts the pair at the two
+read-side aux sites. rei-bench.py, this host: sequential rt 0.4 channel /
+0.7 pool us, pipelined pool 2.31M tasks/s, payload 8k/800k/8M
+2.7/58.7/211.3 us, streaming 21.1M msg/s, map trivial 0.4 us/elt, template
+copy/view 690k/698k tasks/s, skew 7.3 ms wall, fan-out 255.7k. The stage
+column's ~13% absolute lift is this run's bandwidth draw: identity 115.4 =
+memcpy 115.5 us/send and the normalized costs sit inside their recorded
+spread. 197 pass, ruff + pyrefly clean.
