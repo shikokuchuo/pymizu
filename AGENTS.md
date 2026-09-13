@@ -67,13 +67,13 @@ tools/vendor-librei.sh` for a local checkout).
 
 - Staging tier order (`stage_impl` in `src/_pyrei.c`), first match wins:
   1. `None` -> NIL.
-  2. Buffer-protocol objects -> RAWVEC/RAWSPILL/SHM_VEC behind the O(1)
-     gate: past max(inline budget, `REI_ZC_FLOOR`) a buffer stages as
-     SHM_VEC (one REIH layout write into a spill region,
-     `rei_stage_retain_zc` storing the producer-loan refcount). The
-     channel keeps the arena copy below `REI_ZC_FLOOR_RAW` and under
-     churn; the pool frames RAWSPILL as a named region (mirror of R's
-     pool framing).
+  2. Buffer-protocol objects -> the core's raw-tier reservation
+     (`rei_stage_raw`, vendored `stage_raw.c`): RAWVEC inline, then past
+     max(inline budget, `REI_ZC_FLOOR`) SHM_VEC (one REIH layout write
+     into a spill region, `rei_stage_retain_zc` storing the producer-loan
+     refcount). The channel keeps the arena copy below `REI_ZC_FLOOR_RAW`
+     and under churn; the pool frames RAWSPILL as a named region. A NULL
+     reservation falls through to pickle.
   3. Exact-type `str` within the inline budget -> STR1 (UTF-8 payload,
      `REI_CE_UTF8` aux; lone surrogates fall through).
   4. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
@@ -149,8 +149,10 @@ tools/vendor-librei.sh` for a local checkout).
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
 - Map conventions (`src/map.c`, `python/pyrei/_map.py`):
-  - One fresh region per map (own "PYRM" magic, `REI_ABI_VERSION`-keyed,
-    the R morsel layout). Runners are ordinary tasks submitted with
+  - One fresh region per map (own "PYRM" magic, `REI_ABI_VERSION`-keyed).
+    The protocol half — header layout, CLAIM-word claim CAS, AIMD sizing,
+    reset/trim, cancel, lost-set scan — is the core's morsel module
+    (`rei_morsel_*`, vendored `morsel.c`; one layout for both bindings). Runners are ordinary tasks submitted with
     `REI_ENTRY_RUNNER` via `_Pool._submit_runner`.
   - The pool-signal capsule is worker-local only (raw addresses — a
     runner calls `_Pool._signals()` on its own handle, never one from
