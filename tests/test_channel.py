@@ -1,5 +1,5 @@
 """Channel tests: echo round-trips, batching, spill, and the sentinel
-discipline, over real spawned peers (``python -m pyrei.child``)."""
+discipline, over real spawned peers (``python -m pymizu.child``)."""
 
 import gc
 import os
@@ -12,22 +12,22 @@ import threading
 import pytest
 from tests.helpers import StrSubclass
 
-import pyrei
+import pymizu
 
 ECHO_PEER = """
-import pyrei
+import pymizu
 while True:
     x = ch.recv()
-    if x is pyrei.CLOSED or x is pyrei.PEER_GONE:
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
         break
     ch.send(x)
 """
 
 BATCH_PEER = """
-import pyrei
+import pymizu
 while True:
     xs = ch.recv_batch(16)
-    if xs is pyrei.CLOSED or xs is pyrei.PEER_GONE:
+    if xs is pymizu.CLOSED or xs is pymizu.PEER_GONE:
         break
     ch.send_batch(xs)
 """
@@ -35,14 +35,14 @@ while True:
 
 @pytest.fixture
 def echo():
-    ch = pyrei.Channel.create(ECHO_PEER)
+    ch = pymizu.Channel.create(ECHO_PEER)
     yield ch
     ch.close()
 
 
 def test_version():
-    assert pyrei.__version__ == "0.1.0.dev0"
-    assert pyrei.abi_version() == 1
+    assert pymizu.__version__ == "0.1.0.dev0"
+    assert pymizu.abi_version() == 1
 
 
 def test_echo_roundtrip(echo):
@@ -143,7 +143,7 @@ def test_bytes_roundtrip(echo):
 
 
 def test_send_recv_batch():
-    ch = pyrei.Channel.create(BATCH_PEER)
+    ch = pymizu.Channel.create(BATCH_PEER)
     try:
         xs = list(range(10))
         assert ch.send_batch(xs) == 10
@@ -153,25 +153,25 @@ def test_send_recv_batch():
 
 
 def test_recv_timeout(echo):
-    assert echo.recv(timeout=0.05) is pyrei.TIMEOUT
-    assert echo.recv_batch(4, timeout=0.05) is pyrei.TIMEOUT
+    assert echo.recv(timeout=0.05) is pymizu.TIMEOUT
+    assert echo.recv_batch(4, timeout=0.05) is pymizu.TIMEOUT
 
 
 def test_sentinels():
-    for s in (pyrei.FULL, pyrei.TIMEOUT, pyrei.CLOSED, pyrei.PEER_GONE):
-        assert pyrei.is_sentinel(s)
+    for s in (pymizu.FULL, pymizu.TIMEOUT, pymizu.CLOSED, pymizu.PEER_GONE):
+        assert pymizu.is_sentinel(s)
         assert not s
-        assert repr(s).startswith("pyrei.")
-    assert not pyrei.is_sentinel("timeout")
-    assert not pyrei.is_sentinel(None)
+        assert repr(s).startswith("pymizu.")
+    assert not pymizu.is_sentinel("timeout")
+    assert not pymizu.is_sentinel(None)
 
 
 def test_send_full():
-    ch = pyrei.Channel.create("import time; time.sleep(5)", capacity=2)
+    ch = pymizu.Channel.create("import time; time.sleep(5)", capacity=2)
     try:
         assert ch.send(1) is True
         assert ch.send(2) is True
-        assert ch.send(3) is pyrei.FULL
+        assert ch.send(3) is pymizu.FULL
     finally:
         ch._proc.kill()
         assert ch.close() is True  # rendezvous on the peer's death
@@ -179,10 +179,10 @@ def test_send_full():
 
 
 def test_closed_sentinel():
-    ch = pyrei.Channel.create("pass")
+    ch = pymizu.Channel.create("pass")
     try:
-        assert ch.recv(timeout=5) is pyrei.CLOSED
-        assert ch.send(1) is pyrei.CLOSED
+        assert ch.recv(timeout=5) is pymizu.CLOSED
+        assert ch.send(1) is pymizu.CLOSED
     finally:
         assert ch.close() is True
     assert ch.close() is True  # idempotent
@@ -191,10 +191,10 @@ def test_closed_sentinel():
 
 
 def test_peer_gone():
-    ch = pyrei.Channel.create("import os; os._exit(0)")
+    ch = pymizu.Channel.create("import os; os._exit(0)")
     try:
-        assert ch.recv(timeout=5) is pyrei.PEER_GONE
-        assert ch.recv(timeout=5) is pyrei.PEER_GONE  # sticky
+        assert ch.recv(timeout=5) is pymizu.PEER_GONE
+        assert ch.recv(timeout=5) is pymizu.PEER_GONE  # sticky
         assert not ch.alive()
     finally:
         ch.close()
@@ -204,8 +204,8 @@ def test_startup_error():
     def launcher(token):
         return subprocess.Popen([sys.executable, "-c", "pass"])
 
-    with pytest.raises(pyrei.StartupError):
-        pyrei.Channel.create("pass", startup_timeout=1.0, launcher=launcher)
+    with pytest.raises(pymizu.StartupError):
+        pymizu.Channel.create("pass", startup_timeout=1.0, launcher=launcher)
 
 
 def test_info(echo):
@@ -219,11 +219,11 @@ def test_info(echo):
 
 def test_validation():
     with pytest.raises(ValueError):
-        pyrei.Channel.create("pass", capacity=3)
+        pymizu.Channel.create("pass", capacity=3)
     with pytest.raises(ValueError):
-        pyrei.Channel.create("pass", slot_size=100)
+        pymizu.Channel.create("pass", slot_size=100)
     with pytest.raises(TypeError):
-        pyrei.Channel.create("")
+        pymizu.Channel.create("")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
@@ -245,7 +245,7 @@ def test_fork_guard(echo):
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_recv_interrupt():
-    ch = pyrei.Channel.create("import time; time.sleep(30)")
+    ch = pymizu.Channel.create("import time; time.sleep(30)")
     timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
     timer.start()
     try:
@@ -312,7 +312,7 @@ def _exporter(arr):
 
 
 def test_shm_vec_roundtrip(echo):
-    # past REI_ZC_FLOOR_RAW the copy tiers give way to a zero-copy view
+    # past MIZU_ZC_FLOOR_RAW the copy tiers give way to a zero-copy view
     a = np.arange(100000, dtype=np.float64)  # 800 KB
     assert echo.send(a) is True
     b = echo.recv(timeout=5)
@@ -369,7 +369,7 @@ def test_view_cache_recycled_name(echo):
 
 
 def test_view_cache_eviction_with_live_views(echo):
-    # more distinct live regions than REI_OPEN_CACHE_MAX (16): evicted
+    # more distinct live regions than MIZU_OPEN_CACHE_MAX (16): evicted
     # owners keep their mappings until the last view is gone
     xs = [np.full(100000, i, dtype=np.float64) for i in range(20)]
     views = []
@@ -396,13 +396,13 @@ def test_view_survives_channel_destroy(echo):
 
 
 def test_r_codec_stream_dispatch():
-    # rei's compact codec magic is 'R' (0x52): the read side declines it
+    # mizu's compact codec magic is 'R' (0x52): the read side declines it
     # with the informative foreign-payload error, not "unrecognized"
-    with pytest.raises(pyrei.ReiError, match="R payload"):
-        pyrei._pyrei._read_stream(b"R")
+    with pytest.raises(pymizu.MizuError, match="R payload"):
+        pymizu._pymizu._read_stream(b"R")
 
 
-# -- R interop (the view tier against an rei peer) --------------------------
+# -- R interop (the view tier against an mizu peer) --------------------------
 
 _RSCRIPT = shutil.which("Rscript")
 
@@ -412,7 +412,7 @@ def _r_available():
         return False
     return (
         subprocess.run(
-            [_RSCRIPT, "-e", "library(rei)"],
+            [_RSCRIPT, "-e", "library(mizu)"],
             capture_output=True,
             check=False,
         ).returncode
@@ -421,20 +421,20 @@ def _r_available():
 
 
 r_only = pytest.mark.skipif(
-    not _r_available(), reason="R with rei not installed"
+    not _r_available(), reason="R with mizu not installed"
 )
 
 _R_ECHO = """
 repeat {
-  x <- rei_recv(ch, timeout = 30)
-  if (inherits(x, "rei_sentinel")) break
-  rei_send(ch, x)
+  x <- mizu_recv(ch, timeout = 30)
+  if (inherits(x, "mizu_sentinel")) break
+  mizu_send(ch, x)
 }
 """
 
 
 def _r_channel(expr_src):
-    # the drop is the peer's bootstrap expression as an REI_DROP_R-tagged
+    # the drop is the peer's bootstrap expression as an MIZU_DROP_R-tagged
     # serialize stream; the launcher runs the R-side peer entry
     import tempfile
 
@@ -455,15 +455,15 @@ def _r_channel(expr_src):
             drop = f.read()
     finally:
         os.unlink(path)
-    h = pyrei._pyrei._channel_new(
+    h = pymizu._pymizu._channel_new(
         16384, 256, 4 * 1024 * 1024, False, b"R" + drop
     )
-    proc = subprocess.Popen([_RSCRIPT, "-e", f'rei:::peer_main("{h.token}")'])
+    proc = subprocess.Popen([_RSCRIPT, "-e", f'mizu:::peer_main("{h.token}")'])
     if not h.ready_wait(30):
         h.destroy()
         proc.kill()
-        raise pyrei.StartupError("pyrei: R peer failed to attach")
-    ch = pyrei.Channel._wrap(h)
+        raise pymizu.StartupError("pymizu: R peer failed to attach")
+    ch = pymizu.Channel._wrap(h)
     ch._proc = proc
     return ch
 
@@ -489,9 +489,9 @@ def test_r_interop_view_cache_sharing():
     # R re-sends its view twice: both cross as REF naming the same region,
     # so the second read hits the view cache — one mapping, one address
     ch = _r_channel(
-        "{ x <- rei_recv(ch, timeout = 30)\n"
-        "  rei_send(ch, x)\n"
-        "  rei_send(ch, x)\n" + _R_ECHO + " }"
+        "{ x <- mizu_recv(ch, timeout = 30)\n"
+        "  mizu_send(ch, x)\n"
+        "  mizu_send(ch, x)\n" + _R_ECHO + " }"
     )
     try:
         a = np.arange(1000000, dtype=np.float64)
@@ -509,7 +509,7 @@ def test_r_interop_view_cache_sharing():
 def test_r_interop_r_produces():
     # R produces SHM_VEC (a plain vector stages as a layout region)
     ch = _r_channel(
-        "{ rei_send(ch, cumsum(rep(1.0, 1000000)))\n" + _R_ECHO + " }"
+        "{ mizu_send(ch, cumsum(rep(1.0, 1000000)))\n" + _R_ECHO + " }"
     )
     try:
         b = ch.recv(timeout=10)
@@ -526,13 +526,13 @@ def test_r_interop_attrs_rejected():
     # attributes (names/dim/class) cannot cross to a Python buffer
     src = (
         "{ y <- cumsum(rep(1.0, 1000000));"
-        " names(y) <- paste0('n', seq_along(y)); rei_send(ch, y)\n"
+        " names(y) <- paste0('n', seq_along(y)); mizu_send(ch, y)\n"
         + _R_ECHO
         + " }"
     )
     ch = _r_channel(src)
     try:
-        with pytest.raises(pyrei.ReiError, match="attributes"):
+        with pytest.raises(pymizu.MizuError, match="attributes"):
             ch.recv(timeout=10)
     finally:
         ch.close()
@@ -540,11 +540,11 @@ def test_r_interop_attrs_rejected():
 
 @r_only
 def test_r_interop_codec_payload_rejected():
-    # an R list stages as an INLINE rei-codec stream ('R' magic): declined
+    # an R list stages as an INLINE mizu-codec stream ('R' magic): declined
     # with the informative foreign-payload error, not "unrecognized"
-    ch = _r_channel("{ rei_send(ch, list(1L, 2.5, 'x'))\n" + _R_ECHO + " }")
+    ch = _r_channel("{ mizu_send(ch, list(1L, 2.5, 'x'))\n" + _R_ECHO + " }")
     try:
-        with pytest.raises(pyrei.ReiError, match="R payload"):
+        with pytest.raises(pymizu.MizuError, match="R payload"):
             ch.recv(timeout=10)
     finally:
         ch.close()

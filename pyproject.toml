@@ -3,13 +3,13 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyrei"
+name = "pymizu"
 version = "0.1.0.dev0"
 description = "Lock-free shared-memory channels and task pools"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "librei authors" }]
+authors = [{ name = "libmizu authors" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Operating System :: POSIX :: Linux",
@@ -26,10 +26,10 @@ cloudpickle = ["cloudpickle"]
 
 [tool.setuptools]
 package-dir = { "" = "python" }
-packages = ["pyrei"]
+packages = ["pymizu"]
 
 [tool.setuptools.package-data]
-pyrei = ["py.typed", "*.pyi"]
+pymizu = ["py.typed", "*.pyi"]
 
 [tool.ruff]
 target-version = "py310"
@@ -45,7 +45,7 @@ search-path = ["python"]
 python-version = "3.10"
 
 [tool.coverage.run]
-source = ["pyrei"]
+source = ["pymizu"]
 # Unique data file per process: the spawned child/worker interpreters
 # measure themselves via COVERAGE_PROCESS_START (see conftest.py).
 parallel = true

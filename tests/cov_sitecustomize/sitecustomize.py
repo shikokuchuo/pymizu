@@ -1,4 +1,4 @@
-"""Auto-imported in spawned pyrei child/worker processes when the test
+"""Auto-imported in spawned pymizu child/worker processes when the test
 suite runs under coverage: the repo-root conftest.py puts this directory
 on PYTHONPATH and sets COVERAGE_PROCESS_START for subprocesses."""
 

@@ -9,31 +9,31 @@ import sys
 import pytest
 from tests.helpers import square
 
-import pyrei
-from pyrei import _pyrei
+import pymizu
+from pymizu import _pymizu
 
 ECHO_PEER = """
-import pyrei
+import pymizu
 while True:
     x = ch.recv()
-    if x is pyrei.CLOSED or x is pyrei.PEER_GONE:
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
         break
     ch.send(x)
 """
 
 # A peer that attaches through the low-level facade path itself, the way
-# ``python -m pyrei.child`` does: consume the drop, then ready_set.
+# ``python -m pymizu.child`` does: consume the drop, then ready_set.
 ATTACH_PEER = """
 import sys
 
-import pyrei
+import pymizu
 
-ch = pyrei.Channel.attach(sys.argv[1])
+ch = pymizu.Channel.attach(sys.argv[1])
 ch.drop
 ch._h.ready_set()
 while True:
     x = ch.recv()
-    if x is pyrei.CLOSED or x is pyrei.PEER_GONE:
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
         break
     ch.send(x)
 ch._h.close_signal()
@@ -51,29 +51,29 @@ def run_module(module, *args):
 
 def test_channel_direct_init():
     with pytest.raises(TypeError, match="Channel.create"):
-        pyrei.Channel()
+        pymizu.Channel()
 
 
 def test_pool_direct_init():
     with pytest.raises(TypeError, match="Pool.create"):
-        pyrei.Pool()
+        pymizu.Pool()
 
 
 def test_channel_attach_bad_token():
     with pytest.raises(ValueError, match="malformed join token"):
-        pyrei.Channel.attach("nope")
+        pymizu.Channel.attach("nope")
 
 
 def test_pool_attach_bad_token():
     with pytest.raises(ValueError, match="malformed join token"):
-        pyrei.Pool.attach("nope!")
+        pymizu.Pool.attach("nope!")
 
 
 def test_channel_attach_peer():
     def launch(token):
         return subprocess.Popen([sys.executable, "-c", ATTACH_PEER, token])
 
-    ch = pyrei.Channel.create("pass", launcher=launch)
+    ch = pymizu.Channel.create("pass", launcher=launch)
     try:
         ch.send("ping")
         assert ch.recv() == "ping"
@@ -82,7 +82,7 @@ def test_channel_attach_peer():
 
 
 def test_channel_token_alive_info():
-    ch = pyrei.Channel.create(ECHO_PEER)
+    ch = pymizu.Channel.create(ECHO_PEER)
     try:
         assert re.fullmatch(r"[0-9a-f]+_[0-9a-f]+", ch.token)
         assert ch.alive()
@@ -92,20 +92,20 @@ def test_channel_token_alive_info():
 
 
 def test_channel_context_manager():
-    with pyrei.Channel.create(ECHO_PEER) as ch:
+    with pymizu.Channel.create(ECHO_PEER) as ch:
         ch.send("x")
         assert ch.recv() == "x"
 
 
 def test_channel_close_signal_destroy():
-    ch = pyrei.Channel.create(ECHO_PEER)
+    ch = pymizu.Channel.create(ECHO_PEER)
     ch.close_signal()
-    assert ch.recv(timeout=5) is pyrei.CLOSED
+    assert ch.recv(timeout=5) is pymizu.CLOSED
     ch.destroy()
 
 
 def test_channel_close_timeout_warns():
-    ch = pyrei.Channel.create("import time; time.sleep(30)")
+    ch = pymizu.Channel.create("import time; time.sleep(30)")
     try:
         with pytest.warns(UserWarning, match="close timed out"):
             assert ch.close(timeout=0.2) is False
@@ -117,13 +117,13 @@ def test_channel_close_timeout_warns():
 
 def test_pool_create_validation():
     with pytest.raises(ValueError, match="at least 1"):
-        pyrei.Pool.create(0)
+        pymizu.Pool.create(0)
     with pytest.raises(ValueError, match="exceeds max_workers"):
-        pyrei.Pool.create(2, max_workers=1)
+        pymizu.Pool.create(2, max_workers=1)
 
 
 def test_pool_submit_validation():
-    with pyrei.Pool.create(1) as pool:
+    with pymizu.Pool.create(1) as pool:
         with pytest.raises(TypeError, match="must be callable"):
             pool.submit(42)
         with pytest.raises(TypeError, match="must be callable"):
@@ -131,38 +131,38 @@ def test_pool_submit_validation():
 
 
 def test_pool_spawn_workers_validation():
-    with pyrei.Pool.create(1) as pool:
+    with pymizu.Pool.create(1) as pool:
         with pytest.raises(ValueError, match="at least 1"):
             pool.spawn_workers(0)
-        with pytest.raises(pyrei.ReiError, match="free worker slots"):
+        with pytest.raises(pymizu.MizuError, match="free worker slots"):
             pool.spawn_workers(1)
 
 
 def test_pool_status_dump():
-    with pyrei.Pool.create(1) as pool:
+    with pymizu.Pool.create(1) as pool:
         assert isinstance(pool.status(), dict)
         assert isinstance(pool.dump(), dict)
 
 
 def test_current_pool_outside_task():
-    assert pyrei.current_pool() is None
+    assert pymizu.current_pool() is None
 
 
 def test_child_entry_bad_args():
-    assert run_module("pyrei.child").returncode == 2
-    assert run_module("pyrei.child", "not-a-token").returncode == 2
+    assert run_module("pymizu.child").returncode == 2
+    assert run_module("pymizu.child", "not-a-token").returncode == 2
 
 
 def test_child_entry_attach_failed():
-    r = run_module("pyrei.child", "deadbeef_1")
+    r = run_module("pymizu.child", "deadbeef_1")
     assert r.returncode == 2
     assert "attach failed" in r.stderr
 
 
 def test_child_entry_foreign_drop():
-    h = _pyrei._channel_new(1024, 256, 1 << 20, False, b"\x00raw")
+    h = _pymizu._channel_new(1024, 256, 1 << 20, False, b"\x00raw")
     try:
-        r = run_module("pyrei.child", h.token)
+        r = run_module("pymizu.child", h.token)
         assert r.returncode == 2
         assert "foreign channel drop" in r.stderr
     finally:
@@ -170,24 +170,24 @@ def test_child_entry_foreign_drop():
 
 
 def test_child_entry_compile_error():
-    with pytest.raises(pyrei.StartupError):
-        pyrei.Channel.create("def (:", startup_timeout=2.0)
+    with pytest.raises(pymizu.StartupError):
+        pymizu.Channel.create("def (:", startup_timeout=2.0)
 
 
 def test_child_entry_peer_exception():
-    ch = pyrei.Channel.create("raise RuntimeError('boom')")
+    ch = pymizu.Channel.create("raise RuntimeError('boom')")
     try:
-        assert ch.recv(timeout=5) in (pyrei.CLOSED, pyrei.PEER_GONE)
+        assert ch.recv(timeout=5) in (pymizu.CLOSED, pymizu.PEER_GONE)
     finally:
         ch.destroy()
 
 
 def test_worker_entry_bad_args():
-    assert run_module("pyrei.worker").returncode == 2
-    assert run_module("pyrei.worker", "deadbeef_1", "abc").returncode == 2
+    assert run_module("pymizu.worker").returncode == 2
+    assert run_module("pymizu.worker", "deadbeef_1", "abc").returncode == 2
 
 
 def test_worker_entry_join_failed():
-    r = run_module("pyrei.worker", "deadbeef_1", "0")
+    r = run_module("pymizu.worker", "deadbeef_1", "0")
     assert r.returncode == 2
     assert "join failed" in r.stderr

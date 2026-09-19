@@ -1,6 +1,6 @@
 """Pool tests: submit/collect, the outcome taxonomy, batching, worker
 death, nested submit, and collect_any/all semantics, over real spawned
-workers (``python -m pyrei.worker``)."""
+workers (``python -m pymizu.worker``)."""
 
 import os
 import pickle
@@ -23,12 +23,12 @@ from tests.helpers import (
     trace_to_file,
 )
 
-import pyrei
+import pymizu
 
 
 @pytest.fixture
 def pool():
-    p = pyrei.Pool.create(2)
+    p = pymizu.Pool.create(2)
     yield p
     p.stop()
 
@@ -45,13 +45,13 @@ def test_submit_kwargs(pool):
 
 def test_collect_timeout(pool):
     t = pool.submit(time.sleep, 1.5)
-    assert t.collect(timeout=0.05) is pyrei.TIMEOUT
+    assert t.collect(timeout=0.05) is pymizu.TIMEOUT
     assert t.collect(timeout=5) is None
 
 
 def test_task_error(pool):
     t = pool.submit(len, 5)  # TypeError in the worker
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         t.collect(timeout=5)
     exc = exc_info.value
     assert exc.remote_type == "TypeError"
@@ -61,7 +61,7 @@ def test_task_error(pool):
 def test_task_error_traceback(pool):
     # a Python-level callable unwinds Python frames: the header crosses
     t = pool.submit(raise_long, "boom")
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         t.collect(timeout=5)
     exc = exc_info.value
     assert exc.remote_type == "ValueError"
@@ -71,7 +71,7 @@ def test_task_error_traceback(pool):
 
 def test_task_error_envelope_is_bounded(pool):
     t = pool.submit(raise_long, "x" * 100000)
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         t.collect(timeout=10)
     exc = exc_info.value
     assert exc.remote_type == "ValueError"
@@ -85,7 +85,7 @@ def test_unpicklable_result(pool):
     # the result's __reduce__ raises: the publish recovers as the task's
     # ERR result — fail the task, never the worker
     t = pool.submit(make_unpicklable)
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         t.collect(timeout=5)
     assert exc_info.value.remote_type == "TypeError"
     # the worker survived
@@ -110,7 +110,7 @@ def test_cancel(pool):
     # collect before a worker consumes the cancelled entry: the CANCEL
     # verdict (once consumed, the worker frees the slot)
     assert queued.cancel() is True
-    with pytest.raises(pyrei.CancelledError):
+    with pytest.raises(pymizu.CancelledError):
         queued.collect(timeout=5)
     assert queued.cancel() is False  # already cancelled
     for t in slow:
@@ -139,7 +139,7 @@ def test_collect_any(pool):
 def test_collect_any_error_index(pool):
     bad = pool.submit(len, 5)  # fails fast
     slow = pool.submit(time.sleep, 1.5)
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         pool.collect_any([slow, bad], timeout=10)
     assert exc_info.value.index == 1
     # the other handle stays collectible
@@ -154,22 +154,22 @@ def test_collect_all(pool):
 def test_collect_all_error_index(pool):
     tasks = [pool.submit(len, [i]) for i in range(3)]
     tasks.append(pool.submit(len, 5))
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         pool.collect_all(tasks, timeout=10)
     assert exc_info.value.index == 3
 
 
 def test_collect_all_timeout_consumes_nothing(pool):
     tasks = [pool.submit(time.sleep, 0.8) for _ in range(2)]
-    assert pool.collect_all(tasks, timeout=0.05) is pyrei.TIMEOUT
+    assert pool.collect_all(tasks, timeout=0.05) is pymizu.TIMEOUT
     assert pool.collect_all(tasks, timeout=10) == [None, None]
 
 
 def test_worker_died():
-    p = pyrei.Pool.create(1)
+    p = pymizu.Pool.create(1)
     try:
         t = p.submit(os._exit, 1)  # the worker dies mid-task
-        with pytest.raises(pyrei.WorkerDiedError) as exc_info:
+        with pytest.raises(pymizu.WorkerDiedError) as exc_info:
             t.collect(timeout=15)
         assert exc_info.value.slot == 0
         assert exc_info.value.pid > 0
@@ -244,7 +244,7 @@ def test_trace(pool):
 
 
 def test_trace_worker_side(tmp_path):
-    with pyrei.Pool.create(1) as p:
+    with pymizu.Pool.create(1) as p:
         out = tmp_path / "trace.log"
         assert p.submit(trace_to_file, str(out)).collect(timeout=15) is True
         assert p.submit(busy, 1).collect(timeout=15) == 2
@@ -262,20 +262,20 @@ def test_trace_worker_side(tmp_path):
 def test_stop_idempotent_and_stopped(pool):
     t = pool.submit(len, [1])
     assert t.collect(timeout=5) == 1
-    pa = pyrei.Pool.attach(pool.token)  # a second handle on the same pool
+    pa = pymizu.Pool.attach(pool.token)  # a second handle on the same pool
     assert pool.stop(timeout=5) is True
     assert pool.stop(timeout=5) is True
     # the controller's own handle is dead after its stop
-    with pytest.raises(pyrei.ReiError, match="closed"):
+    with pytest.raises(pymizu.MizuError, match="closed"):
         pool.submit(len, [1])
     # an attached submitter reads the shutdown flag as StoppedError
-    with pytest.raises(pyrei.StoppedError):
+    with pytest.raises(pymizu.StoppedError):
         pa.submit(len, [1])
     pa.destroy()
 
 
 def test_retire_and_spawn():
-    p = pyrei.Pool.create(1, max_workers=2)
+    p = pymizu.Pool.create(1, max_workers=2)
     try:
         p.retire(0)
         deadline = time.monotonic() + 10
@@ -293,8 +293,8 @@ def test_attach_submitter(pool):
     # a second process joins as a submitter and collects its own result
     prog = """
 import sys
-import pyrei
-p = pyrei.Pool.attach(sys.argv[1])
+import pymizu
+p = pymizu.Pool.attach(sys.argv[1])
 t = p.submit(len, [1, 2, 3, 4])
 print(t.collect(timeout=10))
 p.destroy()
@@ -313,8 +313,8 @@ def test_startup_error():
     def launcher(token, slot):
         return subprocess.Popen([sys.executable, "-c", "pass"])
 
-    with pytest.raises(pyrei.StartupError):
-        pyrei.Pool.create(1, startup_timeout=1.0, launcher=launcher)
+    with pytest.raises(pymizu.StartupError):
+        pymizu.Pool.create(1, startup_timeout=1.0, launcher=launcher)
 
 
 def test_task_state(pool):
@@ -356,7 +356,7 @@ def test_fork_guard(pool):
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_collect_interrupt():
-    p = pyrei.Pool.create(1)
+    p = pymizu.Pool.create(1)
     p.submit(time.sleep, 3)
     timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
     timer.start()

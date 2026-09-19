@@ -1,4 +1,4 @@
-/* pyrei Pool.map staging and worker-side context — one fresh rei region
+/* pymizu Pool.map staging and worker-side context — one fresh mizu region
    per map call, holding a 128-byte header, ONE pickled descriptor stream
    ((fn, args, kwargs), or (fn, args, kwargs, x) when x rides the
    descriptor), an optional bare-bytes x section (a C-contiguous buffer of
@@ -18,17 +18,17 @@
 #include <string.h>
 
 #include "pymap.h"
-#include "rei.h"
-#include "rei_ext.h"
+#include "mizu.h"
+#include "mizu_ext.h"
 
-#define REI_PYMAP_MAGIC 0x4D525950u   /* "PYRM" — this binding's morsel tag */
+#define MIZU_PYMAP_MAGIC 0x4D4D5950u   /* "PYMM" — this binding's morsel tag */
 
-static PyObject *ReiErr;   /* pyrei.ReiError (borrowed at registration) */
-static PyObject *ReiShmErr;   /* pyrei.ShmError */
+static PyObject *MizuErr;   /* pymizu.MizuError (borrowed at registration) */
+static PyObject *MizuShmErr;   /* pymizu.ShmError */
 
 /* The map region's protocol half — the 128-byte header, the morsel-state
    words, the claim CAS, the AIMD batch sizing, reset/trim, and the lost-set
-   scan — is the core's morsel module (vendor/librei/morsel.c, rei_morsel_*):
+   scan — is the core's morsel module (vendor/libmizu/morsel.c, mizu_morsel_*):
    the struct is the layout. This file keeps the language-coupled half: the
    pickled descriptor, the x-section view, the batch loop's value writes,
    and the gather. */
@@ -42,50 +42,50 @@ static PyObject *ReiShmErr;   /* pyrei.ShmError */
    would re-trust. The capsule pins the context, so the mapping outlives
    any view handed out over it as long as the Python side caches them
    together. */
-typedef struct rei_pymap_s {
-  rei_shm *shm;
-  rei_morsel_hdr h;
+typedef struct mizu_pymap_s {
+  mizu_shm *shm;
+  mizu_morsel_hdr h;
   int owner;             /* stage side: the destructor unlinks */
   /* Batch sizing state (map_next), process-private and never wire state,
      reset at each run's first-call CLAIM CAS. */
-  rei_morsel_sizer sizer;
-} rei_pymap;
+  mizu_morsel_sizer sizer;
+} mizu_pymap;
 
-static void pymap_free(rei_pymap *mh) {
+static void pymap_free(mizu_pymap *mh) {
   if (mh->shm != NULL)
-    rei_shm_close(mh->shm, mh->owner);   /* owner: unlink + unmap + free */
+    mizu_shm_close(mh->shm, mh->owner);   /* owner: unlink + unmap + free */
   free(mh);
 }
 
 /* _map_close's tombstone: PyCapsule_SetPointer rejects NULL, so a closed
    context is marked with a sentinel address the accessors refuse. */
 static int pymap_closed_marker;
-#define REI_PYMAP_CLOSED ((void *) &pymap_closed_marker)
+#define MIZU_PYMAP_CLOSED ((void *) &pymap_closed_marker)
 
 static void pymap_capsule_free(PyObject *caps) {
-  void *p = PyCapsule_GetPointer(caps, REI_PY_MAP_CAPSULE);
+  void *p = PyCapsule_GetPointer(caps, MIZU_PY_MAP_CAPSULE);
   if (p == NULL) {
     PyErr_Clear();   /* a NULL payload is not produced, but tolerate it */
     return;
   }
-  if (p != REI_PYMAP_CLOSED) pymap_free((rei_pymap *) p);
+  if (p != MIZU_PYMAP_CLOSED) pymap_free((mizu_pymap *) p);
 }
 
-static rei_pymap *pymap_get(PyObject *caps) {
-  rei_pymap *mh = (rei_pymap *) PyCapsule_GetPointer(caps, REI_PY_MAP_CAPSULE);
-  if (mh == NULL || mh == (rei_pymap *) REI_PYMAP_CLOSED) {
+static mizu_pymap *pymap_get(PyObject *caps) {
+  mizu_pymap *mh = (mizu_pymap *) PyCapsule_GetPointer(caps, MIZU_PY_MAP_CAPSULE);
+  if (mh == NULL || mh == (mizu_pymap *) MIZU_PYMAP_CLOSED) {
     /* a foreign capsule or a closed context land alike */
-    PyErr_SetString(ReiErr, "pyrei: not a map context (or it is closed)");
+    PyErr_SetString(MizuErr, "pymizu: not a map context (or it is closed)");
     return NULL;
   }
   return mh;
 }
 
-static int pymap_ordinal(rei_pymap *mh, PyObject *ord, uint32_t *out) {
+static int pymap_ordinal(mizu_pymap *mh, PyObject *ord, uint32_t *out) {
   long r = PyLong_AsLong(ord);
   if (r == -1 && PyErr_Occurred()) return -1;
   if (r < 0 || (uint32_t) r >= mh->h.claim_n) {
-    PyErr_SetString(ReiErr, "pyrei: runner ordinal out of range");
+    PyErr_SetString(MizuErr, "pymizu: runner ordinal out of range");
     return -1;
   }
   *out = (uint32_t) r;
@@ -117,17 +117,17 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
     return NULL;
   if (n_ll < 1 || n_ll > ((uint64_t) 1 << 48)) {
     PyBuffer_Release(&desc);
-    PyErr_SetString(ReiErr, "pyrei: invalid map length");
+    PyErr_SetString(MizuErr, "pymizu: invalid map length");
     return NULL;
   }
   if (ms_ll < 1 || ms_ll > n_ll) {
     PyBuffer_Release(&desc);
-    PyErr_SetString(ReiErr, "pyrei: invalid map morsel size");
+    PyErr_SetString(MizuErr, "pymizu: invalid map morsel size");
     return NULL;
   }
   if (desc.len < 1) {
     PyBuffer_Release(&desc);
-    PyErr_SetString(ReiErr, "pyrei: invalid map descriptor size");
+    PyErr_SetString(MizuErr, "pymizu: invalid map descriptor size");
     return NULL;
   }
   have_x = x_obj != Py_None;
@@ -137,13 +137,13 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
        x (a zero-copy view) is eligible; strides != NULL is not */
     if (PyObject_GetBuffer(x_obj, &xbuf, PyBUF_ND | PyBUF_FORMAT) < 0)
       goto fail_desc;
-    x_tag = xbuf.strides == NULL ? rei_py_wire_type_of(&xbuf) : 0;
-    size_t elt = rei_type_elt_size(x_tag);
+    x_tag = xbuf.strides == NULL ? mizu_py_wire_type_of(&xbuf) : 0;
+    size_t elt = mizu_type_elt_size(x_tag);
     if (x_tag == 0 || elt == 0 || (uint64_t) xbuf.len != n_ll * elt) {
       PyBuffer_Release(&xbuf);
       PyBuffer_Release(&desc);
-      PyErr_SetString(ReiErr,
-                      "pyrei: x is not eligible for the map raw section");
+      PyErr_SetString(MizuErr,
+                      "pymizu: x is not eligible for the map raw section");
       return NULL;
     }
   }
@@ -154,13 +154,13 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
     if (PyObject_GetBuffer(t_obj, &tbuf,
                            PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0)
       goto fail_bufs;
-    t_tag = rei_py_wire_type_of(&tbuf);
-    size_t elt = rei_type_elt_size(t_tag);
+    t_tag = mizu_py_wire_type_of(&tbuf);
+    size_t elt = mizu_type_elt_size(t_tag);
     if (t_tag == 0 || elt == 0 ||
         tbuf.len < (Py_ssize_t) elt ||
         (size_t) tbuf.len % elt != 0) {
       PyBuffer_Release(&tbuf);
-      PyErr_SetString(ReiErr, "pyrei: invalid map template");
+      PyErr_SetString(MizuErr, "pymizu: invalid map template");
       goto fail_bufs;
     }
     t_m = (uint64_t) tbuf.len / elt;
@@ -169,23 +169,23 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
 
   /* the binding-side checks above pre-validate the geometry, so a layout
      refusal is always a size overflow */
-  rei_morsel_hdr h;
-  uint64_t size = rei_morsel_layout(&h, REI_PYMAP_MAGIC, (uint64_t) n_ll,
+  mizu_morsel_hdr h;
+  uint64_t size = mizu_morsel_layout(&h, MIZU_PYMAP_MAGIC, (uint64_t) n_ll,
                                     (uint64_t) ms_ll, (uint64_t) desc.len,
                                     have_x ? (uint32_t) x_tag : 0,
                                     have_x ? (uint64_t) xbuf.len : 0,
                                     have_t ? (uint32_t) t_tag : 0, t_m,
-                                    REI_MAX_WORKERS);
+                                    MIZU_MAX_WORKERS);
   if (size == 0) {
-    PyErr_SetString(ReiShmErr, "pyrei: map region too large");
+    PyErr_SetString(MizuShmErr, "pymizu: map region too large");
     goto fail_bufs;
   }
 
-  rei_shm *shm;
-  if (rei_shm_create(&shm, (size_t) size) != REI_OK) {
+  mizu_shm *shm;
+  if (mizu_shm_create(&shm, (size_t) size) != MIZU_OK) {
     const char *summary, *hint;
-    rei_err_describe(rei_last_error_category(), &summary, &hint);
-    PyErr_Format(ReiShmErr, "pyrei: cannot create map region (%llu bytes): "
+    mizu_err_describe(mizu_last_error_category(), &summary, &hint);
+    PyErr_Format(MizuShmErr, "pymizu: cannot create map region (%llu bytes): "
                  "%s%s%s", (unsigned long long) size, summary,
                  hint[0] != '\0' ? ". " : "", hint);
     goto fail_bufs;
@@ -198,16 +198,16 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   PyBuffer_Release(&desc);
   if (have_x) PyBuffer_Release(&xbuf);
 
-  rei_pymap *mh = calloc(1, sizeof(*mh));
+  mizu_pymap *mh = calloc(1, sizeof(*mh));
   if (mh == NULL) {
-    rei_shm_close(shm, 1);
+    mizu_shm_close(shm, 1);
     return PyErr_NoMemory();
   }
   mh->shm = shm;
   mh->h = h;
   mh->owner = 1;
-  rei_morsel_sizer_init(&mh->sizer);
-  PyObject *caps = PyCapsule_New(mh, REI_PY_MAP_CAPSULE, pymap_capsule_free);
+  mizu_morsel_sizer_init(&mh->sizer);
+  PyObject *caps = PyCapsule_New(mh, MIZU_PY_MAP_CAPSULE, pymap_capsule_free);
   if (caps == NULL) {
     pymap_free(mh);
     return NULL;
@@ -242,17 +242,17 @@ backstop), the worker side drops its mapping. Idempotent.");
 
 static PyObject *py_map_close(PyObject *Py_UNUSED(module), PyObject *caps) {
   if (!PyCapsule_CheckExact(caps)) {
-    PyErr_SetString(ReiErr, "pyrei: not a map context");
+    PyErr_SetString(MizuErr, "pymizu: not a map context");
     return NULL;
   }
-  void *p = PyCapsule_GetPointer(caps, REI_PY_MAP_CAPSULE);
+  void *p = PyCapsule_GetPointer(caps, MIZU_PY_MAP_CAPSULE);
   if (p == NULL) {
     PyErr_Clear();   /* tolerate a NULL payload */
     Py_RETURN_NONE;
   }
-  if (p == REI_PYMAP_CLOSED) Py_RETURN_NONE;   /* idempotent */
-  if (PyCapsule_SetPointer(caps, REI_PYMAP_CLOSED) < 0) return NULL;
-  pymap_free((rei_pymap *) p);
+  if (p == MIZU_PYMAP_CLOSED) Py_RETURN_NONE;   /* idempotent */
+  if (PyCapsule_SetPointer(caps, MIZU_PYMAP_CLOSED) < 0) return NULL;
+  pymap_free((mizu_pymap *) p);
   Py_RETURN_NONE;
 }
 
@@ -269,29 +269,29 @@ ERR result (or the cancel drop absorbs it on the timeout path).");
 static PyObject *py_map_open(PyObject *Py_UNUSED(module), PyObject *arg) {
   const char *name = PyUnicode_AsUTF8(arg);
   if (name == NULL) return NULL;
-  rei_shm *shm;
-  if (rei_shm_open_rw(&shm, name, 0) != REI_OK) {
-    PyErr_Format(ReiShmErr, "pyrei: cannot open map region '%s' — its "
+  mizu_shm *shm;
+  if (mizu_shm_open_rw(&shm, name, 0) != MIZU_OK) {
+    PyErr_Format(MizuShmErr, "pymizu: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
     return NULL;
   }
-  rei_morsel_hdr h;
-  const char *err = rei_morsel_hdr_check(shm->addr, shm->size,
-                                         REI_PYMAP_MAGIC, &h);
+  mizu_morsel_hdr h;
+  const char *err = mizu_morsel_hdr_check(shm->addr, shm->size,
+                                         MIZU_PYMAP_MAGIC, &h);
   if (err != NULL) {
-    rei_shm_close(shm, 0);
-    PyErr_Format(ReiErr, "pyrei: invalid map region: %s", err);
+    mizu_shm_close(shm, 0);
+    PyErr_Format(MizuErr, "pymizu: invalid map region: %s", err);
     return NULL;
   }
-  rei_pymap *mh = calloc(1, sizeof(*mh));
+  mizu_pymap *mh = calloc(1, sizeof(*mh));
   if (mh == NULL) {
-    rei_shm_close(shm, 0);
+    mizu_shm_close(shm, 0);
     return PyErr_NoMemory();
   }
   mh->shm = shm;
   mh->h = h;
-  rei_morsel_sizer_init(&mh->sizer);
-  return PyCapsule_New(mh, REI_PY_MAP_CAPSULE, pymap_capsule_free);
+  mizu_morsel_sizer_init(&mh->sizer);
+  return PyCapsule_New(mh, MIZU_PY_MAP_CAPSULE, pymap_capsule_free);
 }
 
 PyDoc_STRVAR(map_header_doc,
@@ -300,7 +300,7 @@ The validated stage-time constants: n, x_kind, x_tag, morsel_size,\n\
 n_morsels, claim_n, out_tag, out_m.");
 
 static PyObject *py_map_header(PyObject *Py_UNUSED(module), PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   return Py_BuildValue("{s:K,s:I,s:I,s:K,s:K,s:I,s:I,s:K}",
                        "n", (unsigned long long) mh->h.n,
@@ -319,7 +319,7 @@ The one descriptor stream, copied out of the mapping (the Python side\n\
 unpickles it once per worker and caches).");
 
 static PyObject *py_map_desc(PyObject *Py_UNUSED(module), PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   return PyBytes_FromStringAndSize(
     (const char *) mh->shm->addr + mh->h.desc_off, (Py_ssize_t) mh->h.desc_len);
@@ -332,10 +332,10 @@ must not outlive the context capsule (the Python cache holds them\n\
 together).");
 
 static PyObject *py_map_x_view(PyObject *Py_UNUSED(module), PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.x_kind != REI_MORSEL_X_RAW) {
-    PyErr_SetString(ReiErr, "pyrei: map region has no x section");
+  if (mh->h.x_kind != MIZU_MORSEL_X_RAW) {
+    PyErr_SetString(MizuErr, "pymizu: map region has no x section");
     return NULL;
   }
   return PyMemoryView_FromMemory(
@@ -347,17 +347,17 @@ static PyObject *py_map_x_view(PyObject *Py_UNUSED(module), PyObject *caps) {
 
 static const char *pymap_tag_format(uint32_t tag) {
   switch (tag) {
-  case REI_TYPE_REAL: return "d";
-  case REI_TYPE_INT:
-  case REI_TYPE_LGL: return "i";
-  case REI_TYPE_INT64: return "q";
-  case REI_TYPE_CPLX: return "Zd";
+  case MIZU_TYPE_REAL: return "d";
+  case MIZU_TYPE_INT:
+  case MIZU_TYPE_LGL: return "i";
+  case MIZU_TYPE_INT64: return "q";
+  case MIZU_TYPE_CPLX: return "Zd";
   default: return "B";
   }
 }
 
 /* Annotate the in-flight exception with the element index — the "first by
-   element index" contract rides the `_pyrei_map_index` attribute the
+   element index" contract rides the `_pymizu_map_index` attribute the
    worker's error envelope reads. */
 static void pymap_annotate_index(uint64_t index) {
   PyObject *t = NULL, *v = NULL, *tb = NULL;
@@ -366,7 +366,7 @@ static void pymap_annotate_index(uint64_t index) {
     PyErr_NormalizeException(&t, &v, &tb);
     PyObject *i = PyLong_FromUnsignedLongLong((unsigned long long) index);
     if (i != NULL) {
-      if (PyObject_SetAttrString(v, "_pyrei_map_index", i) < 0)
+      if (PyObject_SetAttrString(v, "_pymizu_map_index", i) < 0)
         PyErr_Clear();
       Py_DECREF(i);
     } else {
@@ -377,9 +377,9 @@ static void pymap_annotate_index(uint64_t index) {
 }
 
 /* Raise the template-mismatch error, annotated like any element failure. */
-static void pymap_raise_value(rei_pymap *mh, uint64_t index) {
-  PyErr_Format(ReiErr,
-               "pyrei: map values must match the template (format '%s', "
+static void pymap_raise_value(mizu_pymap *mh, uint64_t index) {
+  PyErr_Format(MizuErr,
+               "pymizu: map values must match the template (format '%s', "
                "length %llu)", pymap_tag_format(mh->h.out_type),
                (unsigned long long) mh->h.out_m);
   pymap_annotate_index(index);
@@ -388,14 +388,14 @@ static void pymap_raise_value(rei_pymap *mh, uint64_t index) {
 /* Element e's value into its disjoint output-area slice: a buffer of the
    template's wire type and length m memcpys; for m == 1 a Python scalar
    (float/int/bool/complex) converts. Returns 0 written, -1 raised. */
-static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
+static int pymap_write_value(mizu_pymap *mh, uint64_t e, PyObject *v) {
   unsigned char *dst = (unsigned char *) mh->shm->addr + mh->h.out_off +
     e * (mh->h.out_m * mh->h.out_elt);
   size_t nbytes = (size_t) (mh->h.out_m * mh->h.out_elt);
   if (PyObject_CheckBuffer(v)) {
     Py_buffer b;
     if (PyObject_GetBuffer(v, &b, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) == 0) {
-      int ok = rei_py_wire_type_of(&b) == (int) mh->h.out_type &&
+      int ok = mizu_py_wire_type_of(&b) == (int) mh->h.out_type &&
                (uint64_t) b.len == (uint64_t) nbytes;
       if (ok) memcpy(dst, b.buf, (size_t) b.len);
       PyBuffer_Release(&b);
@@ -406,7 +406,7 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
   }
   if (mh->h.out_m == 1 && !PyObject_CheckBuffer(v)) {
     switch (mh->h.out_type) {
-    case REI_TYPE_REAL:
+    case MIZU_TYPE_REAL:
       if (PyFloat_Check(v)) {
         double d = PyFloat_AS_DOUBLE(v);
         memcpy(dst, &d, 8);
@@ -419,8 +419,8 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
         return 0;
       }
       break;
-    case REI_TYPE_INT:
-    case REI_TYPE_LGL:
+    case MIZU_TYPE_INT:
+    case MIZU_TYPE_LGL:
       if (PyLong_Check(v)) {
         long w = PyLong_AsLong(v);
         if (w == -1 && PyErr_Occurred()) return -1;
@@ -430,7 +430,7 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
         return 0;
       }
       break;
-    case REI_TYPE_INT64:
+    case MIZU_TYPE_INT64:
       if (PyLong_Check(v)) {
         long long w = PyLong_AsLongLong(v);
         if (w == -1 && PyErr_Occurred()) {
@@ -443,7 +443,7 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
         return 0;
       }
       break;
-    case REI_TYPE_RAW:
+    case MIZU_TYPE_RAW:
       if (PyLong_Check(v)) {
         long w = PyLong_AsLong(v);
         if (w == -1 && PyErr_Occurred()) return -1;
@@ -452,7 +452,7 @@ static int pymap_write_value(rei_pymap *mh, uint64_t e, PyObject *v) {
         return 0;
       }
       break;
-    case REI_TYPE_CPLX:
+    case MIZU_TYPE_CPLX:
       if (PyComplex_Check(v) || PyFloat_Check(v) || PyLong_Check(v)) {
         Py_complex c = PyComplex_AsCComplex(v);
         if (c.real == -1.0 && PyErr_Occurred()) return -1;
@@ -479,18 +479,18 @@ static PyObject *py_map_write(PyObject *Py_UNUSED(module), PyObject *args) {
   unsigned long long lo_ll;
   if (!PyArg_ParseTuple(args, "OKO:_map_write", &caps, &lo_ll, &vals))
     return NULL;
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (mh->h.out_type == 0) {
-    PyErr_SetString(ReiErr, "pyrei: map region has no output area");
+    PyErr_SetString(MizuErr, "pymizu: map region has no output area");
     return NULL;
   }
-  PyObject *seq = PySequence_Fast(vals, "pyrei: values must be a sequence");
+  PyObject *seq = PySequence_Fast(vals, "pymizu: values must be a sequence");
   if (seq == NULL) return NULL;
   Py_ssize_t len = PySequence_Fast_GET_SIZE(seq);
   if (lo_ll + (uint64_t) len > mh->h.n) {
     Py_DECREF(seq);
-    PyErr_SetString(ReiErr, "pyrei: map write range out of bounds");
+    PyErr_SetString(MizuErr, "pymizu: map write range out of bounds");
     return NULL;
   }
   for (Py_ssize_t j = 0; j < len; j++) {
@@ -510,10 +510,10 @@ The output area copied out, n * m elements of the template's wire type —\n\
 the whole cross-process gather is this one memcpy.");
 
 static PyObject *py_map_gather(PyObject *Py_UNUSED(module), PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (mh->h.out_type == 0) {
-    PyErr_SetString(ReiErr, "pyrei: map region has no output area");
+    PyErr_SetString(MizuErr, "pymizu: map region has no output area");
     return NULL;
   }
   uint64_t nbytes = mh->h.n * mh->h.out_m * mh->h.out_elt;
@@ -534,16 +534,16 @@ typedef struct {
   uint32_t tag;
   Py_ssize_t shape[1];
   Py_ssize_t strides[1];
-} ReiMapView;
+} MizuMapView;
 
 static int mapview_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
-  ReiMapView *v = (ReiMapView *) obj;
+  MizuMapView *v = (MizuMapView *) obj;
   if (flags & PyBUF_WRITABLE) {
     PyErr_SetString(PyExc_BufferError,
-                    "pyrei: shared-memory views are read-only");
+                    "pymizu: shared-memory views are read-only");
     return -1;
   }
-  Py_ssize_t elt = (Py_ssize_t) rei_type_elt_size((int) v->tag);
+  Py_ssize_t elt = (Py_ssize_t) mizu_type_elt_size((int) v->tag);
   v->shape[0] = v->len / elt;
   v->strides[0] = elt;
   view->buf = v->data;
@@ -562,11 +562,11 @@ static int mapview_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
   return 0;
 }
 
-static PyTypeObject ReiMapViewType;
+static PyTypeObject MizuMapViewType;
 
-static void mapview_dealloc(ReiMapView *self) {
+static void mapview_dealloc(MizuMapView *self) {
   Py_XDECREF(self->capsule);
-  ReiMapViewType.tp_free((PyObject *) self);
+  MizuMapViewType.tp_free((PyObject *) self);
 }
 
 static PyBufferProcs mapview_as_buffer = {
@@ -574,10 +574,10 @@ static PyBufferProcs mapview_as_buffer = {
   .bf_releasebuffer = NULL,
 };
 
-static PyTypeObject ReiMapViewType = {
+static PyTypeObject MizuMapViewType = {
   PyVarObject_HEAD_INIT(NULL, 0)
-  .tp_name = "_pyrei._MapOutView",
-  .tp_basicsize = sizeof(ReiMapView),
+  .tp_name = "_pymizu._MapOutView",
+  .tp_basicsize = sizeof(MizuMapView),
   .tp_flags = Py_TPFLAGS_DEFAULT,
   .tp_doc = "A zero-copy view over a map region's output area.",
   .tp_dealloc = (destructor) mapview_dealloc,
@@ -592,13 +592,13 @@ every memoryview / numpy array exported from it) is gone.");
 
 static PyObject *py_map_gather_view(PyObject *Py_UNUSED(module),
                                     PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (mh->h.out_type == 0) {
-    PyErr_SetString(ReiErr, "pyrei: map region has no output area");
+    PyErr_SetString(MizuErr, "pymizu: map region has no output area");
     return NULL;
   }
-  ReiMapView *v = (ReiMapView *) ReiMapViewType.tp_alloc(&ReiMapViewType, 0);
+  MizuMapView *v = (MizuMapView *) MizuMapViewType.tp_alloc(&MizuMapViewType, 0);
   if (v == NULL) return NULL;
   Py_INCREF(caps);
   v->capsule = caps;
@@ -629,17 +629,17 @@ static PyObject *py_map_next(PyObject *Py_UNUSED(module), PyObject *args) {
   uint32_t r, gen;
   if (!PyArg_ParseTuple(args, "OOII:_map_next", &caps, &sig_caps, &r, &gen))
     return NULL;
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (r >= mh->h.claim_n) {
-    PyErr_SetString(ReiErr, "pyrei: runner ordinal out of range");
+    PyErr_SetString(MizuErr, "pymizu: runner ordinal out of range");
     return NULL;
   }
-  rei_pool_sig *s = NULL;
+  mizu_pool_sig *s = NULL;
   if (sig_caps != Py_None) {
-    s = (rei_pool_sig *) PyCapsule_GetPointer(sig_caps, REI_PY_SIG_CAPSULE);
+    s = (mizu_pool_sig *) PyCapsule_GetPointer(sig_caps, MIZU_PY_SIG_CAPSULE);
     if (s == NULL) {
-      PyErr_SetString(ReiErr, "pyrei: not a pool-signal handle");
+      PyErr_SetString(MizuErr, "pymizu: not a pool-signal handle");
       return NULL;
     }
   }
@@ -647,12 +647,12 @@ static PyObject *py_map_next(PyObject *Py_UNUSED(module), PyObject *args) {
      pool-signal checks, AIMD sizing, cursor issue */
   uint64_t m, k;
   int help;
-  if (!rei_morsel_next(mh->shm->addr, &mh->h, &mh->sizer, r, gen, s, 0,
-                       rei_now(), &m, &k, &help))
+  if (!mizu_morsel_next(mh->shm->addr, &mh->h, &mh->sizer, r, gen, s, 0,
+                       mizu_now(), &m, &k, &help))
     Py_RETURN_NONE;
 
   uint64_t lo, hi;
-  rei_morsel_span_of(&mh->h, m, k, &lo, &hi);   /* 0-based half-open */
+  mizu_morsel_span_of(&mh->h, m, k, &lo, &hi);   /* 0-based half-open */
   return Py_BuildValue("(KKi)", (unsigned long long) lo,
                        (unsigned long long) hi, help);
 }
@@ -670,12 +670,12 @@ static PyObject *py_map_abandon(PyObject *Py_UNUSED(module), PyObject *args) {
   uint32_t gen;
   if (!PyArg_ParseTuple(args, "OOI:_map_abandon", &caps, &ord, &gen))
     return NULL;
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   uint32_t r;
   if (pymap_ordinal(mh, ord, &r) < 0) return NULL;
   return PyLong_FromLong(
-    rei_morsel_abandon(mh->shm->addr, &mh->h, r, gen));
+    mizu_morsel_abandon(mh->shm->addr, &mh->h, r, gen));
 }
 
 PyDoc_STRVAR(map_cancel_set_doc,
@@ -686,12 +686,12 @@ stops every peer within ~a batch. Idempotent.");
 
 static PyObject *py_map_cancel_set(PyObject *Py_UNUSED(module),
                                    PyObject *caps) {
-  void *p = PyCapsule_GetPointer(caps, REI_PY_MAP_CAPSULE);
+  void *p = PyCapsule_GetPointer(caps, MIZU_PY_MAP_CAPSULE);
   if (p == NULL) PyErr_Clear();   /* foreign capsule: no-op */
-  if (p == NULL || p == REI_PYMAP_CLOSED)
+  if (p == NULL || p == MIZU_PYMAP_CLOSED)
     Py_RETURN_NONE;   /* closed or foreign: no-op (runs from unwind paths) */
-  rei_pymap *mh = (rei_pymap *) p;
-  rei_morsel_cancel_set(mh->shm->addr, &mh->h);
+  mizu_pymap *mh = (mizu_pymap *) p;
+  mizu_morsel_cancel_set(mh->shm->addr, &mh->h);
   Py_RETURN_NONE;
 }
 
@@ -700,9 +700,9 @@ PyDoc_STRVAR(map_cancel_get_doc,
 
 static PyObject *py_map_cancel_get(PyObject *Py_UNUSED(module),
                                    PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  return PyBool_FromLong(rei_morsel_cancel_get(mh->shm->addr, &mh->h));
+  return PyBool_FromLong(mizu_morsel_cancel_get(mh->shm->addr, &mh->h));
 }
 
 /* Prepared-run re-arm, O(1) in n (no per-morsel state exists to clear):
@@ -719,10 +719,10 @@ generation, re-arm the CLAIM array, zero the cursor, clear the cancel\n\
 word. Returns the new generation for the run's runner payloads.");
 
 static PyObject *py_map_reset(PyObject *Py_UNUSED(module), PyObject *caps) {
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   return PyLong_FromUnsignedLong(
-    (unsigned long) rei_morsel_reset(mh->shm->addr, &mh->h));
+    (unsigned long) mizu_morsel_reset(mh->shm->addr, &mh->h));
 }
 
 PyDoc_STRVAR(map_swap_x_doc,
@@ -736,22 +736,22 @@ the Python side restages instead of swapping.");
 static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
   PyObject *caps, *x_obj;
   if (!PyArg_ParseTuple(args, "OO:_map_swap_x", &caps, &x_obj)) return NULL;
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
-  if (mh->h.x_kind != REI_MORSEL_X_RAW) {
-    PyErr_SetString(ReiErr, "pyrei: map region has no x section");
+  if (mh->h.x_kind != MIZU_MORSEL_X_RAW) {
+    PyErr_SetString(MizuErr, "pymizu: map region has no x section");
     return NULL;
   }
   Py_buffer xbuf;
   if (PyObject_GetBuffer(x_obj, &xbuf,
                          PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0)
     return NULL;
-  int tag = rei_py_wire_type_of(&xbuf);
+  int tag = mizu_py_wire_type_of(&xbuf);
   if (tag == 0 || (uint32_t) tag != mh->h.x_type ||
       (uint64_t) xbuf.len != mh->h.x_len) {
     PyBuffer_Release(&xbuf);
-    PyErr_SetString(ReiErr,
-                    "pyrei: replacement x must match the staged type and "
+    PyErr_SetString(MizuErr,
+                    "pymizu: replacement x must match the staged type and "
                     "length");
     return NULL;
   }
@@ -768,7 +768,7 @@ static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
    it publishes only at exhaustion. histories is a list of per-runner
    lists of (lo, hi) 0-based half-open element ranges. Returns a list of
    (lo, hi) tuples. */
-typedef rei_morsel_span rei_pyrange;
+typedef mizu_morsel_span mizu_pyrange;
 
 PyDoc_STRVAR(map_lost_doc,
 "_map_lost(capsule, histories) -> list of (lo, hi)\n\n\
@@ -778,21 +778,21 @@ covered by no collected batch history.");
 static PyObject *py_map_lost(PyObject *Py_UNUSED(module), PyObject *args) {
   PyObject *caps, *runs;
   if (!PyArg_ParseTuple(args, "OO:_map_lost", &caps, &runs)) return NULL;
-  rei_pymap *mh = pymap_get(caps);
+  mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   PyObject *seq = PySequence_Fast(
-    runs, "pyrei: histories must be a list of range lists");
+    runs, "pymizu: histories must be a list of range lists");
   if (seq == NULL) return NULL;
   Py_ssize_t nh = PySequence_Fast_GET_SIZE(seq);
   Py_ssize_t total = 0;
   for (Py_ssize_t i = 0; i < nh; i++) {
     PyObject *hist = PySequence_Fast(PySequence_Fast_GET_ITEM(seq, i),
-                                     "pyrei: invalid map batch history");
+                                     "pymizu: invalid map batch history");
     if (hist == NULL) goto fail_seq;
     total += PySequence_Fast_GET_SIZE(hist);
     Py_DECREF(hist);
   }
-  rei_pyrange *b = PyMem_Malloc((size_t) (total > 0 ? total : 1) *
+  mizu_pyrange *b = PyMem_Malloc((size_t) (total > 0 ? total : 1) *
                                 sizeof(*b));
   if (b == NULL) {
     PyErr_NoMemory();
@@ -801,14 +801,14 @@ static PyObject *py_map_lost(PyObject *Py_UNUSED(module), PyObject *args) {
   Py_ssize_t at = 0;
   for (Py_ssize_t i = 0; i < nh; i++) {
     PyObject *hist = PySequence_Fast(PySequence_Fast_GET_ITEM(seq, i),
-                                     "pyrei: invalid map batch history");
+                                     "pymizu: invalid map batch history");
     if (hist == NULL) goto fail_b;
     Py_ssize_t nb = PySequence_Fast_GET_SIZE(hist);
     for (Py_ssize_t j = 0; j < nb; j++, at++) {
       unsigned long long lo, hi;
       if (!PyArg_ParseTuple(PySequence_Fast_GET_ITEM(hist, j), "KK",
                             &lo, &hi) || hi < lo || hi > mh->h.n) {
-        PyErr_SetString(ReiErr, "pyrei: invalid map batch history");
+        PyErr_SetString(MizuErr, "pymizu: invalid map batch history");
         Py_DECREF(hist);
         goto fail_b;
       }
@@ -817,17 +817,17 @@ static PyObject *py_map_lost(PyObject *Py_UNUSED(module), PyObject *args) {
     }
     Py_DECREF(hist);
   }
-  uint64_t issued = rei_morsel_cursor(mh->shm->addr, &mh->h) *
+  uint64_t issued = mizu_morsel_cursor(mh->shm->addr, &mh->h) *
     mh->h.morsel_size;
   if (issued > mh->h.n) issued = mh->h.n;
 
   /* at most one gap per span plus the tail */
-  rei_pyrange *gaps = PyMem_Malloc(((size_t) total + 1) * sizeof(*gaps));
+  mizu_pyrange *gaps = PyMem_Malloc(((size_t) total + 1) * sizeof(*gaps));
   if (gaps == NULL) {
     PyErr_NoMemory();
     goto fail_b;
   }
-  size_t ngaps = rei_morsel_lost(b, (size_t) total, issued, gaps);
+  size_t ngaps = mizu_morsel_lost(b, (size_t) total, issued, gaps);
   PyObject *out = PyList_New(0);
   if (out == NULL) {
     PyMem_Free(gaps);
@@ -869,12 +869,12 @@ static PyObject *py_map_probe_x(PyObject *Py_UNUSED(module), PyObject *arg) {
     PyErr_Clear();
     Py_RETURN_NONE;
   }
-  int type = v.strides == NULL ? rei_py_wire_type_of(&v) : 0;
+  int type = v.strides == NULL ? mizu_py_wire_type_of(&v) : 0;
   if (type == 0) {
     PyBuffer_Release(&v);
     Py_RETURN_NONE;
   }
-  size_t elt = rei_type_elt_size(type);
+  size_t elt = mizu_type_elt_size(type);
   PyObject *out = Py_BuildValue("(iKK)", type,
                                 (unsigned long long) ((size_t) v.len / elt),
                                 (unsigned long long) v.len);
@@ -909,16 +909,16 @@ static PyMethodDef pymap_methods[] = {
   {NULL, NULL, 0, NULL}
 };
 
-int rei_py_map_register(PyObject *m, PyObject *rei_error,
+int mizu_py_map_register(PyObject *m, PyObject *mizu_error,
                         PyObject *shm_error) {
-  ReiErr = rei_error;
-  ReiShmErr = shm_error;
-  Py_INCREF(ReiErr);
-  Py_INCREF(ReiShmErr);
-  if (PyType_Ready(&ReiMapViewType) < 0) return -1;
-  Py_INCREF(&ReiMapViewType);
-  if (PyModule_AddObject(m, "_MapOutView", (PyObject *) &ReiMapViewType) < 0) {
-    Py_DECREF(&ReiMapViewType);
+  MizuErr = mizu_error;
+  MizuShmErr = shm_error;
+  Py_INCREF(MizuErr);
+  Py_INCREF(MizuShmErr);
+  if (PyType_Ready(&MizuMapViewType) < 0) return -1;
+  Py_INCREF(&MizuMapViewType);
+  if (PyModule_AddObject(m, "_MapOutView", (PyObject *) &MizuMapViewType) < 0) {
+    Py_DECREF(&MizuMapViewType);
     return -1;
   }
   for (PyMethodDef *def = pymap_methods; def->ml_name != NULL; def++) {

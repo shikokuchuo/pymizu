@@ -65,10 +65,10 @@ jobs:
       - name: Build and install
         run: pip install . pytest numpy pyarrow polars cloudpickle coverage
 
-      # The cross-language tests need an Rscript with the installed rei
+      # The cross-language tests need an Rscript with the installed mizu
       # package (their fixture probe-skips otherwise); Linux legs only.
-      # rei is a private repo, so these steps need the CROSSLANG_PAT
-      # secret (a PAT with read access to rei); without it they skip and
+      # mizu is a private repo, so these steps need the CROSSLANG_PAT
+      # secret (a PAT with read access to mizu); without it they skip and
       # the tests probe-skip.
       - name: Set up R (cross-language tests)
         if: runner.os == 'Linux' && env.CROSSLANG_PAT != ''
@@ -76,17 +76,17 @@ jobs:
         with:
           use-public-rspm: true
 
-      - name: Install the rei R package (cross-language tests)
+      - name: Install the mizu R package (cross-language tests)
         if: runner.os == 'Linux' && env.CROSSLANG_PAT != ''
         env:
           GITHUB_PAT: ${{ secrets.CROSSLANG_PAT }}
         run: |
           install.packages(c("bit64", "pak"))
-          pak::pak("shikokuchuo/rei")
+          pak::pak("shikokuchuo/mizu")
         shell: Rscript {0}
 
       - name: Import smoke
-        run: python -c "import pyrei; print(pyrei.__version__, pyrei.__core_version__, pyrei.abi_version())"
+        run: python -c "import pymizu; print(pymizu.__version__, pymizu.__core_version__, pymizu.abi_version())"
 
       - name: Test
         run: coverage run -m pytest tests/ -q

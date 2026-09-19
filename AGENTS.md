@@ -1,10 +1,10 @@
-# pyrei — project memory
+# pymizu — project memory
 
-Python binding for librei: lock-free shared-memory IPC (SPSC channels and
+Python binding for libmizu: lock-free shared-memory IPC (SPSC channels and
 work-stealing task pools) via the raw CPython C API. Pre-release (v0.1.0).
-Sibling repos: `librei` (the C core, upstream authority) and `rei` (the R
-package). The governing design document is the ipc plan in the librei repo
-(Phase 2 covers pyrei).
+Sibling repos: `libmizu` (the C core, upstream authority) and `mizu` (the R
+package). The governing design document is the ipc plan in the libmizu repo
+(Phase 2 covers pymizu).
 
 ## Requirements
 
@@ -12,26 +12,26 @@ package). The governing design document is the ipc plan in the librei repo
   build requires clang-cl (see Build).
 - Raw CPython C API only — no pybind11/Cython/cffi. No numpy at build
   time (buffer protocol only; numpy is imported at runtime when present,
-  the `pyrei[numpy]` extra). cloudpickle is the `pyrei[cloudpickle]`
+  the `pymizu[numpy]` extra). cloudpickle is the `pymizu[cloudpickle]`
   extra.
 - Free-threaded CPython (3.13t) is out of scope for v1 — the GIL policy
   assumes a GIL.
 
 ## Layout
 
-- `src/_pyrei.c` — the extension module (`pyrei._pyrei`): `_Channel` /
+- `src/_pymizu.c` — the extension module (`pymizu._pymizu`): `_Channel` /
   `_Pool` / `_Task` handles, stage/read/check callbacks, verb wrappers,
   sentinel singletons, the exception hierarchy (`TaskError` with
   remote_type/remote_traceback, `WorkerDiedError` with slot/pid), the
   `_Caught` outcome box the collect veneer unwraps and raises.
-- `src/vendor/librei/` — vendored librei core (generated; see Vendoring).
-- `python/pyrei/` — the Python package. `child.py` / `worker.py` are the
-  spawned-process entries (`python -m pyrei.child <token>`,
-  `python -m pyrei.worker <suffix> <slot>`). `_r.py` holds the R-peer
-  launcher (`pyrei.r_launcher()`; see Conventions).
+- `src/vendor/libmizu/` — vendored libmizu core (generated; see Vendoring).
+- `python/pymizu/` — the Python package. `child.py` / `worker.py` are the
+  spawned-process entries (`python -m pymizu.child <token>`,
+  `python -m pymizu.worker <suffix> <slot>`). `_r.py` holds the R-peer
+  launcher (`pymizu.r_launcher()`; see Conventions).
 - `tests/` — pytest; see Testing.
-- `benchmarks/` — `rei-bench.py` (report-only, asserts nothing; records
-  appended to `notes.md`) and `rei-stdlib-bench.py` (stdlib comparison).
+- `benchmarks/` — `mizu-bench.py` (report-only, asserts nothing; records
+  appended to `notes.md`) and `mizu-stdlib-bench.py` (stdlib comparison).
 
 ## Build and test
 
@@ -43,7 +43,7 @@ ruff check python tests benchmarks   # lint (config in pyproject.toml)
 pyrefly check                        # typecheck
 ```
 
-`setup.py` holds the explicit `ext_modules` source list (`_pyrei.c` + the
+`setup.py` holds the explicit `ext_modules` source list (`_pymizu.c` + the
 vendored core) and a `build_ext` override forcing clang-cl on Windows
 (setuptools' msvc backend resolves cl.exe itself and ignores CC).
 
@@ -52,33 +52,33 @@ The `.venv` install is non-editable: after editing `python/`, reinstall
 
 ## Vendoring
 
-`tools/vendor-librei.sh` (pin in the script) flattens librei's `rei.h`,
-`rei_ext.h`, `internal.h`, and all core TUs into `src/vendor/librei/`,
+`tools/vendor-libmizu.sh` (pin in the script) flattens libmizu's `mizu.h`,
+`mizu_ext.h`, `internal.h`, and all core TUs into `src/vendor/libmizu/`,
 with a VENDOR shasum record and a self-grep gate for stray sora/mori
 remnants. The pin tracks the R package's pin. The package's own TUs
-(`_pyrei.c`, `map.c`) compile against `rei_ext.h` (the binding-author
-tier: version-pinned per librei minor release, may change without
+(`_pymizu.c`, `map.c`) compile against `mizu_ext.h` (the binding-author
+tier: version-pinned per libmizu minor release, may change without
 deprecation), never `internal.h` — only vendored core TUs include it.
-Vendored files are never edited by hand: changes go upstream to librei
-and are pulled by re-running the script (`LIBREI_SRC=~/r/librei
-tools/vendor-librei.sh` for a local checkout).
+Vendored files are never edited by hand: changes go upstream to libmizu
+and are pulled by re-running the script (`LIBMIZU_SRC=~/r/libmizu
+tools/vendor-libmizu.sh` for a local checkout).
 
 ## Conventions
 
-- Staging tier order (`stage_impl` in `src/_pyrei.c`), first match wins:
+- Staging tier order (`stage_impl` in `src/_pymizu.c`), first match wins:
   1. `None` -> NIL.
   2. Buffer-protocol objects -> the core's raw-tier reservation
-     (`rei_stage_raw`, vendored `stage_raw.c`): RAWVEC inline, then past
-     max(inline budget, `REI_ZC_FLOOR`) SHM_VEC (one REIH layout write
-     into a spill region, `rei_stage_retain_zc` storing the producer-loan
-     refcount). The channel keeps the arena copy below `REI_ZC_FLOOR_RAW`
+     (`mizu_stage_raw`, vendored `stage_raw.c`): RAWVEC inline, then past
+     max(inline budget, `MIZU_ZC_FLOOR`) SHM_VEC (one MIZH layout write
+     into a spill region, `mizu_stage_retain_zc` storing the producer-loan
+     refcount). The channel keeps the arena copy below `MIZU_ZC_FLOOR_RAW`
      and under churn; the pool frames RAWSPILL as a named region. A NULL
      reservation falls through to pickle.
   3. Exact-type `str` within the inline budget -> STR1 (UTF-8 payload,
-     `REI_CE_UTF8` aux; lone surrogates fall through).
+     `MIZU_CE_UTF8` aux; lone surrogates fall through).
   4. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
      built only through the `_task_frame` factory) -> the structured
-     frame codec (`PYREI_TAG_TASK`): fn by module+qualname reference
+     frame codec (`PYMIZU_TAG_TASK`): fn by module+qualname reference
      (exact function/builtin, no `<` in the qualname, module not
      `__main__`) or its own protocol-4 pickle; args/kwargs as codec
      scalars, None, one flat container level, or buffer leaves — inline
@@ -86,7 +86,7 @@ tools/vendor-librei.sh` for a local checkout).
      (at most one per frame, the stream then inline-only: the core's
      staging seam holds a single spill checkout). A BUFREF argument
      arrives as a read-only view.
-  5. The compact binary codec (`PYREI_CODEC_MAGIC` 0x50): bool,
+  5. The compact binary codec (`PYMIZU_CODEC_MAGIC` 0x50): bool,
      int64-bounded int, float, str, bytes, None, and one flat
      list/tuple/dict level of those, capped at 64 elements. Exact-type
      checks throughout, so subclasses keep their pickle semantics;
@@ -98,7 +98,7 @@ tools/vendor-librei.sh` for a local checkout).
   implies WRITABLE and would reject a read-only view echoing back. Its
   dtype map (`wire_type_of`) is width-exact:
   uint8/float64/int32/int64/complex128 -> RAW/REAL/INT/INT64/CPLX; int64
-  is a native wire tag (`REI_TYPE_INT64` 32, `INT64_MIN` the missing
+  is a native wire tag (`MIZU_TYPE_INT64` 32, `INT64_MIN` the missing
   sentinel, no per-element scan), not a conversion. The conversion pass
   (`cvt_for_buffer`/`cvt_for_arrow`) is channel-scoped and serves only
   the non-identity dtypes (uint64 past 2^53 warns to `NA_real_`; narrow
@@ -110,50 +110,50 @@ tools/vendor-librei.sh` for a local checkout).
   the refcount in `tp_dealloc` (a fork guard skips a child's sub). It
   exports a read-only 1-D buffer, so the user object (a numpy array via
   `np.frombuffer`, or a memoryview) pins the mapping through the buffer
-  protocol. REIS/REIL layouts, REF paths into list trees, and R
+  protocol. MIZS/MIZL layouts, REF paths into list trees, and R
   attributes (names/dim/class) are informative errors, never silent
-  drops. A per-handle view cache (`ReiViewCache`, LRU,
-  `REI_OPEN_CACHE_MAX` entries, hung off `binding.ctx`, mirrored on the
+  drops. A per-handle view cache (`MizuViewCache`, LRU,
+  `MIZU_OPEN_CACHE_MAX` entries, hung off `binding.ctx`, mirrored on the
   handle for teardown after destroy) maps region name to owner: a hit
-  does the counted add (`rei_zc_ref`) without a fresh open/mmap. Only
-  the mapping is cached — REIH header validation runs per read. An
+  does the counted add (`mizu_zc_ref`) without a fresh open/mmap. Only
+  the mapping is cached — MIZH header validation runs per read. An
   evicted owner's mapping closes when its last view is gone.
 - Pickle protocol pinned to 4 (homogeneous pools can mix Python point
   versions). Task callables must be importable references under stock
   pickle; cloudpickle lifts that when installed. The channel peer
-  program is always a UTF-8 source string (REI_DROP_SOURCE drop).
-- R interop: `pyrei.r_launcher()` (`python/pyrei/_r.py`) mirrors the R
-  package's exported `rei_launcher()` — a `Channel.create` launcher
-  spawning the peer through rei's static `rei-child.R` runner with the
-  entry expression (`rei:::peer_main("<token>")`) and the probed
+  program is always a UTF-8 source string (MIZU_DROP_SOURCE drop).
+- R interop: `pymizu.r_launcher()` (`python/pymizu/_r.py`) mirrors the R
+  package's exported `mizu_launcher()` — a `Channel.create` launcher
+  spawning the peer through mizu's static `mizu-child.R` runner with the
+  entry expression (`mizu:::peer_main("<token>")`) and the probed
   `.libPaths()` hex-encoded in argv; never `Rscript -e` (it writes a
-  per-spawn command file). The probe (Rscript + an installed rei with
+  per-spawn command file). The probe (Rscript + an installed mizu with
   the source-drop path) runs at factory call, cached per Rscript, and
-  fails fast with `ReiError` before any channel region exists.
+  fails fast with `MizuError` before any channel region exists.
   Channel-only: pools can't mix languages (task frames are
   language-specific pickles).
 - A task error crosses as the worker's constructed, bounded (type,
   message, traceback) envelope — never a pickled exception instance; an
   unpicklable result recovers as the task's ERR.
-- `pyrei.current_pool()` binds the worker's own handle inside a task
+- `pymizu.current_pool()` binds the worker's own handle inside a task
   (nested submit/collect).
 - Join tokens: `<pid hex>_<counter hex>`, validated against
-  `^[0-9a-f]+_[0-9a-f]+$`; children prepend their compiled-in `/rei_`
+  `^[0-9a-f]+_[0-9a-f]+$`; children prepend their compiled-in `/mizu_`
   prefix.
 - GIL policy (per handle kind): submitter handles release the GIL around
   every park/wait and reacquire it in the `check` hook for
   `PyErr_CheckSignals()`; worker (exec-capable) handles hold the GIL
   through collect and register the core's around-park `park` hook, which
   drops the GIL for each bounded sleep.
-- Sentinels map to Python singletons; `REI_ERR` maps to an exception
+- Sentinels map to Python singletons; `MIZU_ERR` maps to an exception
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
-- Map conventions (`src/map.c`, `python/pyrei/_map.py`):
-  - One fresh region per map (own "PYRM" magic, `REI_ABI_VERSION`-keyed).
+- Map conventions (`src/map.c`, `python/pymizu/_map.py`):
+  - One fresh region per map (own "PYRM" magic, `MIZU_ABI_VERSION`-keyed).
     The protocol half — header layout, CLAIM-word claim CAS, AIMD sizing,
     reset/trim, cancel, lost-set scan — is the core's morsel module
-    (`rei_morsel_*`, vendored `morsel.c`; one layout for both bindings). Runners are ordinary tasks submitted with
-    `REI_ENTRY_RUNNER` via `_Pool._submit_runner`.
+    (`mizu_morsel_*`, vendored `morsel.c`; one layout for both bindings). Runners are ordinary tasks submitted with
+    `MIZU_ENTRY_RUNNER` via `_Pool._submit_runner`.
   - The pool-signal capsule is worker-local only (raw addresses — a
     runner calls `_Pool._signals()` on its own handle, never one from
     the submitter). The cancel word is the fail-fast store, set by an
@@ -197,10 +197,10 @@ tools/vendor-librei.sh` for a local checkout).
   spawned child/worker interpreters via `COVERAGE_PROCESS_START` so they
   measure themselves too.
 - Cross-language cases (`tests/test_crosslang.py` +
-  `tests/r_host_roundtrip.R`, real user programs as REI_DROP_SOURCE
-  drops both directions) skip unless `Rscript` and an installed R `rei`
-  with the source-drop path are present. The `r_rei` fixture dogfoods
-  the shipped `pyrei.r_launcher()` — it catches the `ReiError` as the
+  `tests/r_host_roundtrip.R`, real user programs as MIZU_DROP_SOURCE
+  drops both directions) skip unless `Rscript` and an installed R `mizu`
+  with the source-drop path are present. The `r_mizu` fixture dogfoods
+  the shipped `pymizu.r_launcher()` — it catches the `MizuError` as the
   skip, so the probe logic has exactly one home (`_r.py`);
   `test_r_launcher_missing_rscript` runs without R.
 

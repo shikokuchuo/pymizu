@@ -1,4 +1,4 @@
-"""prune() over the vendored reaper: reclaims /rei_ regions orphaned by
+"""prune() over the vendored reaper: reclaims /mizu_ regions orphaned by
 dead creators (a hard-killed process runs no finalizers)."""
 
 import os
@@ -9,16 +9,16 @@ import time
 
 import pytest
 
-import pyrei
+import pymizu
 
 ORPHAN_MAKER = """
 import os
 import sys
 import time
 
-import pyrei
+import pymizu
 
-ch = pyrei.Channel.create("import time; time.sleep(300)")
+ch = pymizu.Channel.create("import time; time.sleep(300)")
 sys.stdout.write(f"{os.getpid()}\\n")
 sys.stdout.flush()
 time.sleep(300)
@@ -35,8 +35,8 @@ def wait_for(pred, timeout=10.0):
 
 
 def test_prune_returns_empty_when_nothing_to_reap():
-    pyrei.prune()  # clear leftovers of earlier crashed runs
-    assert pyrei.prune() == []
+    pymizu.prune()  # clear leftovers of earlier crashed runs
+    assert pymizu.prune() == []
 
 
 @pytest.mark.skipif(
@@ -59,15 +59,15 @@ def test_prune_reaps_orphans_of_hard_killed_process():
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
 
-        marker = f"rei_{pid:x}_"
+        marker = f"mizu_{pid:x}_"
         reaped = []
 
         def gone():
-            reaped.extend(pyrei.prune())
+            reaped.extend(pymizu.prune())
             return any(marker in name for name in reaped)
 
         assert wait_for(gone)
-        assert pyrei.prune() == []
+        assert pymizu.prune() == []
     finally:
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGKILL)

@@ -1,7 +1,7 @@
 """The numpy-less paths: the ``_TAG_MV`` rows serve the memoryview casts
 where ``_TAG_NP`` would serve numpy. The suite's environment has numpy, so
 these run in a subprocess whose PYTHONPATH shim makes ``import numpy``
-raise ImportError — pyrei's optional-numpy detection then falls back in
+raise ImportError — pymizu's optional-numpy detection then falls back in
 both the driver and its spawned workers."""
 
 import os
@@ -32,14 +32,14 @@ def test_map_int64_without_numpy(tmp_path):
         """
         import array
 
-        import pyrei
-        from pyrei import _map
+        import pymizu
+        from pymizu import _map
         from tests.helpers import square
 
         assert _map._np is None  # the shim took; else this covers nothing
 
         x = array.array("q", range(50))
-        p = pyrei.Pool.create(2)
+        p = pymizu.Pool.create(2)
         try:
             # generic collect: workers index the raw x section through
             # _TAG_MV (memoryview.cast("q"))

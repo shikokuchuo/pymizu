@@ -13,13 +13,13 @@ import numpy as np
 import pytest
 from tests.helpers import array_sum, echo, is_readonly, square, sum_mixed
 
-import pyrei
-from pyrei._pyrei import _read_stream, _task_frame
+import pymizu
+from pymizu._pymizu import _read_stream, _task_frame
 
 
 @pytest.fixture
 def pool():
-    p = pyrei.Pool.create(2)
+    p = pymizu.Pool.create(2)
     yield p
     p.stop()
 
@@ -38,7 +38,7 @@ def test_fn_pickled_fallback(pool):
 
 def test_fn_main_module_falls_back(pool):
     # '__main__' is excluded from by-reference crossing (the worker's
-    # __main__ is pyrei.worker, not the submitter's script); cloudpickle
+    # __main__ is pymizu.worker, not the submitter's script); cloudpickle
     # carries it by value instead
     pytest.importorskip("cloudpickle")
 
@@ -57,7 +57,7 @@ def test_fn_unresolvable_on_worker(pool):
 
     phantom.__module__ = "no_such_module_xyz"
     phantom.__qualname__ = "phantom"
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         pool.submit(phantom).collect(timeout=5)
     assert exc_info.value.remote_type == "ModuleNotFoundError"
 
@@ -112,10 +112,10 @@ def test_vanished_bufref_region_does_not_wedge_pool(pool):
         [
             sys.executable,
             "-c",
-            "import os, sys, pyrei\n"
+            "import os, sys, pymizu\n"
             "import numpy as np\n"
             "from tests.helpers import array_sum\n"
-            "p = pyrei.Pool.attach(sys.argv[1])\n"
+            "p = pymizu.Pool.attach(sys.argv[1])\n"
             "p.submit(array_sum, np.arange(1000000, dtype=np.float64))\n"
             "os._exit(0)\n",
             pool.token,
@@ -170,10 +170,10 @@ def test_read_stream_task_frame_by_reference():
 
 def test_read_stream_corrupt_frames():
     # bad fn kind byte
-    with pytest.raises(pyrei.ReiError, match="corrupt"):
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
         _read_stream(b"Pk\x07")
     # truncated fn reference
-    with pytest.raises(pyrei.ReiError, match="corrupt"):
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
         _read_stream(b"Pk\x00" + b"s\x05\x00")
     # over-cap args tuple
     stream = (
@@ -183,7 +183,7 @@ def test_read_stream_corrupt_frames():
         + b"t"
         + (65).to_bytes(4, "little")
     )
-    with pytest.raises(pyrei.ReiError, match="corrupt"):
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
         _read_stream(stream)
     # a BUFREF leaf with a truncated name
     stream = (
@@ -196,9 +196,9 @@ def test_read_stream_corrupt_frames():
         + bytes([1])
         + (8).to_bytes(8, "little")
         + bytes([12])
-        + b"/rei_short"
+        + b"/mizu_short"
     )
-    with pytest.raises(pyrei.ReiError, match="corrupt"):
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
         _read_stream(stream)
     # a BUFREF leaf naming a region that does not exist
     stream = (
@@ -211,9 +211,9 @@ def test_read_stream_corrupt_frames():
         + bytes([1])
         + (8).to_bytes(8, "little")
         + bytes([13])
-        + b"/rei_nonexist"
+        + b"/mizu_nonexist"
     )
-    with pytest.raises(pyrei.ReiError, match="gone"):
+    with pytest.raises(pymizu.MizuError, match="gone"):
         _read_stream(stream)
 
 

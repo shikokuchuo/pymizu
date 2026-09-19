@@ -1,14 +1,14 @@
-"""The pool trace hook (rei_pool_set_trace): submit-side events on the
+"""The pool trace hook (mizu_pool_set_trace): submit-side events on the
 calling thread, removal with None, and unraisable hook errors."""
 
 import pytest
 
-import pyrei
+import pymizu
 
 
 @pytest.fixture
 def pool():
-    p = pyrei.Pool.create(2)
+    p = pymizu.Pool.create(2)
     yield p
     p.stop()
 

@@ -28,12 +28,12 @@ from tests.helpers import (
     square,
 )
 
-import pyrei
+import pymizu
 
 
 @pytest.fixture
 def pool():
-    p = pyrei.Pool.create(2)
+    p = pymizu.Pool.create(2)
     yield p
     p.stop()
 
@@ -71,7 +71,7 @@ def test_map_chunking_invariance(pool):
 
 
 def test_map_error_index(pool):
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         pool.map(fail_at, list(range(10)), args=(4,))
     exc = exc_info.value
     assert exc.remote_type == "ValueError"
@@ -83,7 +83,7 @@ def test_map_fail_fast(pool):
     # the failing element's runner sets the cancel word: peers stop within
     # ~a batch instead of draining the remaining (slow) elements
     start = time.monotonic()
-    with pytest.raises(pyrei.TaskError):
+    with pytest.raises(pymizu.TaskError):
         pool.map(fail_or_sleep, list(range(8)), args=(0, 5.0))
     assert time.monotonic() - start < 5.0
 
@@ -91,15 +91,15 @@ def test_map_fail_fast(pool):
 def test_map_timeout(pool):
     x = [0.4] * 8
     out = pool.map(sleep_ident, x, timeout=0.2)
-    assert out is pyrei.TIMEOUT
+    assert out is pymizu.TIMEOUT
     # the cancellation drained: the pool is usable immediately after
     assert pool.map(square, [2], timeout=15) == [4]
 
 
 def test_map_worker_died():
-    p = pyrei.Pool.create(1)
+    p = pymizu.Pool.create(1)
     try:
-        with pytest.raises(pyrei.WorkerDiedError) as exc_info:
+        with pytest.raises(pymizu.WorkerDiedError) as exc_info:
             p.map(kill_at, list(range(8)), args=(2,))
         exc = exc_info.value
         assert exc.slot == 0
@@ -153,7 +153,7 @@ def test_map_nested(pool):
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_map_interrupt_cancels():
-    p = pyrei.Pool.create(1)
+    p = pymizu.Pool.create(1)
     timer = threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT))
     timer.start()
     try:
@@ -232,7 +232,7 @@ def test_map_template_view(pool):
 
 
 def test_map_template_mismatch(pool):
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         pool.map(bad_template, list(range(10)), template=np.empty(2))
     assert exc_info.value.index == 0
 
@@ -285,7 +285,7 @@ def test_map_template_int64_view(pool):
 
 def test_map_template_int64_mismatch(pool):
     # an int past INT64_MAX fails the element write as a template mismatch
-    with pytest.raises(pyrei.TaskError) as exc_info:
+    with pytest.raises(pymizu.TaskError) as exc_info:
         pool.map(huge_int, [1, 2, 3], template=np.empty(1, dtype=np.int64))
     assert exc_info.value.index == 0
 
@@ -352,7 +352,7 @@ def test_map_prepared_view_restages(pool):
 def test_map_prepared_error_and_reuse(pool):
     pm = pool.map_prepare(fail_at, list(range(10)), args=(4,))
     try:
-        with pytest.raises(pyrei.TaskError) as exc_info:
+        with pytest.raises(pymizu.TaskError) as exc_info:
             pool.map_run(pm)
         assert exc_info.value.index == 4
         # the cancel word fired; the next run's re-arm clears it
@@ -368,7 +368,7 @@ def test_map_prepared_error_and_reuse(pool):
 def test_map_prepared_timeout(pool):
     pm = pool.map_prepare(sleep_ident, [0.4] * 8)
     try:
-        assert pool.map_run(pm, timeout=0.2) is pyrei.TIMEOUT
+        assert pool.map_run(pm, timeout=0.2) is pymizu.TIMEOUT
         assert pool.map(square, [2], timeout=15) == [4]
     finally:
         pm.close()
@@ -431,12 +431,12 @@ def test_map_prepared_closed(pool):
     pm.close()
     pm.close()
     assert pm.closed
-    with pytest.raises(pyrei.ReiError):
+    with pytest.raises(pymizu.MizuError):
         pool.map_run(pm)
 
 
 def test_map_prepared_wrong_pool(pool):
-    other = pyrei.Pool.create(1)
+    other = pymizu.Pool.create(1)
     try:
         pm = other.map_prepare(square, [1])
         try:

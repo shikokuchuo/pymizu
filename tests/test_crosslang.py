@@ -1,7 +1,7 @@
 """Cross-language round-trips: real R and Python peer processes in both
-directions, with real user programs crossing as REI_DROP_SOURCE drops.
-Skipped unless Rscript and the installed rei package (with the source-drop
-path) are present — the skip_if_no_child_rei() mirror."""
+directions, with real user programs crossing as MIZU_DROP_SOURCE drops.
+Skipped unless Rscript and the installed mizu package (with the source-drop
+path) are present — the skip_if_no_child_mizu() mirror."""
 
 import os
 import pathlib
@@ -11,40 +11,40 @@ import sys
 
 import pytest
 
-import pyrei
+import pymizu
 
 RSCRIPT = shutil.which("Rscript")
-REPO_PY = str(pathlib.Path(pyrei.__file__).resolve().parent.parent)
+REPO_PY = str(pathlib.Path(pymizu.__file__).resolve().parent.parent)
 
 # The R echo peer: a real user program crossing as a source drop.
 R_ECHO = """
 repeat {
-  x <- rei::rei_recv(ch, timeout = 30)
-  if (inherits(x, "rei_sentinel")) break
-  rei::rei_send(ch, x)
+  x <- mizu::mizu_recv(ch, timeout = 30)
+  if (inherits(x, "mizu_sentinel")) break
+  mizu::mizu_send(ch, x)
 }
 """
 
 
 @pytest.fixture(scope="module")
-def r_rei():
+def r_mizu():
     """The shipped R-peer launcher; its probe is the
-    skip_if_no_child_rei() mirror."""
+    skip_if_no_child_mizu() mirror."""
     try:
-        return pyrei.r_launcher()
-    except pyrei.ReiError:
-        pytest.skip("Rscript with the rei package (source-drop support) "
+        return pymizu.r_launcher()
+    except pymizu.MizuError:
+        pytest.skip("Rscript with the mizu package (source-drop support) "
                     "not available")
 
 
 def test_r_launcher_missing_rscript():
-    with pytest.raises(pyrei.ReiError):
-        pyrei.r_launcher(rscript="/nonexistent/Rscript")
+    with pytest.raises(pymizu.MizuError):
+        pymizu.r_launcher(rscript="/nonexistent/Rscript")
 
 
-def test_r_peer_echo_roundtrip(r_rei):
+def test_r_peer_echo_roundtrip(r_mizu):
     np = pytest.importorskip("numpy")
-    ch = pyrei.Channel.create(R_ECHO, launcher=r_rei)
+    ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
         for x in [
             np.array([1.5, 2.5, 3.5]),                    # float64 <-> REALSXP
@@ -61,15 +61,15 @@ def test_r_peer_echo_roundtrip(r_rei):
         ch.close()
 
 
-def test_r_peer_zero_copy_view(r_rei):
+def test_r_peer_zero_copy_view(r_mizu):
     np = pytest.importorskip("numpy")
     src = """
 x <- as.numeric(seq_len(2000000)) + 0   # materialize: an ALTREP sequence
 i <- seq_len(2000000) + 0L              # would serialize, never SHM_VEC
-rei::rei_send(ch, x)
-rei::rei_send(ch, i)
+mizu::mizu_send(ch, x)
+mizu::mizu_send(ch, i)
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         v = ch.recv(30)
         assert isinstance(v, np.ndarray)
@@ -93,11 +93,11 @@ rei::rei_send(ch, i)
     assert s[0] == 1.0 and s[-1] == 1999999.0
 
 
-def test_r_peer_int64_roundtrip(r_rei):
+def test_r_peer_int64_roundtrip(r_mizu):
     """int64 is a native wire type: numpy int64 crosses bit-identically,
     landing in R as an integer64 vector (bit64's layout) — no conversion."""
     np = pytest.importorskip("numpy")
-    ch = pyrei.Channel.create(R_ECHO, launcher=r_rei)
+    ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
         for x in [
             np.array([0, 1, -1, 2**53 + 1, -(2**53) - 1], dtype=np.int64),
@@ -112,7 +112,7 @@ def test_r_peer_int64_roundtrip(r_rei):
         ch.close()
 
 
-def test_r_peer_int64_na_sentinel(r_rei):
+def test_r_peer_int64_na_sentinel(r_mizu):
     """INT64_MIN is NA_integer64_ (the documented sentinel) both ways. The
     R side asserts the wire bits, so the check needs no bit64 install; when
     bit64 is loadable it also confirms the is.na() semantics."""
@@ -121,7 +121,7 @@ def test_r_peer_int64_na_sentinel(r_rei):
 i64le <- function(v) writeBin(unclass(v), raw(), size = 8L, endian = "little")
 fromle <- function(r) readBin(r, "double", size = 8L, endian = "little",
                               n = length(r) %/% 8L)
-x <- rei::rei_recv(ch, timeout = 30)
+x <- mizu::mizu_recv(ch, timeout = 30)
 ok <- inherits(x, "integer64") && length(x) == 2L &&
   identical(i64le(x), as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x80,
                               7, 0, 0, 0, 0, 0, 0, 0)))
@@ -132,9 +132,9 @@ if (requireNamespace("bit64", quietly = TRUE)) {
 v <- structure(fromle(as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x80,
                                1, 0, 0, 0, 0, 0, 0x20, 0))),
                class = "integer64")
-rei::rei_send(ch, if (isTRUE(ok)) v else "R check failed")
+mizu::mizu_send(ch, if (isTRUE(ok)) v else "R check failed")
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         assert ch.send(np.array([-(2**63), 7], dtype=np.int64)) is True
         got = ch.recv(30)
@@ -144,12 +144,12 @@ rei::rei_send(ch, if (isTRUE(ok)) v else "R check failed")
         ch.close()
 
 
-def test_r_peer_string_and_na(r_rei):
+def test_r_peer_string_and_na(r_mizu):
     src = """
-rei::rei_send(ch, "hello world")
-rei::rei_send(ch, NA_character_)
+mizu::mizu_send(ch, "hello world")
+mizu::mizu_send(ch, NA_character_)
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         assert ch.recv(30) == "hello world"
         assert ch.recv(30) is None
@@ -157,13 +157,13 @@ rei::rei_send(ch, NA_character_)
         ch.close()
 
 
-def test_r_peer_python_payload_error(r_rei):
+def test_r_peer_python_payload_error(r_mizu):
     src = """
-x <- tryCatch(rei::rei_recv(ch, timeout = 30),
+x <- tryCatch(mizu::mizu_recv(ch, timeout = 30),
               error = function(e) conditionMessage(e))
-rei::rei_send(ch, if (is.character(x)) x else "no error")
+mizu::mizu_send(ch, if (is.character(x)) x else "no error")
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         assert ch.send({1, 2, 3}) is True   # a pickled set
         got = ch.recv(30)
@@ -172,26 +172,26 @@ rei::rei_send(ch, if (is.character(x)) x else "no error")
         ch.close()
 
 
-def test_r_peer_serialized_payload_consumed(r_rei):
+def test_r_peer_serialized_payload_consumed(r_mizu):
     """An R native-serialize stream is declined and consumed (the
-    REI_READ_CONSUME contract): the recv raises, and a retried recv sees
+    MIZU_READ_CONSUME contract): the recv raises, and a retried recv sees
     the NEXT slot — before 0.3.0 the ring wedged behind the failed slot."""
     src = """
-rei::rei_send(ch, new.env())   # the codec rejects environments: R serialize
-rei::rei_send(ch, "after")
+mizu::mizu_send(ch, new.env())   # the codec rejects environments: R serialize
+mizu::mizu_send(ch, "after")
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        with pytest.raises(pyrei.ReiError, match="R payload"):
+        with pytest.raises(pymizu.MizuError, match="R payload"):
             ch.recv(30)
         assert ch.recv(30) == "after"
     finally:
         ch.close()
 
 
-def test_r_host_python_peer(r_rei):
+def test_r_host_python_peer(r_mizu):
     """The other direction: an R host, a Python peer spawned through
-    python -m pyrei.child, assertions on the R side."""
+    python -m pymizu.child, assertions on the R side."""
     script = pathlib.Path(__file__).parent / "r_host_roundtrip.R"
     env = dict(os.environ)
     env["PYTHONPATH"] = REPO_PY + os.pathsep + env.get("PYTHONPATH", "")

@@ -1,15 +1,15 @@
-# pyrei れい
+# pymizu 水
 
-[![ci](https://github.com/shikokuchuo/pyrei/actions/workflows/ci.yml/badge.svg)](https://github.com/shikokuchuo/pyrei/actions/workflows/ci.yml)
+[![ci](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml/badge.svg)](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
       ________
      /\       \
-    /  \ pyrei \
-    \  /  れい  /
+    /  \ pymizu\
+    \  /  水   /
      \/_______/
 
-pyrei is the Python binding to [librei](https://github.com/shikokuchuo/librei), a C library for lock-free shared-memory IPC.
+pymizu is the Python binding to [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 
 Parallel computation and data exchange between Python processes: channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
 
@@ -20,20 +20,20 @@ In both, one process writes data and the other reads it in place — never copie
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
 The GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
-pyrei makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
+pymizu makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
 
 Pre-release.
 
 ## Channels
 
 ```python
-import pyrei
+import pymizu
 
-ch = pyrei.Channel.create("""
-import pyrei
+ch = pymizu.Channel.create("""
+import pymizu
 while True:
     x = ch.recv()
-    if x is pyrei.CLOSED:
+    if x is pymizu.CLOSED:
         break
     ch.send(x)
 """)
@@ -42,11 +42,11 @@ print(ch.recv(timeout=5))
 ch.close()
 ```
 
-`Channel.create()` spawns a peer process (`python -m pyrei.child <token>`) and connects both ends over a lock-free ring pair.
+`Channel.create()` spawns a peer process (`python -m pymizu.child <token>`) and connects both ends over a lock-free ring pair.
 The peer program is a Python source string, evaluated with `ch` bound to the peer-side handle.
 
 Sends never block for ring space.
-Receives report terminal states as sentinel singletons — `pyrei.FULL`, `pyrei.TIMEOUT`, `pyrei.CLOSED`, `pyrei.PEER_GONE` — tested by identity (`x is pyrei.TIMEOUT`), never raised.
+Receives report terminal states as sentinel singletons — `pymizu.FULL`, `pymizu.TIMEOUT`, `pymizu.CLOSED`, `pymizu.PEER_GONE` — tested by identity (`x is pymizu.TIMEOUT`), never raised.
 
 `None` crosses as an immediate.
 `bytes` and 1-D contiguous numpy arrays ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
@@ -58,27 +58,27 @@ Everything else crosses as a pickle protocol 4 stream.
 ## Task pools
 
 ```python
-import pyrei
+import pymizu
 
-with pyrei.Pool.create(4) as pool:
+with pymizu.Pool.create(4) as pool:
     task = pool.submit(pow, 2, 16)
     print(task.collect(timeout=5))
 ```
 
-`Pool.create()` spawns worker processes (`python -m pyrei.worker <token> <slot>`) that claim tasks from per-submitter injection rings and steal work from each other.
+`Pool.create()` spawns worker processes (`python -m pymizu.worker <token> <slot>`) that claim tasks from per-submitter injection rings and steal work from each other.
 A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.
 
 A task callable rides pickle: under stock pickle it must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently.
-A task error re-raises on collect as `pyrei.TaskError`, carrying the remote type name and traceback text — a constructed, bounded envelope, never a pickled exception instance.
-A cancellation raises `pyrei.CancelledError`; the death of the executing worker raises `pyrei.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
+A task error re-raises on collect as `pymizu.TaskError`, carrying the remote type name and traceback text — a constructed, bounded envelope, never a pickled exception instance.
+A cancellation raises `pymizu.CancelledError`; the death of the executing worker raises `pymizu.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
 
 `Pool.collect_any()` and `Pool.collect_all()` wait on several handles at once.
-Inside a task, `pyrei.current_pool()` returns the worker's own handle: a nested submit pushes onto the worker's deque, and a nested collect helps instead of parking, so nested fan-outs never deadlock the pool.
+Inside a task, `pymizu.current_pool()` returns the worker's own handle: a nested submit pushes onto the worker's deque, and a nested collect helps instead of parking, so nested fan-outs never deadlock the pool.
 
 ## Parallel map
 
 ```python
-with pyrei.Pool.create(4) as pool:
+with pymizu.Pool.create(4) as pool:
     print(pool.map(abs, range(-5, 5)))
 ```
 
@@ -91,19 +91,19 @@ A 1-D C-contiguous buffer of float64, int32, int64, complex128, or uint8 travels
 
 `seed=` (an int or bytes) derives deterministic per-element streams of the stdlib `random` module: element `i` runs under `random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))`, so results are identical for any chunking, worker count, or steal order.
 
-An error raised by `fn` re-raises as `pyrei.TaskError` carrying the failing element's 0-based `index`; failure is fail-fast — peers stop within about one batch.
-Worker death raises `pyrei.WorkerDiedError` carrying the lost element ranges as `lost` (0-based half-open pairs, conservative).
-On `timeout=` expiry the outstanding work is cancelled and the `pyrei.TIMEOUT` sentinel is returned, never raised.
+An error raised by `fn` re-raises as `pymizu.TaskError` carrying the failing element's 0-based `index`; failure is fail-fast — peers stop within about one batch.
+Worker death raises `pymizu.WorkerDiedError` carrying the lost element ranges as `lost` (0-based half-open pairs, conservative).
+On `timeout=` expiry the outstanding work is cancelled and the `pymizu.TIMEOUT` sentinel is returned, never raised.
 Ctrl-C during a map cancels its outstanding tasks.
-A map inside a task runs on the worker's own handle via `pyrei.current_pool()`, at fork/join cost.
+A map inside a task runs on the worker's own handle via `pymizu.current_pool()`, at fork/join cost.
 
 ## Benchmarks
 
-Headline numbers against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/rei-stdlib-bench.py`):
+Headline numbers against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/mizu-stdlib-bench.py`):
 
 Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled payloads):
 
-| Benchmark | pyrei | ProcessPoolExecutor | Speedup |
+| Benchmark | pymizu | ProcessPoolExecutor | Speedup |
 |----|----|----|----|
 | Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
 | Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
@@ -112,35 +112,35 @@ Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled pay
 
 Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
 
-| Benchmark | pyrei | ThreadPoolExecutor | Speedup |
+| Benchmark | pymizu | ThreadPoolExecutor | Speedup |
 |----|----|----|----|
 | Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
 | Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
 | Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
 
-`benchmarks/rei-bench.py` runs the pyrei rows standalone.
+`benchmarks/mizu-bench.py` runs the pymizu rows standalone.
 
 \* elt = element; microseconds of wall time per map element.
 
 ## R interop
 
-A channel peer can be an R process that runs the `rei` package.
-Pass the peer program as R source, and set the launcher to `pyrei.r_launcher()`:
+A channel peer can be an R process that runs the `mizu` package.
+Pass the peer program as R source, and set the launcher to `pymizu.r_launcher()`:
 
 ```python
-import pyrei
+import pymizu
 
-ch = pyrei.Channel.create(
+ch = pymizu.Channel.create(
     """
-library(rei)
+library(mizu)
 repeat {
-  x <- rei_recv(ch, timeout = 30)
-  if (inherits(x, "rei_sentinel")) break
-  rei_send(ch, x)
+  x <- mizu_recv(ch, timeout = 30)
+  if (inherits(x, "mizu_sentinel")) break
+  mizu_send(ch, x)
 }
 """,
-    launcher=pyrei.r_launcher(),
+    launcher=pymizu.r_launcher(),
 )
 
 import numpy as np
@@ -149,13 +149,13 @@ print(ch.recv(timeout=5))            # echoes back as a float64 array
 ch.close()
 ```
 
-`r_launcher()` needs R and the `rei` R package installed.
-If R or the package is missing, it raises `ReiError` before the channel is created.
+`r_launcher()` needs R and the `mizu` R package installed.
+If R or the package is missing, it raises `MizuError` before the channel is created.
 
 A launcher is one callable that takes the join token and spawns the peer process.
 For a different spawn method, write your own launcher.
 
-The reverse direction is also possible: an R host spawns a Python peer with `rei::rei_py_launcher()`.
+The reverse direction is also possible: an R host spawns a Python peer with `mizu::mizu_py_launcher()`.
 
 What crosses the language boundary:
 
@@ -167,7 +167,7 @@ What crosses the language boundary:
 - Strings cross both ways (`str` rides the shared STR1 tier); `NA_character_` arrives as `None`.
 - A large R atomic vector arrives as a zero-copy, read-only numpy view over the shared pages — no copy, no parse.
   Without numpy it arrives as a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: `pa.array(view)`, `pl.from_arrow(view)`.
-- Python-only payloads do not cross: R declines pyrei's compact codec streams and pickled objects with an informative error.
+- Python-only payloads do not cross: R declines pymizu's compact codec streams and pickled objects with an informative error.
 
 ### The dtype matrix
 
@@ -243,14 +243,14 @@ The extension compiles the vendored C core, so no system library is necessary.
 
 Optional extras:
 
-- `pyrei[numpy]`: zero-copy array views and raw-tier array staging.
-- `pyrei[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
+- `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
+- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
 ## Linux memory allocator
 
 This section applies only to Linux with glibc.
 
-When pyrei starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
+When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
 It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
 This keeps large payloads in fast memory.
 Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
@@ -262,25 +262,25 @@ If you want the same settings there, set them before Python starts:
 export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
 ```
 
-If you have set `GLIBC_TUNABLES`, pyrei respects your values.
+If you have set `GLIBC_TUNABLES`, pymizu respects your values.
 
 ## Layout
 
-- `src/_pyrei.c`: the extension module.
+- `src/_pymizu.c`: the extension module.
   It uses the raw CPython C API (no pybind11, Cython, or cffi).
-- `src/vendor/librei/`: the vendored librei core.
-  `tools/vendor-librei.sh` generates this directory.
+- `src/vendor/libmizu/`: the vendored libmizu core.
+  `tools/vendor-libmizu.sh` generates this directory.
   Do not edit these files by hand.
-- `python/pyrei/`: the Python package.
-  `child.py` and `worker.py` are the entry points for spawned processes (`python -m pyrei.child <token>`, `python -m pyrei.worker <suffix> <slot>`).
+- `python/pymizu/`: the Python package.
+  `child.py` and `worker.py` are the entry points for spawned processes (`python -m pymizu.child <token>`, `python -m pymizu.worker <suffix> <slot>`).
 - `tests/`: the pytest suite.
   `tests/helpers.py` holds the task callables (pickle sends them by reference, so the workers must import them).
 
 ## License
 
 MIT.
-The vendored librei core carries third-party RngStreams attribution (upstream `LICENSE.note`).
+The vendored libmizu core carries third-party RngStreams attribution (upstream `LICENSE.note`).
 
 ------------------------------------------------------------------------
 
-Please note that this project is released with a [Contributor Code of Conduct](https://github.com/shikokuchuo/pyrei/blob/main/.github/CODE_OF_CONDUCT.md). By participating in this project you agree to abide by its terms.
+Please note that this project is released with a [Contributor Code of Conduct](https://github.com/shikokuchuo/pymizu/blob/main/.github/CODE_OF_CONDUCT.md). By participating in this project you agree to abide by its terms.

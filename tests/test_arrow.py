@@ -3,7 +3,7 @@ numeric dtype crosses to R with correct NA handling — numpy via the
 buffer protocol, Arrow producers (pyarrow, polars) via
 ``__arrow_c_array__`` — and a received view exports to any Arrow consumer
 zero-copy. R-side type and NA assertions use a real R peer (the
-skip_if_no_child_rei() mirror); the rest use a Python echo peer."""
+skip_if_no_child_mizu() mirror); the rest use a Python echo peer."""
 
 import ctypes
 import gc
@@ -12,16 +12,16 @@ import warnings
 import pytest
 from tests.helpers import ret_arrow_nulls, ret_int64_array
 
-import pyrei
+import pymizu
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 pa = pytest.importorskip("pyarrow", reason="pyarrow not installed")
 
 ECHO_PEER = """
-import pyrei
+import pymizu
 while True:
     x = ch.recv()
-    if x is pyrei.CLOSED or x is pyrei.PEER_GONE:
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
         break
     ch.send(x)
 """
@@ -34,9 +34,9 @@ while True:
 R_CHECK = r"""
 i64le <- function(v) writeBin(unclass(v), raw(), size = 8L, endian = "little")
 repeat {
-  spec <- rei::rei_recv(ch, timeout = 30)
-  if (inherits(spec, "rei_sentinel")) break
-  x <- rei::rei_recv(ch, timeout = 30)
+  spec <- mizu::mizu_recv(ch, timeout = 30)
+  if (inherits(spec, "mizu_sentinel")) break
+  x <- mizu::mizu_recv(ch, timeout = 30)
   ok <- tryCatch({
     switch(spec,
       raw = stopifnot(is.raw(x), identical(x, as.raw(c(0, 127, 255)))),
@@ -85,39 +85,39 @@ repeat {
     )
     TRUE
   }, error = function(e) conditionMessage(e))
-  rei::rei_send(ch, if (isTRUE(ok)) x else ok)
+  mizu::mizu_send(ch, if (isTRUE(ok)) x else ok)
 }
 """
 
 
 @pytest.fixture
 def echo():
-    ch = pyrei.Channel.create(ECHO_PEER)
+    ch = pymizu.Channel.create(ECHO_PEER)
     yield ch
     ch.close()
 
 
 @pytest.fixture
 def pool():
-    p = pyrei.Pool.create(2)
+    p = pymizu.Pool.create(2)
     yield p
     p.stop()
 
 
 @pytest.fixture(scope="module")
-def r_rei():
+def r_mizu():
     """The shipped R-peer launcher; its probe is the
-    skip_if_no_child_rei() mirror."""
+    skip_if_no_child_mizu() mirror."""
     try:
-        return pyrei.r_launcher()
-    except pyrei.ReiError:
-        pytest.skip("Rscript with the rei package (source-drop support) "
+        return pymizu.r_launcher()
+    except pymizu.MizuError:
+        pytest.skip("Rscript with the mizu package (source-drop support) "
                     "not available")
 
 
 @pytest.fixture
-def rcheck(r_rei):
-    ch = pyrei.Channel.create(R_CHECK, launcher=r_rei)
+def rcheck(r_mizu):
+    ch = pymizu.Channel.create(R_CHECK, launcher=r_mizu)
     yield ch
     ch.close()
 
@@ -396,22 +396,22 @@ def test_py_py_channel_normalizes(echo):
 # -- round-trip fidelity ---------------------------------------------------
 
 
-def test_na_real_echo_bit_exact(r_rei):
+def test_na_real_echo_bit_exact(r_mizu):
     # an untouched received view re-stages as untouched bytes: the NA_real_
     # payload survives the relay (R distinguishes it from a plain NaN)
     src = """
 x <- as.numeric(seq_len(40000)) + 0   # past the zc floor: a view crosses
 x[2] <- NA_real_
 x[3] <- NaN
-rei::rei_send(ch, x)
-y <- rei::rei_recv(ch, timeout = 30)
+mizu::mizu_send(ch, x)
+y <- mizu::mizu_recv(ch, timeout = 30)
 ok <- tryCatch({
   stopifnot(is.double(y), identical(y, x))
   TRUE
 }, error = function(e) conditionMessage(e))
-rei::rei_send(ch, if (isTRUE(ok)) "OK" else ok)
+mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         v = ch.recv(timeout=30)
         assert isinstance(v, np.ndarray) and v.dtype == np.float64
@@ -422,22 +422,22 @@ rei::rei_send(ch, if (isTRUE(ok)) "OK" else ok)
         ch.close()
 
 
-def test_na_real_under_compute(r_rei):
+def test_na_real_under_compute(r_mizu):
     # Python-side compute treats the NA sentinel as a NaN value; whether
     # the payload itself survives is platform-dependent (IEEE NaN payload
     # propagation), so R-side only is.na() is locked, not NA vs NaN
     src = """
 x <- as.numeric(seq_len(40000)) + 0
 x[2] <- NA_real_
-rei::rei_send(ch, x)
-y <- rei::rei_recv(ch, timeout = 30)
+mizu::mizu_send(ch, x)
+y <- mizu::mizu_recv(ch, timeout = 30)
 ok <- tryCatch({
   stopifnot(is.double(y), is.na(y[2]), identical(y[1], 1))
   TRUE
 }, error = function(e) conditionMessage(e))
-rei::rei_send(ch, if (isTRUE(ok)) "OK" else ok)
+mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         v = ch.recv(timeout=30)
         with np.errstate(invalid="ignore"):
@@ -448,20 +448,20 @@ rei::rei_send(ch, if (isTRUE(ok)) "OK" else ok)
         ch.close()
 
 
-def test_logical_relay_loses_tag(r_rei):
+def test_logical_relay_loses_tag(r_mizu):
     # R logical exports to Python as int32 on both surfaces (Arrow bool is
     # bit-packed: no zero-copy): the tag does not survive the relay, the
     # values (0/1, INT_MIN for NA) do
     src = """
-rei::rei_send(ch, c(TRUE, FALSE, NA))
-y <- rei::rei_recv(ch, timeout = 30)
+mizu::mizu_send(ch, c(TRUE, FALSE, NA))
+y <- mizu::mizu_recv(ch, timeout = 30)
 ok <- tryCatch({
   stopifnot(is.integer(y), identical(y, c(1L, 0L, NA_integer_)))
   TRUE
 }, error = function(e) conditionMessage(e))
-rei::rei_send(ch, if (isTRUE(ok)) "OK" else ok)
+mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         v = ch.recv(timeout=30)
         assert v.dtype == np.int32
@@ -569,14 +569,14 @@ def test_export_complex_rejected(echo):
         view.__arrow_c_array__()
 
 
-def test_export_r_logical_and_na(r_rei):
+def test_export_r_logical_and_na(r_mizu):
     # R logical exports as int32 (Arrow bool is bit-packed); R's NA
     # sentinels arrive as visible values with null_count == 0 (documented)
     src = """
-rei::rei_send(ch, rep(c(TRUE, FALSE, NA), length.out = 100000))
-rei::rei_send(ch, rep(c(1L, NA), length.out = 100000))
+mizu::mizu_send(ch, rep(c(TRUE, FALSE, NA), length.out = 100000))
+mizu::mizu_send(ch, rep(c(1L, NA), length.out = 100000))
 """
-    ch = pyrei.Channel.create(src, launcher=r_rei)
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         view = _exporter(np.asarray(ch.recv(timeout=30)))
         arr = pa.array(view)
@@ -614,13 +614,13 @@ def test_view_without_numpy():
     script = r"""
 import sys
 sys.modules["numpy"] = None   # the import probe fails, the view stays bare
-import pyrei
+import pymizu
 
-ch = pyrei.Channel.create('''
-import pyrei
+ch = pymizu.Channel.create('''
+import pymizu
 while True:
     x = ch.recv()
-    if x is pyrei.CLOSED or x is pyrei.PEER_GONE:
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
         break
     ch.send(x)
 ''')

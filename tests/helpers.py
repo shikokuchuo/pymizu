@@ -11,7 +11,7 @@ import random
 import threading
 import time
 
-import pyrei
+import pymizu
 
 
 def square(x):
@@ -70,7 +70,7 @@ def array_sum(a):
 def fanout(n):
     """Nested fan-out: submit n subtasks on the worker's own pool handle
     and collect them (nested collect helps instead of parking)."""
-    pool = pyrei.current_pool()
+    pool = pymizu.current_pool()
     tasks = [pool.submit(square, i) for i in range(n)]
     return sum(t.collect() for t in tasks)
 
@@ -100,7 +100,7 @@ def kill_at(i, bad):
 
 def nested_map(n):
     """A map inside a task, on the evaluating worker's own pool handle."""
-    pool = pyrei.current_pool()
+    pool = pymizu.current_pool()
     return pool.map(square, list(range(n)))
 
 
@@ -197,11 +197,11 @@ def huge_int(v):
 def trace_to_file(path):
     """Install a trace hook appending events to a file, on the worker's own
     pool handle (worker-side tracing must be installed from a task)."""
-    import pyrei
+    import pymizu
 
     def hook(ev, tid):
         with open(path, "a") as f:
             f.write(f"{ev} {tid}\n")
 
-    pyrei.current_pool().trace(hook)
+    pymizu.current_pool().trace(hook)
     return True

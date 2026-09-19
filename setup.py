@@ -1,8 +1,8 @@
-"""Build wiring for pyrei.
+"""Build wiring for pymizu.
 
-The extension compiles the vendored librei core sources (PyPI-style
-self-containment — no system librei is required or consulted). The vendored
-TUs need no defines: REI_API defaults to empty under static linkage.
+The extension compiles the vendored libmizu core sources (PyPI-style
+self-containment — no system libmizu is required or consulted). The vendored
+TUs need no defines: MIZU_API defaults to empty under static linkage.
 
 Windows builds force clang-cl: MSVC's C11 atomics are unsupported, and
 setuptools' msvc backend resolves cl.exe itself, ignoring CC — so the
@@ -25,7 +25,7 @@ def _find_on_path(exe):
     return exe
 
 
-class build_ext_rei(build_ext):
+class build_ext_mizu(build_ext):
     def build_extensions(self):
         if os.name == "nt":
             # setuptools' msvc backend resolves cl.exe itself and ignores CC;
@@ -41,16 +41,16 @@ class build_ext_rei(build_ext):
         super().build_extensions()
 
 
-core_sources = sorted(glob.glob("src/vendor/librei/*.c"))
+core_sources = sorted(glob.glob("src/vendor/libmizu/*.c"))
 
 ext_modules = [
     Extension(
-        "pyrei._pyrei",
-        sources=["src/_pyrei.c", "src/map.c"] + core_sources,
-        include_dirs=["src/vendor/librei"],
+        "pymizu._pymizu",
+        sources=["src/_pymizu.c", "src/map.c"] + core_sources,
+        include_dirs=["src/vendor/libmizu"],
         extra_compile_args=[] if os.name == "nt" else ["-std=c11", "-pthread"],
         extra_link_args=[] if os.name == "nt" else ["-pthread"],
     )
 ]
 
-setup(ext_modules=ext_modules, cmdclass={"build_ext": build_ext_rei})
+setup(ext_modules=ext_modules, cmdclass={"build_ext": build_ext_mizu})

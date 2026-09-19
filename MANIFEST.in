@@ -1,2 +1,2 @@
 recursive-include src *.h
-include src/vendor/librei/VENDOR
+include src/vendor/libmizu/VENDOR
