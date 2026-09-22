@@ -795,7 +795,7 @@ static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
    back to pickle, the same discipline as R's codec rejecting ALTREP.
    Streams carry a magic first byte so readers dispatch on it; the
    first-byte namespace is shared (pickle protocol 4 is 0x80, R's codec is
-   'S', R native streams 'B'/'X'/'A'). Integers are int64, little-endian;
+   'R', R native streams 'B'/'X'/'A'). Integers are int64, little-endian;
    all supported platforms are little-endian. */
 #define PYMIZU_CODEC_MAGIC 0x50   /* 'P' */
 #define PYMIZU_CODEC_CAP 64       /* container element cap: staging stays bounded */
