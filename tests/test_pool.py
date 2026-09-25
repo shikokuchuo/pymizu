@@ -20,7 +20,9 @@ from tests.helpers import (
     identity,
     make_unpicklable,
     raise_long,
+    takes_timeout,
     trace_to_file,
+    warn_then,
 )
 
 import pymizu
@@ -47,6 +49,13 @@ def test_collect_timeout(pool):
     t = pool.submit(time.sleep, 1.5)
     assert t.collect(timeout=0.05) is pymizu.TIMEOUT
     assert t.collect(timeout=5) is None
+
+
+def test_collect_exactly_once(pool):
+    t = pool.submit(len, [1, 2])
+    assert t.collect(timeout=5) == 2
+    with pytest.raises(pymizu.MizuError, match="already collected"):
+        t.collect(timeout=0)
 
 
 def test_task_error(pool):
@@ -79,6 +88,10 @@ def test_task_error_envelope_is_bounded(pool):
     # at the default 512-byte slot size)
     assert len(str(exc)) < 1000
     assert len(exc.remote_traceback) < 1000
+
+
+def test_task_warning_passes_through(pool):
+    assert pool.submit(warn_then, 21).collect(timeout=5) == 42
 
 
 def test_unpicklable_result(pool):
@@ -128,6 +141,80 @@ def test_submit_batch(pool):
     assert [t.collect(timeout=5) for t in tasks] == [2**i for i in range(10)]
 
 
+def test_submit_ring_full_raises():
+    # ring capacity 2 with the one worker busy: polls raise, never stall
+    p = pymizu.Pool.create(1, injection_cap=2)
+    try:
+        blocker = p.submit(time.sleep, 2)
+        fills = []
+        with pytest.raises(pymizu.SubmitTimeoutError):
+            for _ in range(8):
+                fills.append(p.submit(len, [1], timeout=0))
+        blocker.collect(timeout=10)
+        for t in fills:  # accepted handles stay valid and collectible
+            assert t.collect(timeout=5) == 1
+    finally:
+        p.stop()
+
+
+def test_submit_batch_short_on_full_ring():
+    # a full ring ends the batch short (no raise); accepted handles collect
+    p = pymizu.Pool.create(1, injection_cap=4)
+    try:
+        blocker = p.submit(time.sleep, 2)
+        fills = []
+        with pytest.raises(pymizu.SubmitTimeoutError):
+            for _ in range(8):
+                fills.append(p.submit(len, [1], timeout=0))
+        payloads = [partial(len, [i]) for i in range(4)]
+        tasks = p.submit_batch(payloads, timeout=0)
+        assert len(tasks) < 4
+        blocker.collect(timeout=10)
+        for t in fills + tasks:
+            assert t.collect(timeout=5) == 1
+    finally:
+        p.stop()
+
+
+def test_submit_blocked_until_worker_pops():
+    # a full ring parks the submitter; a worker's pop wakes it
+    p = pymizu.Pool.create(1, injection_cap=2)
+    try:
+        blocker = p.submit(time.sleep, 0.5)
+        fills = []
+        with pytest.raises(pymizu.SubmitTimeoutError):
+            for _ in range(8):
+                fills.append(p.submit(len, [1], timeout=0))
+        t = p.submit(len, [1], timeout=5)  # parks until the worker drains
+        blocker.collect(timeout=10)
+        for u in fills + [t]:
+            assert u.collect(timeout=5) == 1
+    finally:
+        p.stop()
+
+
+def test_slots_exhausted():
+    # two result slots per submitter: the third outstanding submit raises
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=2)
+    try:
+        t1 = p.submit(len, [1])
+        t2 = p.submit(len, [2])
+        with pytest.raises(pymizu.SlotsExhaustedError):
+            p.submit(len, [3], timeout=5)
+        assert t1.collect(timeout=5) == 1
+        assert t2.collect(timeout=5) == 1
+        # collected slots are reused
+        assert p.submit(len, [3]).collect(timeout=5) == 1
+    finally:
+        p.stop()
+
+
+def test_submit_callable_timeout_kwarg(pool):
+    # timeout= is the submission keyword: the callable's own rides partial
+    t = pool.submit(partial(takes_timeout, timeout=3), timeout=5)
+    assert t.collect(timeout=5) == 3
+
+
 def test_collect_any(pool):
     slow = pool.submit(time.sleep, 1.0)
     fast = pool.submit(len, [1, 2, 3])
@@ -163,6 +250,54 @@ def test_collect_all_timeout_consumes_nothing(pool):
     tasks = [pool.submit(time.sleep, 0.8) for _ in range(2)]
     assert pool.collect_all(tasks, timeout=0.05) is pymizu.TIMEOUT
     assert pool.collect_all(tasks, timeout=10) == [None, None]
+
+
+def test_collect_any_all_validate_tasks(pool):
+    for verb in (pool.collect_any, pool.collect_all):
+        with pytest.raises(ValueError, match="non-empty"):
+            verb([])
+        with pytest.raises(TypeError, match="not a task handle"):
+            verb([1])
+    pa = pymizu.Pool.attach(pool.token)  # a second handle on the same pool
+    t1 = pool.submit(len, [1])
+    t2 = pa.submit(len, [1, 2])
+    with pytest.raises(ValueError, match="same pool handle"):
+        pool.collect_any([t1, t2], timeout=0)
+    assert t1.collect(timeout=5) == 1
+    with pytest.raises(pymizu.MizuError, match="already collected"):
+        pool.collect_all([t1], timeout=0)
+    assert t2.collect(timeout=5) == 2
+    pa.destroy()
+
+
+def test_collect_any_cancelled_index(pool):
+    slow = [pool.submit(time.sleep, 2) for _ in range(2)]  # both busy
+    runs = pool.submit(len, [1])
+    never = pool.submit(len, [2])
+    assert never.cancel() is True
+    with pytest.raises(pymizu.CancelledError) as exc_info:
+        pool.collect_any([runs, never], timeout=10)
+    assert exc_info.value.index == 1
+    assert runs.collect(timeout=10) == 1  # the other handle stays valid
+    for t in slow:
+        t.collect(timeout=10)
+
+
+def test_collect_all_cancelled_index(pool):
+    slow = [pool.submit(time.sleep, 2) for _ in range(2)]  # both busy
+    never = pool.submit(len, [1])
+    also = pool.submit(len, [2])
+    assert never.cancel() is True
+    assert also.cancel() is True
+    # both terminal at the call: no wait, the first by position raises
+    with pytest.raises(pymizu.CancelledError) as exc_info:
+        pool.collect_all([never, also], timeout=10)
+    assert exc_info.value.index == 0
+    # a cancel reads without consuming: the later handle still collects
+    with pytest.raises(pymizu.CancelledError):
+        also.collect(timeout=0)
+    for t in slow:
+        t.collect(timeout=10)
 
 
 def test_worker_died():

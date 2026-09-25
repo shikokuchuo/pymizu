@@ -326,6 +326,11 @@ class Pool:
         (None waits indefinitely): SubmitTimeoutError on expiry,
         SlotsExhaustedError / StoppedError on the fatal outcomes.
 
+        ``timeout`` belongs to the submission, not to ``fn``: a callable
+        taking its own ``timeout=`` keyword argument cannot receive it
+        through ``**kwargs`` here — bind it first with
+        ``functools.partial(fn, timeout=...)``.
+
         A buffer-protocol argument (e.g. a numpy array) past the
         zero-copy floor crosses as a read-only view over shared pages,
         not a writable copy.
@@ -365,7 +370,10 @@ class Pool:
         self, tasks: _Iterable[Task], timeout: float | None = None
     ) -> list[_Any] | _pymizu._Sentinel:
         """Wait until every task is terminal; return all values in input
-        order, or the TIMEOUT sentinel (which consumes nothing)."""
+        order. On the first non-OK outcome by position, raise with an
+        ``index`` attribute (0-based) — handles up to it inclusive are
+        consumed, the rest stay collectible. The TIMEOUT sentinel
+        consumes nothing."""
         return self._h.collect_all(tasks, timeout)
 
     def map(

@@ -116,6 +116,20 @@ def sleep_ident(t):
     return t
 
 
+def takes_timeout(*, timeout=None):
+    """A callable with its own ``timeout=`` kwarg: it collides with the
+    submit keyword, so it must ride in via functools.partial."""
+    return timeout
+
+
+def warn_then(x):
+    """A warning passes through: it never fails the task."""
+    import warnings
+
+    warnings.warn(f"warn for {x}", stacklevel=2)
+    return x * 2
+
+
 def scale_add(x, *, scale=1, add=0):
     return x * scale + add
 
