@@ -268,7 +268,6 @@ class Pool:
         ``python -m pymizu.worker <token> <slot>``; the default spawns
         ``sys.executable`` directly.
         """
-        workers = int(workers)
         if workers < 1:
             raise ValueError("pymizu: workers must be at least 1")
         if max_workers is None:
@@ -502,7 +501,6 @@ class Pool:
     ) -> list[int]:
         """Spawn ``n`` additional workers into free registry slots and wait
         for them to join. Returns the slot indices spawned into."""
-        n = int(n)
         if n < 1:
             raise ValueError("pymizu: n must be at least 1")
         free = [

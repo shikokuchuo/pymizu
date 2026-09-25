@@ -120,6 +120,9 @@ def test_pool_create_validation():
         pymizu.Pool.create(0)
     with pytest.raises(ValueError, match="exceeds max_workers"):
         pymizu.Pool.create(2, max_workers=1)
+    # no int() coercion: a float count fails at the C boundary
+    with pytest.raises(TypeError):
+        pymizu.Pool.create(2.5)
 
 
 def test_pool_submit_validation():

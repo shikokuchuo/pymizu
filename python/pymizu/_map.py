@@ -30,6 +30,7 @@ import time as _time
 from collections.abc import Callable as _Callable
 from typing import TYPE_CHECKING
 from typing import Any as _Any
+from typing import Literal as _Literal
 
 from pymizu import _pymizu
 
@@ -61,7 +62,9 @@ _TAG_NP = {
     15: "complex128",
     32: "int64",
 }
-_TAG_MV = {24: "B", 14: "d", 13: "i", 10: "i", 32: "q"}
+_TAG_MV: dict[int, _Literal["B", "d", "i", "q"]] = {
+    24: "B", 14: "d", 13: "i", 10: "i", 32: "q"
+}
 
 # Morsel geometry (frozen by the R package's gate sweep): target ~256
 # morsels per runner, clamped to a constant grain.
@@ -298,8 +301,7 @@ def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
         a = _np.frombuffer(raw, dtype=_TAG_NP[tag])
         return a.reshape(n, m) if m > 1 else a
     fmt = _TAG_MV[tag]
-    mv = memoryview(raw).cast(fmt)  # pyrefly: ignore [no-matching-overload]
-    # pyrefly: ignore [no-matching-overload]
+    mv = memoryview(raw).cast(fmt)
     return mv.cast(fmt, [n, m]) if m > 1 else mv
 
 
@@ -355,7 +357,6 @@ def pool_map(
             return []
         return _wrap_out(b"", tprobe[0], 0, tprobe[1])
     if chunks is not None:
-        chunks = int(chunks)
         if chunks < 1:
             raise ValueError("pymizu: chunks must be a positive number")
 
@@ -739,7 +740,6 @@ class PreparedMap:
                 raise ValueError("pymizu: collect must be 'copy' or 'view'")
             self._collect_mode = collect
         if chunks is not None:
-            chunks = int(chunks)
             if chunks < 1:
                 raise ValueError("pymizu: chunks must be a positive number")
         self._fn = fn
