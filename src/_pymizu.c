@@ -233,7 +233,9 @@ typedef struct ArrowArray {
 /* Frame n bytes over the INLINE / ARENA / SHM_RAW tiers — the reference
    stager's (bytes.c) discipline: one arena chunk past the inline budget,
    else a reap and a spill region retained SPILL (surrendered to the free
-   list at consumer-done). */
+   list at consumer-done). The INLINE frame stamps the keeperless claim:
+   the streams this frames (pickle, the spilled codec and task frames)
+   commit no retain-table entry of their own. */
 static int stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
                        uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
   if (n == 0) {
@@ -246,7 +248,7 @@ static int stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
     memcpy(payload, src, n);
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
-    hdr->aux = 0;
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;
     return 0;
   }
   uint64_t off;
@@ -795,9 +797,9 @@ static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
    back to pickle, the same discipline as R's codec rejecting ALTREP.
    Streams carry a magic first byte so readers dispatch on it; the
    first-byte namespace is shared (pickle protocol 4 is 0x80, R's codec is
-   'R', R native streams 'B'/'X'/'A'). Integers are int64, little-endian;
-   all supported platforms are little-endian. */
-#define PYMIZU_CODEC_MAGIC 0x50   /* 'P' */
+   'R', R native streams 'B'/'X'/'A') and owned by the vendored mizu_ext.h
+   (MIZU_PYMIZU_CODEC_MAGIC is this codec's 'P'). Integers are int64,
+   little-endian; all supported platforms are little-endian. */
 #define PYMIZU_CODEC_CAP 64       /* container element cap: staging stays bounded */
 
 enum {
@@ -974,17 +976,17 @@ static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   uint64_t sz = 1;   /* the magic byte */
   if (codec_size(obj, &sz) < 0) return -1;
   if (sz <= (uint64_t) inline_max) {
-    payload[0] = PYMIZU_CODEC_MAGIC;
+    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
     uint8_t *p = payload + 1;
     codec_put(&p, obj);
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) sz;
-    hdr->aux = 0;
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a flat codec stream references nothing */
     return 0;
   }
   uint8_t *buf = (uint8_t *) malloc((size_t) sz);
   if (buf == NULL) return -1;   /* pickle's own allocation failure reports */
-  buf[0] = PYMIZU_CODEC_MAGIC;
+  buf[0] = MIZU_PYMIZU_CODEC_MAGIC;
   uint8_t *p = buf + 1;
   codec_put(&p, obj);
   int rc = stage_bytes(buf, (size_t) sz, hdr, payload, inline_max, h);
@@ -1275,7 +1277,7 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
     }
   }
   uint8_t *p = buf;
-  *p++ = PYMIZU_CODEC_MAGIC;
+  *p++ = MIZU_PYMIZU_CODEC_MAGIC;
   *p++ = PYMIZU_TAG_TASK;
   *p++ = (uint8_t) fp.fn_kind;
   if (fp.fn_kind == 0) {
@@ -1307,7 +1309,9 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
     if (buf == payload) {
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
-      hdr->aux = 0;
+      /* keeperless even with a BUFREF leaf: its zc loan rides the
+         claim-side release machinery, not the keeper-drop reap */
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
     } else {
       rc = stage_bytes(buf, n, hdr, payload, inline_max, h);
     }
@@ -2354,7 +2358,7 @@ corrupt:
 
 /* A serialized-stream frame (INLINE / ARENA / SHM_RAW bytes). Our streams
    are pickle protocol 4 (first byte 0x80) or the compact codec
-   (PYMIZU_CODEC_MAGIC). MIZU_CODEC_MAGIC ('R') is mizu's compact codec,
+   (MIZU_PYMIZU_CODEC_MAGIC). MIZU_CODEC_MAGIC ('R') is mizu's compact codec,
    'B' / 'X' / 'A' the R serialize formats — no codec interop in v1. */
 static PyObject *read_stream(const uint8_t *src, size_t n,
                              mizu_read_ctx *ctx) {
@@ -2366,7 +2370,7 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
   case 0x80:
     return PyObject_CallFunction(mizu_loads, "y#", (const char *) src,
                                  (Py_ssize_t) n);
-  case PYMIZU_CODEC_MAGIC:
+  case MIZU_PYMIZU_CODEC_MAGIC:
     return codec_read(src, n, ctx);
   case MIZU_CODEC_MAGIC: case 'B': case 'X': case 'A':
     /* foreign stream: consume the slot (a plain failure would wedge the

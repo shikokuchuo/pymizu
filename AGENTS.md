@@ -86,7 +86,7 @@ tools/vendor-libmizu.sh` for a local checkout).
      (at most one per frame, the stream then inline-only: the core's
      staging seam holds a single spill checkout). A BUFREF argument
      arrives as a read-only view.
-  5. The compact binary codec (`PYMIZU_CODEC_MAGIC` 0x50): bool,
+  5. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50): bool,
      int64-bounded int, float, str, bytes, None, and one flat
      list/tuple/dict level of those, capped at 64 elements. Exact-type
      checks throughout, so subclasses keep their pickle semantics;

@@ -241,3 +241,21 @@ copy/view 690k/698k tasks/s, skew 7.3 ms wall, fan-out 255.7k. The stage
 column's ~13% absolute lift is this run's bandwidth draw: identity 115.4 =
 memcpy 115.5 us/send and the normalized costs sit inside their recorded
 spread. 197 pass, ruff + pyrefly clean.
+
+## 2026-09-26: keeperless wire flag (after-measurement)
+
+libmizu MIZU_AUX_F_KEEPERLESS adopted (vendored working tree over the
+8bdf2f7 pin): every INLINE frame stamps the stager's keeperless claim —
+stage_bytes (pickle plus the spilled codec and task streams),
+stage_codec's direct inline path, and the task-frame inline path. The
+behavioral change is pickle-tier results only: 'P'-magic frames were
+already probe-keeperless, so pickle collects alone stop waking the
+producing worker's keeper sweep. Probe (this host, 1 worker, sequential
+submit+collect of a frozenset([1,2,3]) result against a tuple([1,2,3])
+control): rt rows before 3.73-3.75 / after 4.03-4.05 us/task pickle,
+2.56-2.60 / 2.71-2.77 codec — both rows up together, host drift (a
+concurrent rchk container). The parked-collect isolation (3000 results
+staged, the worker drained and parked, collects timed alone) carries the
+signal: pickle collects 2.14-3.20 us before -> 0.93-1.55 after, the codec
+control flat at 0.40-0.99 on both builds — the spurious cross-process
+keeper wake is gone. 207 pass.
