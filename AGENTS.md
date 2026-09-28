@@ -1,7 +1,9 @@
 # pymizu — project memory
 
 Python binding for libmizu: lock-free shared-memory IPC (SPSC channels and
-work-stealing task pools) via the raw CPython C API. Pre-release (v0.1.0).
+work-stealing task pools) via the raw CPython C API. Pre-release
+(0.1.0.dev0; `CHANGELOG.md` is the release-facing feature summary, Keep a
+Changelog format).
 Sibling repos: `libmizu` (the C core, upstream authority) and `mizu` (the R
 package). The governing design document is the ipc plan in the libmizu repo
 (Phase 2 covers pymizu).
@@ -15,7 +17,8 @@ package). The governing design document is the ipc plan in the libmizu repo
   the `pymizu[numpy]` extra). cloudpickle is the `pymizu[cloudpickle]`
   extra.
 - Free-threaded CPython (3.13t) is out of scope for v1 — the GIL policy
-  assumes a GIL.
+  assumes a GIL. (A local `.venv-ft/` 3.14 freethreaded venv exists for
+  exploratory checks only.)
 
 ## Layout
 
@@ -24,14 +27,20 @@ package). The governing design document is the ipc plan in the libmizu repo
   sentinel singletons, the exception hierarchy (`TaskError` with
   remote_type/remote_traceback, `WorkerDiedError` with slot/pid), the
   `_Caught` outcome box the collect veneer unwraps and raises.
+- `src/map.c` / `src/pymap.h` — the `Pool.map` region layer (see
+  Conventions); `pymap.h` is its interface to `_pymizu.c` (capsule names,
+  the wire-type gate, registration).
 - `src/vendor/libmizu/` — vendored libmizu core (generated; see Vendoring).
 - `python/pymizu/` — the Python package. `child.py` / `worker.py` are the
   spawned-process entries (`python -m pymizu.child <token>`,
   `python -m pymizu.worker <suffix> <slot>`). `_r.py` holds the R-peer
-  launcher (`pymizu.r_launcher()`; see Conventions).
+  launcher (`pymizu.r_launcher()`; see Conventions). Ships `py.typed` and
+  the `_pymizu.pyi` stub as package data.
 - `tests/` — pytest; see Testing.
 - `benchmarks/` — `mizu-bench.py` (report-only, asserts nothing; records
   appended to `notes.md`) and `mizu-stdlib-bench.py` (stdlib comparison).
+  Task callables live in `benchmarks/tasks.py` (same by-reference pickle
+  reason as `tests/helpers.py`).
 
 ## Build and test
 
@@ -49,6 +58,9 @@ vendored core) and a `build_ext` override forcing clang-cl on Windows
 
 The `.venv` install is non-editable: after editing `python/`, reinstall
 (`pip install .`) or tests import the stale copy.
+
+`.pre-commit-config.yaml` runs the standard hygiene hooks plus
+`ruff-check --fix` and `ruff-format`.
 
 ## Vendoring
 
@@ -86,12 +98,20 @@ tools/vendor-libmizu.sh` for a local checkout).
      (at most one per frame, the stream then inline-only: the core's
      staging seam holds a single spill checkout). A BUFREF argument
      arrives as a read-only view.
-  5. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50): bool,
+  5. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
+     defined in the vendored `mizu_ext.h` next to mizu's own
+     `MIZU_CODEC_MAGIC` 0x52 'R' — one registry for both bindings): bool,
      int64-bounded int, float, str, bytes, None, and one flat
      list/tuple/dict level of those, capped at 64 elements. Exact-type
      checks throughout, so subclasses keep their pickle semantics;
      anything else falls back.
   6. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
+
+  `stage_bytes` frames the pickle/codec/task-frame streams over the
+  INLINE/ARENA/SHM_RAW tiers; the INLINE frame stamps the keeperless
+  claim (`MIZU_AUX_F_KEEPERLESS`) — these streams commit no retain-table
+  entry of their own, and a BUFREF leaf's zc loan rides the claim-side
+  release machinery, not the keeper-drop reap.
 
   The buffer gate requests `PyBUF_ND | PyBUF_FORMAT` and verifies
   C-contiguity as `strides == NULL` — never `PyBUF_C_CONTIGUOUS`, which
@@ -118,6 +138,13 @@ tools/vendor-libmizu.sh` for a local checkout).
   does the counted add (`mizu_zc_ref`) without a fresh open/mmap. Only
   the mapping is cached — MIZH header validation runs per read. An
   evicted owner's mapping closes when its last view is gone.
+- Arrow interop: `Channel.send` accepts any `__arrow_c_array__` producer
+  (pyarrow, polars, duckdb; the `cvt_for_arrow` pass). Arrow nulls become
+  R missing values. A received zero-copy view exports to an Arrow consumer
+  through its own `__arrow_c_array__` (`pa.array(view)`,
+  `pl.from_arrow(view)`); the export release callback is pure C, callable
+  from any thread. Without numpy, a received view is the view object
+  itself — `memoryview(view)` and `pa.array(view)` both work.
 - Pickle protocol pinned to 4 (homogeneous pools can mix Python point
   versions). Task callables must be importable references under stock
   pickle; cloudpickle lifts that when installed. The channel peer
@@ -137,6 +164,13 @@ tools/vendor-libmizu.sh` for a local checkout).
   unpicklable result recovers as the task's ERR.
 - `pymizu.current_pool()` binds the worker's own handle inside a task
   (nested submit/collect).
+- Pool surface beyond submit/collect: `submit_batch`,
+  `collect_any`/`collect_all`, `retire`/`spawn_workers`, submitter
+  `attach(token)`, and a trace hook (`mizu_pool_set_trace`: submit-side
+  events on the calling thread, removed with None, hook errors
+  unraisable). Module-level `pymizu.prune()` runs the vendored reaper,
+  reclaiming `/mizu_` regions orphaned by dead creators (a hard-killed
+  process runs no finalizers).
 - Join tokens: `<pid hex>_<counter hex>`, validated against
   `^[0-9a-f]+_[0-9a-f]+$`; children prepend their compiled-in `/mizu_`
   prefix.
@@ -149,7 +183,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
 - Map conventions (`src/map.c`, `python/pymizu/_map.py`):
-  - One fresh region per map (own "PYRM" magic, `MIZU_ABI_VERSION`-keyed).
+  - One fresh region per map (own `MIZU_PYMAP_MAGIC` "PYMM",
+    `MIZU_ABI_VERSION`-keyed).
     The protocol half — header layout, CLAIM-word claim CAS, AIMD sizing,
     reset/trim, cancel, lost-set scan — is the core's morsel module
     (`mizu_morsel_*`, vendored `morsel.c`; one layout for both bindings). Runners are ordinary tasks submitted with
@@ -182,6 +217,10 @@ tools/vendor-libmizu.sh` for a local checkout).
     template path) — a C batch loop was tried and reverted 2026-08-24:
     the winsum scaling gap is memory bandwidth, not interpreter
     overhead.
+  - `Pool.map(seed=...)`: deterministic per-element streams of the stdlib
+    `random` module — `random.seed(SHA-256(seed_bytes + (i +
+    offset).to_bytes(8, "little")))`; `seed=(seed, offset)` shifts every
+    element's stream by `offset`.
 - Commit messages are a single line (subject only, no body).
 - Never push without explicit approval — every push must be approved by
   the user first.
@@ -203,12 +242,23 @@ tools/vendor-libmizu.sh` for a local checkout).
   the shipped `pymizu.r_launcher()` — it catches the `MizuError` as the
   skip, so the probe logic has exactly one home (`_r.py`);
   `test_r_launcher_missing_rscript` runs without R.
+- `tests/test_no_numpy.py` exercises the numpy-less paths in a subprocess
+  whose PYTHONPATH shim makes `import numpy` raise ImportError (the
+  `_TAG_MV` memoryview rows standing in for `_TAG_NP`), in both the
+  driver and its spawned workers. `tests/test_prune.py` hard-kills a
+  creator to test `prune()`; `tests/test_trace.py` covers the trace hook;
+  `tests/test_arrow.py` covers the Arrow exchange.
 
 ## CI
 
-`.github/workflows/ci.yml`: a lint leg (ruff + pyrefly), an sdist leg
-(the sdist must carry the vendored C core and build standalone), and a
-build matrix over ubuntu/macos/windows x Python 3.10/3.14 that installs,
-runs an import smoke, and measures coverage (uploaded from ubuntu only).
+`.github/workflows/ci.yml`: a lint leg (ruff + pyrefly, with
+numpy/cloudpickle/pyarrow/polars installed so the optional paths
+typecheck), an sdist leg (the sdist must carry the vendored C core and
+build standalone), and a build matrix — ubuntu 3.10/3.13/3.14, macos
+3.11/3.14, windows 3.12/3.14 — that installs, runs an import smoke, and
+measures coverage (codecov upload from ubuntu only). Windows legs add
+the preinstalled LLVM to PATH for clang-cl. Linux legs run the
+cross-language R tests only when the `CROSSLANG_PAT` secret is set (mizu
+is a private repo; without it the steps skip and the tests probe-skip).
 
 License: MIT.
