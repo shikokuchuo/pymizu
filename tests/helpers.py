@@ -8,6 +8,7 @@ the test process; a spawned worker's sys.path[0] is the repo root already.
 
 import os
 import random
+import sys
 import threading
 import time
 
@@ -34,6 +35,29 @@ def raise_long(msg):
 class Unpicklable:
     def __reduce__(self):
         raise TypeError("cannot pickle Unpicklable")
+
+
+def _fail_on_unpickle():
+    raise ValueError("pymizu: test unpickle failure")
+
+
+class FailOnUnpickle:
+    """A deterministic read decline: unpickling raises a plain Exception on
+    the host — the content failure a channel read consumes. Pickler-
+    agnostic: the reconstruction callable is importable, so stock pickle
+    and cloudpickle both store it by reference."""
+
+    def __reduce__(self):
+        return (_fail_on_unpickle, ())
+
+
+class ExitOnUnpickle:
+    """A deterministic control-flow decline: unpickling calls sys.exit(0),
+    raising SystemExit on the host — the BaseException tier a channel read
+    must never consume (the slot is kept, so the failure reproduces)."""
+
+    def __reduce__(self):
+        return (sys.exit, (0,))
 
 
 def make_unpicklable():

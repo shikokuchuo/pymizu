@@ -45,3 +45,12 @@ Initial pre-release.
 - Optional extras: `pymizu[numpy]` (zero-copy array views, raw-tier
   staging) and `pymizu[cloudpickle]` (lambdas, closures, and local
   functions as task callables).
+
+### Fixed
+
+- A channel message that fails to read (a declined R payload, a pickle
+  that will not load, a non-UTF-8 string, a corrupt slot) no longer wedges
+  the ring behind the unreadable slot: the read consumes the message and
+  the verb raises, so the next message arrives. Consumption is limited to
+  content failures — a `KeyboardInterrupt`, `SystemExit`, or `MemoryError`
+  keeps the slot for a retry.

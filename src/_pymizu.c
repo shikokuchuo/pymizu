@@ -2571,6 +2571,31 @@ static void *py_read(const mizu_slot_hdr *hdr, const uint8_t *payload,
   return (void *) obj;
 }
 
+/* The channel's read_fn: py_read plus the consume rule, one site for every
+   current and future decline — an unreadable slot must not wedge the ring
+   behind it. Consume exactly the content failures: any Exception except
+   MemoryError (environmental, a retry can succeed, so no message is lost
+   to a transient). Matching on Exception excludes the whole BaseException
+   control-flow tier — KeyboardInterrupt, SystemExit, GeneratorExit — which
+   describes the process, never the message bytes, and can be caught
+   up-stack, after which the channel must not have lost the message. The
+   ctx->gone guard keeps a vanished region on the core's verdict path; the
+   PyErr_Occurred guard never exempts a real decline (every read_impl
+   failure sets an exception) — it only keeps a NULL without one (an
+   internal bug) retryable rather than silently consumed. Pools keep
+   py_read: a freed result slot is a separate decision. */
+static void *py_chan_read(const mizu_slot_hdr *hdr, const uint8_t *payload,
+                          size_t limit, mizu_read_ctx *ctx) {
+  PyGILState_STATE gil = PyGILState_Ensure();
+  PyObject *obj = read_impl(hdr, payload, limit, ctx);
+  if (obj == NULL && !ctx->gone && PyErr_Occurred() &&
+      PyErr_ExceptionMatches(PyExc_Exception) &&
+      !PyErr_ExceptionMatches(PyExc_MemoryError))
+    ctx->flags |= MIZU_READ_CONSUME;
+  PyGILState_Release(gil);
+  return (void *) obj;
+}
+
 /* The batch-verb sink (recv_batch_fn / collect_all_fn): each read product
    lands in the pre-built list as it is produced, so the partial prefix is
    owned by the list on every exit path. The verb runs with the GIL
@@ -2856,7 +2881,8 @@ typedef struct {
 static void chan_binding(mizu_binding *b) {
   mizu_binding_init(b);
   b->stage = py_stage;
-  b->read = py_read;
+  b->read = py_chan_read;   /* the consume-on-decline read_fn; pools keep
+                               py_read */
   b->check = py_check;
   /* exec/park/sweep/drop NULL: a channel never evals; submitter handles
      release the GIL around the whole verb, so no park hook; staging pins

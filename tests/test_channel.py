@@ -402,6 +402,48 @@ def test_r_codec_stream_dispatch():
         pymizu._pymizu._read_stream(b"R")
 
 
+def test_unpickle_failure_is_consumed():
+    # unpickling raises a plain Exception on the host — a content failure:
+    # the read consumes the slot, so the next message arrives instead of
+    # the ring wedging behind the decline
+    ch = pymizu.Channel.create(
+        "from tests.helpers import FailOnUnpickle\n"
+        "ch.send('a')\n"
+        "ch.send(FailOnUnpickle())\n"
+        "ch.send('c')\n"
+    )
+    try:
+        assert ch.recv(timeout=10) == "a"
+        with pytest.raises(ValueError, match="unpickle failure"):
+            ch.recv(timeout=10)
+        assert ch.recv(timeout=10) == "c"
+    finally:
+        ch.close()
+
+
+def test_control_flow_raise_keeps_the_slot():
+    # unpickling raises SystemExit (the BaseException control-flow tier,
+    # which describes the process, never the message bytes): never
+    # consumed — the same failure reproduces on the next receive
+    ch = pymizu.Channel.create(
+        "from tests.helpers import ExitOnUnpickle\n"
+        "ch.send('a')\n"
+        "ch.send(ExitOnUnpickle())\n"
+        "ch.send('c')\n"
+    )
+    try:
+        assert ch.recv(timeout=10) == "a"
+        with pytest.raises(SystemExit):
+            ch.recv(timeout=10)
+        with pytest.raises(SystemExit):
+            ch.recv(timeout=10)
+    finally:
+        # no orderly close: a control-flow raise from payload code is a
+        # sender bug; the exclusion serves the transient case (a real
+        # Ctrl-C whose retry succeeds)
+        ch.destroy()
+
+
 # -- R interop (the view tier against an mizu peer) --------------------------
 
 _RSCRIPT = shutil.which("Rscript")
@@ -546,5 +588,31 @@ def test_r_interop_codec_payload_rejected():
     try:
         with pytest.raises(pymizu.MizuError, match="R payload"):
             ch.recv(timeout=10)
+    finally:
+        ch.close()
+
+
+@r_only
+def test_r_interop_declines_are_consumed():
+    # every channel read failure is consumed: the next message arrives
+    # instead of the ring wedging behind the declined slot
+    ch = _r_channel(
+        "{ y <- cumsum(rep(1.0, 1000000));"
+        " names(y) <- paste0('n', seq_along(y)); mizu_send(ch, y)\n"
+        " mizu_send(ch, rep('x', 100000))\n"
+        " mizu_send(ch, rawToChar(as.raw(c(0x61, 0xff))))\n"
+        " mizu_send(ch, 'done')\n" + _R_ECHO + " }"
+    )
+    try:
+        # a named numeric vector past the zero-copy floor (attributed MIZH)
+        with pytest.raises(pymizu.MizuError, match="attributes"):
+            ch.recv(timeout=10)
+        # a character vector past the floor (MIZS)
+        with pytest.raises(pymizu.MizuError, match="cannot cross to Python"):
+            ch.recv(timeout=10)
+        # a non-UTF-8 native string (STR1)
+        with pytest.raises(pymizu.MizuError, match="not valid UTF-8"):
+            ch.recv(timeout=10)
+        assert ch.recv(timeout=10) == "done"
     finally:
         ch.close()
