@@ -211,6 +211,26 @@ mizu::mizu_send(ch, "after")
         ch.close()
 
 
+def test_r_peer_batch_keeps_prefix(r_mizu):
+    """A batch that reaches a foreign payload returns the messages read
+    before it; the next receive reproduces the decline (and consumes the
+    slot), and the one after reads on. send_batch's single tail store
+    publishes the first two atomically, so the batch provably reaches the
+    foreign stream."""
+    src = """
+mizu::mizu_send_batch(ch, list("a", list(1, 2)))   # an 'R' codec stream
+mizu::mizu_send(ch, "after")
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        assert ch.recv_batch(4, timeout=30) == ["a"]
+        with pytest.raises(pymizu.MizuError, match="R payload"):
+            ch.recv(30)
+        assert ch.recv(30) == "after"
+    finally:
+        ch.close()
+
+
 def test_r_host_python_peer(r_mizu):
     """The other direction: an R host, a Python peer spawned through
     python -m pymizu.child, assertions on the R side."""

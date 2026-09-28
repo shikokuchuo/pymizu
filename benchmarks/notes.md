@@ -259,3 +259,18 @@ staged, the worker drained and parked, collects timed alone) carries the
 signal: pickle collects 2.14-3.20 us before -> 0.93-1.55 after, the codec
 control flat at 0.40-0.99 on both builds — the spurious cross-process
 keeper wake is gone. 207 pass.
+
+## 2026-09-28: decline and batch-receive fixes (after-measurement)
+
+The decline/batch fixes (re-vendored libmizu 151fcae: recv_batch keeps
+its consumed prefix, collect_all claims only the reported handle, leave
+fails an announced in-flight claim; pymizu-side: py_chan_read consumes
+declined channel reads, buffer subclasses keep the pickle path,
+recv_batch clears the deferred read's exception on a prefix return). All
+changes touch failure branches; the C.3 gate is one pointer compare on
+the buffer branch. mizu-bench.py, this host: sequential rt 0.4 channel /
+0.7 pool us, pipelined pool 2.48M tasks/s, payload 8k/800k/8M
+2.9/65.2/219.0 us, streaming 20.8M msg/s, map trivial 0.4 us/elt,
+template copy/view 692k/696k tasks/s, skew 7.0 ms wall, fan-out 275.4k,
+stage masked rows 121.6/110.4/146.4 us/send (their recorded spread).
+218 pass, ruff + pyrefly clean.

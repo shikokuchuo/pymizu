@@ -3133,7 +3133,9 @@ static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
 PyDoc_STRVAR(recv_batch_doc,
 "recv_batch(n=256, timeout=None) -> list | sentinel\n\n\
 Wait for the first message exactly like recv(), then drain up to `n`\n\
-already-published messages without waiting further.");
+already-published messages without waiting further. A batch that reaches\n\
+a message it cannot read returns what it has; the failure surfaces on\n\
+the next receive.");
 
 static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
                                     PyObject *kw) {
@@ -3159,6 +3161,22 @@ static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
   st = mizu_channel_recv_batch_fn(c, (size_t) n, &count, list_sink, out, ms);
   Py_END_ALLOW_THREADS
   if (st == MIZU_OK) {
+    /* the batch ended early at a declining read: the prefix is real, and
+       the slot stays for the next receive to reproduce the failure — so
+       clear its pending exception (MemoryError included: the retry
+       reproduces it, and clearing loses nothing). A BaseException-only
+       one — an interrupt out of the unpickle — propagates instead, the
+       prefix lost; swallowing a Ctrl-C would be a regression on today.
+       This runs before SetSlice, so a genuine SetSlice failure is never
+       masked, and no return carries a stale exception. */
+    if (PyErr_Occurred()) {
+      if (PyErr_ExceptionMatches(PyExc_Exception)) {
+        PyErr_Clear();
+      } else {
+        Py_DECREF(out);
+        return NULL;
+      }
+    }
     if (count < (size_t) n &&
         PyList_SetSlice(out, (Py_ssize_t) count, (Py_ssize_t) n, NULL) < 0) {
       Py_DECREF(out);
@@ -3763,8 +3781,8 @@ PyDoc_STRVAR(pool_collect_all_doc,
 "collect_all(tasks, timeout=None) -> list | sentinel\n\n\
 Wait until every task is terminal; return all values in input order. On\n\
 the first non-OK outcome by position it raises with an `index` attribute\n\
-— handles up to it inclusive are consumed, the rest stay collectible.\n\
-pymizu.TIMEOUT consumes nothing.");
+— only the reported handle is consumed; every other, the results ahead\n\
+of it included, stays collectible. pymizu.TIMEOUT consumes nothing.");
 
 static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
                                   PyObject *kw) {

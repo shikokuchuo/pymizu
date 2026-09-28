@@ -244,6 +244,11 @@ def test_collect_all_error_index(pool):
     with pytest.raises(pymizu.TaskError) as exc_info:
         pool.collect_all(tasks, timeout=10)
     assert exc_info.value.index == 3
+    # only the reported handle is consumed: the results ahead of it stay
+    # collectible; the reported one is spent
+    assert [t.collect(timeout=5) for t in tasks[:3]] == [1, 1, 1]
+    with pytest.raises(pymizu.MizuError, match="already collected"):
+        tasks[3].collect(timeout=0)
 
 
 def test_collect_all_timeout_consumes_nothing(pool):

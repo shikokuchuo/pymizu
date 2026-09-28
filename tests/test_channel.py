@@ -488,6 +488,44 @@ def test_control_flow_raise_keeps_the_slot():
         ch.destroy()
 
 
+def test_recv_batch_keeps_prefix():
+    # a read failure past the batch's first message ends it with the
+    # consumed prefix; the next receive reproduces the failure and
+    # consumes, and the one after reads on. send_batch's single tail store
+    # publishes both messages atomically, so the batch provably reaches
+    # the failing read.
+    ch = pymizu.Channel.create(
+        "from tests.helpers import FailOnUnpickle\n"
+        "ch.send_batch(['a', FailOnUnpickle()])\n"
+        "ch.send('c')\n"
+    )
+    try:
+        assert ch.recv_batch(4, timeout=10) == ["a"]
+        with pytest.raises(ValueError, match="unpickle failure"):
+            ch.recv(timeout=10)
+        assert ch.recv(timeout=10) == "c"
+    finally:
+        ch.close()
+
+
+def test_recv_batch_interrupt_propagates():
+    # a BaseException-only raise out of the unpickle is not cleared with
+    # the prefix: the batch propagates it (the prefix is lost), and the
+    # unconsumed slot reproduces it on the next receive
+    ch = pymizu.Channel.create(
+        "from tests.helpers import ExitOnUnpickle\n"
+        "ch.send_batch(['a', ExitOnUnpickle()])\n"
+        "ch.send('c')\n"
+    )
+    try:
+        with pytest.raises(SystemExit):
+            ch.recv_batch(4, timeout=10)
+        with pytest.raises(SystemExit):
+            ch.recv(timeout=10)
+    finally:
+        ch.destroy()
+
+
 # -- R interop (the view tier against an mizu peer) --------------------------
 
 _RSCRIPT = shutil.which("Rscript")

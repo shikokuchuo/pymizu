@@ -60,3 +60,11 @@ Initial pre-release.
   base buffer. Exact `bytes`, `bytearray`, `memoryview`, `array.array`,
   `numpy.ndarray`, and numpy scalar types — and unrelated exporters such
   as `pyarrow.Buffer` — still stage raw.
+- `Channel.recv_batch` no longer drops the messages it already read when a
+  later message in the batch fails to read: the batch ends early with the
+  prefix, and the failure surfaces on the next receive. A `BaseException`
+  out of the payload (an interrupt) still propagates, losing the prefix.
+- `Pool.collect_all` on a first non-OK outcome now consumes only the
+  reported handle: the results ahead of it stay collectible, as do the
+  handles past it (previously the prefix results were consumed and
+  dropped).
