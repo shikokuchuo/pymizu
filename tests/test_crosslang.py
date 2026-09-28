@@ -172,6 +172,28 @@ mizu::mizu_send(ch, if (is.character(x)) x else "no error")
         ch.close()
 
 
+def test_r_peer_masked_array_declined(r_mizu):
+    """A MaskedArray keeps its pickle path (the raw tier would drop the
+    mask), so on an R channel it is a declined "Python payload" — consumed,
+    and the next message arrives. The remedy is the Arrow import."""
+    np = pytest.importorskip("numpy")
+    src = """
+err <- tryCatch(mizu::mizu_recv(ch, timeout = 30), error = function(e) e)
+stopifnot(is(err, "error"))
+x <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, x)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        m = np.ma.MaskedArray([1.0, 2.0], mask=[True, False])
+        assert ch.send(m) is True
+        a = np.array([1.5, 2.5])
+        assert ch.send(a) is True
+        assert np.array_equal(np.asarray(ch.recv(30)), a)
+    finally:
+        ch.close()
+
+
 def test_r_peer_serialized_payload_consumed(r_mizu):
     """An R native-serialize stream is declined and consumed (the
     MIZU_READ_CONSUME contract): the recv raises, and a retried recv sees

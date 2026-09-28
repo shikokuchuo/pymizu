@@ -54,3 +54,9 @@ Initial pre-release.
   the verb raises, so the next message arrives. Consumption is limited to
   content failures — a `KeyboardInterrupt`, `SystemExit`, or `MemoryError`
   keeps the slot for a retry.
+- Subclasses of buffer-exporting types now keep their pickle semantics on
+  channels and pools: a `numpy.ma.MaskedArray` round-trips with its mask
+  (and a `numpy.memmap` as a memmap) instead of silently arriving as the
+  base buffer. Exact `bytes`, `bytearray`, `memoryview`, `array.array`,
+  `numpy.ndarray`, and numpy scalar types — and unrelated exporters such
+  as `pyarrow.Buffer` — still stage raw.

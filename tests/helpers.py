@@ -14,6 +14,11 @@ import time
 
 import pymizu
 
+try:
+    import numpy as np
+except ImportError:
+    np = None  # test_no_numpy's shim: this module must still import
+
 
 def square(x):
     return x * x
@@ -187,6 +192,30 @@ def fanout_with_thread(n, interval=0.005):
 class StrSubclass(str):
     """A str subclass: staging must keep its pickle semantics (the exact-type
     checks route it past STR1 and the codec)."""
+
+
+if np is not None:
+
+    class CarryArray(np.ndarray):
+        """An ndarray subclass carrying an attribute through pickle (the
+        canonical subclass recipe): the raw buffer tier would stage the
+        base buffer only, losing the class itself."""
+
+        def __new__(cls, data, tag=None):
+            obj = np.asarray(data).view(cls)
+            obj.tag = tag
+            return obj
+
+        def __array_finalize__(self, obj):
+            self.tag = getattr(obj, "tag", None)
+
+        def __reduce__(self):
+            func, args, state = super().__reduce__()
+            return func, args, state + (self.__dict__,)
+
+        def __setstate__(self, state):
+            self.__dict__.update(state[-1])
+            super().__setstate__(state[:-1])
 
 
 def echo(*a, **k):

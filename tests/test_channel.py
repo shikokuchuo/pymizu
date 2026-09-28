@@ -262,6 +262,8 @@ def test_recv_interrupt():
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 
+from tests.helpers import CarryArray  # noqa: E402
+
 
 @pytest.mark.parametrize("dtype", ["float64", "int32", "complex128", "uint8"])
 def test_numpy_rawvec(echo, dtype):
@@ -299,6 +301,48 @@ def test_numpy_gate_fallbacks(echo):
     a = np.arange(5, dtype=np.int16).astype(">i2")
     assert echo.send(a) is True
     assert np.array_equal(echo.recv(timeout=5), a)
+
+
+def test_ndarray_subclasses_keep_pickle(echo):
+    # a strict ndarray subclass leaves the buffer branch for pickle: the
+    # raw tier would carry the base buffer only — a MaskedArray would lose
+    # its mask, a units-carrying subclass its attribute
+    m = np.ma.MaskedArray([1.0, 2.0, 3.0], mask=[True, False, False])
+    assert echo.send(m) is True
+    r = echo.recv(timeout=5)
+    assert isinstance(r, np.ma.MaskedArray)
+    assert list(r.mask) == [True, False, False]
+    assert list(r.data) == [1.0, 2.0, 3.0]
+
+    c = CarryArray([1.0, 2.0], tag="kept")
+    assert echo.send(c) is True
+    r = echo.recv(timeout=5)
+    assert type(r) is CarryArray
+    assert r.tag == "kept"
+    assert list(r) == [1.0, 2.0]
+
+
+def test_memmap_roundtrips_as_memmap(echo, tmp_path):
+    # its pickle yields a memmap (numpy embeds the data), so the subclass
+    # rejection costs it nothing against raw staging
+    a = np.memmap(tmp_path / "m.dat", dtype=np.float64, mode="w+", shape=4)
+    a[:] = [1.5, 2.5, 3.5, 4.5]
+    a.flush()
+    assert echo.send(a) is True
+    r = echo.recv(timeout=5)
+    assert isinstance(r, np.memmap)
+    assert list(r) == [1.5, 2.5, 3.5, 4.5]
+
+
+def test_exact_ndarray_stays_zero_copy(echo):
+    # the gate rejects subclasses only: an exact ndarray past the floor
+    # still arrives as a view over the shared pages
+    a = np.arange(100000, dtype=np.float64)
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    assert type(b) is np.ndarray
+    assert _exporter(b) is not None
+    assert np.array_equal(b, a)
 
 
 # -- zero-copy views (SHM_VEC) ----------------------------------------------

@@ -529,6 +529,16 @@ def test_numpy_result_region(pool):
     assert any(s["spills"] > 0 for s in d["submitters"])
 
 
+def test_masked_array_keeps_its_mask(pool):
+    # a strict ndarray subclass keeps the lossless pickle path: the raw
+    # tier would carry the base buffer only, dropping the mask
+    m = np.ma.MaskedArray([1.0, 2.0, 3.0], mask=[True, False, True])
+    r = pool.submit(identity, m).collect(timeout=15)
+    assert isinstance(r, np.ma.MaskedArray)
+    assert list(r.mask) == [True, False, True]
+    assert list(r.data) == [1.0, 2.0, 3.0]
+
+
 # -- zero-copy views (SHM_VEC) ----------------------------------------------
 
 np = pytest.importorskip("numpy", reason="numpy not installed")

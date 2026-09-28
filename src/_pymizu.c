@@ -310,6 +310,101 @@ int mizu_py_wire_type_of(const Py_buffer *v) {
   return wire_type_of(v);
 }
 
+/* The buffer gates' subclass rejection: an object whose type is a strict
+   subclass of a known base type keeps its pickle semantics — the raw tier
+   carries the base buffer only, so a MaskedArray would lose its mask, a
+   units-carrying subclass its units, a bytes subclass its type. The exact
+   base types (bytes, bytearray, memoryview, array.array, numpy.ndarray,
+   numpy's own scalar types), and any exporter subclassing none of them (a
+   pyarrow.Buffer), stay raw. numpy and array are looked up in sys.modules
+   through the module dict: neither can have produced an instance unless
+   already imported, and staging must not import numpy for non-numpy
+   users. The type objects are cached on first sight; the hot path pays
+   one pointer compare. */
+static PyTypeObject *mizu_array_type, *mizu_np_ndarray, *mizu_np_generic;
+static PyObject *mizu_np_scalars;   /* frozenset of numpy's own scalar types */
+static int mizu_buf_types_probed;
+
+/* One attribute fetch for the probe: NULL leaves the gate without the
+   type, never with a pending exception. */
+static PyTypeObject *buffer_type_attr(PyObject *mod, const char *name) {
+  PyObject *t = PyObject_GetAttrString(mod, name);
+  if (t != NULL && PyType_Check(t)) return (PyTypeObject *) t;
+  Py_XDECREF(t);
+  PyErr_Clear();
+  return NULL;
+}
+
+static void buffer_types_probe(void) {
+  if (mizu_buf_types_probed) return;
+  mizu_buf_types_probed = 1;
+  PyObject *mods = PyImport_GetModuleDict();
+  PyObject *ar = PyMapping_GetItemString(mods, "array");
+  if (ar == NULL) {
+    PyErr_Clear();
+  } else {
+    if (ar != Py_None)   /* sys.modules["array"] = None blocks imports */
+      mizu_array_type = buffer_type_attr(ar, "array");
+    Py_DECREF(ar);
+  }
+  PyObject *np = PyMapping_GetItemString(mods, "numpy");
+  if (np == NULL) {
+    PyErr_Clear();
+    return;
+  }
+  if (np != Py_None) {   /* sys.modules["numpy"] = None blocks imports */
+    mizu_np_ndarray = buffer_type_attr(np, "ndarray");
+    mizu_np_generic = buffer_type_attr(np, "generic");
+    if (mizu_np_generic != NULL) {
+      /* numpy's own scalar types: the np.generic subtypes in its
+         namespace (the abstract intermediates are harmless members —
+         never an object's type) */
+      PyObject *set = PyFrozenSet_New(NULL);
+      if (set != NULL) {
+        PyObject *d = PyModule_GetDict(np);   /* borrowed */
+        PyObject *k, *v;
+        Py_ssize_t pos = 0;
+        int rc = 0;
+        while (rc == 0 && PyDict_Next(d, &pos, &k, &v))
+          if (PyType_Check(v) &&
+              PyType_IsSubtype((PyTypeObject *) v, mizu_np_generic))
+            rc = PySet_Add(set, v);
+        if (rc != 0) Py_CLEAR(set);
+      }
+      if (set == NULL) PyErr_Clear();
+      mizu_np_scalars = set;
+    }
+  }
+  Py_DECREF(np);
+}
+
+static int buffer_subclass_reject(PyObject *obj) {
+  PyTypeObject *tp = Py_TYPE(obj);
+  buffer_types_probe();
+  if (tp == &PyBytes_Type || tp == &PyByteArray_Type ||
+      tp == &PyMemoryView_Type || tp == mizu_array_type ||
+      tp == mizu_np_ndarray)
+    return 0;
+  if (PyType_IsSubtype(tp, &PyBytes_Type) ||
+      PyType_IsSubtype(tp, &PyByteArray_Type) ||
+      PyType_IsSubtype(tp, &PyMemoryView_Type))
+    return 1;
+  if (mizu_array_type != NULL && PyType_IsSubtype(tp, mizu_array_type))
+    return 1;
+  if (mizu_np_ndarray != NULL && PyType_IsSubtype(tp, mizu_np_ndarray))
+    return 1;
+  if (mizu_np_generic != NULL && mizu_np_scalars != NULL &&
+      PyType_IsSubtype(tp, mizu_np_generic)) {
+    int known = PySet_Contains(mizu_np_scalars, (PyObject *) tp);
+    if (known < 0) {
+      PyErr_Clear();          /* unreachable: type objects hash */
+      return 0;
+    }
+    return !known;
+  }
+  return 0;
+}
+
 /* The raw-tier reserve is the core's (mizu_stage_raw): RAWVEC inline within
    the budget; past it the zero-copy SHM_VEC tier at max(inline budget,
    MIZU_ZC_FLOOR), with the copy tiers as the cheaper small end and the churn
@@ -1068,8 +1163,11 @@ static void frame_plan_clear(frame_plan *fp) {
 }
 
 /* Buffer leaf, size pass: the same gate as stage_raw (wire_type_of, the
-   zc floor, the churn snapshot). 0 ok, -1 reject. */
+   zc floor, the churn snapshot), and the same subclass rejection — a
+   MaskedArray argument keeps its mask on the plain-tuple pickle fallback.
+   0 ok, -1 reject. */
 static int frame_buf_size(PyObject *o, frame_plan *fp) {
+  if (buffer_subclass_reject(o)) return -1;
   Py_buffer v;
   if (PyObject_GetBuffer(o, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) {
     PyErr_Clear();
@@ -1346,7 +1444,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       return 0;
     }
   }
-  if (PyObject_CheckBuffer(obj)) {
+  if (PyObject_CheckBuffer(obj) && !buffer_subclass_reject(obj)) {
     Py_buffer v;
     /* not PyBUF_C_CONTIGUOUS (it implies WRITABLE): a read-only buffer —
        a zero-copy view echoing back — stages fine; contiguity is verified
