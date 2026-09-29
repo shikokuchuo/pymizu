@@ -9,9 +9,12 @@
     \  /  水   /
      \/_______/
 
-pymizu is the Python binding to [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
+pymizu makes communication between Python processes cheap enough to divide work at granularities usually reserved for threads.
 
-Parallel computation and data exchange between Python processes: channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
+Processes also isolate failures: a worker that crashes does not take the host down with it.
+
+Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
 
 A channel is a two-way message link between a Python process and a helper process that it spawns.
 A pool is a set of worker processes that divide submitted tasks among themselves.
@@ -19,10 +22,11 @@ In both, one process writes data and the other reads it in place — never copie
 
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
-The GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
-pymizu makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
+pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
+[mizu](https://github.com/shikokuchuo/mizu) binds the same core for R, so Python and R processes can share a channel.
 
 Pre-release.
+The API is not stable and may change at any time before a release.
 
 ## Channels
 
@@ -99,7 +103,7 @@ A map inside a task runs on the worker's own handle via `pymizu.current_pool()`,
 
 ## Benchmarks
 
-Headline numbers against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/mizu-stdlib-bench.py`):
+Communication overhead against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/mizu-stdlib-bench.py`):
 
 Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled payloads):
 
