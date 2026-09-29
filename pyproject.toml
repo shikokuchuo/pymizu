@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pymizu"
 version = "0.1.0.dev0"
-description = "Lock-free shared-memory channels and task pools"
+description = "Lock-free shared-memory parallelism for Python"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
