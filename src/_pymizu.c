@@ -50,6 +50,11 @@ static PyTypeObject MizuShmViewType;
 static PyTypeObject MizuShmOwnerType;
 static PyTypeObject MizuTaskFrameType;
 
+/* The REF stage for a received view re-sent whole (defined with the view
+   type below; stage_impl runs first in the file). */
+static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
+                     uint8_t *payload, uint32_t inline_max);
+
 static PyObject *numpy_module(void);
 
 // Module state -------------------------------------------------------------------
@@ -1452,13 +1457,20 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
       int rc = -1;
       if (v.strides == NULL) {
-        int type = wire_type_of(&v);
-        if (type != 0)
-          rc = stage_raw(&v, type, hdr, payload, inline_max, h);
-        else if (mizu_handle_kind(h) != MIZU_HTYPE_POOL)
-          /* the conversion pass is channel-scoped: pools are
-             Python-both-ends and keep the lossless pickle path */
-          rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);
+        /* a read-only buffer may be a received view echoing back: whole,
+           it crosses as its region name (REF, zero payload bytes);
+           writable buffers — every ordinary send — skip the .base walk */
+        if (v.readonly)
+          rc = stage_ref(obj, &v, hdr, payload, inline_max);
+        if (rc < 0) {
+          int type = wire_type_of(&v);
+          if (type != 0)
+            rc = stage_raw(&v, type, hdr, payload, inline_max, h);
+          else if (mizu_handle_kind(h) != MIZU_HTYPE_POOL)
+            /* the conversion pass is channel-scoped: pools are
+               Python-both-ends and keep the lossless pickle path */
+            rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);
+        }
       }
       PyBuffer_Release(&v);
       if (rc >= 0) return rc;
@@ -1716,7 +1728,11 @@ static int view_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
   view->format = (flags & PyBUF_FORMAT) ? (char *) view_format(v->type) : NULL;
   view->ndim = 1;
   view->shape = (flags & PyBUF_ND) ? v->shape : NULL;
-  view->strides = (flags & PyBUF_STRIDES) ? v->strides : NULL;
+  /* PyBUF_STRIDES contains the PyBUF_ND bit: an ND-only request (the
+     stage gate's) must get NULL strides, the protocol's C-contiguous
+     form, or the view fails the gate's strides == NULL contiguity check */
+  view->strides = ((flags & PyBUF_STRIDES) == PyBUF_STRIDES) ?
+    v->strides : NULL;
   view->suboffsets = NULL;
   view->internal = NULL;
   return 0;
@@ -1737,11 +1753,82 @@ static PyObject *view_refcount(PyObject *obj, void *Py_UNUSED(closure)) {
   return PyLong_FromUnsignedLong(mizu_zc_refcount(v->owner->shm));
 }
 
+static PyObject *view_flags(PyObject *obj, void *Py_UNUSED(closure)) {
+  MizuShmView *v = (MizuShmView *) obj;
+  if (v->owner == NULL) Py_RETURN_NONE;
+  return PyLong_FromUnsignedLong(mizu_zc_flags(v->owner->shm));
+}
+
 static PyGetSetDef view_getset[] = {
   {"refcount", view_refcount, NULL,
    "The region's cross-process view refcount (introspection).", NULL},
+  {"flags", view_flags, NULL,
+   "The region's zero-copy flags word (bit 0: REFHELD; introspection).",
+   NULL},
   {NULL}
 };
+
+// REF stage (a received view re-sent whole) ---------------------------------------
+
+/* The view behind a read-only buffer: the object itself when it is a
+   _ShmView (the numpy-less home), else the end of its .base chain —
+   np.frombuffer(view).base is the view, and a slice's base is its parent
+   array. Bounded hops; NULL with no exception set when the chain ends
+   anywhere else. Returns a new reference. */
+static MizuShmView *view_behind(PyObject *obj) {
+  PyObject *cur = Py_NewRef(obj);
+  for (int hop = 0; hop < 8; hop++) {
+    if (Py_TYPE(cur) == &MizuShmViewType) return (MizuShmView *) cur;
+    PyObject *base = PyObject_GetAttrString(cur, "base");
+    Py_DECREF(cur);
+    if (base == NULL) {
+      PyErr_Clear();
+      return NULL;
+    }
+    if (base == Py_None) {
+      Py_DECREF(base);
+      return NULL;
+    }
+    cur = base;
+  }
+  Py_DECREF(cur);
+  return NULL;
+}
+
+/* REF: a received view re-sent whole crosses as its region's name and zero
+   payload bytes — the mirror of mizu's mizu_zc_ref_stage. The buffer must
+   be the view's exact bytes (a slice, a reshape or a dtype reinterpretation
+   goes by value) at the view's wire type — an LGL view read as int32
+   included, so a logical relayed whole returns to R as a logical. Before
+   the name goes out the region is marked REFHELD: its holder set widens
+   beyond the direct peer, so the producer's death verdict must leak +
+   unlink rather than force-reclaim (mizu.h). Every consumer mapping has
+   page 0 read-write for the counted add, so the flag store goes through
+   the owner's mapping. There is no COW-materialized case to exclude (R's
+   data2 rule): a view refuses writable buffers, so its bytes are never
+   private. 0 staged, -1 not a whole view (the caller falls through). */
+static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
+                     uint8_t *payload, uint32_t inline_max) {
+  MizuShmView *view = view_behind(obj);
+  if (view == NULL) return -1;
+  int rc = -1;
+  mizu_shm *shm = view->owner != NULL ? view->owner->shm : NULL;
+  int type = wire_type_of(v);
+  if (shm != NULL && v->buf == (void *) view->data && v->len == view->len &&
+      (type == view->type ||
+       (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL)) &&
+      shm->name_len > 0 && (size_t) shm->name_len <= (size_t) inline_max) {
+    atomic_fetch_or_explicit(mizu_zc_flags_(mizu_shm_addr(shm)),
+                             MIZU_ZC_FLAG_REFHELD, memory_order_acq_rel);
+    hdr->kind = MIZU_KIND_REF;
+    hdr->len = (uint32_t) shm->name_len;
+    hdr->aux = 0;
+    memcpy(payload, shm->name, shm->name_len);
+    rc = 0;
+  }
+  Py_DECREF(view);
+  return rc;
+}
 
 // Arrow export (the view's __arrow_c_array__) ------------------------------------
 

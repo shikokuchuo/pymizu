@@ -42,6 +42,32 @@ def test_r_launcher_missing_rscript():
         pymizu.r_launcher(rscript="/nonexistent/Rscript")
 
 
+R_REF_RELAY = """
+x <- runif(2e5)
+mizu::mizu_send(ch, x)
+y <- mizu::mizu_recv(ch, timeout = 30)
+flags <- .Call(mizu:::mizu_zc_refcount, y)[[2L]]
+mizu::mizu_send(ch, c(
+  .Call(mizu:::mizu_zc_view_check, y),
+  flags %% 2L == 1L,
+  identical(y, x)
+))
+"""
+
+
+def test_r_peer_view_relayed_by_reference(r_mizu):
+    # R -> Python -> R: the return hop is a REF naming R's own region, so
+    # R gets a view of it (REFHELD) that is identical() to what it sent
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_REF_RELAY, launcher=r_mizu)
+    try:
+        v = ch.recv(30)
+        assert ch.send(v) is True
+        assert np.asarray(ch.recv(30)).tolist() == [1, 1, 1]
+    finally:
+        ch.close()
+
+
 def test_r_peer_echo_roundtrip(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)

@@ -524,14 +524,25 @@ def test_numpy_result_rawvec(pool):
 
 
 def test_numpy_result_region(pool):
-    # past the inline budget: a pool has no arena — the result rides a
+    # past the inline budget: a pool has no arena — a fresh result rides a
     # named region (RAWSPILL pool framing), never pickle
     a = np.arange(200000, dtype=np.float64)
-    b = pool.submit(identity, a).collect(timeout=15)
+    b = pool.submit(np.copy, a).collect(timeout=15)
     assert b.dtype == np.float64
     assert np.array_equal(b, a)
     d = pool.dump()
     assert any(s["spills"] > 0 for s in d["submitters"])
+
+
+def test_view_argument_returned_whole_is_a_ref(pool):
+    # a BUFREF argument arrives as a view; returned whole it publishes as
+    # REF — the region's name, no result region — after marking it REFHELD
+    a = np.arange(200000, dtype=np.float64)
+    b = pool.submit(identity, a).collect(timeout=15)
+    assert np.array_equal(b, a)
+    assert b.base.flags & 1
+    d = pool.dump()
+    assert all(s["spills"] == 0 for s in d["submitters"])
 
 
 def test_masked_array_keeps_its_mask(pool):

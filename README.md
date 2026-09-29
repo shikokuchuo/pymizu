@@ -202,7 +202,7 @@ NA semantics:
   numpy sends stay silent; an Arrow int32 send with a validity bitmap warns once — int64 sends are never scanned, so that collision stays silent too.
 - Python-side compute treats `NA_real_` as a NaN value; whether the exact payload survives arithmetic is platform-dependent — do not rely on it either way.
 
-Round trips are stable after the first hop, and a pure pass-through echo is bit-exact (an untouched received view re-stages as untouched bytes, so even the `NA_real_` payload survives a relay).
+Round trips are stable after the first hop, and a pure pass-through echo is bit-exact: an untouched received view re-stages by reference (its region name, no payload bytes), so even the `NA_real_` payload survives a relay. A slice or a dtype view of a received view re-stages by value.
 
 | Python sends | R sees | Back in Python | |
 |----|----|----|----|

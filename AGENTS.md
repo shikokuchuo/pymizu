@@ -85,7 +85,14 @@ tools/vendor-libmizu.sh` for a local checkout).
      into a spill region, `mizu_stage_retain_zc` storing the producer-loan
      refcount). The channel keeps the arena copy below `MIZU_ZC_FLOOR_RAW`
      and under churn; the pool frames RAWSPILL as a named region. A NULL
-     reservation falls through to pickle.
+     reservation falls through to pickle. Ahead of the reservation, a
+     read-only buffer is checked for a received view re-sent whole
+     (`stage_ref`: a `_ShmView`, or a numpy array whose `.base` chain
+     ends in one over the view's exact bytes at its wire type — an LGL
+     view read as int32 included): it crosses as REF (the region name,
+     zero payload bytes) after `MIZU_ZC_FLAG_REFHELD` is OR'd into the
+     region's flags word. A slice, reshape or dtype view goes by value;
+     writable buffers never pay the `.base` walk.
   3. Exact-type `str` within the inline budget -> STR1 (UTF-8 payload,
      `MIZU_CE_UTF8` aux; lone surrogates fall through).
   4. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
@@ -130,7 +137,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   the refcount in `tp_dealloc` (a fork guard skips a child's sub). It
   exports a read-only 1-D buffer, so the user object (a numpy array via
   `np.frombuffer`, or a memoryview) pins the mapping through the buffer
-  protocol. MIZS/MIZL layouts, REF paths into list trees, and R
+  protocol. `.refcount` / `.flags` read the region's zc words
+  (introspection; flags bit 0 is REFHELD). MIZS/MIZL layouts, REF paths into list trees, and R
   attributes (names/dim/class) are informative errors, never silent
   drops. A per-handle view cache (`MizuViewCache`, LRU,
   `MIZU_OPEN_CACHE_MAX` entries, hung off `binding.ctx`, mirrored on the

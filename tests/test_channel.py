@@ -396,6 +396,51 @@ def test_shm_vec_small_stays_copy(echo):
     assert _exporter(b) is None  # a plain copy
 
 
+REF_VARIANTS_PEER = """
+import numpy as np
+import pymizu
+while True:
+    x = ch.recv()
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
+        break
+    ch.send(x[1:])  # a slice: by value
+    ch.send(x.view(np.int32))  # a dtype view: by value
+    ch.send(x.base)  # the _ShmView itself: REF
+"""
+
+
+def test_view_echo_crosses_by_reference(echo):
+    # a received view sent on whole is a REF — the region's name, no
+    # payload bytes — and the peer marks the region REFHELD first
+    a = np.arange(100000, dtype=np.float64)
+    assert echo.send(a) is True
+    b = echo.recv(timeout=5)
+    exp = _exporter(b)
+    assert exp is not None
+    assert exp.flags & 1
+    assert np.array_equal(b, a)
+
+
+def test_view_slice_and_dtype_view_go_by_value():
+    ch = pymizu.Channel.create(REF_VARIANTS_PEER)
+    try:
+        a = np.arange(100000, dtype=np.float64)
+        assert ch.send(a) is True
+        sl = ch.recv(timeout=5)
+        dv = ch.recv(timeout=5)
+        whole = ch.recv(timeout=5)
+        assert np.array_equal(sl, a[1:])
+        assert np.array_equal(dv, a.view(np.int32))
+        assert np.array_equal(whole, a)
+        # the copies land in fresh regions of the peer's own; only the
+        # whole re-send names the sent region, now REFHELD
+        assert not (_exporter(sl).flags & 1)
+        assert not (_exporter(dv).flags & 1)
+        assert _exporter(whole).flags & 1
+    finally:
+        ch.close()
+
+
 # -- the consumer-side view cache -------------------------------------------
 
 

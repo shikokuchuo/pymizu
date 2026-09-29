@@ -24,6 +24,15 @@ Initial pre-release.
   results keep the lossless pickle path, because pools are Python at both
   ends. On a channel, a tuple or a list around an array keeps its exact
   pickle path.
+- A received zero-copy view sent on again, whole, crosses by reference:
+  the slot carries the region's name and no payload bytes (REF), and the
+  region is marked REFHELD first. An R → Python → R relay therefore moves
+  nothing on the return hop, and a logical relayed whole returns to R as a
+  logical. A slice, a reshape or a dtype view of a received view still
+  crosses by value. `_ShmView.flags` exposes the region's flags word. The
+  view's buffer export now answers an ND-only request with NULL strides
+  (the protocol's contiguous form), so a bare `_ShmView` takes the raw and
+  REF paths instead of the Arrow copy path.
 - Arrow interop: `channel.send()` accepts an Arrow array from any producer
   with `__arrow_c_array__` (pyarrow, polars, duckdb). Arrow nulls become R
   missing values. A received zero-copy view exports to an Arrow consumer
