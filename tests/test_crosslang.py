@@ -241,7 +241,15 @@ mizu::mizu_send(ch, "after")
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        assert ch.recv_batch(4, timeout=30) == ["a", [1.0, 2.0], "after"]
+        # recv_batch drains what has arrived; the peer's two statements
+        # need not land before the first drain, so accumulate
+        got = []
+        while len(got) < 3:
+            batch = ch.recv_batch(4, timeout=30)
+            if not isinstance(batch, list):
+                break
+            got.extend(batch)
+        assert got == ["a", [1.0, 2.0], "after"]
     finally:
         ch.close()
 
@@ -486,9 +494,9 @@ report_err <- function(x) {
   mizu::mizu_send(ch, e)
 }
 report_err(ordered(c("a", "b")))
-if (requireNamespace("tibble", quietly = TRUE)) {
-  report_err(tibble::tibble(x = 1:2))
-}
+df <- data.frame(x = 1:2)
+class(df) <- c("tbl_df", "tbl", "data.frame") # a tibble's shape, no package
+report_err(df)
 bs <- "héllo"
 Encoding(bs) <- "bytes"
 report_err(bs)
