@@ -274,3 +274,18 @@ the buffer branch. mizu-bench.py, this host: sequential rt 0.4 channel /
 template copy/view 692k/696k tasks/s, skew 7.0 ms wall, fan-out 275.4k,
 stage masked rows 121.6/110.4/146.4 us/send (their recorded spread).
 218 pass, ruff + pyrefly clean.
+
+## 2026-09-30: the interchange codec (1.2, before/after acceptance)
+
+The 'I' interchange codec landed (foreign-handle interop, DeclinedError,
+pymizu.Frame, the Arrow stream front-end); same-language staging is
+unchanged by construction (one peer-language branch at stage), with the
+conversion pass and Arrow front-ends moving to foreign handles only.
+mizu-bench.py, this host, before (5d7f001) -> after: sequential rt
+0.4/0.4 channel, 0.7/0.7 pool us; pipelined 3.78M -> 4.34M rt/s, pool
+2.24M -> 2.08M tasks/s (within the recorded jitter band); payloads
+2.6/62.1/113.3 -> 2.4/59.9/108.3 us; streaming 20.4M -> 20.5M msg/s; map
+rows flat; stage memcpy/identity/int64 112/114/108 -> 111/106/105 us;
+the widen/masked rows re-measured on a foreign pair (their new home):
+widen 251.5, masked 107.0/106.1, masked+scan 166.1 us/send. 254 pass,
+4 skip.
