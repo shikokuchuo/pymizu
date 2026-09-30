@@ -189,3 +189,30 @@ def test_tree_wrap_without_numpy(tmp_path):
             ch.close()
         """,
     )
+
+
+def test_mizl_frame_write_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pyarrow as pa
+
+        from tests.helpers import foreign_pair
+
+        # the MIZL writer is Arrow-fed throughout: a frame past the floor
+        # stages and reads back with no numpy in the process
+        h, p = foreign_pair(caps=7)
+        tbl = pa.table({
+            "i": pa.array([k if k % 10 else None for k in range(20000)],
+                          type=pa.int32()),
+            "s": pa.array([f"s{k % 100}" for k in range(20000)]),
+        })
+        h.send(tbl)
+        f = p.recv(10)
+        cols = f.to_dict()
+        assert memoryview(cols["i"])[:3].tolist() == [-2147483648, 1, 2]
+        assert cols["s"][:2] == ["s0", "s1"]
+        p.destroy()
+        h.destroy()
+        """,
+    )
