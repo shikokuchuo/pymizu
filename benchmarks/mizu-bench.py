@@ -566,15 +566,7 @@ try:
         cases = [
             ("stage memcpy", base.tobytes()),
             ("stage identity", base),
-            # int64 is a wire type now: the identity memcpy, not a widening
-            # conversion loop — uint64 keeps the widen row
             ("stage int64", base.astype(np.int64)),
-            ("stage widen", base.astype(np.uint64)),
-            ("stage masked", arrow_masked(base, pa.float64())),
-            ("stage masked int64",
-             arrow_masked(base.astype(np.int64), pa.int64())),
-            ("stage masked+scan",
-             arrow_masked(base.astype(np.int32), pa.int32())),
         ]
         for label, x in cases:
 
@@ -589,6 +581,48 @@ try:
     with_channel(SINK_PEER, convert_channel)
 except ImportError:
     print("  pyarrow not installed: skipped")
+
+# the conversion rows are foreign-only (same-language channels pickle):
+# an in-process foreign pair stands in for an R peer
+def convert_foreign():
+    from pymizu import _pymizu
+
+    size = 1000000
+    n = 30
+    h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
+    p.ready_set()
+    assert h.ready_wait(10)
+    try:
+        base = np.arange(size, dtype=np.float64)
+        cases = [
+            ("stage widen", base.astype(np.uint64)),
+            ("stage masked", arrow_masked(base, pa.float64())),
+            ("stage masked int64",
+             arrow_masked(base.astype(np.int64), pa.int64())),
+            ("stage masked+scan",
+             arrow_masked(base.astype(np.int32), pa.int32())),
+        ]
+        for label, x in cases:
+
+            def rep(x=x):
+                for _ in range(n):
+                    h.send(x)
+                    p.recv(timeout=30)
+
+            warmup(rep, n=3)
+            note_us(label, "pymizu channel (foreign)", n, rep, "us/send")
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+try:
+    import pyarrow as pa
+
+    convert_foreign()
+except ImportError:
+    pass
 
 # summary ---------------------------------------------------------------------
 
