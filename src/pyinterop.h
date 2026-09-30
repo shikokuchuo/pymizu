@@ -127,6 +127,17 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
    MemoryError). */
 PyObject *pymizu_ix_read(const uint8_t *src, size_t n);
 
+/* The err tag (0x11) framer: the three bare strings and the optional
+   element index, truncated at UTF-8 boundaries to fit inline_max by
+   construction (type past 128 bytes, message past half the budget, detail
+   past what remains) — the writer cannot fail. Returns the stream size.
+   Serves the peer shim's _send_error and Phase 4's ERR publish. */
+size_t pymizu_ix_write_err(uint8_t *dst, uint32_t inline_max,
+                           const char *type, size_t type_n,
+                           const char *msg, size_t msg_n,
+                           const char *detail, size_t detail_n,
+                           int has_index, uint64_t index);
+
 /* The _write_stream test hook: the writer, as bytes (DeclinedError for a
    value outside the portable subset). */
 PyObject *pymizu_ix_write_stream(PyObject *obj);
@@ -135,5 +146,14 @@ PyObject *pymizu_ix_write_stream(PyObject *obj);
    Frame to the module. */
 int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
                              PyObject *declined_error);
+
+// What interop.c calls in _pymizu.c -------------------------------------------
+
+/* The one TaskError builder: (type name, message, traceback, optional
+   element index) -> the exception object, text "type: message", the
+   fields as remote_type / remote_traceback / index. Borrowed references;
+   NULL with an exception set on allocation failure. */
+PyObject *mizu_py_task_error_build(PyObject *tn, PyObject *ms,
+                                   PyObject *tbs, PyObject *eidx);
 
 #endif

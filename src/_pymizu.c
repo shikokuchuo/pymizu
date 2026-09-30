@@ -1532,12 +1532,21 @@ typedef struct {
    identity word (the language registry byte and the capability mask,
    Phase 0's identity exchange). peer_lang 0 is "not yet read" and
    behaves as same-language; the host reads it when ready_wait returns,
-   the peer at attach. Pools are homogeneous: their word stays 0. */
+   the peer at attach. Pools are homogeneous: their word stays 0.
+   err_exc is the peer shim's err-send exception (_send_error); the stage
+   hook pointer-matches it and frames the err stream. NULL when idle; set
+   and cleared within the _send_error veneer, whose argument roots it. */
 typedef struct {
   MizuViewCache vc;
   uint32_t peer_lang;
   uint32_t peer_caps;
+  PyObject *err_exc;
 } MizuHandleCtx;
+
+/* Frame an exception as an 'I' err stream INLINE (defined with the other
+   task-error helpers below, ahead of publish_exc). */
+static int frame_err_exc(PyObject *exc, uint8_t *payload,
+                         uint32_t inline_max, mizu_slot_hdr *hdr);
 
 /* The binding's stage_fn, registered on every channel handle. The veneer
    released the GIL around the verb; reacquire. ctx (the view cache) is
@@ -1545,8 +1554,18 @@ typedef struct {
 static int py_stage(void *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                     uint32_t inline_max, mizu_handle *h, void *ctx) {
   PyGILState_STATE gil = PyGILState_Ensure();
-  uint32_t peer_lang = ctx != NULL ?
-    ((const MizuHandleCtx *) ctx)->peer_lang : 0;
+  MizuHandleCtx *hctx = (MizuHandleCtx *) ctx;
+  if (hctx != NULL && obj == hctx->err_exc) {
+    /* the peer shim's err send (_send_error): frame the exception as an
+       'I' err stream INLINE, whatever the peer's language — the pointer
+       match (one compare, cleared as it matches) bypasses the value
+       codec choice below. §4.1's spec submit reuses this pattern. */
+    hctx->err_exc = NULL;
+    int rc = frame_err_exc(obj, payload, inline_max, hdr);
+    PyGILState_Release(gil);
+    return rc;
+  }
+  uint32_t peer_lang = hctx != NULL ? hctx->peer_lang : 0;
   int rc = stage_impl((PyObject *) obj, hdr, payload, inline_max, h,
                       peer_lang);
   PyGILState_Release(gil);
@@ -2675,12 +2694,44 @@ static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
   return NULL;
 }
 
+/* Build a TaskError from the (type name, message, traceback) fields and
+   the optional element index: the exception's text is "type: message";
+   the fields ride as remote_type / remote_traceback / index. Borrowed
+   references throughout. Serves the ERR envelope (below), the err tag's
+   Python home (interop.c's reader, through mizu_py_task_error_build),
+   and Phase 4's dual-format publish. */
+static PyObject *task_error_build(PyObject *tn, PyObject *ms, PyObject *tbs,
+                                  PyObject *eidx) {
+  PyObject *exc = NULL;
+  PyObject *text = PyUnicode_FromFormat("%U: %U", tn, ms);
+  if (text != NULL)
+    exc = PyObject_CallFunction(MizuTaskError, "N", text);
+  if (exc != NULL &&
+      (PyObject_SetAttrString(exc, "remote_type", tn) < 0 ||
+       PyObject_SetAttrString(exc, "remote_traceback", tbs) < 0 ||
+       (eidx != NULL && PyObject_SetAttrString(exc, "index", eidx) < 0)))
+    Py_CLEAR(exc);
+  return exc;
+}
+
+/* interop.c's err-tag reader builds its home through the one builder. */
+PyObject *mizu_py_task_error_build(PyObject *tn, PyObject *ms,
+                                   PyObject *tbs, PyObject *eidx) {
+  return task_error_build(tn, ms, tbs, eidx);
+}
+
 /* The ERR outcome's payload is the worker's constructed envelope: a pickled
    (type name, message, traceback) tuple — never a pickled exception
    instance — plus, for a map runner's annotated error, a fourth element
    carrying the in-flight element index. Rebuild it as a TaskError carrying
-   the remote type name and traceback text (and `index` when present). */
+   the remote type name and traceback text (and `index` when present). An
+   'I' err stream has already been read to its TaskError home (the channel
+   value discipline), so it passes through. */
 static PyObject *task_error_of(PyObject *env) {
+  if (PyObject_TypeCheck(env, (PyTypeObject *) MizuError)) {
+    Py_INCREF(env);
+    return env;
+  }
   PyObject *tn = NULL, *ms = NULL, *tbs = NULL, *eidx = NULL;
   Py_ssize_t arity = PyTuple_Check(env) ? PyTuple_GET_SIZE(env) : 0;
   if ((arity == 3 || arity == 4) &&
@@ -2690,36 +2741,27 @@ static PyObject *task_error_of(PyObject *env) {
     tn = PyTuple_GET_ITEM(env, 0);
     ms = PyTuple_GET_ITEM(env, 1);
     tbs = PyTuple_GET_ITEM(env, 2);
-    Py_INCREF(tn);
-    Py_INCREF(ms);
-    Py_INCREF(tbs);
     if (arity == 4) {
       PyObject *i = PyTuple_GET_ITEM(env, 3);
-      if (PyLong_Check(i)) {
-        eidx = i;
-        Py_INCREF(eidx);
-      }
+      if (PyLong_Check(i)) eidx = i;
     }
   } else {
     tn = PyUnicode_FromString("Exception");
     ms = PyUnicode_FromString("pymizu: task failed (unreadable error envelope)");
     tbs = PyUnicode_FromString("");
+    if (tn == NULL || ms == NULL || tbs == NULL) {
+      Py_XDECREF(tn);
+      Py_XDECREF(ms);
+      Py_XDECREF(tbs);
+      return NULL;
+    }
+    PyObject *exc = task_error_build(tn, ms, tbs, NULL);
+    Py_DECREF(tn);
+    Py_DECREF(ms);
+    Py_DECREF(tbs);
+    return exc;
   }
-  PyObject *exc = NULL;
-  PyObject *text = (tn != NULL && ms != NULL) ?
-    PyUnicode_FromFormat("%U: %U", tn, ms) : NULL;
-  if (text != NULL)
-    exc = PyObject_CallFunction(MizuTaskError, "N", text);
-  if (exc != NULL && tn != NULL && tbs != NULL &&
-      (PyObject_SetAttrString(exc, "remote_type", tn) < 0 ||
-       PyObject_SetAttrString(exc, "remote_traceback", tbs) < 0 ||
-       (eidx != NULL && PyObject_SetAttrString(exc, "index", eidx) < 0)))
-    Py_CLEAR(exc);
-  Py_XDECREF(tn);
-  Py_XDECREF(ms);
-  Py_XDECREF(tbs);
-  Py_XDECREF(eidx);
-  return exc;
+  return task_error_build(tn, ms, tbs, eidx);
 }
 
 /* The DIED outcome carries no payload (a reap cannot write payload bytes
@@ -2905,6 +2947,50 @@ static PyObject *traceback_text(PyObject *type, PyObject *value,
     text = PyUnicode_FromString("");
   }
   return text;
+}
+
+/* Frame an exception as an 'I' err stream INLINE (the _send_error shim
+   path): type name, str(), traceback text — pymizu_ix_write_err truncates
+   to the slot by construction, so the publish cannot fail. */
+static int frame_err_exc(PyObject *exc, uint8_t *payload,
+                         uint32_t inline_max, mizu_slot_hdr *hdr) {
+  const char *tn = PyExceptionClass_Name(Py_TYPE(exc));
+  PyObject *tname = PyUnicode_FromString(tn != NULL ? tn : "Exception");
+  PyObject *msg = PyObject_Str(exc);
+  if (msg == NULL) {
+    PyErr_Clear();
+    msg = PyUnicode_FromString("<unprintable exception>");
+  }
+  PyObject *tb = PyException_GetTraceback(exc);   /* new ref or NULL */
+  PyObject *tbs = traceback_text(Py_TYPE(exc), exc, tb);
+  Py_XDECREF(tb);
+  if (tname == NULL || msg == NULL || tbs == NULL) {
+    Py_XDECREF(tname);
+    Py_XDECREF(msg);
+    Py_XDECREF(tbs);
+    return 1;
+  }
+  Py_ssize_t tn_n = 0, ms_n = 0, tb_n = 0;
+  const char *tn_s = PyUnicode_AsUTF8AndSize(tname, &tn_n);
+  const char *ms_s = PyUnicode_AsUTF8AndSize(msg, &ms_n);
+  const char *tb_s = PyUnicode_AsUTF8AndSize(tbs, &tb_n);
+  if (tn_s == NULL || ms_s == NULL || tb_s == NULL) {
+    PyErr_Clear();                 /* a lone surrogate is no detail */
+    static const char empty[] = "";
+    if (tn_s == NULL) { tn_s = empty; tn_n = 0; }
+    if (ms_s == NULL) { ms_s = empty; ms_n = 0; }
+    if (tb_s == NULL) { tb_s = empty; tb_n = 0; }
+  }
+  size_t n = pymizu_ix_write_err(payload, inline_max,
+                                 tn_s, (size_t) tn_n, ms_s, (size_t) ms_n,
+                                 tb_s, (size_t) tb_n, 0, 0);
+  hdr->kind = MIZU_KIND_INLINE;
+  hdr->len = (uint32_t) n;
+  hdr->aux = MIZU_AUX_F_KEEPERLESS;
+  Py_DECREF(tname);
+  Py_DECREF(msg);
+  Py_DECREF(tbs);
+  return 0;
 }
 
 /* Publish the currently-held exception as the task's ERR result: the
@@ -3186,6 +3272,34 @@ static PyObject *Channel_send(MizuChannel *self, PyObject *arg) {
   st = mizu_channel_send(c, (void *) arg);
   Py_END_ALLOW_THREADS
   return status_or_raise(self, st, Py_True);
+}
+
+PyDoc_STRVAR(send_error_doc,
+"_send_error(exc) -> bool\n\n\
+The peer shim's uncaught-error send: point the handle's err field at the\n\
+exception and send it — the stage hook pointer-matches and frames the 'I'\n\
+err stream INLINE in place of a value, whatever the peer's language.\n\
+Bounded: the ordinary send never blocks for ring space, so a full ring\n\
+drops the stream (the stderr traceback stands either way). True on\n\
+publish, False on a full ring or an already-closed channel.");
+
+static PyObject *Channel_send_error(MizuChannel *self, PyObject *arg) {
+  if (!PyExceptionInstance_Check(arg)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: expected an exception instance");
+    return NULL;
+  }
+  mizu_channel *c = chan_get(self);
+  if (c == NULL) return NULL;
+  MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
+  hctx->err_exc = arg;
+  mizu_status st;
+  Py_BEGIN_ALLOW_THREADS
+  st = mizu_channel_send(c, (void *) arg);
+  Py_END_ALLOW_THREADS
+  hctx->err_exc = NULL;
+  if (st == MIZU_ERR) return raise_handle(self);
+  return PyBool_FromLong(st == MIZU_OK);
 }
 
 PyDoc_STRVAR(send_batch_doc,
@@ -3514,6 +3628,7 @@ static void Channel_dealloc(MizuChannel *self) {
 
 static PyMethodDef Channel_methods[] = {
   {"send", (PyCFunction) Channel_send, METH_O, send_doc},
+  {"_send_error", (PyCFunction) Channel_send_error, METH_O, send_error_doc},
   {"send_batch", (PyCFunction) Channel_send_batch, METH_O, send_batch_doc},
   {"recv", (PyCFunction)(void (*)(void)) Channel_recv,
    METH_VARARGS | METH_KEYWORDS, recv_doc},
@@ -5220,6 +5335,45 @@ static PyObject *pymizu_write_stream(PyObject *Py_UNUSED(module),
   return pymizu_ix_write_stream(arg);
 }
 
+PyDoc_STRVAR(write_err_doc,
+"_write_err(type, message, detail, index=None, budget=240) -> bytes\n\n\
+Frame an err stream (tag 0x11) from its fields, truncated to the inline\n\
+budget (240 is the default slot's) so it fits by construction. Exposed\n\
+for the test suite: the golden corpus drives it.");
+
+static PyObject *pymizu_write_err(PyObject *Py_UNUSED(module),
+                                  PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"type", "message", "detail", "index", "budget",
+                           NULL};
+  const char *type, *message, *detail;
+  Py_ssize_t tn, mn, dn;
+  PyObject *index = Py_None;
+  unsigned int budget = 240;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "s#s#s#|OI:_write_err", kwlist,
+                                   &type, &tn, &message, &mn, &detail, &dn,
+                                   &index, &budget))
+    return NULL;
+  int has_index = index != Py_None;
+  unsigned long long idx = 0;
+  if (has_index) {
+    idx = PyLong_AsUnsignedLongLong(index);
+    if (idx == (unsigned long long) -1 && PyErr_Occurred()) return NULL;
+  }
+  uint8_t stackbuf[512];
+  uint8_t *dst = stackbuf;
+  if (budget > sizeof stackbuf) {
+    dst = PyMem_Malloc(budget);
+    if (dst == NULL) return PyErr_NoMemory();
+  }
+  size_t n = pymizu_ix_write_err(dst, (uint32_t) budget,
+                                 type, (size_t) tn, message, (size_t) mn,
+                                 detail, (size_t) dn, has_index, idx);
+  PyObject *out = PyBytes_FromStringAndSize((const char *) dst,
+                                            (Py_ssize_t) n);
+  if (dst != stackbuf) PyMem_Free(dst);
+  return out;
+}
+
 PyDoc_STRVAR(is_sentinel_doc,
 "is_sentinel(x) -> bool\n\n\
 Provenance, not shape: True only for the exact sentinel singletons this\n\
@@ -5298,6 +5452,8 @@ static PyMethodDef pymizu_methods[] = {
    METH_FASTCALL, task_frame_doc},
   {"_read_stream", pymizu_read_stream, METH_O, read_stream_doc},
   {"_write_stream", pymizu_write_stream, METH_O, write_stream_doc},
+  {"_write_err", (PyCFunction)(void (*)(void)) pymizu_write_err,
+   METH_VARARGS | METH_KEYWORDS, write_err_doc},
   {"is_sentinel", pymizu_is_sentinel, METH_O, is_sentinel_doc},
   {"abi_version", (PyCFunction) pymizu_abi_version, METH_NOARGS, abi_version_doc},
   {"prune", (PyCFunction) pymizu_prune, METH_NOARGS, prune_doc},

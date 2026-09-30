@@ -26,6 +26,15 @@ class ExpectedFrame:
     row_names: object = None  # None | list[str] | int32 array
 
 
+@dataclass
+class ExpectedError:
+    """An err home: a TaskError's remote_type, message, detail, index."""
+    remote_type: str
+    message: str
+    detail: str
+    index: object = None  # int when the flags carry one (0-based)
+
+
 def load_cases(path):
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -222,6 +231,24 @@ class _Parser:
         keys, values = self.pairs()
         return attr_home(x, dict(zip(keys, values, strict=True)))
 
+    def v_err(self):
+        self.expect("(")
+        t = self.string()
+        self.expect(",")
+        m = self.string()
+        self.expect(",")
+        d = self.string()
+        index = None
+        self.ws()
+        if self.peek() == ",":
+            self.i += 1
+            if self.token("=") != "index":
+                raise ValueError("bad err field")
+            self.expect("=")
+            index = int(self.token(")"))
+        self.expect(")")
+        return ExpectedError(t, m, d, index)
+
     def v_strv(self):
         self.expect("[")
         elts = []
@@ -405,6 +432,8 @@ def ix_same(a, b):
     """The corpus comparison: exact, NaN-payload-bitwise."""
     if isinstance(b, ExpectedFrame):
         return frame_same(a, b)
+    if isinstance(b, ExpectedError):
+        return err_same(a, b)
     if isinstance(b, np.ndarray):
         return _array_same(a, b)
     if isinstance(b, float):
@@ -445,6 +474,18 @@ def frame_same(f, exp):
     if isinstance(en, np.ndarray):
         return isinstance(rn, np.ndarray) and _array_same(rn, en)
     return list(rn) == list(en) if isinstance(rn, list) else False
+
+
+def err_same(a, exp):
+    """A TaskError against its spec-authored fields."""
+    import pymizu
+    return (
+        isinstance(a, pymizu.TaskError)
+        and a.remote_type == exp.remote_type
+        and str(a) == f"{exp.remote_type}: {exp.message}"
+        and a.remote_traceback == exp.detail
+        and getattr(a, "index", None) == exp.index
+    )
 
 
 def _pymizu_frame():

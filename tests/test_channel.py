@@ -734,3 +734,30 @@ def test_r_interop_string_vector_crosses():
         assert ch.recv(timeout=10) == ["x"] * 100000
     finally:
         ch.close()
+
+
+def test_peer_error_sends_an_err_stream_before_exit():
+    ch = pymizu.Channel.create("ch.send(1.5)\nraise ValueError('boom')\n")
+    try:
+        assert ch.recv(timeout=10) == 1.5
+        v = ch.recv(timeout=10)
+        assert pymizu.is_remote_error(v)
+        assert v.remote_type == "ValueError"
+        assert str(v) == "ValueError: boom"
+        # the traceback truncates to its share of the inline budget
+        assert v.remote_traceback.startswith(
+            "Traceback (most recent call last):"
+        )
+        assert len(v.remote_traceback.encode()) <= 201
+        assert ch.recv(timeout=10) is pymizu.CLOSED
+    finally:
+        ch.close()
+
+
+def test_peer_system_exit_sends_no_error_value():
+    ch = pymizu.Channel.create("import sys\nch.send(1.5)\nsys.exit(3)\n")
+    try:
+        assert ch.recv(timeout=10) == 1.5
+        assert ch.recv(timeout=10) is pymizu.CLOSED
+    finally:
+        ch.close()

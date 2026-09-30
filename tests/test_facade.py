@@ -180,6 +180,10 @@ def test_child_entry_compile_error():
 def test_child_entry_peer_exception():
     ch = pymizu.Channel.create("raise RuntimeError('boom')")
     try:
+        # the err stream crosses ahead of the close signal
+        v = ch.recv(timeout=5)
+        assert isinstance(v, pymizu.TaskError)
+        assert v.remote_type == "RuntimeError"
         assert ch.recv(timeout=5) in (pymizu.CLOSED, pymizu.PEER_GONE)
     finally:
         ch.destroy()

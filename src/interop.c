@@ -930,6 +930,38 @@ static PyObject *factor_to_list(const int32_t *codes, uint64_t n,
 
 static PyObject *ixr_attr(mizu_ix *cur);
 
+/* The err tag's Python home: a TaskError *value* (remote_type,
+   remote_traceback, index when the flags carry one) — a received error is
+   data until user code decides to raise (pymizu.is_remote_error). The
+   cursor has validated the three bare strings as UTF-8; never NA. */
+static PyObject *ixr_err(const mizu_ix_item *it) {
+  PyObject *tn = PyUnicode_FromStringAndSize(
+    (const char *) it->err_str[0].ptr, (Py_ssize_t) it->err_str[0].len);
+  PyObject *ms = PyUnicode_FromStringAndSize(
+    (const char *) it->err_str[1].ptr, (Py_ssize_t) it->err_str[1].len);
+  PyObject *tbs = PyUnicode_FromStringAndSize(
+    (const char *) it->err_str[2].ptr, (Py_ssize_t) it->err_str[2].len);
+  PyObject *eidx = NULL;
+  if (tn == NULL || ms == NULL || tbs == NULL) goto fail;
+  if ((it->err_flags & 1u) != 0) {
+    eidx = PyLong_FromUnsignedLongLong(it->err_index);
+    if (eidx == NULL) goto fail;
+  }
+  {
+    PyObject *exc = mizu_py_task_error_build(tn, ms, tbs, eidx);
+    Py_DECREF(tn);
+    Py_DECREF(ms);
+    Py_DECREF(tbs);
+    Py_XDECREF(eidx);
+    return exc;
+  }
+fail:
+  Py_XDECREF(tn);
+  Py_XDECREF(ms);
+  Py_XDECREF(tbs);
+  return NULL;
+}
+
 static PyObject *ixr_value(mizu_ix *cur) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) {
@@ -974,8 +1006,7 @@ static PyObject *ixr_value(mizu_ix *cur) {
   case MIZU_IX_ATTR:
     return ixr_attr(cur);
   case MIZU_IX_ERR:
-    PyErr_SetString(MizuError, "pymizu: an interop err is not a value");
-    return NULL;
+    return ixr_err(&it);
   case MIZU_IX_TASK:
     PyErr_SetString(MizuError, "pymizu: an interop task is not a value");
     return NULL;
@@ -4448,6 +4479,47 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
 }
 
 // Entry points ---------------------------------------------------------------------
+
+/* The err tag (0x11) framer: bounded by truncation — type past 128 bytes,
+   message past half the inline budget (the task flatten's share), detail
+   past what remains, each cut at a UTF-8 boundary — so the frame fits the
+   slot by construction and the caller stamps INLINE with the keeperless
+   claim: the writer cannot fail. Serves the peer shim's _send_error and
+   Phase 4's ERR publish. */
+
+/* magic + version + tag + flags + index + three counted lengths. */
+#define IX_ERR_OVERHEAD 25
+#define IX_ERR_TYPE_SHARE 128
+
+/* The UTF-8-boundary floor of n bytes within share (s is valid UTF-8 — it
+   came from PyUnicode_AsUTF8AndSize). */
+static size_t ix_err_floor(const uint8_t *s, size_t n, size_t share) {
+  if (n <= share) return n;
+  size_t len = share;
+  while (len > 0 && (s[len] & 0xC0) == 0x80) len--;
+  return len;
+}
+
+size_t pymizu_ix_write_err(uint8_t *dst, uint32_t inline_max,
+                           const char *type, size_t type_n,
+                           const char *msg, size_t msg_n,
+                           const char *detail, size_t detail_n,
+                           int has_index, uint64_t index) {
+  const size_t budget = inline_max;
+  size_t avail = budget > IX_ERR_OVERHEAD ? budget - IX_ERR_OVERHEAD : 0;
+  size_t cap = avail < IX_ERR_TYPE_SHARE ? avail : IX_ERR_TYPE_SHARE;
+  const size_t tn = ix_err_floor((const uint8_t *) type, type_n, cap);
+  cap = budget / 2;
+  if (cap > avail - tn) cap = avail - tn;
+  const size_t mn = ix_err_floor((const uint8_t *) msg, msg_n, cap);
+  const size_t dn = ix_err_floor((const uint8_t *) detail, detail_n,
+                                 avail - tn - mn);
+  size_t n = mizu_ix_put_header(dst);
+  n += mizu_ix_put_err(dst != NULL ? dst + n : NULL, has_index, index,
+                       type, (uint32_t) tn, msg, (uint32_t) mn,
+                       detail, (uint32_t) dn);
+  return n;
+}
 
 /* Run the two-pass walk over obj: header + one value. */
 static void ixw_stream(ixw *w, PyObject *obj) {

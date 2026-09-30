@@ -68,7 +68,13 @@ def test_golden_corpus():
         elif kind == "rt":
             home = ixn.parse(value)
             assert ixn.ix_same(got, home), cid
-            assert _write(got) == CORPUS[cid], cid
+            if isinstance(home, ixn.ExpectedError):
+                assert _pymizu._write_err(
+                    home.remote_type, home.message, home.detail,
+                    index=home.index,
+                ).hex() == CORPUS[cid], cid
+            else:
+                assert _write(got) == CORPUS[cid], cid
         elif kind == "enc":
             home = ixn.parse(value)
             assert _write(home) == CORPUS[cid], cid
@@ -463,3 +469,76 @@ def test_pandas_without_pyarrow_declines():
             sys.modules["pyarrow"] = saved
         p.destroy()
         h.destroy()
+
+
+def test_err_stream_reads_as_a_task_error_value():
+    data = bytes.fromhex(
+        "49011100000a00000056616c75654572726f7204000000626f6f6d00000000"
+    )
+    v = _read(data)
+    assert isinstance(v, pymizu.TaskError)
+    assert isinstance(v, pymizu.MizuError)
+    assert pymizu.is_remote_error(v)
+    assert not pymizu.is_remote_error(ValueError("boom"))
+    assert v.remote_type == "ValueError"
+    assert str(v) == "ValueError: boom"
+    assert v.remote_traceback == ""
+    assert not hasattr(v, "index")
+    data_idx = bytes.fromhex(
+        "490111010029000000000000000b000000576f726b65724572726f72"
+        "0e000000656c656d656e74206661696c656400000000"
+    )
+    vi = _read(data_idx)
+    assert vi.remote_type == "WorkerError"
+    assert vi.index == 41  # the wire index, 0-based
+
+
+def test_write_err_frames_bounded():
+    assert _pymizu._write_err("ValueError", "boom", "").hex() == (
+        "49011100000a00000056616c75654572726f7204000000626f6f6d00000000"
+    )
+    # the frame fits the slot by construction: strings truncate at shares
+    b = _pymizu._write_err("custom_error", "m" * 500, "d" * 500, budget=48)
+    assert len(b) <= 48
+    v = _read(bytes(b))
+    assert v.remote_type == "custom_error"
+    assert str(v) == "custom_error: " + "m" * 11
+    assert v.remote_traceback == ""
+    # a multibyte string cuts at a character boundary
+    b2 = _pymizu._write_err("custom_error", "é" * 100, "", budget=60)
+    assert len(b2) <= 60
+    assert str(_read(bytes(b2))) == "custom_error: " + "é" * 11
+
+
+def test_err_send_crosses_foreign_and_same_language_channels():
+    h, p = foreign_pair()
+    try:
+        raise ValueError("boom")
+    except ValueError as e:
+        assert p._send_error(e) is True
+    v = h.recv(5)
+    assert isinstance(v, pymizu.TaskError)
+    assert v.remote_type == "ValueError"
+    assert str(v) == "ValueError: boom"
+    assert "ValueError: boom" in v.remote_traceback
+    p.destroy()
+    h.destroy()
+    # same-language: the pointer match bypasses pickle, the same value
+    hh = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    pp, _ = _pymizu._channel_attach(hh.token)
+    pp.ready_set()
+    assert hh.ready_wait(10)
+    try:
+        raise RuntimeError("same-lang")
+    except RuntimeError as e:
+        assert pp._send_error(e) is True
+        # a second send of the same exception pickles as an ordinary value
+        assert pp.send(e) is True
+    v2 = hh.recv(5)
+    assert isinstance(v2, pymizu.TaskError)
+    assert str(v2) == "RuntimeError: same-lang"
+    v3 = hh.recv(5)
+    assert type(v3) is RuntimeError
+    assert not pymizu.is_remote_error(v3)
+    pp.destroy()
+    hh.destroy()

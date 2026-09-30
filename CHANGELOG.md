@@ -10,6 +10,17 @@ Initial pre-release.
 
 ### Added
 
+- The err stream (the `'I'` err tag, 0x11): an uncaught exception in a
+  channel peer now crosses to the host as a value before the close
+  signal, on every channel — same-language included. `python -m
+  pymizu.child` frames the exception (`SystemExit` excepted — an orderly
+  exit) with the bounded writer: type name, message and traceback text,
+  each truncated at a UTF-8 boundary to fit the slot by construction.
+  The host receives a `pymizu.TaskError` carrying `remote_type` and
+  `remote_traceback` (and `index` when the remote error carries one);
+  `pymizu.is_remote_error()` tests a received value, and the exception
+  raises naturally. The pool's ERR envelope reader accepts the err
+  stream alongside the pickled frames (the Phase 4 dual format).
 - The `'I'` interchange stream on foreign-language channels: every handle
   reads its peer's language and capability mask off the region at
   handshake (the libmizu identity exchange), and a foreign peer gets the

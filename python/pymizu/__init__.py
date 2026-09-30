@@ -150,6 +150,14 @@ class Channel:
         else rides pickle protocol 4."""
         return self._h.send(x)
 
+    def _send_error(self, exc: BaseException) -> bool:
+        """The peer shim's uncaught-error send: frame the exception as an
+        'I' err stream and publish it, whatever the peer's language.
+        Bounded (never blocks for ring space); False when the ring was
+        full or the channel already closed. ``python -m pymizu.child``
+        runs this before exit; user code should not need to."""
+        return self._h._send_error(exc)
+
     def send_batch(self, xs: _Iterable[_Any]) -> int:
         """Send several payloads in one crossing; return the number
         accepted (short on ring-full or a terminal state)."""
@@ -608,6 +616,20 @@ def prune() -> list[str]:
     return _prune()
 
 
+def is_remote_error(x: _Any) -> bool:
+    """Test whether a received channel value is a remote error.
+
+    An uncaught error in a channel peer crosses as a value, not a raised
+    exception (transport states are values, payloads are values — user
+    code decides to raise). The value is a :class:`TaskError` carrying
+    the original exception's class name as ``remote_type`` and its
+    traceback text as ``remote_traceback``; raise it to propagate.
+
+    Returns True for a received remote error, False otherwise.
+    """
+    return isinstance(x, TaskError)
+
+
 def current_pool() -> Pool | None:
     """The evaluating worker's own pool handle, inside a task.
 
@@ -643,6 +665,7 @@ __all__ = [
     "__version__",
     "abi_version",
     "current_pool",
+    "is_remote_error",
     "is_sentinel",
     "prune",
     "r_launcher",
