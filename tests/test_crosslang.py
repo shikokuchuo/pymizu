@@ -3,6 +3,7 @@ directions, with real user programs crossing as MIZU_DROP_SOURCE drops.
 Skipped unless Rscript and the installed mizu package (with the source-drop
 path) are present — the skip_if_no_child_mizu() mirror."""
 
+import gc
 import os
 import pathlib
 import shutil
@@ -582,7 +583,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 5)  # MIZU_LANG_R, MIZS | MIZL
+        assert ch._h._peer_ident() == (2, 7)  # MIZU_LANG_R, MIZS|ATTRS|MIZL
     finally:
         ch.close()
 
@@ -1043,3 +1044,511 @@ mizu::mizu_send(ch, identical(y, im))
         assert got["count"] == 3 and got["label"] == "exp"
     finally:
         ch.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5: attributed layouts R -> Python — the region-backed homes (the
+# MIZL tree wrap, the region-backed Frame, MIZH attr roots) and the validity
+# sections on foreign sends.
+
+
+R_REGION_FRAME = r"""
+df <- data.frame(x = 1:300000, y = runif(300000),
+                 s = rep(c("a", "b", NA), 100000),
+                 stringsAsFactors = FALSE)
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_r_peer_frame_region_backed(r_mizu):
+    # an R data.frame past the zc floor crosses as one MIZL region: the
+    # numeric columns are views over the shared pages, the string column
+    # reads off its MIZS block; row.names automatic -> None
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_REGION_FRAME, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        assert type(f).__name__ == "Frame"
+        assert len(f) == 300000 and f.names == ("x", "y", "s")
+        assert f.row_names is None
+        d = f.to_dict()
+        assert d["x"].dtype == np.int32 and not d["x"].flags.writeable
+        assert type(d["x"].base).__name__ == "_ShmView"
+        assert d["x"][:5].tolist() == [1, 2, 3, 4, 5]
+        assert d["y"].dtype == np.float64 and not d["y"].flags.writeable
+        assert d["s"][:5] == ["a", "b", None, "a", "b"]
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_factor_and_int64_columns(r_mizu):
+    # a factor leaf is a dictionary column (the region's 1-based codes, the
+    # blob's levels); an integer64 leaf rides directory tag 32 to int64
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+df <- data.frame(f = factor(rep(c("aa", "bb", NA), 100000)),
+                 i = bit64::as.integer64(1:300000))
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        d = f.to_dict()
+        assert d["f"][:5] == ["aa", "bb", None, "aa", "bb"]
+        assert d["i"].dtype == np.int64 and d["i"][:3].tolist() == [1, 2, 3]
+        t = pa.table(f)
+        assert t.schema.field("f").type == pa.dictionary(
+            pa.int32(), pa.string())
+        assert t.column("f").null_count == 100000
+        assert t.column("f").slice(0, 3).to_pylist() == ["aa", "bb", None]
+        assert t.schema.field("i").type == pa.int64()
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_date_posixct_columns(r_mizu):
+    # Date / POSIXct columns convert (owned): date32 and timestamp[us],
+    # the POSIXct tzone kept as export metadata
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+df <- data.frame(d = as.Date("2024-01-01") + 0:299999,
+                 p = as.POSIXct("2024-01-01 00:00:00", tz = "UTC") +
+                   0:299999)
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        d = f.to_dict()
+        assert d["d"].dtype == np.dtype("datetime64[D]")
+        assert str(d["d"][1]) == "2024-01-02"
+        assert d["p"].dtype == np.dtype("datetime64[us]")
+        t = pa.table(f)
+        assert t.schema.field("d").type == pa.date32()
+        assert t.schema.field("p").type == pa.timestamp("us", tz="UTC")
+        assert t.column("p").null_count == 0
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_row_names(r_mizu):
+    # non-automatic row.names ride the root blob: character as a list,
+    # integer as an int32 array
+    np = pytest.importorskip("numpy")
+    src = r"""
+df <- data.frame(x = 1:300000, y = runif(300000))
+row.names(df) <- paste0("r", 1:300000)
+mizu::mizu_send(ch, df)
+df2 <- data.frame(x = 1:300000)
+row.names(df2) <- as.integer(seq(2, 600000, by = 2))
+mizu::mizu_send(ch, df2)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        assert f.row_names[:3] == ["r1", "r2", "r3"]
+        f2 = ch.recv(60)
+        assert f2.row_names.dtype == np.int32
+        assert f2.row_names[:3].tolist() == [2, 4, 6]
+    finally:
+        ch.close()
+
+
+def test_r_peer_factor_standalone_region(r_mizu):
+    # a standalone factor past the floor: an MIZH INT root with the factor
+    # blob — the same list[str | None] home as the copy tier
+    src = r"""
+f <- factor(rep(c("x", "y", NA), 100000))
+mizu::mizu_send(ch, f)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        assert type(f) is list and len(f) == 300000
+        assert f[:5] == ["x", "y", None, "x", "y"]
+    finally:
+        ch.close()
+
+
+def test_r_peer_matrix_region_f_order(r_mizu):
+    # a matrix past the floor arrives as an F-order view over the region
+    # (the {dim} blob on an MIZH root); a re-send crosses by value with
+    # its shape — REF stays a 1-D rule — value-exact both ways
+    np = pytest.importorskip("numpy")
+    src = r"""
+m <- matrix(runif(200000), nrow = 400)
+mizu::mizu_send(ch, m)
+y <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, identical(y, m))
+im <- bit64::as.integer64(1:200000)
+dim(im) <- c(400L, 500L)
+mizu::mizu_send(ch, im)
+z <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, identical(z, im))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        m = ch.recv(60)
+        assert m.shape == (400, 500) and m.flags.f_contiguous
+        assert m.dtype == np.float64 and not m.flags.writeable
+        assert ch.send(m) is True                  # F-order: by value
+        assert ch.recv(30) is True
+        im = ch.recv(60)
+        assert im.shape == (400, 500) and im.flags.f_contiguous
+        assert im.dtype == np.int64 and im[:3, 0].tolist() == [1, 2, 3]
+        assert im[0, :3].tolist() == [1, 401, 801]   # F-order layout
+        assert ch.send(np.ascontiguousarray(im)) is True   # C-order
+        assert ch.recv(30) is True
+    finally:
+        ch.close()
+
+
+def test_r_peer_date_posixct_region(r_mizu):
+    # Date / POSIXct MIZH roots materialize datetime64 off the shared
+    # pages (one conversion copy)
+    np = pytest.importorskip("numpy")
+    src = r"""
+d <- as.Date("2024-01-01") + 0:299999
+mizu::mizu_send(ch, d)
+p <- as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + 0:299999
+mizu::mizu_send(ch, p)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        d = ch.recv(60)
+        assert d.dtype == np.dtype("datetime64[D]")
+        assert str(d[0]) == "2024-01-01"
+        assert d[-1] == np.datetime64("2024-01-01") + 299999
+        p = ch.recv(60)
+        assert p.dtype == np.dtype("datetime64[us]")
+        assert p[0] == np.datetime64("2024-01-01T00:00:00.000000")
+    finally:
+        ch.close()
+
+
+def test_r_peer_named_list_dict_of_views(r_mizu):
+    # a large named list crosses as one region: a dict of views over the
+    # shared pages (one loan), not an 'I' copy
+    np = pytest.importorskip("numpy")
+    src = r"""
+x <- list(a = runif(200000), b = 1:200000)
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        d = ch.recv(60)
+        assert type(d) is dict and sorted(d) == ["a", "b"]
+        assert type(d["a"].base).__name__ == "_ShmView"
+        assert d["a"].dtype == np.float64 and not d["a"].flags.writeable
+        assert d["b"][:3].tolist() == [1, 2, 3]
+        # one loan for the whole tree: both views name one region
+        assert d["a"].base.refcount == d["b"].base.refcount == 2
+    finally:
+        ch.close()
+
+
+def test_r_peer_nested_tree(r_mizu):
+    # a nested tree recurses: dict homes within an unnamed list, string
+    # leaves as string views over the same region
+    np = pytest.importorskip("numpy")
+    src = r"""
+nested <- list(p = list(q = runif(200000)),
+               r = list(s = 1:200000, t = "hi"))
+mizu::mizu_send(ch, nested)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        n = ch.recv(60)
+        assert type(n) is dict and sorted(n) == ["p", "r"]
+        assert n["p"]["q"].dtype == np.float64
+        assert n["r"]["s"][:2].tolist() == [1, 2]
+        assert n["r"]["t"].to_list() == ["hi"]
+        assert n["p"]["q"].base.refcount == 2   # one loan for the tree
+    finally:
+        ch.close()
+
+
+R_PATH_REF = r"""
+x <- list(runif(200000), 1:200000)
+mizu::mizu_send(ch, x)
+v <- mizu::mizu_recv(ch, timeout = 30)   # the REF back: R's own view
+el <- v[[2]]                              # an element view (a path REF)
+mizu::mizu_send(ch, el)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_r_peer_path_ref(r_mizu):
+    # an R element view re-sent crosses as a path REF: the tree walk
+    # resolves it to the element's wrap over the same region
+    pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_PATH_REF, launcher=r_mizu)
+    try:
+        x = ch.recv(60)
+        assert ch.send(x) is True
+        el = ch.recv(60)
+        assert type(el).__name__ == "ndarray"
+        assert el[:4].tolist() == [1, 2, 3, 4]
+        assert type(el.base).__name__ == "_ShmView"
+    finally:
+        ch.close()
+
+
+R_FRAME_REF = r"""
+df <- data.frame(a = runif(200000), b = 1:200000)
+mizu::mizu_send(ch, df)
+v <- mizu::mizu_recv(ch, timeout = 30)   # the frame REF: R's own view
+mizu::mizu_send(ch, c(identical(v, df),
+                      .Call(mizu:::mizu_zc_refcount, v)[[2L]] %% 2L == 1L))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_r_peer_frame_ref(r_mizu):
+    # a received Frame re-sent whole crosses as a REF naming R's own
+    # region (REFHELD): R's view of it is identical() to what it sent
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_FRAME_REF, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        assert type(f).__name__ == "Frame"
+        assert ch.send(f) is True
+        assert np.asarray(ch.recv(30)).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_REFCOUNT = r"""
+df <- data.frame(x = 1:300000, y = runif(300000))
+mizu::mizu_send(ch, df)
+v <- mizu::mizu_recv(ch, timeout = 30)   # the REF back: R's own view
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_refcount, v)[[1L]])
+mizu::mizu_recv(ch, timeout = 30)         # Python dropped the tree
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_refcount, v)[[1L]])
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_r_peer_tree_refcount_balance(r_mizu):
+    # one counted zc-ref per tree: the wrap adds one, the last view's
+    # death subs it — the region's refcount returns to the producer's
+    pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_REFCOUNT, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        v = f.to_dict()["x"].base
+        assert v.refcount == 2          # R's producer loan + the tree's
+        assert ch.send(f) is True       # the frame REF
+        # R's producer loan is reaped by its own later verbs, so the
+        # steady state is the tree anchor + R's own view ...
+        assert ch.recv(30) == 2
+        del f, v
+        gc.collect()
+        assert ch.send("drop") is True
+        # ... then just R's view: the tree anchor's sub fired
+        assert ch.recv(30) == 1
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_export_polars(r_mizu):
+    # the region-backed Frame's Arrow export: polars ingests the stream
+    # zero-copy — every fixed-width column's data pointer inside the
+    # acquisition's own mapping, the string column's variadic buffer too
+    pytest.importorskip("numpy")
+    pl = pytest.importorskip("polars")
+    import warnings
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    src = r"""
+df <- data.frame(x = c(1:299999, NA), y = runif(300000),
+                 s = rep(c("short", strrep("long", 1000), NA), 100000),
+                 stringsAsFactors = FALSE)
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        pf = pl.from_arrow(f)
+        assert pf.schema == {"x": pl.Int32, "y": pl.Float64, "s": pl.String}
+        assert pf["x"].null_count() == 1 and pf["s"].null_count() == 100000
+        spans = pymizu._pymizu._debug_export_spans()
+        ptrs = _polars_col_buffers(pf)
+        # Int32 / Float64: the values buffer; String: the variadic data
+        # buffer (a >12-byte string keeps it non-inline)
+        for p in (ptrs[0][1], ptrs[1][1], ptrs[2][2]):
+            assert any(a <= p < a + s for a, s in spans)
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_export_survives_frame(r_mizu):
+    # the export's loan is its own: a consumer holding the arrays pins
+    # the region past the Frame's death. A fully conforming consumer
+    # (the explicit pyarrow reader) runs the C-side release chain to
+    # zero — sub and unmap; polars keeps some structs past del + gc
+    # (consumer-side), so its half asserts survival, not the release
+    pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    pl = pytest.importorskip("polars")
+    import warnings
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    ch = pymizu.Channel.create(R_REGION_FRAME, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        before = set(pymizu._pymizu._debug_export_spans())
+        reader = pa.RecordBatchStreamReader.from_stream(f)
+        t = reader.read_all()
+        assert t.num_rows == 300000
+        assert len(set(pymizu._pymizu._debug_export_spans()) - before) == 1
+        del reader, t
+        gc.collect()
+        assert set(pymizu._pymizu._debug_export_spans()) == before
+        v = f.to_dict()["x"].base
+        assert v.refcount == 2
+        pf = pl.from_arrow(f)
+        assert v.refcount == 3          # + the export's acquisition
+        del f, v
+        gc.collect()
+        # polars holds the arrays: the region stays mapped, the data valid
+        assert len(set(pymizu._pymizu._debug_export_spans()) - before) == 1
+        assert pf["x"][0] == 1
+        del pf
+        gc.collect()
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_validity_sections(r_mizu):
+    # the validity section on a foreign send: an INT column's NAs read
+    # off the leaf's section (to_numpy converts, Arrow nulls), a clean
+    # column is known-NA-free (no scan, a NULL bitmap)
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+df <- data.frame(x = c(1:299999, NA), y = 1:300000)
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        d = f.to_dict()
+        x = d["x"].base.to_numpy()      # the section says NAs: float64
+        assert x.dtype == np.float64 and np.isnan(x[-1])
+        y = d["y"].base.to_numpy()      # known-NA-free: the int32 view
+        assert y.dtype == np.int32 and not y.flags.writeable
+        t = pa.table(f)
+        assert t.column("x").null_count == 1
+        assert t.column("y").null_count == 0
+    finally:
+        ch.close()
+
+
+def test_r_peer_seq_columned_frame_region(r_mizu):
+    # an ALTREP (seq) column crosses as MIZL on a foreign handle, the
+    # sender's column staying compact
+    pytest.importorskip("numpy")
+    src = r"""
+df <- data.frame(id = 1:300000, v = runif(300000))
+mizu::mizu_send(ch, df)
+mizu::mizu_send(ch, length(serialize(df[[1L]], NULL)) < 1000L)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        d = f.to_dict()
+        assert d["id"][:3].tolist() == [1, 2, 3]
+        assert d["id"][-1] == 300000
+        assert ch.recv(30) is True      # the sender is still compact
+    finally:
+        ch.close()
+
+
+def test_r_peer_region_declines_on_r_side(r_mizu):
+    # past the floor on a foreign handle: a named vector, a difftime and
+    # a closure-leafed tree all raise at send (no portable home)
+    src = r"""
+e1 <- tryCatch({
+  nv <- runif(300000)
+  names(nv) <- paste0("n", 1:300000)
+  mizu::mizu_send(ch, nv)
+  "no error"
+}, error = function(e) conditionMessage(e))
+mizu::mizu_send(ch, e1)
+e2 <- tryCatch({
+  mizu::mizu_send(ch, as.difftime(1:300000, units = "secs"))
+  "no error"
+}, error = function(e) conditionMessage(e))
+mizu::mizu_send(ch, e2)
+e3 <- tryCatch({
+  mizu::mizu_send(ch, list(f = function() 1, big = runif(200000)))
+  "no error"
+}, error = function(e) conditionMessage(e))
+mizu::mizu_send(ch, e3)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        assert "not portable" in ch.recv(30)
+        assert "not portable" in ch.recv(30)
+        assert "not portable" in ch.recv(30)
+    finally:
+        ch.close()
+
+
+def _polars_col_buffers(pf):
+    """Each column's ArrowArray buffer pointers off the polars frame's
+    own __arrow_c_stream__ export (the zero-copy aliasing assertion)."""
+    import ctypes
+
+    class ArrowArrayStream(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_void_p) for n in
+                    ("get_schema", "get_next", "get_last_error",
+                     "release", "private_data")]
+
+    class ArrowArray(ctypes.Structure):
+        pass
+
+    ArrowArray._fields_ = [
+        ("length", ctypes.c_int64), ("null_count", ctypes.c_int64),
+        ("offset", ctypes.c_int64), ("n_buffers", ctypes.c_int64),
+        ("n_children", ctypes.c_int64),
+        ("buffers", ctypes.POINTER(ctypes.c_void_p)),
+        ("children", ctypes.POINTER(ctypes.POINTER(ArrowArray))),
+        ("dictionary", ctypes.POINTER(ArrowArray)),
+        ("release", ctypes.c_void_p), ("private_data", ctypes.c_void_p),
+    ]
+    get_ptr = ctypes.pythonapi.PyCapsule_GetPointer
+    get_ptr.restype = ctypes.c_void_p
+    get_ptr.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    addr = get_ptr(pf.__arrow_c_stream__(), b"arrow_array_stream")
+    stream = ArrowArrayStream.from_address(addr)
+    get_next = ctypes.CFUNCTYPE(
+        ctypes.c_int, ctypes.POINTER(ArrowArrayStream),
+        ctypes.POINTER(ArrowArray))(stream.get_next)
+    arr = ArrowArray()
+    # polars' stream is single-shot: exactly one get_next, no get_schema
+    try:
+        assert get_next(ctypes.byref(stream), ctypes.byref(arr)) == 0
+        out = []
+        for i in range(arr.n_children):
+            child = arr.children[i].contents
+            out.append([child.buffers[j] for j in range(child.n_buffers)])
+        return out
+    finally:
+        if arr.release:
+            ctypes.CFUNCTYPE(None, ctypes.POINTER(ArrowArray))(
+                arr.release)(ctypes.byref(arr))

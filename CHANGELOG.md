@@ -10,6 +10,23 @@ Initial pre-release.
 
 ### Added
 
+- Region-backed trees, `Frame`s and factors (Phase 3.5): an R list tree
+  past the zero-copy floor now crosses as one MIZL region — a plain
+  `list` of views (no attributes), a `dict` of views (names only), or a
+  region-backed `pymizu.Frame` (the data.frame shape) — instead of an
+  interchange copy. One counted reference per tree anchors every element
+  view; a re-sent tree element of R's own resolves its `[i,j,...]` path
+  to the element's wrap, and a re-sent `Frame` crosses by reference
+  (REF). Attributed MIZH roots home too: a standalone factor is
+  `list[str | None]`, a `{dim}` array an F-order view over the region
+  (integer64 included), a Date or POSIXct a `datetime64` copy. A
+  region-backed `Frame` exports `__arrow_c_stream__` off its own
+  per-export mapping: fixed-width columns and validity bitmaps are
+  zero-copy into Arrow consumers, factor leaves are dictionary columns
+  (the region's 1-based codes shifted at export), string columns
+  `large_utf8` in place, and `to_dict()` gives read-only numpy views for
+  numeric columns. pymizu now advertises `MIZU_CAP_ATTRS | MIZU_CAP_MIZL`
+  in its identity word, so a mizu peer stages these layouts for it.
 - `_ShmView.to_numpy()` and `.to_arrow()` (Phase 3.4): a received view's
   conveniences. `to_numpy()` applies the copied-read NA rules to the view
   tiers — a logical is a `bool_` copy when NA-free, an integer a float64
@@ -124,6 +141,11 @@ Initial pre-release.
 
 ### Fixed
 
+- The `Frame` Arrow export's schema and array release callbacks now
+  cascade to children and dictionaries, per the C Data Interface
+  contract (consumers release only the struct they received). pyarrow
+  and polars both rely on the cascade; without it their imports leaked
+  the export's holder past `del`.
 - A channel message that fails to read (a declined R payload, a pickle
   that will not load, a non-UTF-8 string, a corrupt slot) no longer wedges
   the ring behind the unreadable slot: the read consumes the message and

@@ -161,4 +161,53 @@ int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
 PyObject *mizu_py_task_error_build(PyObject *tn, PyObject *ms,
                                    PyObject *tbs, PyObject *eidx);
 
+// The MIZL tree wrap (§3.5) --------------------------------------------------------
+
+/* What interop.c calls in _pymizu.c: the tree-borrow constructors. owner
+   is a _ShmOwner; the loan anchor (mizu_py_loan_new) holds the tree's
+   one zc loan, referenced by every element view the walk builds, so the
+   sub fires at the last view's release. valid/nulls are the leaf's
+   validity verdict (bitmap + count, NULL + -1 known-NA-free, NULL + 0
+   the lazy scan) — a borrowed view never reads the region root's words. */
+PyObject *mizu_py_loan_new(PyObject *owner);
+PyObject *mizu_py_view_borrow(PyObject *owner, PyObject *loan,
+                              uint8_t *data, Py_ssize_t len, int type,
+                              const uint8_t *valid, int64_t nulls);
+PyObject *mizu_py_strview_borrow(PyObject *owner, PyObject *loan,
+                                 const uint8_t *block, int64_t n,
+                                 int64_t str_bytes);
+mizu_shm *mizu_py_loan_shm(PyObject *loan);
+PyObject *mizu_py_loan_owner(PyObject *loan);   /* borrowed ref */
+
+/* The live export acquisitions' mapping spans (test-only; _pymizu.c's). */
+void mizu_py_debug_span_add(void *base, size_t size);
+void mizu_py_debug_span_remove(void *base);
+
+/* The attributed-atomic home shared by an MIZH root and an MIZL leaf:
+   the blob's shape decision (factor / dim / Date / POSIXct / no-home). */
+PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
+                              uint8_t *data, int64_t n,
+                              const uint8_t *valid, int64_t nulls,
+                              const uint8_t *blob, size_t blob_size);
+
+/* The MIZL walk and shape decision: one counted zc-ref per root (the
+   loan anchor), element views borrowed over the shared mapping. Returns
+   the tree's home — a plain list (no attributes), a dict (names only),
+   or a region-backed Frame (the data.frame shape) — NULL with an
+   exception on a decline or a corrupt region. */
+PyObject *pymizu_tree_wrap(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size, int64_t n,
+                           int64_t attrs_off, int64_t attrs_size);
+
+/* A path REF's resolution: "[i,j,...]" (1-based hops, the R identifier's
+   form) walked to the element's wrap. */
+PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
+                                const uint8_t *base, size_t size,
+                                const char *path);
+
+/* The REF staging helper's Frame half: the region loan anchor of a
+   region-backed Frame, NULL for anything else (a copy-backed Frame
+   included). Borrowed reference. */
+PyObject *mizu_py_frame_loan(PyObject *obj);
+
 #endif

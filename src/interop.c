@@ -35,6 +35,45 @@ static int is_na_r(uint64_t bits) {
   return ((bits >> 52) & 0x7FF) == 0x7FF && (uint32_t) bits == 0x7A2;
 }
 
+/* Strict UTF-8 validation (the copy of _pymizu.c's utf8_valid the MIZS
+   string-block checks run here). */
+static int ix_utf8_valid(const uint8_t *s, int64_t n) {
+  int64_t i = 0;
+  while (i < n) {
+    uint8_t c = s[i];
+    if (c < 0x80) {
+      i++;
+      continue;
+    }
+    int64_t need;
+    uint32_t cp;
+    if ((c & 0xE0) == 0xC0) {
+      need = 1;
+      cp = c & 0x1F;
+      if (cp == 0) return 0;                 /* overlong */
+    } else if ((c & 0xF0) == 0xE0) {
+      need = 2;
+      cp = c & 0x0F;
+    } else if ((c & 0xF8) == 0xF0) {
+      need = 3;
+      cp = c & 0x07;
+    } else {
+      return 0;
+    }
+    if (i + need >= n) return 0;
+    for (int64_t k = 1; k <= need; k++) {
+      if ((s[i + k] & 0xC0) != 0x80) return 0;
+      cp = (cp << 6) | (s[i + k] & 0x3F);
+    }
+    if ((need == 1 && cp < 0x80) || (need == 2 && cp < 0x800) ||
+        (need == 3 && cp < 0x10000) || cp > 0x10FFFF ||
+        (cp >= 0xD800 && cp <= 0xDFFF))
+      return 0;                              /* overlong / out of range */
+    i += need + 1;
+  }
+  return 1;
+}
+
 /* Days-from-civil (Howard Hinnant's algorithm): days since 1970-01-01. */
 static int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
   y -= m <= 2;
@@ -293,7 +332,9 @@ enum {
   FCOL_STR,   /* values = i32 offsets (n+1); bytes packed */
   FCOL_DICT,  /* values = i32 codes 0-based (MIZU_NA_INT32 null) + levels */
   FCOL_DATE,  /* i32 days, MIZU_NA_INT32 null — Arrow date32 */
-  FCOL_TS     /* i64 us, MIZU_NA_INT64 null — Arrow timestamp[us] */
+  FCOL_TS,    /* i64 us, MIZU_NA_INT64 null — Arrow timestamp[us] */
+  FCOL_STR64  /* a region MIZS block (the tree wrap): values = the block,
+                 validity/i64 offsets/bytes in place — Arrow large_utf8 */
 };
 
 typedef struct {
@@ -305,8 +346,19 @@ typedef struct {
   int32_t *lev_off;   /* DICT: level offsets, nlev + 1 */
   int64_t nlev;       /* DICT */
   char tz[48];        /* TS: the tzone name ("" is naive) */
-  uint8_t *valid;     /* validity bitmap, built lazily at export */
+  uint8_t *valid;     /* validity bitmap: the region's section (borrowed)
+                         or built lazily at export (owned) */
+  int64_t vnulls;     /* a borrowed valid's null count */
   uint8_t *bits;      /* LGL: the bit-packed values, built at export */
+  int32_t *codes0;    /* DICT codes1: the 0-based shift, built at export */
+  uint8_t borrowed;   /* the tree wrap's: values/valid point into the
+                         region (never freed here) */
+  uint8_t valid_owned;/* valid was built here (freed even when borrowed) */
+  uint8_t known_free; /* the region's {0, -1}: the sentinel scan never
+                         runs (the LGL bit-pack still builds) */
+  uint8_t codes1;     /* DICT: the region's 1-based R codes — the export
+                         shifts to 0-based into codes0 */
+  uint8_t enc_ok;     /* STR64: the encoding check ran (once, at export) */
 } fcol;
 
 /* The column block: C-owned (no PyObject inside — the Arrow export's
@@ -322,11 +374,16 @@ typedef struct frame_cols {
 } frame_cols;
 
 static void fcol_free(fcol *c) {
-  free(c->values);
+  if (!c->borrowed) {
+    free(c->values);
+    free(c->valid);
+  } else if (c->valid_owned) {
+    free(c->valid);   /* a borrowed column's lazily built bitmap */
+  }
   free(c->bytes);
   free(c->lev_off);
-  free(c->valid);
   free(c->bits);
+  free(c->codes0);
 }
 
 static void frame_cols_decref(frame_cols *fc) {
@@ -370,6 +427,8 @@ typedef struct {
   PyObject_HEAD
   frame_cols *fc;
   PyObject *row_names;   /* Py_None | list[str] | numpy int32 array */
+  PyObject *loan;        /* region-backed: the tree wrap's _ShmLoan anchor
+                            (NULL for a copy-backed Frame) */
 } MizuFrame;
 
 /* The validity bitmap's bit i (LSB-first, Arrow's order). */
@@ -768,6 +827,31 @@ static attr_ent *attr_find(attr_ent *ents, int n, const char *key) {
     if (ents[i].key_len == klen && memcmp(ents[i].key, key, klen) == 0)
       return &ents[i];
   return NULL;
+}
+
+/* A layout attribute blob (§3.5): a complete 'I' stream whose value is
+   the attribute dict, read with the finishing check. A non-'I' blob (an
+   R_Serialize stream from a peer that sent one despite the mask) declines
+   as a corrupt or newer region. */
+static attr_ent *blob_attrs(const uint8_t *buf, size_t size, int *n_out) {
+  if (size == 0 || buf[0] != MIZU_INTEROP_MAGIC) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a serialized attribute blob)");
+    return NULL;
+  }
+  mizu_ix cur;
+  if (mizu_ix_open(&cur, buf, size) != MIZU_OK) {
+    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    return NULL;
+  }
+  attr_ent *ents = ixr_attr_dict(&cur, n_out);
+  if (ents == NULL) return NULL;
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    attr_vals_free(ents, *n_out);
+    return NULL;
+  }
+  return ents;
 }
 
 static int str_obj_eq(PyObject *s, const char *c) {
@@ -1240,6 +1324,66 @@ static PyObject *ixr_attr(mizu_ix *cur) {
 
 // The frame reader ------------------------------------------------------------------
 
+/* A Date column's doubles to owned i32 days (MIZU_NA_INT32 null); a
+   fractional or non-finite value is the informative decline. */
+static int fcol_date_fill(const double *src, uint64_t vn, fcol *c) {
+  int32_t *days = malloc((size_t) (vn != 0 ? vn : 1) * 4);
+  if (days == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  for (uint64_t i = 0; i < vn; i++) {
+    uint64_t bits;
+    memcpy(&bits, src + i, 8);
+    if (is_na_r(bits)) {
+      days[i] = MIZU_NA_INT32;
+    } else if (!isfinite(src[i]) || trunc(src[i]) != src[i] ||
+               fabs(src[i]) > 2.0e9) {
+      free(days);
+      PyErr_SetString(MizuError, "pymizu: no portable home for a "
+                      "fractional Date");
+      return -1;
+    } else {
+      days[i] = (int32_t) src[i];
+    }
+  }
+  c->kind = FCOL_DATE;
+  c->n = (int64_t) vn;
+  c->values = (uint8_t *) days;
+  return 0;
+}
+
+/* A POSIXct column's doubles to owned i64 microseconds (INT64_MIN null);
+   the tzone name (empty when naive) is export metadata. */
+static int fcol_ts_fill(const double *src, uint64_t vn, const char *tz,
+                        size_t tz_len, fcol *c) {
+  int64_t *us = malloc((size_t) (vn != 0 ? vn : 1) * 8);
+  if (us == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  for (uint64_t i = 0; i < vn; i++) {
+    uint64_t bits;
+    memcpy(&bits, src + i, 8);
+    if (is_na_r(bits)) {
+      us[i] = INT64_MIN;
+    } else if (!isfinite(src[i]) || fabs(src[i]) > 9.0e12) {
+      free(us);
+      PyErr_SetString(MizuError, "pymizu: no portable home for this "
+                      "POSIXct value");
+      return -1;
+    } else {
+      us[i] = (int64_t) llround(src[i] * 1e6);
+    }
+  }
+  c->kind = FCOL_TS;
+  c->n = (int64_t) vn;
+  c->values = (uint8_t *) us;
+  if (tz_len > 0 && tz_len < sizeof(c->tz))
+    snprintf(c->tz, sizeof(c->tz), "%.*s", (int) tz_len, tz);
+  return 0;
+}
+
 /* One frame column: the cursor at the column's first item; fills the
    fcol. */
 static int ixr_column(mizu_ix *cur, fcol *c) {
@@ -1384,72 +1528,15 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
       }
     } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
                vtype == MIZU_TYPE_REAL) {
-      int32_t *days = malloc((size_t) (vn != 0 ? vn : 1) * 4);
-      if (days == NULL) {
-        PyErr_NoMemory();
-      } else {
-        const double *src = (const double *) vptr;
-        int ok = 1;
-        for (uint64_t i = 0; i < vn; i++) {
-          uint64_t bits;
-          memcpy(&bits, src + i, 8);
-          if (is_na_r(bits)) {
-            days[i] = MIZU_NA_INT32;
-          } else if (!isfinite(src[i]) || trunc(src[i]) != src[i] ||
-                     fabs(src[i]) > 2.0e9) {
-            PyErr_SetString(MizuError, "pymizu: no portable home for a "
-                            "fractional Date");
-            ok = 0;
-            break;
-          } else {
-            days[i] = (int32_t) src[i];
-          }
-        }
-        if (ok) {
-          c->kind = FCOL_DATE;
-          c->n = (int64_t) vn;
-          c->values = (uint8_t *) days;
-          rc = 0;
-        } else {
-          free(days);
-        }
-      }
+      rc = fcol_date_fill((const double *) vptr, vn, c);
     } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
                class_is(cls, "POSIXct", "POSIXt") &&
                vtype == MIZU_TYPE_REAL) {
-      int64_t *us = malloc((size_t) (vn != 0 ? vn : 1) * 8);
-      if (us == NULL) {
-        PyErr_NoMemory();
-      } else {
-        const double *src = (const double *) vptr;
-        int ok = 1;
-        for (uint64_t i = 0; i < vn; i++) {
-          uint64_t bits;
-          memcpy(&bits, src + i, 8);
-          if (is_na_r(bits)) {
-            us[i] = INT64_MIN;
-          } else if (!isfinite(src[i]) || fabs(src[i]) > 9.0e12) {
-            PyErr_SetString(MizuError, "pymizu: no portable home for "
-                            "this POSIXct value");
-            ok = 0;
-            break;
-          } else {
-            us[i] = (int64_t) llround(src[i] * 1e6);
-          }
-        }
-        if (ok) {
-          c->kind = FCOL_TS;
-          c->n = (int64_t) vn;
-          c->values = (uint8_t *) us;
-          if (tz != NULL && tz->kind == AV_STR && tz->val.count > 0 &&
-              tz->val.count < sizeof(c->tz))
-            snprintf(c->tz, sizeof(c->tz), "%.*s", (int) tz->val.count,
-                     (const char *) tz->val.ptr);
-          rc = 0;
-        } else {
-          free(us);
-        }
-      }
+      rc = fcol_ts_fill((const double *) vptr, vn,
+                        tz != NULL && tz->kind == AV_STR ?
+                          (const char *) tz->val.ptr : "",
+                        tz != NULL && tz->kind == AV_STR ?
+                          (size_t) tz->val.count : 0, c);
     } else {
       ixr_no_home(ents, nent, "an attributed frame column");
     }
@@ -1552,6 +1639,109 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
   }
 }
 
+/* names into the block's packed store: unique, one per column (the
+   AV_STR length-1 form for a single column). */
+static int frame_names_build(frame_cols *fc, const attr_ent *nm) {
+  const int ncols = fc->ncols;
+  Py_ssize_t nn = nm->kind == AV_STR ? 1 :
+    nm->kind == AV_STRLIST ? PyList_GET_SIZE(nm->val.obj) : -1;
+  if (nn != ncols) {
+    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                    "the frame's names do not match its columns");
+    return -1;
+  }
+  size_t name_len = 0;
+  for (int i = 0; i < ncols; i++) {
+    const char *s;
+    Py_ssize_t len;
+    if (nm->kind == AV_STR) {
+      s = (const char *) nm->val.ptr;
+      len = (Py_ssize_t) nm->val.count;
+    } else {
+      PyObject *o = PyList_GET_ITEM(nm->val.obj, i);
+      if (!PyUnicode_Check(o)) {
+        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                        "an NA column name");
+        return -1;
+      }
+      s = PyUnicode_AsUTF8AndSize(o, &len);
+      if (s == NULL) return -1;
+    }
+    for (int j = 0; j < i; j++)
+      if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) ==
+            (size_t) len &&
+          memcmp(fc->names + fc->name_off[j], s, (size_t) len) == 0) {
+        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                        "duplicate column names");
+        return -1;
+      }
+    char *nb = realloc(fc->names, name_len + (size_t) len + 1);
+    if (nb == NULL) {
+      PyErr_NoMemory();
+      return -1;
+    }
+    fc->names = nb;
+    memcpy(fc->names + name_len, s, (size_t) len);
+    fc->name_off[i] = (int32_t) name_len;
+    name_len += (size_t) len;
+  }
+  fc->name_off[ncols] = (int32_t) name_len;
+  return 0;
+}
+
+/* row.names: compact intv c(NA, +-n), a full intv, an int scalar at
+   n == 1, or a strv / str. */
+static PyObject *frame_rownames_build(const attr_ent *rn, int64_t nrow) {
+  if (rn->kind == AV_INTSPAN) {
+    const int32_t *v = (const int32_t *) rn->val.ptr;
+    uint64_t nr = rn->val.count;
+    if (nr == 2 && v[0] == MIZU_NA_INT32 &&
+        (v[1] == nrow || v[1] == -nrow))
+      Py_RETURN_NONE;
+    if (nr == (uint64_t) nrow && !span_has_na32(v, (size_t) nrow))
+      return ixr_vec_raw("int32", (const uint8_t *) v, (uint64_t) nrow, 4);
+    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                    "the row.names length is not the row count");
+    return NULL;
+  }
+  if (rn->kind == AV_INT) {
+    if (nrow == 1 && rn->val.v != INT64_MIN) {
+      int32_t v = (int32_t) rn->val.v;
+      return ixr_vec_raw("int32", (const uint8_t *) &v, 1, 4);
+    }
+    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                    "the row.names length is not the row count");
+    return NULL;
+  }
+  if (rn->kind == AV_STRLIST && PyList_GET_SIZE(rn->val.obj) == nrow) {
+    PyObject *rownames = rn->val.obj;
+    for (int64_t i = 0; i < nrow; i++)
+      if (!PyUnicode_Check(PyList_GET_ITEM(rownames, i))) {
+        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                        "an NA row name");
+        return NULL;
+      }
+    Py_INCREF(rownames);
+    return rownames;
+  }
+  if (rn->kind == AV_STR && nrow == 1) {
+    PyObject *s = PyUnicode_DecodeUTF8((const char *) rn->val.ptr,
+                                       (Py_ssize_t) rn->val.count, NULL);
+    if (s == NULL) return NULL;
+    PyObject *rownames = PyList_New(1);
+    if (rownames != NULL) {
+      PyList_SET_ITEM(rownames, 0, s);
+      return rownames;
+    }
+    Py_DECREF(s);
+    return NULL;
+  }
+  PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                  "the row.names are not int or character of the row "
+                  "count");
+  return NULL;
+}
+
 /* The data.frame shape: read the columns, then the dict, and validate
    before installing the shell. */
 static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64) {
@@ -1586,106 +1776,14 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64) {
     attr_vals_free(ents, nent);
     goto fail;
   }
-  /* names: unique, one per column */
-  Py_ssize_t nn = nm->kind == AV_STR ? 1 :
-    nm->kind == AV_STRLIST ? PyList_GET_SIZE(nm->val.obj) : -1;
-  if (nn != ncols) {
-    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                    "the frame's names do not match its columns");
-    attr_vals_free(ents, nent);
-    goto fail;
-  }
   frame_cols *fc = frame_cols_new(ncols, nrow);
   if (fc == NULL) {
     PyErr_NoMemory();
     attr_vals_free(ents, nent);
     goto fail;
   }
-  size_t name_len = 0;
-  for (int i = 0; i < ncols; i++) {
-    const char *s;
-    Py_ssize_t len;
-    if (nm->kind == AV_STR) {
-      s = (const char *) nm->val.ptr;
-      len = (Py_ssize_t) nm->val.count;
-    } else {
-      PyObject *o = PyList_GET_ITEM(nm->val.obj, i);
-      if (!PyUnicode_Check(o)) {
-        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                        "an NA column name");
-        goto dict_fail;
-      }
-      s = PyUnicode_AsUTF8AndSize(o, &len);
-      if (s == NULL) goto dict_fail;
-    }
-    for (int j = 0; j < i; j++)
-      if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) ==
-            (size_t) len &&
-          memcmp(fc->names + fc->name_off[j], s, (size_t) len) == 0) {
-        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                        "duplicate column names");
-        goto dict_fail;
-      }
-    char *nb = realloc(fc->names, name_len + (size_t) len + 1);
-    if (nb == NULL) {
-      PyErr_NoMemory();
-      goto dict_fail;
-    }
-    fc->names = nb;
-    memcpy(fc->names + name_len, s, (size_t) len);
-    fc->name_off[i] = (int32_t) name_len;
-    name_len += (size_t) len;
-  }
-  fc->name_off[ncols] = (int32_t) name_len;
-  /* row.names: compact intv c(NA, +-n), a full intv, an int scalar at
-     n == 1, or a strv / str */
-  PyObject *rownames = NULL;
-  if (rn->kind == AV_INTSPAN) {
-    const int32_t *v = (const int32_t *) rn->val.ptr;
-    uint64_t nr = rn->val.count;
-    if (nr == 2 && v[0] == MIZU_NA_INT32 &&
-        (v[1] == nrow || v[1] == -nrow)) {
-      Py_INCREF(Py_None);
-      rownames = Py_None;
-    } else if (nr == (uint64_t) nrow && !span_has_na32(v, (size_t) nrow)) {
-      rownames = ixr_vec_raw("int32", (const uint8_t *) v, (uint64_t) nrow,
-                             4);
-    } else {
-      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                      "the row.names length is not the row count");
-    }
-  } else if (rn->kind == AV_INT) {
-    if (nrow == 1 && rn->val.v != INT64_MIN) {
-      int32_t v = (int32_t) rn->val.v;
-      rownames = ixr_vec_raw("int32", (const uint8_t *) &v, 1, 4);
-    } else {
-      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                      "the row.names length is not the row count");
-    }
-  } else if (rn->kind == AV_STRLIST &&
-             PyList_GET_SIZE(rn->val.obj) == nrow) {
-    rownames = rn->val.obj;
-    Py_INCREF(rownames);
-    for (int64_t i = 0; i < nrow; i++)
-      if (!PyUnicode_Check(PyList_GET_ITEM(rownames, i))) {
-        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                        "an NA row name");
-        Py_CLEAR(rownames);
-        break;
-      }
-  } else if (rn->kind == AV_STR && nrow == 1) {
-    PyObject *s = PyUnicode_DecodeUTF8((const char *) rn->val.ptr,
-                                       (Py_ssize_t) rn->val.count, NULL);
-    if (s != NULL) {
-      rownames = PyList_New(1);
-      if (rownames != NULL) PyList_SET_ITEM(rownames, 0, s);
-      else Py_DECREF(s);
-    }
-  } else {
-    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                    "the row.names are not int or character of the row "
-                    "count");
-  }
+  if (frame_names_build(fc, nm) < 0) goto dict_fail;
+  PyObject *rownames = frame_rownames_build(rn, nrow);
   if (rownames == NULL) goto dict_fail;
   attr_vals_free(ents, nent);
   /* adopt the columns into the block */
@@ -1699,6 +1797,7 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64) {
   }
   self->fc = fc;
   self->row_names = rownames;
+  self->loan = NULL;
   return (PyObject *) self;
 dict_fail:
   attr_vals_free(ents, nent);
@@ -1706,6 +1805,527 @@ dict_fail:
 fail:
   for (int i = 0; i < ncols; i++) fcol_free(&cols[i]);
   free(cols);
+  return NULL;
+}
+
+// The MIZL tree wrap (§3.5) ----------------------------------------------------------
+
+/* A leaf's validity pair into the column: a section offset borrows the
+   region's bitmap, {0, -1} marks known-NA-free, {0, 0} leaves the lazy
+   sentinel scan. */
+static void tree_valid(fcol *c, const uint8_t *base, const int64_t valid[2]) {
+  if (valid[0] > 0) {
+    c->valid = (uint8_t *) (base + valid[0]);
+    c->vnulls = valid[1];
+  } else if (valid[1] == -1) {
+    c->known_free = 1;
+  }
+}
+
+/* A frame column off an MIZL directory entry: the §1.0 column set only —
+   attribute-free atomics (tag 32 the int64 form) borrow the leaf's bytes,
+   a factor blob makes a dictionary column (owned levels, borrowed 1-based
+   codes), Date/POSIXct blobs convert (owned), a string leaf borrows its
+   MIZS block; anything else declines informatively. */
+static int tree_column(const uint8_t *base, size_t size, int64_t i,
+                       fcol *c) {
+  mizu_mizl_entry e;
+  if (mizu_mizl_elem(base, size, i, &e) != 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return -1;
+  }
+  memset(c, 0, sizeof(*c));
+  if (e.sexptype & MIZU_MIZL_S4) {
+    PyErr_SetString(MizuError, "pymizu: no portable home for a frame "
+                    "column with the S4 bit");
+    return -1;
+  }
+  const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
+  const uint8_t *data = base + e.data_offset;
+  const int64_t body = e.data_size - (int64_t) e.attrs_size;
+  if (tag == MIZU_TYPE_STR) {
+    if (e.attrs_size != 0) goto newer;
+    mizu_mizs_geom g = mizu_mizs_geometry(e.length);
+    c->kind = FCOL_STR64;
+    c->n = e.length;
+    c->values = (uint8_t *) data;   /* the block */
+    c->valid = (uint8_t *) (data + g.validity);
+    c->bytes_len = body - g.data;
+    c->borrowed = 1;
+    return 0;
+  }
+  const size_t elt = mizu_type_elt_size(tag);
+  if (elt == 0) {
+    PyErr_SetString(MizuError, "pymizu: no portable home for a frame "
+                    "column of this form (a list or serialized leaf)");
+    return -1;
+  }
+  if (e.attrs_size == 0) {
+    int kind;
+    switch (tag) {
+    case MIZU_TYPE_REAL: kind = FCOL_F64; break;
+    case MIZU_TYPE_INT: kind = FCOL_I32; break;
+    case MIZU_TYPE_INT64: kind = FCOL_I64; break;
+    case MIZU_TYPE_RAW: kind = FCOL_U8; break;
+    case MIZU_TYPE_CPLX: kind = FCOL_C128; break;
+    default: kind = FCOL_LGL; break;   /* MIZU_TYPE_LGL (tags pre-checked) */
+    }
+    c->kind = kind;
+    c->n = e.length;
+    c->values = (uint8_t *) data;
+    c->borrowed = 1;
+    tree_valid(c, base, e.valid);
+    return 0;
+  }
+  int nent = 0;
+  attr_ent *ents = blob_attrs(data + body, (size_t) e.attrs_size, &nent);
+  if (ents == NULL) return -1;
+  int rc = -1;
+  attr_ent *cls = attr_find(ents, nent, "class");
+  attr_ent *lv = attr_find(ents, nent, "levels");
+  attr_ent *tz = attr_find(ents, nent, "tzone");
+  if (cls != NULL && lv != NULL && nent == 2 &&
+      class_is(cls, "factor", NULL) && tag == MIZU_TYPE_INT &&
+      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+    if (levels_read(lv, &c->lev_off, &c->bytes, &c->nlev,
+                    &c->bytes_len) == 0) {
+      c->kind = FCOL_DICT;
+      c->n = e.length;
+      c->values = (uint8_t *) data;   /* the 1-based codes */
+      c->codes1 = 1;
+      c->borrowed = 1;
+      tree_valid(c, base, e.valid);
+      rc = 0;
+    }
+  } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
+             tag == MIZU_TYPE_REAL) {
+    rc = fcol_date_fill((const double *) data, (uint64_t) e.length, c);
+  } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
+             class_is(cls, "POSIXct", "POSIXt") &&
+             tag == MIZU_TYPE_REAL) {
+    rc = fcol_ts_fill((const double *) data, (uint64_t) e.length,
+                      tz != NULL && tz->kind == AV_STR ?
+                        (const char *) tz->val.ptr : "",
+                      tz != NULL && tz->kind == AV_STR ?
+                        (size_t) tz->val.count : 0, c);
+  } else {
+    ixr_no_home(ents, nent, "an attributed frame column");
+  }
+  attr_vals_free(ents, nent);
+  return rc;
+newer:
+  PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                  "(a frame column of an unexpected form)");
+  return -1;
+}
+
+/* The {dim} blob's home: the borrowed 1-D view reshaped order="F" —
+   strides over the shared pages, the loan pinned through the array's
+   .base chain (a length-1 dim is the documented plain-vector shift). */
+static PyObject *tree_dim_view(PyObject *owner, PyObject *loan, int type,
+                               uint8_t *data, int64_t n,
+                               const uint8_t *valid, int64_t nulls,
+                               const attr_ent *dm) {
+  int32_t one;
+  const int32_t *dims;
+  uint64_t nd;
+  if (dm->kind == AV_INT) {
+    one = (int32_t) dm->val.v;
+    dims = &one;
+    nd = 1;
+  } else if (dm->kind == AV_INTSPAN) {
+    dims = (const int32_t *) dm->val.ptr;
+    nd = dm->val.count;
+  } else {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a dim of an unexpected form)");
+    return NULL;
+  }
+  if (nd == 0 || nd > 32) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a dim past 32 axes)");
+    return NULL;
+  }
+  uint64_t prod = 1;
+  for (uint64_t i = 0; i < nd; i++) {
+    if (dims[i] < 0) {
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                      "(a negative dim)");
+      return NULL;
+    }
+    if (dims[i] != 0 && prod > UINT64_MAX / (uint64_t) dims[i]) {
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                      "(a dim product overflow)");
+      return NULL;
+    }
+    prod *= (uint64_t) dims[i];
+  }
+  if (prod != (uint64_t) n) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region (the dim "
+                    "product is not the element count)");
+    return NULL;
+  }
+  PyObject *view = mizu_py_view_borrow(
+    owner, loan, data,
+    (Py_ssize_t) n * (Py_ssize_t) mizu_type_elt_size(type), type,
+    valid, nulls);
+  if (view == NULL || nd == 1) return view;
+  if (mizu_py_numpy_module() == NULL) {
+    Py_DECREF(view);
+    PyErr_SetString(MizuError, "pymizu: a dim-array view needs numpy "
+                    "(install it)");
+    return NULL;
+  }
+  PyObject *shape = PyTuple_New((Py_ssize_t) nd);
+  if (shape == NULL) {
+    Py_DECREF(view);
+    return NULL;
+  }
+  for (uint64_t i = 0; i < nd; i++) {
+    PyObject *d = PyLong_FromSsize_t((Py_ssize_t) dims[i]);
+    if (d == NULL) {
+      Py_DECREF(shape);
+      Py_DECREF(view);
+      return NULL;
+    }
+    PyTuple_SET_ITEM(shape, (Py_ssize_t) i, d);
+  }
+  PyObject *meth = PyObject_GetAttrString(view, "reshape");
+  PyObject *kw = meth != NULL ? PyDict_New() : NULL;
+  PyObject *ord = NULL;
+  if (kw != NULL) {
+    ord = PyUnicode_FromString("F");
+    if (ord == NULL || PyDict_SetItemString(kw, "order", ord) < 0)
+      Py_CLEAR(kw);
+  }
+  PyObject *args = kw != NULL ? PyTuple_Pack(1, shape) : NULL;
+  PyObject *out = args != NULL ? PyObject_Call(meth, args, kw) : NULL;
+  Py_XDECREF(meth);
+  Py_XDECREF(kw);
+  Py_XDECREF(ord);
+  Py_XDECREF(args);
+  Py_DECREF(shape);
+  Py_DECREF(view);
+  return out;
+}
+
+/* An attributed atomic's home (the blob decision shared by an MIZH root
+   and an MIZL leaf): the factor shape a list[str|None], {dim} the
+   reshaped view (an integer64 class consumed as the wire type), Date /
+   POSIXct a datetime64 copy, anything else the no-home error. The loan
+   anchor rides any view built here; copies hold no region state. */
+PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
+                              uint8_t *data, int64_t n,
+                              const uint8_t *valid, int64_t nulls,
+                              const uint8_t *blob, size_t blob_size) {
+  int nent = 0;
+  attr_ent *ents = blob_attrs(blob, blob_size, &nent);
+  if (ents == NULL) return NULL;
+  PyObject *out = NULL;
+  attr_ent *cls = attr_find(ents, nent, "class");
+  attr_ent *lv = attr_find(ents, nent, "levels");
+  attr_ent *dm = attr_find(ents, nent, "dim");
+  if (cls != NULL && lv != NULL && nent == 2 &&
+      class_is(cls, "factor", NULL) && type == MIZU_TYPE_INT &&
+      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+    int32_t *lev_off = NULL, *codes = NULL;
+    uint8_t *lev_bytes = NULL;
+    int64_t nlev = 0, blen = 0;
+    if (levels_read(lv, &lev_off, &lev_bytes, &nlev, &blen) == 0 &&
+        codes_read((const int32_t *) data, (uint64_t) n, nlev,
+                   &codes) == 0)
+      out = factor_to_list(codes, (uint64_t) n, lev_off, lev_bytes);
+    free(lev_off);
+    free(lev_bytes);
+    free(codes);
+  } else if (dm != NULL &&
+             (nent == 1 ||
+              (nent == 2 && cls != NULL && type == MIZU_TYPE_REAL &&
+               class_is(cls, "integer64", NULL)))) {
+    out = tree_dim_view(owner, loan,
+                        nent == 2 ? MIZU_TYPE_INT64 : type, data, n,
+                        valid, nulls, dm);
+  } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
+             type == MIZU_TYPE_REAL) {
+    out = realv_to_datetime(data, (uint64_t) n, 1);
+  } else if (cls != NULL &&
+             (nent == 1 ||
+              (nent == 2 && attr_find(ents, nent, "tzone") != NULL)) &&
+             class_is(cls, "POSIXct", "POSIXt") &&
+             type == MIZU_TYPE_REAL) {
+    out = realv_to_datetime(data, (uint64_t) n, 0);   /* tzone: display
+                                                         metadata, dropped */
+  } else {
+    ixr_no_home(ents, nent, "an attributed value");
+  }
+  attr_vals_free(ents, nent);
+  return out;
+}
+
+static PyObject *tree_walk(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size);
+
+/* One directory entry's wrap (generic mode): a nested list recurses, a
+   string leaf borrows its block, an attribute-free atomic borrows a view,
+   an attributed one runs the blob decision; a serialized leaf, a
+   VECSXP/STRSXP entry with a trailing blob, or the S4 bit declines
+   informatively. */
+static PyObject *tree_element(PyObject *owner, PyObject *loan,
+                              const uint8_t *base, size_t size, int64_t i) {
+  mizu_mizl_entry e;
+  if (mizu_mizl_elem(base, size, i, &e) != 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return NULL;
+  }
+  if (e.sexptype & MIZU_MIZL_S4) {
+    PyErr_SetString(MizuError, "pymizu: R S4 list trees do not cross the "
+                    "view tier");
+    return NULL;
+  }
+  const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
+  const uint8_t *data = base + e.data_offset;
+  const int64_t body = e.data_size - (int64_t) e.attrs_size;
+  if (tag == MIZU_TYPE_VEC) {
+    if (e.attrs_size != 0) goto newer;
+    return tree_walk(owner, loan, data, (size_t) e.data_size);
+  }
+  if (tag == MIZU_TYPE_STR) {
+    if (e.attrs_size != 0) goto newer;
+    mizu_mizs_geom g = mizu_mizs_geometry(e.length);
+    return mizu_py_strview_borrow(owner, loan, data, e.length,
+                                  body - g.data);
+  }
+  const size_t elt = mizu_type_elt_size(tag);
+  if (elt == 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a serialized leaf)");
+    return NULL;
+  }
+  const uint8_t *valid = e.valid[0] > 0 ? base + e.valid[0] : NULL;
+  if (e.attrs_size == 0)
+    return mizu_py_view_borrow(owner, loan, (uint8_t *) data,
+                               (Py_ssize_t) e.length * (Py_ssize_t) elt,
+                               tag, valid, e.valid[1]);
+  return mizu_py_atomic_home(owner, loan, tag, (uint8_t *) data, e.length,
+                             valid, e.valid[1], data + body,
+                             (size_t) e.attrs_size);
+newer:
+  PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                  "(a leaf of an unexpected form)");
+  return NULL;
+}
+
+static PyObject *tree_list(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size, int64_t n) {
+  PyObject *out = PyList_New((Py_ssize_t) n);
+  if (out == NULL) return NULL;
+  for (int64_t i = 0; i < n; i++) {
+    PyObject *v = tree_element(owner, loan, base, size, i);
+    if (v == NULL) {
+      Py_DECREF(out);
+      return NULL;
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, v);
+  }
+  return out;
+}
+
+/* names only: a dict of the element wraps; the names validated (one per
+   element, non-NA, unique — the sender's gate, re-checked here). */
+static PyObject *tree_dict(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size, int64_t n,
+                           const attr_ent *nm) {
+  Py_ssize_t nn = nm->kind == AV_STR ? 1 :
+    nm->kind == AV_STRLIST ? PyList_GET_SIZE(nm->val.obj) : -1;
+  if (nn != n) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region (the "
+                    "names do not match the element count)");
+    return NULL;
+  }
+  PyObject *out = PyDict_New();
+  if (out == NULL) return NULL;
+  for (int64_t i = 0; i < n; i++) {
+    PyObject *k;
+    if (nm->kind == AV_STR) {
+      k = PyUnicode_DecodeUTF8((const char *) nm->val.ptr,
+                               (Py_ssize_t) nm->val.count, NULL);
+      if (k == NULL) goto fail;
+    } else {
+      k = PyList_GET_ITEM(nm->val.obj, (Py_ssize_t) i);
+      if (!PyUnicode_Check(k)) {
+        PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                        "(an NA name)");
+        goto fail;
+      }
+      Py_INCREF(k);
+    }
+    int dup = PyDict_Contains(out, k);
+    if (dup != 0) {
+      Py_DECREF(k);
+      if (dup > 0)
+        PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                        "(duplicate names)");
+      goto fail;
+    }
+    PyObject *v = tree_element(owner, loan, base, size, i);
+    if (v == NULL || PyDict_SetItem(out, k, v) < 0) {
+      Py_DECREF(k);
+      Py_XDECREF(v);
+      goto fail;
+    }
+    Py_DECREF(k);
+    Py_DECREF(v);
+  }
+  return out;
+fail:
+  Py_DECREF(out);
+  return NULL;
+}
+
+/* The data.frame shape: the region-backed Frame — columns off the
+   directory entries, names and row.names off the root blob, the tree's
+   loan anchor on the shell. */
+static PyObject *tree_frame(PyObject *owner, PyObject *loan,
+                            const uint8_t *base, size_t size, int64_t n,
+                            const attr_ent *nm, const attr_ent *rn) {
+  if (n == 0 || n > (int64_t) (1u << 20)) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a frame without columns)");
+    return NULL;
+  }
+  int ncols = (int) n;
+  fcol *cols = calloc((size_t) ncols, sizeof(fcol));
+  if (cols == NULL) return PyErr_NoMemory();
+  int64_t nrow = -1;
+  for (int i = 0; i < ncols; i++) {
+    if (tree_column(base, size, i, &cols[i]) < 0) goto fail;
+    if (nrow < 0) nrow = cols[i].n;
+    else if (cols[i].n != nrow) {
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region (the "
+                      "frame's columns differ in length)");
+      goto fail;
+    }
+  }
+  frame_cols *fc = frame_cols_new(ncols, nrow);
+  if (fc == NULL) {
+    PyErr_NoMemory();
+    goto fail;
+  }
+  if (frame_names_build(fc, nm) < 0) goto names_fail;
+  PyObject *rownames = frame_rownames_build(rn, nrow);
+  if (rownames == NULL) goto names_fail;
+  free(fc->cols);
+  fc->cols = cols;
+  MizuFrame *self = (MizuFrame *) MizuFrameType.tp_alloc(&MizuFrameType, 0);
+  if (self == NULL) {
+    frame_cols_decref(fc);
+    Py_DECREF(rownames);
+    return NULL;
+  }
+  self->fc = fc;
+  self->row_names = rownames;
+  Py_INCREF(loan);
+  self->loan = loan;
+  return (PyObject *) self;
+names_fail:
+  frame_cols_decref(fc);
+fail:
+  for (int i = 0; i < ncols; i++) fcol_free(&cols[i]);
+  free(cols);
+  return NULL;
+}
+
+/* The root and leaf dict's shape decision: no attributes a plain list,
+   names only a dict, the data.frame shape a region-backed Frame, any
+   other attribute set the no-home error. */
+static PyObject *tree_home(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size, int64_t n,
+                           attr_ent *ents, int nent) {
+  attr_ent *nm = attr_find(ents, nent, "names");
+  attr_ent *cls = attr_find(ents, nent, "class");
+  attr_ent *rn = attr_find(ents, nent, "row.names");
+  if (nent == 0)
+    return tree_list(owner, loan, base, size, n);
+  if (nent == 1 && nm != NULL)
+    return tree_dict(owner, loan, base, size, n, nm);
+  if (nent == 3 && cls != NULL && nm != NULL && rn != NULL &&
+      class_is(cls, "data.frame", NULL))
+    return tree_frame(owner, loan, base, size, n, nm, rn);
+  ixr_no_home(ents, nent, "an attributed list");
+  return NULL;
+}
+
+/* A nested MIZL: validate through the core's check, read the blob first,
+   then the shape decision. */
+static PyObject *tree_walk(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size) {
+  int64_t n = 0, attrs_off = 0, attrs_size = 0, valid[2];
+  if (mizu_mizl_check(base, size, &n, &attrs_off, &attrs_size,
+                      valid) != 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return NULL;
+  }
+  int nent = 0;
+  attr_ent *ents = NULL;
+  if (attrs_size > 0) {
+    ents = blob_attrs(base + attrs_off, (size_t) attrs_size, &nent);
+    if (ents == NULL) return NULL;
+  }
+  PyObject *out = tree_home(owner, loan, base, size, n, ents, nent);
+  attr_vals_free(ents, nent);
+  return out;
+}
+
+PyObject *pymizu_tree_wrap(PyObject *owner, PyObject *loan,
+                           const uint8_t *base, size_t size, int64_t n,
+                           int64_t attrs_off, int64_t attrs_size) {
+  int nent = 0;
+  attr_ent *ents = NULL;
+  if (attrs_size > 0) {
+    ents = blob_attrs(base + attrs_off, (size_t) attrs_size, &nent);
+    if (ents == NULL) return NULL;
+  }
+  PyObject *out = tree_home(owner, loan, base, size, n, ents, nent);
+  attr_vals_free(ents, nent);
+  return out;
+}
+
+PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
+                                const uint8_t *base, size_t size,
+                                const char *path) {
+  const char *p = path;
+  if (*p++ != '[') goto corrupt;
+  const uint8_t *cur = base;
+  size_t cursz = size;
+  for (;;) {
+    if (*p < '1' || *p > '9') goto corrupt;
+    uint64_t v = (uint64_t) (*p++ - '0');
+    while (*p >= '0' && *p <= '9') {
+      const uint64_t d = (uint64_t) (*p - '0');
+      if (v > (uint64_t) INT64_MAX / 10 ||
+          (v == (uint64_t) INT64_MAX / 10 &&
+           d > (uint64_t) INT64_MAX % 10))
+        goto corrupt;
+      v = v * 10 + d;
+      p++;
+    }
+    const int64_t idx = (int64_t) v - 1;
+    if (*p == ']') {
+      if (p[1] != '\0') goto corrupt;
+      return tree_element(owner, loan, cur, cursz, idx);
+    }
+    if (*p != ',') goto corrupt;
+    p++;
+    mizu_mizl_entry e;
+    if (mizu_mizl_elem(cur, cursz, idx, &e) != 0) goto corrupt;
+    if ((e.sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
+        e.attrs_size != 0)
+      goto corrupt;
+    cur += e.data_offset;
+    cursz = (size_t) e.data_size;
+  }
+corrupt:
+  PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
 }
 
@@ -2442,6 +3062,7 @@ static void ixw_node(ixw *w, PyObject *obj) {
 
 static void Frame_dealloc(MizuFrame *self) {
   Py_CLEAR(self->row_names);
+  Py_CLEAR(self->loan);
   if (self->fc != NULL) frame_cols_decref(self->fc);
   MizuFrameType.tp_free((PyObject *) self);
 }
@@ -2483,6 +3104,36 @@ static PyObject *Frame_row_names_get(MizuFrame *self,
 static PyObject *fcol_to_list(const fcol *c) {
   PyObject *out = PyList_New((Py_ssize_t) c->n);
   if (out == NULL) return NULL;
+  if (c->kind == FCOL_STR64) {
+    mizu_mizs_geom g = mizu_mizs_geometry(c->n);
+    const uint8_t *block = c->values;
+    const uint8_t *validity = block + g.validity;
+    const int64_t *offs = (const int64_t *) (block + g.offsets);
+    const uint8_t *data = block + g.data;
+    for (int64_t i = 0; i < c->n; i++) {
+      PyObject *s;
+      if (!(validity[i / 8] & (1u << (i % 8)))) {
+        Py_INCREF(Py_None);
+        s = Py_None;
+      } else {
+        int64_t lo = offs[i], hi = offs[i + 1];
+        if (lo < 0 || hi < lo || hi > c->bytes_len) {
+          Py_DECREF(out);
+          PyErr_SetString(MizuError, "pymizu: invalid string data in "
+                          "shared region");
+          return NULL;
+        }
+        s = PyUnicode_DecodeUTF8((const char *) data + lo,
+                                 (Py_ssize_t) (hi - lo), NULL);
+        if (s == NULL) {
+          Py_DECREF(out);
+          return NULL;
+        }
+      }
+      PyList_SET_ITEM(out, (Py_ssize_t) i, s);
+    }
+    return out;
+  }
   if (c->kind == FCOL_STR) {
     const int32_t *offs = (const int32_t *) c->values;
     for (int64_t i = 0; i < c->n; i++) {
@@ -2510,7 +3161,13 @@ static PyObject *fcol_to_list(const fcol *c) {
       Py_INCREF(Py_None);
       s = Py_None;
     } else {
-      int32_t k = codes[i];
+      int32_t k = c->codes1 ? codes[i] - 1 : codes[i];
+      if (k < 0 || k >= c->nlev) {
+        Py_DECREF(out);
+        PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                        "(a factor code outside the levels)");
+        return NULL;
+      }
       s = PyUnicode_DecodeUTF8((const char *) c->bytes + c->lev_off[k],
                                c->lev_off[k + 1] - c->lev_off[k], NULL);
       if (s == NULL) {
@@ -2523,8 +3180,48 @@ static PyObject *fcol_to_list(const fcol *c) {
   return out;
 }
 
-static PyObject *fcol_to_obj(const fcol *c) {
+/* The column's region validity state for a borrowed view: the section
+   bitmap and count, known-NA-free, or the lazy-scan default. An owned
+   (lazily built) bitmap is not the region's — the view re-scans. */
+static void fcol_view_valid(const fcol *c, const uint8_t **valid,
+                            int64_t *nulls) {
+  if (c->valid != NULL && !c->valid_owned) {
+    *valid = c->valid;
+    *nulls = c->vnulls;
+  } else if (c->known_free) {
+    *valid = NULL;
+    *nulls = -1;
+  } else {
+    *valid = NULL;
+    *nulls = 0;
+  }
+}
+
+/* to_dict's column object: a borrowed fixed-width column wraps as a view
+   over the region (owner/loan the frame's anchor); the rest copy. */
+static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
+                             PyObject *loan) {
   uint64_t n = (uint64_t) c->n;
+  if (c->borrowed) {
+    int type;
+    switch (c->kind) {
+    case FCOL_F64: type = MIZU_TYPE_REAL; break;
+    case FCOL_I32: type = MIZU_TYPE_INT; break;
+    case FCOL_I64: type = MIZU_TYPE_INT64; break;
+    case FCOL_U8: type = MIZU_TYPE_RAW; break;
+    case FCOL_C128: type = MIZU_TYPE_CPLX; break;
+    default: type = 0; break;
+    }
+    if (type != 0) {
+      const uint8_t *valid;
+      int64_t nulls;
+      fcol_view_valid(c, &valid, &nulls);
+      return mizu_py_view_borrow(owner, loan, c->values,
+                                 (Py_ssize_t) c->n *
+                                 (Py_ssize_t) mizu_type_elt_size(type),
+                                 type, valid, nulls);
+    }
+  }
   switch (c->kind) {
   case FCOL_F64:
     return ixr_vec_raw("float64", c->values, n, 8);
@@ -2545,6 +3242,7 @@ static PyObject *fcol_to_obj(const fcol *c) {
     return ixr_vec_conv("bool", c->values, n, 1, conv_lgl_bool, &s);
   }
   case FCOL_STR:
+  case FCOL_STR64:
   case FCOL_DICT:
     return fcol_to_list(c);
   case FCOL_DATE: {
@@ -2581,10 +3279,12 @@ complex128 here (the Arrow export has no complex type).");
 
 static PyObject *Frame_to_dict(MizuFrame *self, PyObject *Py_UNUSED(a)) {
   frame_cols *fc = self->fc;
+  PyObject *owner = self->loan != NULL ? mizu_py_loan_owner(self->loan) :
+    NULL;
   PyObject *out = PyDict_New();
   if (out == NULL) return NULL;
   for (int i = 0; i < fc->ncols; i++) {
-    PyObject *v = fcol_to_obj(&fc->cols[i]);
+    PyObject *v = fcol_to_obj(&fc->cols[i], owner, self->loan);
     if (v == NULL) {
       Py_DECREF(out);
       return NULL;
@@ -2604,12 +3304,64 @@ static PyObject *Frame_to_dict(MizuFrame *self, PyObject *Py_UNUSED(a)) {
   return out;
 }
 
-/* The validity bitmap + (for LGL) the bit-packed values, built lazily at
-   the export. Returns the null count, -1 on OOM. */
+/* The STR64 column's one pre-export pass: span bounds and the encoding
+   bytes (a latin1/bytes element declines, naming its index; CE_NATIVE
+   spans UTF-8-validate — the sender's MIZS filter keeps one off this
+   path, a defense), fused with the null count. */
+static int64_t fcol_str64_check(fcol *c) {
+  mizu_mizs_geom g = mizu_mizs_geometry(c->n);
+  const uint8_t *block = c->values;
+  const uint8_t *validity = block + g.validity;
+  const int64_t *offs = (const int64_t *) (block + g.offsets);
+  const uint8_t *enc = block + g.encoding;
+  const uint8_t *data = block + g.data;
+  const int64_t str_bytes = c->bytes_len;
+  int64_t nulls = 0;
+  for (int64_t i = 0; i < c->n; i++) {
+    if (!(validity[i / 8] & (1u << (i % 8)))) {
+      nulls++;
+      continue;
+    }
+    int64_t lo = offs[i], hi = offs[i + 1];
+    if (lo < 0 || hi < lo || hi > str_bytes) {
+      PyErr_SetString(MizuError,
+                      "pymizu: invalid string data in shared region");
+      return -1;
+    }
+    if (enc[i] == MIZU_CE_LATIN1 || enc[i] == MIZU_CE_BYTES) {
+      PyErr_Format(MizuError,
+                   "pymizu: string %lld has an encoding that does not "
+                   "cross to Arrow (latin1/bytes)", (long long) i);
+      return -1;
+    }
+    if (enc[i] == MIZU_CE_NATIVE && !ix_utf8_valid(data + lo, hi - lo)) {
+      PyErr_Format(MizuError,
+                   "pymizu: string %lld is not valid UTF-8",
+                   (long long) i);
+      return -1;
+    }
+  }
+  c->enc_ok = 1;
+  return nulls;
+}
+
+/* The validity bitmap + (for LGL) the bit-packed values + (for a
+   region-borrowed DICT) the 0-based codes, built lazily at the export.
+   Returns the null count, -1 on OOM. */
 static int64_t fcol_ensure_export(fcol *c) {
   int64_t n = c->n, nulls = 0;
   if (c->kind == FCOL_U8) return 0;
-  if (c->valid == NULL) {
+  if (c->kind == FCOL_STR64) {
+    if (!c->enc_ok) {
+      int64_t nn = fcol_str64_check(c);
+      if (nn < 0) return -1;
+      nulls = nn;
+    } else if (c->valid != NULL) {
+      for (int64_t i = 0; i < n; i++) nulls += !bitmap_at(c->valid, i);
+    }
+    return nulls;
+  }
+  if (c->valid == NULL && !c->known_free) {
     uint8_t *valid = calloc(((size_t) n + 7) / 8, 1);
     if (valid == NULL) return -1;
     int any = 0;
@@ -2653,26 +3405,36 @@ static int64_t fcol_ensure_export(fcol *c) {
       valid = NULL;
     } else {
       c->valid = valid;
+      c->valid_owned = 1;
     }
-    /* the bit-packed values build at export, nulls or not */
-    if (c->kind == FCOL_LGL && c->bits == NULL) {
-      c->bits = calloc(((size_t) n + 7) / 8, 1);
-      if (c->bits == NULL) return -1;
-      const int32_t *v = (const int32_t *) c->values;
-      for (int64_t i = 0; i < n; i++)
-        if ((valid == NULL || bitmap_at(valid, i)) && v[i] != 0)
-          c->bits[i >> 3] |= 1 << (i & 7);
-    }
-    return nulls;
   }
-  for (int64_t i = 0; i < n; i++) nulls += !bitmap_at(c->valid, i);
+  if (c->valid != NULL)
+    for (int64_t i = 0; i < n; i++) nulls += !bitmap_at(c->valid, i);
+  /* the bit-packed values build at export, nulls or not */
   if (c->kind == FCOL_LGL && c->bits == NULL) {
     c->bits = calloc(((size_t) n + 7) / 8, 1);
     if (c->bits == NULL) return -1;
     const int32_t *v = (const int32_t *) c->values;
     for (int64_t i = 0; i < n; i++)
-      if (bitmap_at(c->valid, i) && v[i] != 0)
+      if ((c->valid == NULL || bitmap_at(c->valid, i)) && v[i] != 0)
         c->bits[i >> 3] |= 1 << (i & 7);
+  }
+  /* the region's 1-based factor codes shift to 0-based at export */
+  if (c->kind == FCOL_DICT && c->codes1 && c->codes0 == NULL) {
+    c->codes0 = malloc((size_t) (n != 0 ? n : 1) * 4);
+    if (c->codes0 == NULL) return -1;
+    const int32_t *v = (const int32_t *) c->values;
+    for (int64_t i = 0; i < n; i++) {
+      if (v[i] == MIZU_NA_INT32) {
+        c->codes0[i] = MIZU_NA_INT32;
+      } else if (v[i] < 1 || (int64_t) v[i] > c->nlev) {
+        PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                        "(a factor code outside the levels)");
+        return -1;
+      } else {
+        c->codes0[i] = v[i] - 1;
+      }
+    }
   }
   return nulls;
 }
@@ -2691,6 +3453,11 @@ typedef struct frame_export {
   int served;
   int released;             /* the stream's own release obligation */
   char err[160];            /* get_last_error's text */
+  mizu_shm *acq;            /* a region-backed frame's own acquisition
+                               (one fresh mapping + counted loan per
+                               export, as __arrow_c_array__'s) */
+  long acq_pid;
+  ptrdiff_t acq_delta;      /* its mapping minus the frame's (the rebase) */
   ArrowSchema root_s;
   ArrowSchema *col_s;         /* [ncols] */
   ArrowSchema **col_s_ptr;    /* [ncols] */
@@ -2718,6 +3485,11 @@ typedef struct frame_export {
 static void frame_export_decref(frame_export *ex) {
   if (atomic_fetch_sub_explicit(&ex->refs, 1, memory_order_acq_rel) != 1)
     return;
+  if (ex->acq != NULL) {
+    mizu_py_debug_span_remove(mizu_shm_addr(ex->acq));
+    if (ex->acq_pid == mizu_self_pid()) mizu_zc_unref(ex->acq);
+    mizu_shm_close(ex->acq, 0);
+  }
   frame_cols_decref(ex->fc);
   free(ex->col_s);
   free(ex->col_s_ptr);
@@ -2733,15 +3505,29 @@ static void frame_export_decref(frame_export *ex) {
   free(ex);
 }
 
+/* The C Data Interface's release discipline: the consumer releases the
+   struct it received (the root); children and dictionaries ride the
+   parent's release. Each struct's callback is still idempotent (a
+   consumer that releases children itself finds release NULL). */
 static void fx_schema_release(ArrowSchema *s) {
   frame_export *ex = (frame_export *) s->private_data;
   s->release = NULL;
+  for (int64_t i = 0; i < s->n_children; i++)
+    if (s->children[i]->release != NULL)
+      s->children[i]->release(s->children[i]);
+  if (s->dictionary != NULL && s->dictionary->release != NULL)
+    s->dictionary->release(s->dictionary);
   frame_export_decref(ex);
 }
 
 static void fx_array_release(ArrowArray *a) {
   frame_export *ex = (frame_export *) a->private_data;
   a->release = NULL;
+  for (int64_t i = 0; i < a->n_children; i++)
+    if (a->children[i]->release != NULL)
+      a->children[i]->release(a->children[i]);
+  if (a->dictionary != NULL && a->dictionary->release != NULL)
+    a->dictionary->release(a->dictionary);
   frame_export_decref(ex);
 }
 
@@ -2862,7 +3648,8 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     int64_t nn = fcol_ensure_export(&fc->cols[i]);
     if (nn < 0) {
       free(nulls);
-      return PyErr_NoMemory();
+      if (!PyErr_Occurred()) PyErr_NoMemory();
+      return NULL;
     }
     nulls[i] = nn;
   }
@@ -2871,11 +3658,35 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
   if (ex == NULL || st == NULL) {
     free(ex);
     free(st);
+    free(nulls);
     return PyErr_NoMemory();
   }
   atomic_init(&ex->refs, 2);   /* the capsule's + the stream's release */
   ex->fc = fc;
   atomic_fetch_add_explicit(&fc->refs, 1, memory_order_relaxed);
+  if (self->loan != NULL) {
+    /* the region-backed export's own mapping and counted loan, so the
+       exported arrays stay valid past the frame's death (the release
+       callbacks subs and unmap, pure C with no GIL) */
+    mizu_shm *oshm = mizu_py_loan_shm(self->loan);
+    mizu_shm *acq = NULL;
+    if (oshm == NULL ||
+        mizu_shm_open_view(&acq, mizu_shm_name(oshm)) != MIZU_OK) {
+      PyErr_SetString(MizuError, oshm == NULL ?
+                      "pymizu: the frame has no region" :
+                      mizu_last_error_message());
+      free(nulls);
+      frame_export_decref(ex);
+      frame_export_decref(ex);
+      free(st);
+      return NULL;
+    }
+    ex->acq = acq;
+    ex->acq_pid = mizu_self_pid();
+    ex->acq_delta = (const uint8_t *) mizu_shm_addr(acq) -
+      (const uint8_t *) mizu_shm_addr(oshm);
+    mizu_py_debug_span_add(mizu_shm_addr(acq), mizu_shm_size(acq));
+  }
   ex->col_s = calloc((size_t) ncols, sizeof(ArrowSchema));
   ex->col_s_ptr = calloc((size_t) ncols, sizeof(ArrowSchema *));
   ex->dict_s = calloc((size_t) ncols, sizeof(ArrowSchema));
@@ -2890,6 +3701,7 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
       ex->col_a == NULL || ex->col_a_ptr == NULL || ex->dict_a == NULL ||
       ex->bufs == NULL || ex->dict_bufs == NULL || ex->fmts == NULL ||
       ex->cname_ptrs == NULL) {
+    free(nulls);
     frame_export_decref(ex);
     frame_export_decref(ex);
     free(st);
@@ -2901,6 +3713,7 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     size_t total = (size_t) fc->name_off[ncols] + (size_t) ncols;
     ex->cnames = malloc(total);
     if (ex->cnames == NULL) {
+      free(nulls);
       frame_export_decref(ex);
       frame_export_decref(ex);
       free(st);
@@ -2946,6 +3759,7 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     case FCOL_U8: fmt = "C"; break;
     case FCOL_LGL: fmt = "b"; break;
     case FCOL_STR: fmt = "u"; break;
+    case FCOL_STR64: fmt = "U"; break;
     case FCOL_DICT: fmt = "i"; break;
     case FCOL_DATE: fmt = "tdD"; break;
     case FCOL_TS:
@@ -2965,20 +3779,37 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     a->buffers = bufs;
     a->n_children = 0;
     a->release = NULL;
-    bufs[0] = c->valid;
+    /* a borrowed column's region pointers rebase onto this export's own
+       mapping (an owned product — the lazy bitmap, the codes shift, the
+       bit-pack — does not) */
+    const uint8_t *vals = c->values;
+    const uint8_t *vld = c->valid;
+    if (c->borrowed) {
+      vals += ex->acq_delta;
+      if (vld != NULL && !c->valid_owned) vld += ex->acq_delta;
+    }
+    bufs[0] = vld;
     switch (c->kind) {
     case FCOL_STR:
       a->n_buffers = 3;
       bufs[1] = c->values;
       bufs[2] = c->bytes;
       break;
+    case FCOL_STR64: {
+      mizu_mizs_geom g = mizu_mizs_geometry(c->n);
+      a->n_buffers = 3;
+      bufs[0] = vals + g.validity;
+      bufs[1] = vals + g.offsets;
+      bufs[2] = vals + g.data;
+      break;
+    }
     case FCOL_LGL:
       a->n_buffers = 2;
       bufs[1] = c->bits;
       break;
     case FCOL_DICT: {
       a->n_buffers = 2;
-      bufs[1] = c->values;
+      bufs[1] = c->codes1 ? (const void *) c->codes0 : (const void *) vals;
       ArrowSchema *ds = &ex->dict_s[i];
       ArrowArray *da = &ex->dict_a[i];
       ds->format = "u";
@@ -3003,10 +3834,11 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     }
     default:
       a->n_buffers = 2;
-      bufs[1] = c->values;
+      bufs[1] = vals;
       break;
     }
   }
+  free(nulls);
   st->get_schema = fx_get_schema;
   st->get_next = fx_get_next;
   st->get_last_error = fx_get_last_error;
@@ -3051,7 +3883,7 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
       c->kind == FCOL_U8 ? "C" :
       c->kind == FCOL_C128 ? "Z" :
       c->kind == FCOL_LGL ? "b" :
-      c->kind == FCOL_STR ? "s" :
+      c->kind == FCOL_STR || c->kind == FCOL_STR64 ? "s" :
       c->kind == FCOL_DICT ? "d" :
       c->kind == FCOL_DATE ? "D" : "t";
     if (payload == NULL) goto fail;
@@ -3104,10 +3936,39 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
         }
         break;
       }
+      case FCOL_STR64: {
+        mizu_mizs_geom g = mizu_mizs_geometry(c->n);
+        const uint8_t *block = c->values;
+        if (!(block[g.validity + j / 8] & (1u << (j % 8)))) {
+          Py_INCREF(Py_None);
+          v = Py_None;
+        } else {
+          const int64_t *offs = (const int64_t *) (block + g.offsets);
+          int64_t lo = offs[j], hi = offs[j + 1];
+          if (lo < 0 || hi < lo || hi > c->bytes_len) {
+            PyErr_SetString(MizuError, "pymizu: invalid string data in "
+                            "shared region");
+          } else {
+            v = PyUnicode_DecodeUTF8((const char *) block + g.data + lo,
+                                     (Py_ssize_t) (hi - lo), NULL);
+          }
+        }
+        break;
+      }
       case FCOL_DICT: {
         const int32_t *codes = (const int32_t *) c->values;
-        v = codes[j] == MIZU_NA_INT32 ? (Py_INCREF(Py_None), Py_None) :
-          PyLong_FromLong(codes[j]);
+        if (codes[j] == MIZU_NA_INT32) {
+          Py_INCREF(Py_None);
+          v = Py_None;
+        } else {
+          int32_t k = c->codes1 ? codes[j] - 1 : codes[j];
+          if (k < 0 || k >= c->nlev) {
+            PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                            "(a factor code outside the levels)");
+          } else {
+            v = PyLong_FromLong(k);
+          }
+        }
         break;
       }
       }
@@ -3472,6 +4333,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     }
     self->fc = fc;
     self->row_names = rownames;
+    self->loan = NULL;
     return (PyObject *) self;
   }
 fc_malformed:
@@ -4636,6 +5498,13 @@ PyObject *pymizu_ix_write_stream(PyObject *obj) {
 }
 
 /* Module init: the Frame type, the shared exceptions, _frame_rebuild. */
+/* The REF staging helper's Frame half (pyinterop.h): the region loan
+   anchor of a region-backed Frame, NULL for anything else. */
+PyObject *mizu_py_frame_loan(PyObject *obj) {
+  if (!PyObject_TypeCheck(obj, &MizuFrameType)) return NULL;
+  return ((MizuFrame *) obj)->loan;
+}
+
 int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
                              PyObject *declined_error) {
   MizuError = mizu_error;

@@ -140,3 +140,52 @@ def test_interop_temporal_frame_without_numpy(tmp_path):
         h.destroy()
         """,
     )
+
+
+def test_tree_wrap_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+
+        try:
+            launcher = pymizu.r_launcher()
+        except pymizu.MizuError:
+            print("no Rscript/mizu — skipping")
+            raise SystemExit(0)
+
+        src = '''
+        x <- list(a = runif(200000), b = 1:200000 * 2L)
+        mizu::mizu_send(ch, x)
+        df <- data.frame(x = 1:300000, s = rep(c("a", "b", NA), 100000),
+                         stringsAsFactors = FALSE)
+        mizu::mizu_send(ch, df)
+        m <- matrix(runif(200000), nrow = 400)
+        mizu::mizu_send(ch, m)
+        mizu::mizu_recv(ch, timeout = 60)
+        '''
+        ch = pymizu.Channel.create(src, launcher=launcher)
+        try:
+            # a named list: a dict of bare _ShmView exporters
+            d = ch.recv(60)
+            assert type(d) is dict and sorted(d) == ["a", "b"]
+            assert memoryview(d["a"]).format == "d"
+            assert memoryview(d["b"]).format == "i"
+            assert memoryview(d["b"])[:3].tolist() == [2, 4, 6]
+            # a frame: numeric columns as views, the string block a list
+            f = ch.recv(60)
+            cols = f.to_dict()
+            assert memoryview(cols["x"])[:3].tolist() == [1, 2, 3]
+            assert memoryview(cols["x"]).format == "i"
+            assert cols["s"][:3] == ["a", "b", None]
+            # a matrix needs numpy for the F-order reshape: the recv
+            # declines informatively (consumed, the channel unharmed)
+            try:
+                ch.recv(60)
+                raise AssertionError("expected the matrix to decline")
+            except pymizu.MizuError as e:
+                assert "needs numpy" in str(e)
+        finally:
+            ch.close()
+        """,
+    )

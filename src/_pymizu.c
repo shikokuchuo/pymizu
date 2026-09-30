@@ -57,6 +57,8 @@ static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max);
 static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
 static PyObject *view_to_object(PyObject *view, int type);
+static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
+                    uint32_t inline_max);
 
 static PyObject *numpy_module(void);
 
@@ -1464,6 +1466,15 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     Py_DECREF(list);
     return rc;
   }
+  {
+    /* a region-backed Frame re-sent whole: the region name (REF, the
+       3.7 rule extended to the frame home); anything else takes the
+       by-value paths below */
+    PyObject *flo = mizu_py_frame_loan(obj);
+    if (flo != NULL &&
+        ref_emit(mizu_py_loan_shm(flo), hdr, payload, inline_max) == 0)
+      return 0;
+  }
   if (PyObject_CheckBuffer(obj) && !buffer_subclass_reject(obj)) {
     Py_buffer v;
     /* not PyBUF_C_CONTIGUOUS (it implies WRITABLE): a read-only buffer —
@@ -1855,6 +1866,15 @@ typedef struct {
   uint8_t *data;          /* the region base + MIZU_HEADER_SIZE */
   Py_ssize_t len;         /* data bytes */
   int type;               /* the wire type tag */
+  PyObject *loan;         /* NULL: the dealloc subs the loan itself (a
+                             top-level view). Set: a _ShmLoan anchor, for
+                             a view borrowed from a tree wrap — the tree
+                             holds one loan, subbed at the last view's
+                             release, and this reference keeps it alive */
+  const uint8_t *valid;   /* a tree leaf's validity bitmap (borrowed);
+                             consulted only when loan != NULL */
+  int64_t valid_nulls;    /* valid's null count; -1 known-NA-free, 0 with
+                             valid NULL: the lazy sentinel scan */
   signed char na_state;   /* to_numpy's cached verdict: 0 unknown,
                              1 NA-free, -1 has-NAs (the {0, 0} scan only) */
   long pid;
@@ -1877,8 +1897,50 @@ typedef struct {
   const uint8_t *data;       /* the packed string bytes */
   int64_t n;
   int64_t str_bytes;         /* the packed area's size; bounds each span */
+  PyObject *loan;            /* the tree-borrow anchor, as MizuShmView */
   long pid;
 } MizuShmStrView;
+
+/* The tree wrap's one zc loan: every element view of the tree holds a
+   reference (their `loan`), so the sub fires at the last view's release
+   — the mirror of the R list view's keeper chain (one count per root,
+   element views riding it). */
+typedef struct {
+  PyObject_HEAD
+  MizuShmOwner *owner;
+  long pid;
+} MizuShmLoan;
+
+static PyTypeObject MizuShmLoanType;
+
+static void loan_dealloc(MizuShmLoan *self) {
+  if (self->owner != NULL) {
+    if (self->pid == mizu_self_pid())
+      mizu_zc_unref(self->owner->shm);   /* the tree's one loan */
+    Py_DECREF(self->owner);
+  }
+  MizuShmLoanType.tp_free((PyObject *) self);
+}
+
+static PyTypeObject MizuShmLoanType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pymizu._ShmLoan",
+  .tp_basicsize = sizeof(MizuShmLoan),
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "The one zc loan anchoring a tree wrap's element views.",
+  .tp_dealloc = (destructor) loan_dealloc,
+};
+
+/* The anchor behind a tree wrap. Takes over the counted add the open
+   already made (subs at dealloc); NULL with an exception. */
+static PyObject *loan_new(MizuShmOwner *owner) {
+  MizuShmLoan *l = (MizuShmLoan *) MizuShmLoanType.tp_alloc(&MizuShmLoanType, 0);
+  if (l == NULL) return NULL;
+  Py_INCREF(owner);
+  l->owner = owner;
+  l->pid = mizu_self_pid();
+  return (PyObject *) l;
+}
 
 static const char *view_format(int type) {
   switch (type) {
@@ -1922,8 +1984,11 @@ static int view_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
 
 static void view_dealloc(MizuShmView *self) {
   if (self->owner != NULL) {
-    if (self->pid == mizu_self_pid())
+    if (self->loan != NULL) {
+      Py_DECREF(self->loan);   /* a tree-borrowed view: the anchor subs */
+    } else if (self->pid == mizu_self_pid()) {
       mizu_zc_unref(self->owner->shm);   /* the consumer's loan, once-only */
+    }
     Py_DECREF(self->owner);
   }
   MizuShmViewType.tp_free((PyObject *) self);
@@ -2014,7 +2079,10 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
   int rc = -1;
   mizu_shm *shm = view->owner != NULL ? view->owner->shm : NULL;
   int type = wire_type_of(v);
-  if (shm != NULL && v->buf == (void *) view->data && v->len == view->len &&
+  /* a tree-borrowed view (a leaf) never names the whole region: it goes
+     by value (the path form is the R writer's) */
+  if (view->loan == NULL && shm != NULL &&
+      v->buf == (void *) view->data && v->len == view->len &&
       (type == view->type ||
        (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL)))
     rc = ref_emit(shm, hdr, payload, inline_max);
@@ -2029,8 +2097,73 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
 static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max) {
   MizuShmStrView *sv = (MizuShmStrView *) obj;
+  if (sv->loan != NULL) return -1;   /* a tree leaf goes by value */
   return ref_emit(sv->owner != NULL ? sv->owner->shm : NULL, hdr, payload,
                   inline_max);
+}
+
+// The live export acquisitions' mapping spans (test-only) -------------------------
+
+/* The aliasing assertions read a consumer's data pointer against the
+   live acquisitions' own mappings. Releases may run on any thread with
+   no GIL, so a spinlock guards the table. */
+#define MIZU_DEBUG_SPAN_MAX 64
+static struct { void *base; size_t size; } mizu_debug_spans[MIZU_DEBUG_SPAN_MAX];
+static _Atomic int mizu_debug_span_n;
+static atomic_flag mizu_debug_span_lock = ATOMIC_FLAG_INIT;
+
+void mizu_py_debug_span_add(void *base, size_t size) {
+  while (atomic_flag_test_and_set_explicit(&mizu_debug_span_lock,
+                                           memory_order_acquire)) {}
+  int n = atomic_load_explicit(&mizu_debug_span_n, memory_order_relaxed);
+  if (n < MIZU_DEBUG_SPAN_MAX) {
+    mizu_debug_spans[n].base = base;
+    mizu_debug_spans[n].size = size;
+    atomic_store_explicit(&mizu_debug_span_n, n + 1, memory_order_relaxed);
+  }
+  atomic_flag_clear_explicit(&mizu_debug_span_lock, memory_order_release);
+}
+
+void mizu_py_debug_span_remove(void *base) {
+  while (atomic_flag_test_and_set_explicit(&mizu_debug_span_lock,
+                                           memory_order_acquire)) {}
+  int n = atomic_load_explicit(&mizu_debug_span_n, memory_order_relaxed);
+  for (int i = 0; i < n; i++)
+    if (mizu_debug_spans[i].base == base) {
+      mizu_debug_spans[i] = mizu_debug_spans[n - 1];
+      atomic_store_explicit(&mizu_debug_span_n, n - 1,
+                            memory_order_relaxed);
+      break;
+    }
+  atomic_flag_clear_explicit(&mizu_debug_span_lock, memory_order_release);
+}
+
+PyDoc_STRVAR(debug_export_spans_doc,
+"_debug_export_spans() -> list[(int, int)]\n\n\
+Test-only: the (address, size) spans of the live Arrow export\n\
+acquisitions' own mappings, for zero-copy aliasing assertions.");
+
+static PyObject *pymizu_debug_export_spans(PyObject *Py_UNUSED(m),
+                                           PyObject *Py_UNUSED(a)) {
+  PyObject *out = PyList_New(0);
+  if (out == NULL) return NULL;
+  while (atomic_flag_test_and_set_explicit(&mizu_debug_span_lock,
+                                           memory_order_acquire)) {}
+  int n = atomic_load_explicit(&mizu_debug_span_n, memory_order_relaxed);
+  for (int i = 0; i < n; i++) {
+    PyObject *t = Py_BuildValue("(nn)",
+                                (Py_ssize_t) mizu_debug_spans[i].base,
+                                (Py_ssize_t) mizu_debug_spans[i].size);
+    if (t == NULL || PyList_Append(out, t) < 0) {
+      Py_XDECREF(t);
+      Py_DECREF(out);
+      out = NULL;
+      break;
+    }
+    Py_DECREF(t);
+  }
+  atomic_flag_clear_explicit(&mizu_debug_span_lock, memory_order_release);
+  return out;
 }
 
 // Arrow export (the view's __arrow_c_array__) ------------------------------------
@@ -2056,6 +2189,7 @@ static void arrow_schema_release(ArrowSchema *s) {
 static void arrow_array_release(ArrowArray *a) {
   arrow_loan *loan = (arrow_loan *) a->private_data;
   if (loan != NULL) {
+    mizu_py_debug_span_remove(mizu_shm_addr(loan->shm));
     if (loan->pid == mizu_self_pid()) mizu_zc_unref(loan->shm);
     mizu_shm_close(loan->shm, 0);
     free(loan->bits);
@@ -2169,27 +2303,44 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
   }
   loan->shm = shm;
   loan->pid = mizu_self_pid();
+  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
   loan->bits = NULL;
   loan->valid = NULL;
   const uint8_t *base = (const uint8_t *) mizu_shm_addr(shm);
+  /* a tree-borrowed view's data lives mid-region: rebase the leaf span
+     onto this mapping (a top-level view's is the MIZH body) */
+  const uint8_t *data = base + MIZU_HEADER_SIZE;
+  if (v->loan != NULL)
+    data = base + (v->data -
+                   (const uint8_t *) mizu_shm_addr(v->owner->shm));
   const int64_t n =
     (int64_t) (v->len / (Py_ssize_t) mizu_type_elt_size(v->type));
   const size_t nb = ((size_t) n + 7) / 8;
   /* the validity source: the region's section when present, the lazy
      sentinel build when absent ({0, 0}), none when known-NA-free
-     ({0, -1}) */
+     ({0, -1}). A tree leaf reads its own verdict, never the root's. */
   const uint8_t *validity = NULL;
   int64_t null_count = 0;
   int build_valid = 0;
   if (want_valid) {
-    int64_t voff, vcount;
-    memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
-    memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
-    if (voff > 0) {
-      validity = base + voff;
-      null_count = vcount;
-    } else if (vcount == 0) {
-      build_valid = 1;
+    if (v->loan != NULL) {
+      if (v->valid != NULL) {
+        validity = base + (v->valid -
+                           (const uint8_t *) mizu_shm_addr(v->owner->shm));
+        null_count = v->valid_nulls;
+      } else if (v->valid_nulls == 0) {
+        build_valid = 1;
+      }
+    } else {
+      int64_t voff, vcount;
+      memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
+      memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
+      if (voff > 0) {
+        validity = base + voff;
+        null_count = vcount;
+      } else if (vcount == 0) {
+        build_valid = 1;
+      }
     }
   }
   if (pack_lgl) {
@@ -2197,7 +2348,7 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
        validity build fuses into the same pass */
     loan->bits = (uint8_t *) calloc(nb != 0 ? nb : 1, 1);
     if (loan->bits == NULL) goto nomem;
-    const int32_t *d32 = (const int32_t *) (base + MIZU_HEADER_SIZE);
+    const int32_t *d32 = (const int32_t *) data;
     if (build_valid) {
       loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
       if (loan->valid == NULL) goto nomem;
@@ -2226,7 +2377,7 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
     }
     buffers[1] = loan->bits;
   } else {
-    buffers[1] = base + MIZU_HEADER_SIZE;
+    buffers[1] = data;
     if (build_valid) {
       /* scan-only for INT/INT64: the values stay the region's pages. One
          fused pass counts and clears into an optimistically allocated
@@ -2239,14 +2390,14 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
       if (n % 8 != 0)
         loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
       if (v->type == MIZU_TYPE_INT) {
-        const int32_t *d32 = (const int32_t *) (base + MIZU_HEADER_SIZE);
+        const int32_t *d32 = (const int32_t *) data;
         for (int64_t i = 0; i < n; i++)
           if (d32[i] == MIZU_NA_INT32) {
             null_count++;
             loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
           }
       } else {
-        const int64_t *d64 = (const int64_t *) (base + MIZU_HEADER_SIZE);
+        const int64_t *d64 = (const int64_t *) data;
         for (int64_t i = 0; i < n; i++)
           if (d64[i] == MIZU_NA_INT64) {
             null_count++;
@@ -2288,8 +2439,18 @@ nomem:
 
 /* The validity section's verdict, no data read: 1 known-NA-free, -1 NAs
    present (*bitmap the section), 0 absent ({0, 0}) — the fallback-scan
-   state (to_numpy's rule, read off the region before any scan). */
+   state (to_numpy's rule, read off the region before any scan). A
+   tree-borrowed view reads its leaf's own verdict: the region root's
+   words belong to a different layout (an MIZL table, not this leaf's
+   bitmap). */
 static int view_valid_section(const MizuShmView *v, const uint8_t **bitmap) {
+  if (v->loan != NULL) {
+    if (v->valid != NULL) {
+      if (bitmap != NULL) *bitmap = v->valid;
+      return v->valid_nulls == 0 ? 1 : -1;
+    }
+    return v->valid_nulls == -1 ? 1 : 0;
+  }
   const uint8_t *base = (const uint8_t *) mizu_shm_addr(v->owner->shm);
   int64_t voff, vcount;
   memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
@@ -2482,8 +2643,11 @@ static PyTypeObject MizuShmViewType = {
 
 static void strview_dealloc(MizuShmStrView *self) {
   if (self->owner != NULL) {
-    if (self->pid == mizu_self_pid())
+    if (self->loan != NULL) {
+      Py_DECREF(self->loan);   /* a tree-borrowed view: the anchor subs */
+    } else if (self->pid == mizu_self_pid()) {
       mizu_zc_unref(self->owner->shm);   /* the consumer's loan, once-only */
+    }
     Py_DECREF(self->owner);
   }
   MizuShmStrViewType.tp_free((PyObject *) self);
@@ -2659,9 +2823,14 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
   }
   loan->shm = shm;
   loan->pid = mizu_self_pid();
+  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
   mizu_mizs_geom g = mizu_mizs_geometry(sv->n);
   const uint8_t *block =
     (const uint8_t *) mizu_shm_addr(shm) + MIZU_HEADER_SIZE;
+  if (sv->loan != NULL)   /* a tree leaf's block lives mid-region */
+    block = (const uint8_t *) mizu_shm_addr(shm) +
+      (sv->validity - g.validity -
+       (const uint8_t *) mizu_shm_addr(sv->owner->shm));
   schema->format = "U";   /* large_utf8 */
   schema->release = arrow_schema_release;
   array->length = sv->n;
@@ -2709,6 +2878,43 @@ static PyTypeObject MizuShmStrViewType = {
   .tp_methods = strview_methods,
 };
 
+/* The string view constructor over a string block (a region's or an
+   MIZL leaf's): the O(1) end-offset check, then the wrap. loan is the
+   tree-borrow anchor (NULL for a top-level view — its dealloc then subs
+   the region loan itself). NULL with an exception set. */
+static PyObject *strview_new(MizuShmOwner *owner, PyObject *loan,
+                             const uint8_t *block, int64_t n,
+                             int64_t str_bytes) {
+  mizu_mizs_geom g = mizu_mizs_geometry(n);
+  const uint8_t *offs = block + g.offsets;
+  int64_t first, last;
+  memcpy(&first, offs, 8);
+  memcpy(&last, offs + 8 * n, 8);
+  if (n < 0 || str_bytes < 0 || first != 0 || last < 0 ||
+      last > str_bytes) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return NULL;
+  }
+  MizuShmStrView *sv =
+    (MizuShmStrView *) MizuShmStrViewType.tp_alloc(&MizuShmStrViewType, 0);
+  if (sv == NULL) return NULL;
+  Py_INCREF(owner);
+  sv->owner = owner;
+  sv->validity = block + g.validity;
+  sv->offsets = (const int64_t *) (block + g.offsets);
+  sv->encoding = block + g.encoding;
+  sv->data = block + g.data;
+  sv->n = n;
+  sv->str_bytes = str_bytes;
+  sv->loan = NULL;
+  if (loan != NULL) {
+    Py_INCREF(loan);
+    sv->loan = loan;
+  }
+  sv->pid = mizu_self_pid();
+  return (PyObject *) sv;
+}
+
 /* Validate the MIZS header at the region base and wrap it as a string
    view. aux != 0 (the SHM_VEC wire form) cross-checks the staged type and
    exact byte count against the header. Attributes (names/class) decline —
@@ -2733,31 +2939,57 @@ static PyObject *strview_wrap(MizuShmOwner *owner, uint64_t aux) {
                     "(names/class), which do not cross the view tier");
     return NULL;
   }
-  {
-    mizu_mizs_geom g = mizu_mizs_geometry(n);
-    const uint8_t *offs = base + MIZU_HEADER_SIZE + g.offsets;
-    int64_t first, last;
-    memcpy(&first, offs, 8);
-    memcpy(&last, offs + 8 * n, 8);
-    if (first != 0 || last < 0 || last > block - g.data)
-      goto corrupt;
-    MizuShmStrView *sv =
-      (MizuShmStrView *) MizuShmStrViewType.tp_alloc(&MizuShmStrViewType, 0);
-    if (sv == NULL) return NULL;
-    Py_INCREF(owner);
-    sv->owner = owner;
-    sv->validity = base + MIZU_HEADER_SIZE + g.validity;
-    sv->offsets = (const int64_t *) (base + MIZU_HEADER_SIZE + g.offsets);
-    sv->encoding = base + MIZU_HEADER_SIZE + g.encoding;
-    sv->data = base + MIZU_HEADER_SIZE + g.data;
-    sv->n = n;
-    sv->str_bytes = block - g.data;
-    sv->pid = mizu_self_pid();
-    return (PyObject *) sv;
-  }
+  return strview_new(owner, NULL, base + MIZU_HEADER_SIZE, n,
+                     block - mizu_mizs_geometry(n).data);
 corrupt:
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
+}
+
+// Tree-borrow constructors (the MIZL walk's, via pyinterop.h) ---------------------
+
+/* A borrowed atomic view (an MIZL leaf or a path-REF target): the anchor
+   holds the tree's one loan. The user object is the numpy frombuffer
+   wrap, as for a top-level view. valid/nulls are the leaf's own verdict
+   (a borrowed view never reads the region root's words). */
+PyObject *mizu_py_view_borrow(PyObject *owner_obj, PyObject *loan,
+                              uint8_t *data, Py_ssize_t len, int type,
+                              const uint8_t *valid, int64_t nulls) {
+  MizuShmOwner *owner = (MizuShmOwner *) owner_obj;
+  MizuShmView *v = (MizuShmView *) MizuShmViewType.tp_alloc(&MizuShmViewType, 0);
+  if (v == NULL) return NULL;
+  Py_INCREF(owner);
+  v->owner = owner;
+  v->data = data;
+  v->len = len;
+  v->type = type;
+  v->valid = valid;
+  v->valid_nulls = nulls;
+  v->loan = NULL;
+  Py_INCREF(loan);
+  v->loan = loan;
+  v->pid = mizu_self_pid();
+  return view_to_object((PyObject *) v, type);
+}
+
+PyObject *mizu_py_strview_borrow(PyObject *owner_obj, PyObject *loan,
+                                 const uint8_t *block, int64_t n,
+                                 int64_t str_bytes) {
+  return strview_new((MizuShmOwner *) owner_obj, loan, block, n, str_bytes);
+}
+
+PyObject *mizu_py_loan_new(PyObject *owner_obj) {
+  return loan_new((MizuShmOwner *) owner_obj);
+}
+
+mizu_shm *mizu_py_loan_shm(PyObject *loan) {
+  MizuShmLoan *l = (MizuShmLoan *) loan;
+  return l->owner != NULL ? l->owner->shm : NULL;
+}
+
+PyObject *mizu_py_loan_owner(PyObject *loan) {
+  MizuShmLoan *l = (MizuShmLoan *) loan;
+  return (PyObject *) l->owner;   /* borrowed */
 }
 
 static PyObject *numpy_module(void) {
@@ -2816,6 +3048,43 @@ static PyObject *view_to_object(PyObject *view, int type) {
   return view;
 }
 
+/* The MIZL branch: the generic tree wrap (the region-backed homes —
+   plain list / dict / Frame). The walk and the shape decision live in
+   interop.c (the attr machinery and the Frame are there); the one zc
+   loan rides a _ShmLoan anchor the tree's element views keep alive.
+   aux != 0 cross-checks the staged type (VECSXP) and bounds the used
+   byte count. On failure the loan anchor's dealloc subs the open's
+   counted add; NULL with an exception. */
+static PyObject *tree_wrap_region(MizuShmOwner *owner, uint64_t aux) {
+  mizu_shm *shm = owner->shm;
+  const uint8_t *base = (const uint8_t *) mizu_shm_addr(shm);
+  size_t size = mizu_shm_size(shm);
+  int64_t n = 0, attrs_off = 0, attrs_size = 0, valid[2];
+  if (mizu_mizl_check(base, size, &n, &attrs_off, &attrs_size, valid) != 0)
+    goto corrupt;
+  if (aux != 0 &&
+      ((uint32_t) mizu_aux_type(aux) != (uint32_t) MIZU_TYPE_VEC ||
+       mizu_aux_hi(aux) > (uint64_t) size))
+    goto corrupt;
+  uint32_t flags;
+  memcpy(&flags, base + MIZU_HDR_FLAGS_OFF, 4);
+  if (flags & MIZU_HDR_FLAG_S4) {
+    PyErr_SetString(MizuError,
+                    "pymizu: R S4 list trees do not cross the view tier");
+    return NULL;
+  }
+  PyObject *loan = loan_new(owner);
+  if (loan == NULL) return NULL;
+  PyObject *out =
+    pymizu_tree_wrap((PyObject *) owner, loan, base, size, n,
+                     attrs_off, attrs_size);
+  Py_DECREF(loan);
+  return out;
+corrupt:
+  PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+  return NULL;
+}
+
 /* Validate the MIZH header at the region base and wrap it as a view. aux
    != 0 (the SHM_VEC wire form) cross-checks the staged type and exact byte
    count against the header. R attributes (names/dim/class) ride the layout
@@ -2837,6 +3106,11 @@ static PyObject *view_wrap_region(MizuShmOwner *owner, uint64_t aux) {
       if (sv == NULL) mizu_zc_unref(shm);
       return sv;
     }
+    if (magic == MIZU_MAGIC_LIST) {
+      PyObject *tw = tree_wrap_region(owner, aux);
+      if (tw == NULL) mizu_zc_unref(shm);
+      return tw;
+    }
     if (magic != MIZU_MAGIC_VEC) {
       err = "pymizu: unsupported shared-payload layout (R list views "
             "cannot cross to Python)";
@@ -2852,16 +3126,33 @@ static PyObject *view_wrap_region(MizuShmOwner *owner, uint64_t aux) {
   {
     int64_t attrs;
     memcpy(&attrs, base + 16, 8);
+    /* the used-byte total: the validity tail (aligned bitmap) rides the
+       aux on a foreign write whose NAs materialized a section */
+    size_t used = (size_t) MIZU_HEADER_SIZE + (size_t) length * elt +
+      (size_t) attrs;
+    if (valid[0] > 0)
+      used = MIZU_ALIGN64(used) + ((size_t) length + 7) / 8;
     if (aux != 0 &&
         ((uint32_t) mizu_aux_type(aux) != (uint32_t) type ||
-         mizu_aux_hi(aux) != (uint64_t) ((size_t) MIZU_HEADER_SIZE +
-                                        (size_t) length * elt +
-                                        (size_t) attrs)))
+         mizu_aux_hi(aux) != (uint64_t) used))
       goto corrupt;
     if (attrs != 0) {
-      err = "pymizu: R shared-vector payload carries attributes "
-            "(names/dim/class), which do not cross the view tier";
-      goto fail;
+      /* the §3.5 attributed root: the blob's shape decision (factor /
+         dim / Date / POSIXct, else the no-home error) — a view rides a
+         fresh loan anchor whose dealloc subs the open's counted add, a
+         copy lets the anchor lapse */
+      PyObject *loan = loan_new(owner);
+      if (loan == NULL) {
+        mizu_zc_unref(shm);
+        return NULL;
+      }
+      PyObject *out = mizu_py_atomic_home(
+        (PyObject *) owner, loan, type, base + MIZU_HEADER_SIZE, length,
+        valid[0] > 0 ? base + valid[0] : NULL, valid[1],
+        base + MIZU_HEADER_SIZE + length * (int64_t) elt,
+        (size_t) attrs);
+      Py_DECREF(loan);
+      return out;
     }
   }
   {
@@ -2872,6 +3163,8 @@ static PyObject *view_wrap_region(MizuShmOwner *owner, uint64_t aux) {
     v->data = base + MIZU_HEADER_SIZE;
     v->len = (Py_ssize_t) length * (Py_ssize_t) elt;
     v->type = type;
+    v->valid = NULL;
+    v->valid_nulls = 0;
     v->pid = mizu_self_pid();
     return view_to_object((PyObject *) v, type);
   }
@@ -2889,8 +3182,8 @@ fail:
    fresh and inserts. A vanished region is the realistic open failure — the
    consumer-done protocol guarantees the name outlives the frame, so a miss
    means the producer died; propagate via ctx->gone. */
-static PyObject *read_shm_vec(const uint8_t *name, uint32_t name_len,
-                              uint64_t aux, mizu_read_ctx *ctx) {
+static MizuShmOwner *open_region_owner(const uint8_t *name, uint32_t name_len,
+                                       mizu_read_ctx *ctx) {
   char buf[MIZU_NAME_MAX];
   memcpy(buf, name, name_len);
   buf[name_len] = '\0';
@@ -2913,15 +3206,23 @@ static PyObject *read_shm_vec(const uint8_t *name, uint32_t name_len,
     }
     if (vc != NULL) view_cache_insert(vc, buf, owner);
   }
+  return owner;
+}
+
+static PyObject *read_shm_vec(const uint8_t *name, uint32_t name_len,
+                              uint64_t aux, mizu_read_ctx *ctx) {
+  MizuShmOwner *owner = open_region_owner(name, name_len, ctx);
+  if (owner == NULL) return NULL;
   PyObject *r = view_wrap_region(owner, aux);
   Py_DECREF(owner);
   return r;
 }
 
 /* REF: the /mizu_ identifier of an object already in shm — the region name,
-   then an optional [i]... path into a list tree. A path leaf has no buffer
-   view (it lives inside an MIZL layout); a bare name resolves to the same
-   wrap as SHM_VEC, the counted add riding mizu_shm_open_view. */
+   then an optional [i,j,...] path into a list tree (1-based hops, the R
+   identifier's form). A bare name resolves to the same wrap as SHM_VEC,
+   the counted add riding the open; a path resolves through the tree walk
+   to the element's wrap, the tree's one loan on its anchor. */
 static PyObject *read_ref(const mizu_slot_hdr *hdr, const uint8_t *payload,
                           mizu_read_ctx *ctx) {
   uint32_t name_len = 0;
@@ -2932,12 +3233,29 @@ static PyObject *read_ref(const mizu_slot_hdr *hdr, const uint8_t *payload,
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
     return NULL;
   }
-  if (name_len < hdr->len) {
-    PyErr_SetString(MizuError, "pymizu: a view into an R list tree cannot "
-                    "cross to Python");
+  if (name_len == hdr->len)
+    return read_shm_vec(payload, name_len, 0, ctx);
+  MizuShmOwner *owner = open_region_owner(payload, name_len, ctx);
+  if (owner == NULL) return NULL;
+  char path[128];
+  if ((size_t) (hdr->len - name_len) >= sizeof path) {
+    Py_DECREF(owner);
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
     return NULL;
   }
-  return read_shm_vec(payload, name_len, 0, ctx);
+  memcpy(path, payload + name_len, (size_t) (hdr->len - name_len));
+  path[hdr->len - name_len] = '\0';
+  PyObject *loan = loan_new(owner);
+  if (loan == NULL) {
+    Py_DECREF(owner);
+    return NULL;
+  }
+  PyObject *out = pymizu_tree_walk_path(
+    (PyObject *) owner, loan, (const uint8_t *) mizu_shm_addr(owner->shm),
+    mizu_shm_size(owner->shm), path);
+  Py_DECREF(loan);
+  Py_DECREF(owner);
+  return out;
 }
 
 /* Codec read side: strict bounds throughout; anything torn or trailing is
@@ -3928,7 +4246,8 @@ static void chan_binding(mizu_binding *b) {
   b->read = py_chan_read;   /* the consume-on-decline read_fn; pools keep
                                py_read */
   b->check = py_check;
-  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS);
+  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON,
+                       MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL);
   /* exec/park/sweep/drop NULL: a channel never evals; submitter handles
      release the GIL around the whole verb, so no park hook; staging pins
      nothing, so no drop hook. */
@@ -4449,7 +4768,8 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->check = py_check;
   b->exec = worker ? py_exec : NULL;
   b->park = worker ? py_park : NULL;
-  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS);
+  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON,
+                       MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL);
   /* sweep/drop NULL: no per-handle caches, and staging pins nothing */
 }
 
@@ -6202,6 +6522,8 @@ static PyMethodDef pymizu_methods[] = {
   {"_write_err", (PyCFunction)(void (*)(void)) pymizu_write_err,
    METH_VARARGS | METH_KEYWORDS, write_err_doc},
   {"is_sentinel", pymizu_is_sentinel, METH_O, is_sentinel_doc},
+  {"_debug_export_spans", (PyCFunction) pymizu_debug_export_spans,
+   METH_NOARGS, debug_export_spans_doc},
   {"abi_version", (PyCFunction) pymizu_abi_version, METH_NOARGS, abi_version_doc},
   {"prune", (PyCFunction) pymizu_prune, METH_NOARGS, prune_doc},
   {"_tune_malloc", (PyCFunction) pymizu_tune_malloc, METH_NOARGS,
@@ -6248,6 +6570,7 @@ PyInit__pymizu(void)
   if (PyType_Ready(&MizuShmViewType) < 0) return NULL;
   if (PyType_Ready(&MizuShmStrViewType) < 0) return NULL;
   if (PyType_Ready(&MizuShmOwnerType) < 0) return NULL;
+  if (PyType_Ready(&MizuShmLoanType) < 0) return NULL;
   MizuTaskFrameType.tp_base = &PyTuple_Type;
   if (PyType_Ready(&MizuTaskFrameType) < 0) return NULL;
 
