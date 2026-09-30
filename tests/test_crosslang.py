@@ -526,7 +526,6 @@ report_err(bs)
 
 
 def test_crosslang_frame_and_arrow_consumers(r_mizu):
-    np = pytest.importorskip("numpy")
     pa = pytest.importorskip("pyarrow")
     pl = pytest.importorskip("polars")
     # data.frame -> Frame: to_dict with no Arrow library, consumers one line
@@ -569,7 +568,6 @@ mizu::mizu_send(ch, df)
 
 
 def test_crosslang_frame_relay_through_export(r_mizu):
-    np = pytest.importorskip("numpy")
     # a data.frame relayed R -> Python -> R through the received Frame's
     # own export: factor columns and row names included, identical()
     src = r"""
@@ -601,7 +599,6 @@ relay(data.frame(d = as.Date("2020-01-01") + 0:2,
 
 
 def test_crosslang_arrow_frames_to_dataframe(r_mizu):
-    np = pytest.importorskip("numpy")
     # Arrow frames write the frame shape, R reads a data.frame (polars,
     # pyarrow, pandas rows; multi-batch included)
     src = r"""

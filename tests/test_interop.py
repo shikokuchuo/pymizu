@@ -10,11 +10,11 @@ import pickle
 import warnings
 
 import pytest
+from tests import ix_notation as ixn
+from tests.helpers import foreign_pair
 
 import pymizu
 from pymizu import _pymizu
-from tests.helpers import foreign_pair
-from tests import ix_notation as ixn
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 pa = pytest.importorskip("pyarrow", reason="pyarrow not installed")
@@ -163,12 +163,18 @@ def test_temporal_shapes():
     # stdlib date / datetime scalars home as length-1 shapes
     got = _read(_pymizu._write_stream(datetime.date(2022, 3, 21)))
     assert got == np.array(["2022-03-21"], dtype="datetime64[D]")[0]
-    got = _read(_pymizu._write_stream(datetime.datetime(2023, 11, 14, 22, 13, 20)))
+    got = _read(
+        _pymizu._write_stream(datetime.datetime(2023, 11, 14, 22, 13, 20))
+    )
     assert got == np.array(["2023-11-14T22:13:20"], dtype="datetime64[us]")[0]
     # an aware datetime converts to its UTC instant
     import zoneinfo
     zi = zoneinfo.ZoneInfo("Europe/Paris")
-    got = _read(_pymizu._write_stream(datetime.datetime(2023, 11, 14, 22, 13, 20, tzinfo=zi)))
+    got = _read(
+        _pymizu._write_stream(
+            datetime.datetime(2023, 11, 14, 22, 13, 20, tzinfo=zi)
+        )
+    )
     assert got == np.array(["2023-11-14T21:13:20"], dtype="datetime64[us]")[0]
 
 
@@ -325,7 +331,7 @@ def test_random_corrupt_streams():
         except pymizu.MizuError:
             pass
         except Exception as e:  # noqa: BLE001 — anything else is a bug
-            raise AssertionError(f"unexpected {type(e).__name__}: {e}")
+            raise AssertionError(f"unexpected {type(e).__name__}: {e}") from e
     for _ in range(50):
         n = int(rng.integers(0, 40))
         blob = bytes(rng.integers(0, 256, n, dtype=np.uint8))
@@ -411,7 +417,11 @@ def test_pandas_frame_foreign():
     df2 = pd.DataFrame({"x": [1, 2]}, index=["r1", "r2"])
     h.send(df2)
     f = p.recv(5)
-    assert "__index_level_0__" in f.names or "index" in f.names or "x" in f.names
+    assert (
+        "__index_level_0__" in f.names
+        or "index" in f.names
+        or "x" in f.names
+    )
     # a named RangeIndex is dropped
     df3 = pd.DataFrame({"x": [1, 2]})
     df3.index.name = "myidx"
@@ -420,7 +430,9 @@ def test_pandas_frame_foreign():
     assert f.names == ("x",)
     # an ordered Categorical declines
     df4 = pd.DataFrame({
-        "c": pd.Series(["a"], dtype=pd.CategoricalDtype(["a", "b"], ordered=True))
+        "c": pd.Series(
+            ["a"], dtype=pd.CategoricalDtype(["a", "b"], ordered=True)
+        )
     })
     with pytest.raises(pymizu.DeclinedError, match="ordered"):
         h.send(df4)

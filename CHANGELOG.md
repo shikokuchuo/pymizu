@@ -10,6 +10,25 @@ Initial pre-release.
 
 ### Added
 
+- The `'I'` interchange stream on foreign-language channels: every handle
+  reads its peer's language and capability mask off the region at
+  handshake (the libmizu identity exchange), and a foreign peer gets the
+  portable interchange subset instead of the private codecs. Python
+  scalars, strings, lists, dicts, numpy arrays (1-D and n-D, any order),
+  `datetime64` and stdlib date/datetime temporals, Arrow arrays and
+  streams, and `pymizu.Frame` values cross to R; R sends its vectors,
+  lists, factors, `data.frame`s, `Date`/`POSIXct`, and matrices back.
+  Same-language channels are unchanged: identity dtypes on the raw tier,
+  everything else on pickle (the conversion pass and the Arrow front-ends
+  are foreign-only now).
+- `pymizu.Frame`: the `data.frame` home — `to_dict()` without an Arrow
+  library, `__arrow_c_stream__` for polars/pyarrow/pandas consumers,
+  picklable, and re-emitted as a `data.frame` on a foreign channel.
+- `pymizu.DeclinedError` (a `TypeError`): raised at send time for a value
+  outside the portable subset on a foreign channel, with `path` and
+  `reason` attributes.
+
+
 - `pymizu.Channel`: shared-memory SPSC channels between a Python process and
   a spawned peer (`python -m pymizu.child`), with batching, a
   serialization-free raw tier for `bytes` and 1-D contiguous numpy arrays,

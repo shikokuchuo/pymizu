@@ -627,6 +627,8 @@ __all__ = [
     "TIMEOUT",
     "CancelledError",
     "Channel",
+    "DeclinedError",
+    "Frame",
     "Pool",
     "MizuError",
     "ShmError",

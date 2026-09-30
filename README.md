@@ -54,10 +54,14 @@ Receives report terminal states as sentinel singletons — `pymizu.FULL`, `pymiz
 
 `None` crosses as an immediate.
 `bytes` and 1-D contiguous numpy arrays ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
-float64, int32, int64, complex128, and uint8 cross unchanged; every other fixed-width numeric dtype (bool, uint64, float32, ...) converts once at send time into the nearest R-compatible wire type — see the [dtype matrix](#the-dtype-matrix).
-Arrow arrays (anything with `__arrow_c_array__`: pyarrow, polars, a duckdb result column) cross the same way, with Arrow nulls becoming R missing values.
+float64, int32, int64, complex128, and uint8 cross unchanged.
 Strings cross as raw UTF-8; booleans, numbers, and flat containers of them ride a compact binary codec.
 Everything else crosses as a pickle protocol 4 stream.
+
+Every handle knows its peer's language (a per-region identity exchange at handshake).
+On a Python-to-Python channel that is the whole story: identity dtypes ride the raw tier, everything else pickles unchanged.
+On a foreign-language channel (an R peer), staging switches to the `'I'` interchange stream: the portable subset below crosses, and the conversion pass and Arrow front-ends run (any fixed-width numeric dtype converts once at send time into the nearest R-compatible wire type — see the [dtype matrix](#the-dtype-matrix)).
+A value outside the subset raises `pymizu.DeclinedError` at send time, naming the value's path and the reason; the channel is unharmed.
 
 ## Task pools
 
@@ -163,15 +167,26 @@ The reverse direction is also possible: an R host spawns a Python peer with `miz
 
 What crosses the language boundary:
 
+- Python scalars (`bool`/`int`/`float`/`complex`/`str`/`None`), lists, and dicts with `str` keys cross both ways — R sees its own logical/integer/double/complex/character/list values back.
+  A `tuple` reads back as a `list` (the documented relay shift; the spec-table shifts all live in the interop plan's dtype matrix).
 - A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector — and back.
   See the dtype matrix below.
+- A multi-dimensional numpy array of a mapped dtype arrives as an R `dim` array (a matrix is the 2-D case) — C order, F order, strided, it crosses value-exact (F order at the far side).
+  `datetime64` arrays of the day/week units arrive as `Date`, of the sub-day units as `POSIXct`; stdlib `datetime.date` and `datetime.datetime` scalars write the length-1 forms.
 - An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`.
   Anything with `__arrow_c_array__` works (pyarrow, polars, a duckdb result column).
+- An Arrow stream — a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with `__arrow_c_stream__` — arrives as an R `data.frame` (dictionary-encoded columns as factors, `date32`/`timestamp` as `Date`/`POSIXct`), or a Series as a plain vector.
+  An R `data.frame` arrives as a `pymizu.Frame` (below); a factor as `list[str | None]`.
 - `bytes` stages as a raw vector.
-- Strings cross both ways (`str` rides the shared STR1 tier); `NA_character_` arrives as `None`.
+- Strings cross both ways (`str` rides the shared STR1 tier); `NA_character_` arrives as `None`; a string vector arrives as `list[str | None]`.
 - A large R atomic vector arrives as a zero-copy, read-only numpy view over the shared pages — no copy, no parse.
   Without numpy it arrives as a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: `pa.array(view)`, `pl.from_arrow(view)`.
-- Python-only payloads do not cross: R declines pymizu's compact codec streams and pickled objects with an informative error.
+- Everything outside the portable subset raises `pymizu.DeclinedError` at send time (a subclass of `TypeError`), carrying `path` and `reason` attributes.
+
+A `pymizu.Frame` is the `data.frame` home: named columns with a row count.
+`frame.to_dict()` gives the column dict with no Arrow library (numpy arrays where installed, memoryviews otherwise; strings and factors as `list[str | None]`); `frame.names` and `frame.row_names` carry the metadata.
+Any Arrow consumer takes the frame in one line — `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)` — with factor columns as dictionary columns, logical columns as Arrow `bool`, `Date` as `date32`, and `POSIXct` as `timestamp[us]`.
+A `Frame` pickles, so Python-to-Python channels carry it; on a foreign channel it writes the `data.frame` shape again through its own export.
 
 ### The dtype matrix
 
@@ -190,8 +205,11 @@ Identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.
 | bool | logical | |
 | complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
 | Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
-| Arrow strings, temporal, dictionary, nested | — | `TypeError` at send time |
-| Arrow ChunkedArray / Table | — | `TypeError` at send time; `combine_chunks()` first |
+| Arrow strings (utf8 / large_utf8 / string_view) | character | a Series arrives as `list[str \| None]`; a column as a frame column |
+| Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
+| Arrow dictionary-encoded | factor | an ordered dictionary declines (`polars Enum`: cast to `pl.Categorical`) |
+| Arrow ChunkedArray / Table / Series | vector / `data.frame` | batches concatenate on the stage copy |
+| Arrow nested, decimal, time32/64, duration, interval | — | `DeclinedError` at send time |
 
 NA semantics:
 
@@ -227,9 +245,9 @@ Round trips are stable after the first hop, and a pure pass-through echo is bit-
 | complex | complex128 | complex | exact |
 | logical | int32 | **integer** | the tag does not survive the Python hop (values do) |
 
-The channel/pool split: channels convert; pools are Python-both-ends by construction, so pool task results keep the lossless pickle path for every dtype.
-Python-to-Python channels also convert — the peer's language is unknowable at send time.
-For an exact Python-to-Python channel send of a non-identity dtype, nest the array in a tuple or list: it keeps the pickle path.
+The channel/pool split: pools are Python-both-ends by construction, so pool task results keep the lossless pickle path for every dtype.
+Python-to-Python channels keep identity dtypes and pickle everything else unchanged (the identity exchange reports the peer's language at handshake; the conversion pass is foreign-only).
+For an exact Python-to-Python channel send of a non-identity dtype, no nesting is needed — it pickles.
 
 ## Requirements
 

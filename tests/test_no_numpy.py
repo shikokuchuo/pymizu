@@ -63,7 +63,8 @@ def test_interop_without_numpy(tmp_path):
         from pymizu import _pymizu
 
         corpus = {}
-        for line in pathlib.Path("tests/interop-corpus/corpus.txt").read_text().splitlines():
+        text = pathlib.Path("tests/interop-corpus/corpus.txt").read_text()
+        for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -75,7 +76,8 @@ def test_interop_without_numpy(tmp_path):
 
         # vector reads fall back to a memoryview copy, sentinels in place
         v = read("realv")
-        assert isinstance(v, memoryview) and list(v.cast("d")) == [1.5, -2.5, 0.0]
+        assert isinstance(v, memoryview)
+        assert list(v.cast("d")) == [1.5, -2.5, 0.0]
         v = read("py-intv-na")
         assert list(v.cast("i")) == [1, -2147483648, -3]
 

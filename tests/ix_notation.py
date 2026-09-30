@@ -213,14 +213,14 @@ class _Parser:
     def v_dict(self):
         self.expect("(")
         keys, values = self.pairs()
-        return dict(zip(keys, values))
+        return dict(zip(keys, values, strict=True))
 
     def v_attr(self):
         self.expect("(")
         x = self.value()
         self.expect(",")
         keys, values = self.pairs()
-        return attr_home(x, dict(zip(keys, values)))
+        return attr_home(x, dict(zip(keys, values, strict=True)))
 
     def v_strv(self):
         self.expect("[")
@@ -314,8 +314,9 @@ def _str_list(v):
 
 def _factor_home(codes, levels):
     out = []
+    na_bits = struct.pack("<Q", NA_REAL)
     for c in np.atleast_1d(codes):
-        if isinstance(c, float) and struct.pack("<d", c) == struct.pack("<Q", NA_REAL):
+        if isinstance(c, float) and struct.pack("<d", c) == na_bits:
             out.append(None)
         else:
             v = int(c)
@@ -326,12 +327,14 @@ def _factor_home(codes, levels):
 def _frame_home(cols, attrs):
     names = _str_list(attrs["names"])
     row_names = attrs["row.names"]
-    if isinstance(row_names, np.ndarray) and row_names.dtype == np.float64             and np.isnan(row_names[0]):
+    if (isinstance(row_names, np.ndarray)
+            and row_names.dtype == np.float64
+            and np.isnan(row_names[0])):
         row_names = None  # the compact automatic form c(NA, +-n)
     elif isinstance(row_names, int):
         row_names = np.array([row_names], dtype=np.int32)
-    return ExpectedFrame(columns=dict(zip(names, cols)), names=names,
-                         row_names=row_names)
+    return ExpectedFrame(columns=dict(zip(names, cols, strict=True)),
+                         names=names, row_names=row_names)
 
 
 def attr_home(x, attrs):
@@ -346,7 +349,10 @@ def attr_home(x, attrs):
         return _frame_home(cols, attrs)
     if set(attrs) == {"dim"}:
         dims = attrs["dim"]
-        dims = [dims] if isinstance(dims, int) else dims.view(np.int32).tolist()
+        if isinstance(dims, int):
+            dims = [dims]
+        else:
+            dims = dims.view(np.int32).tolist()
         if len(dims) == 1:
             return x  # the length-1 shift: a plain vector
         return np.asarray(x).reshape(dims, order="F")
@@ -408,7 +414,7 @@ def ix_same(a, b):
     if isinstance(b, (list, tuple)):
         if not isinstance(a, (list, tuple)) or len(a) != len(b):
             return False
-        return all(ix_same(x, y) for x, y in zip(a, b))
+        return all(ix_same(x, y) for x, y in zip(a, b, strict=True))
     if isinstance(b, dict):
         if not isinstance(a, dict) or set(a) != set(b):
             return False

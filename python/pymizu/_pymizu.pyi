@@ -23,6 +23,24 @@ def _tune_malloc() -> None: ...
 class MizuError(Exception):
     """Base class for pymizu errors."""
 
+class DeclinedError(TypeError):
+    """A foreign-handle send of a value outside the portable subset."""
+
+    path: str
+    reason: str
+
+class Frame:
+    """A data.frame's Python home: named columns with a row count."""
+
+    @property
+    def names(self) -> tuple[str, ...]: ...
+    @property
+    def row_names(self) -> Any: ...
+    def to_dict(self) -> dict[str, Any]: ...
+    def __arrow_c_stream__(self, requested_schema: Any = None) -> Any: ...
+    def __len__(self) -> int: ...
+    def __reduce__(self) -> Any: ...
+
 class ShmError(MizuError):
     """Shared-memory setup/teardown failure."""
 
