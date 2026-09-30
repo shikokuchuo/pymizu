@@ -165,6 +165,29 @@ For a different spawn method, write your own launcher.
 
 The reverse direction is also possible: an R host spawns a Python peer with `mizu::mizu_py_launcher()`.
 
+### Mixed-language pools
+
+A pool's workers can be R processes, driven through the neutral task format: `pymizu.r_pool_launcher()` spawns them, and `pymizu.call()` describes the task — a qualified name (`"pkg::fn"` for R, `"mod.fn"` for Python) or a `source=` string, plus the constant arguments.
+
+```python
+import numpy as np
+import pymizu
+
+pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
+t = pool.submit(pymizu.call("stats::quantile", np.arange(101.0),
+                            probs=np.array([0.25, 0.5, 0.75]), names=False))
+print(t.collect())                  # [ 25.  50.  75.]
+t2 = pool.submit(pymizu.call(source="y <- x * 2\ny + 1", x=20))
+print(t2.collect())                 # 41
+pool.stop()
+```
+
+The workers' language comes from the pool itself — there is no language argument and no override.
+A plain callable on a foreign pool errors locally naming `pymizu.call()`; a bare unqualified name errors at submit; a non-portable argument declines at submit with `DeclinedError`.
+Task errors cross as `TaskError` with the remote type preserved (`remote_type == "simpleError"` from R), and a result without a portable home fails the task with one naming the type.
+The reverse direction mirrors: `mizu::mizu_pool()` with `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
+Mixed workers in one pool and by-reference task arguments are deliberately out of scope for now.
+
 What crosses the language boundary:
 
 - Python scalars (`bool`/`int`/`float`/`complex`/`str`/`None`), lists, and dicts with `str` keys cross both ways — R sees its own logical/integer/double/complex/character/list values back.

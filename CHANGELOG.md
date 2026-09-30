@@ -10,6 +10,29 @@ Initial pre-release.
 
 ### Added
 
+- Mixed-language pools (Phase 4): a Python submitter drives a pool of R
+  workers, and vice versa. `pymizu.call("pkg::fn", ...)` or
+  `pymizu.call(source=..., **names)` builds a task specification —
+  positional arguments map to the positional list, keyword arguments to
+  the named dict — and `Pool.submit(spec)` stages it as the neutral
+  `'I'` task stream (tag 0x12) the worker's exec hook decodes: name
+  kind resolves through the worker's module machinery, source kind runs
+  the ast split (exec the prefix, eval the trailing expression) in a
+  fresh namespace with the arguments bound as names (`_1`, `_2`, ... for
+  positional). The workers' language comes from the pool itself (the
+  core's worker identity word — creators and attached submitters alike,
+  re-read while unset), so there is no language argument and no
+  override: a plain callable on a foreign pool errors locally naming
+  `pymizu.call()`, as do `submit_batch` and a native-fn `Pool.map()`,
+  and a bare unqualified name errors at submit. Task errors cross as
+  the bounded err stream (a `TaskError` with `remote_type` /
+  `remote_traceback`, or the R peer's `mizu_error_remote`); a result
+  without a portable home fails the task with one naming the type,
+  never crosses. Worker death is unchanged (`WorkerDiedError` at
+  collect). `pymizu.r_pool_launcher()` probes Rscript and an installed
+  mizu at the factory and spawns `mizu:::worker_main` per slot, the
+  `r_launcher()` pattern with the probed `.libPaths()` propagated in
+  argv; the R package's `mizu_py_pool_launcher()` is the mirror.
 - Attributed layouts Python → R (Phase 3.6): a frame past the zero-copy
   floor now stages as one MIZL region instead of an interchange copy —
   any `__arrow_c_stream__` producer (polars, pyarrow, pandas) on a
