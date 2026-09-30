@@ -58,6 +58,11 @@ typedef struct ArrowArrayStream {
 #define PYMIZU_ARROW_FLAG_NULLABLE 2
 #define PYMIZU_ARROW_FLAG_DICTIONARY_ORDERED 1
 
+/* R's verbatim NA_real_ bits (the corpus pins them; the core's
+   MIZU_NA_REAL_BITS is the quiet-bit-set twin — ISNA reads either, but an
+   R->Python->R relay compares NaN payloads bitwise). */
+#define PYMIZU_NA_REAL_BITS 0x7FF00000000007A2ULL
+
 // The conversion table (shared with _pymizu.c's conversion pass) ---------------
 
 enum {

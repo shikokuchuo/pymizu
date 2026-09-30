@@ -10,6 +10,22 @@ Initial pre-release.
 
 ### Added
 
+- Honest numpy dtypes on the copied reads (Phase 3.2): an R logical
+  vector with no `NA` now reads as numpy `bool_` on the raw tiers (one
+  holding an `NA` stays int32 with the documented `-2^31` sentinel), and
+  an R integer with `NA`s reads as float64 carrying R's `NA_real_`
+  payload — every int32 value exact. The integer scan is gated on a
+  foreign writer (the channel peer word, a pool result's `worker_ident`),
+  so a Python↔Python int32 holding a genuine `-2^31` round-trips
+  unchanged, dtype and value. An R int64 keeps its dtype and warns on a
+  detected `INT64_MIN`, naming the Arrow export as the NA-honest
+  accessor. Zero-copy views stay int32 on the raw page buffer.
+- Arrow truth for logicals: every `__arrow_c_array__` export of a
+  logical view is now Arrow `bool` — the bit-packed values built at
+  export — with a validity bitmap, and integer/int64 views export with a
+  validity bitmap when NAs are present (built off the sentinels on a
+  pre-section region; the region's validity section once writers stamp
+  it). R's NA sentinels read as Arrow nulls instead of visible values.
 - Region-backed string views (the MIZS layout): an R character vector
   past the zero-copy floor now arrives as a `_ShmStrView` over the shared
   pages — no copy. `to_list()` materializes the explicit `list[str |

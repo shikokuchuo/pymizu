@@ -200,18 +200,18 @@ def test_numpy_dtype_matrix(rcheck):
 
 def test_numpy_echo_dtypes(rcheck):
     # the echo's dtype reports the R-side wire type (R re-stages what it
-    # received): int64 arrives as int64 (R integer64), bool as int32 (R
-    # logical reads width-compatibly)
+    # received): int64 arrives as int64 (R integer64), bool as bool_ (an
+    # NA-free R logical, the 3.2 copied-read rule)
     b = r_case(rcheck, "i64", np.array([-1, 2, 3], dtype=np.int64))
     assert b.dtype == np.int64
     b = r_case(rcheck, "lgl", np.array([True, False, True]))
-    assert b.dtype == np.int32
-    assert list(b) == [1, 0, 1]
+    assert b.dtype == np.bool_
+    assert list(b) == [True, False, True]
 
 
 def test_int64_exact_and_sentinel(rcheck):
     # int64 is a native wire type: values past 2^53 cross exactly, no
-    # warning (the copy tier is a pure memcpy)
+    # warning while no INT64_MIN rides
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         b = r_case(rcheck, "i64edge",
@@ -220,11 +220,12 @@ def test_int64_exact_and_sentinel(rcheck):
         b = r_case(rcheck, "i64big",
                    np.array([2**53 + 1, -(2**53) - 1], dtype=np.int64))
         assert np.array_equal(b, [2**53 + 1, -(2**53) - 1])
-        # INT64_MIN is the missing sentinel (documented): a genuine one
-        # reads as NA_integer64_ in R and echoes back as INT64_MIN
+    # INT64_MIN is the missing sentinel (documented): a genuine one reads
+    # as NA_integer64_ in R, and its echo warns (3.2), dtype unchanged
+    with pytest.warns(UserWarning, match="to_arrow"):
         b = r_case(rcheck, "i64na2",
                    np.array([2**53 + 1, -(2**63)], dtype=np.int64))
-        assert list(b) == [2**53 + 1, -(2**63)]
+    assert list(b) == [2**53 + 1, -(2**63)]
     # uint64 stays lossy: past 2^53 warns and converts to NA_real_
     with pytest.warns(RuntimeWarning, match="beyond"):
         r_case(rcheck, "over1", np.array([2**53 + 1], dtype=np.uint64))
@@ -263,7 +264,10 @@ def test_prefixed_buffer_formats():
 
 def test_arrow_import_nulls(rcheck):
     b = r_case(rcheck, "intna", pa.array([1, None, 3], type=pa.int32()))
-    assert b[1] == -2147483648  # the NA sentinel is visible on the echo
+    # the echo of an R integer with NA: float64 with the NA_real_ payload
+    # (the 3.2 copied-read rule), every int32 exact
+    assert b.dtype == np.float64
+    assert b[0] == 1 and np.isnan(b[1]) and b[2] == 3
     r_case(rcheck, "lglena", pa.array([True, None, False]))
     b = r_case(rcheck, "dblna", pa.array([1.5, None, 3.5], type=pa.float64()))
     assert np.isnan(b[1])
@@ -271,15 +275,16 @@ def test_arrow_import_nulls(rcheck):
 
 def test_arrow_masked_int64(rcheck):
     # values cross exactly, the null lane writes INT64_MIN (reads as
-    # NA_integer64_ in R) — no warning: the copy tier is a pure memcpy
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    # NA_integer64_ in R); the echo of an R int64 with NA keeps the dtype
+    # and warns (3.2's warn-only rule, .to_arrow() the NA-honest accessor)
+    with pytest.warns(UserWarning, match="to_arrow"):
         b = r_case(rcheck, "i64na24", pa.array([2, None, 4], type=pa.int64()))
-        assert list(b) == [2, -(2**63), 4]
-        # an out-of-range valid value under a mask: exact, still no warning
+    assert list(b) == [2, -(2**63), 4]
+    # an out-of-range valid value under a mask: exact, warns likewise
+    with pytest.warns(UserWarning, match="to_arrow"):
         b = r_case(rcheck, "i64na2",
                    pa.array([2**53 + 1, None], type=pa.int64()))
-        assert list(b) == [2**53 + 1, -(2**63)]
+    assert list(b) == [2**53 + 1, -(2**63)]
 
 
 def test_arrow_masked_intmin(rcheck):
@@ -287,7 +292,9 @@ def test_arrow_masked_intmin(rcheck):
     with pytest.warns(RuntimeWarning, match="-2147483648"):
         b = r_case(rcheck, "intmin",
                    pa.array([-2147483648, 1, None], type=pa.int32()))
-    assert list(b) == [-2147483648, 1, -2147483648]
+    # the echo of the R integer (two NAs) reads float64, NaN payloads
+    assert b.dtype == np.float64
+    assert np.isnan(b[0]) and b[1] == 1 and np.isnan(b[2])
 
 
 def test_arrow_sliced(rcheck):
@@ -586,10 +593,11 @@ def test_export_complex_rejected(echo):
 
 
 def test_export_r_logical_and_na(r_mizu):
-    # R logical exports as int32 (Arrow bool is bit-packed); R's NA
-    # sentinels arrive as visible values with null_count == 0 (documented).
-    # The peer waits for the host's ack: a clean exit would otherwise race
-    # the payload regions' teardown against the host's reads
+    # every Arrow export of LGL is Arrow bool with a validity bitmap (the
+    # bit-pack built at export); an INT with NAs exports int32 with the
+    # validity bitmap built off the sentinels (3.2). The peer waits for
+    # the host's ack: a clean exit would otherwise race the payload
+    # regions' teardown against the host's reads
     src = """
 mizu::mizu_send(ch, rep(c(TRUE, FALSE, NA), length.out = 100000))
 mizu::mizu_send(ch, rep(c(1L, NA), length.out = 100000))
@@ -599,14 +607,14 @@ mizu::mizu_recv(ch, timeout = 30)
     try:
         view = _exporter(np.asarray(ch.recv(timeout=30)))
         arr = pa.array(view)
-        assert arr.type == pa.int32()
-        assert arr[:3].to_pylist() == [1, 0, -2147483648]
-        assert arr.null_count == 0
+        assert arr.type == pa.bool_()
+        assert arr[:3].to_pylist() == [True, False, None]
+        assert arr.null_count == 33333
         view = _exporter(np.asarray(ch.recv(timeout=30)))
         arr = pa.array(view)
         assert arr.type == pa.int32()
-        assert arr[:2].to_pylist() == [1, -2147483648]
-        assert arr.null_count == 0
+        assert arr[:2].to_pylist() == [1, None]
+        assert arr.null_count == 50000
         ch.send("ack")
     finally:
         ch.close()

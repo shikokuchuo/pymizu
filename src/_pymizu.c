@@ -1595,11 +1595,23 @@ static PyObject *numpy_empty(void) {
   return PyObject_GetAttrString(np, "empty");   /* new ref */
 }
 
-/* RAWVEC/RAWSPILL materialize: one memcpy into a fresh numpy array (or a
-   memoryview copy) before consumer-done — ring slots are reused and arena
-   chunks FIFO-reclaim, so a view over them dangles. LGL reads as int32
-   (width-compatible; there is no bool mapping). */
-static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
+/* RAWVEC/RAWSPILL materialize into a fresh numpy array (or a memoryview
+   copy) before consumer-done — ring slots are reused and arena chunks
+   FIFO-reclaim, so a view over them dangles. LGL and INT take the
+   copied-read rule: no INT_MIN present reads numpy bool_ / int32, else
+   int32 (LGL — the sentinel documented, no width room for an out-of-band
+   NA numpy respects) / float64 with R's NA_real_ payload (every int32
+   exact). The INT/INT64 scans are gated on a foreign writer (foreign at
+   the call site): Python stages identity int32/int64 on the same tiers,
+   so a same-language read stays an unscanned identity and a genuine
+   -2^31/-2^63 survives Python<->Python. LGL needs no gate — R is the only
+   NA-writing stager of it a Python reader meets. int64 keeps its dtype
+   and warns on a detected INT64_MIN (warn-only, .to_arrow() the NA-honest
+   accessor). Each scan fuses into the element copy the read already makes
+   — the one deliberate exception to the raw tiers' no-per-element-scan
+   rule. */
+static PyObject *read_raw(const uint8_t *src, uint32_t len, int type,
+                          int foreign) {
   size_t elt = mizu_type_elt_size(type);
   if (elt == 0 || len % elt != 0) {
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
@@ -1608,11 +1620,16 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
   size_t nelts = len / elt;
   PyObject *empty = numpy_empty();
   if (empty != NULL) {
+    /* the conversion verdict: 0 identity, 1 LGL->bool (an INT_MIN reverts
+       to int32), 2 INT->float64 (the scan's verdict, foreign-gated) */
+    int conv = 0;
+    if (type == MIZU_TYPE_LGL) conv = 1;
+    else if (type == MIZU_TYPE_INT && foreign) conv = 2;
     const char *dt;
     switch (type) {
     case MIZU_TYPE_REAL: dt = "float64"; break;
     case MIZU_TYPE_INT:
-    case MIZU_TYPE_LGL: dt = "int32"; break;
+    case MIZU_TYPE_LGL: dt = conv == 1 ? "bool" : "int32"; break;
     case MIZU_TYPE_INT64: dt = "int64"; break;
     case MIZU_TYPE_CPLX: dt = "complex128"; break;
     case MIZU_TYPE_RAW: dt = "uint8"; break;
@@ -1633,6 +1650,89 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
     if (PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE) < 0) {
       Py_DECREF(arr);
       return NULL;
+    }
+    if (conv == 1) {
+      /* bool_ copy with the INT_MIN scan fused: a detected NA discards
+         the bool array and re-reads as int32 (the sentinel documented) */
+      const int32_t *s32 = (const int32_t *) src;
+      uint8_t *d = (uint8_t *) v.buf;
+      int na = 0;
+      for (size_t i = 0; i < nelts; i++) {
+        na |= s32[i] == MIZU_NA_INT32;
+        d[i] = s32[i] != 0;
+      }
+      PyBuffer_Release(&v);
+      if (!na) return arr;
+      Py_DECREF(arr);
+      return read_raw(src, len, MIZU_TYPE_INT, 0);
+    }
+    if (conv == 2) {
+      /* int32 copy with the scan fused; a detected NA converts the copy
+         in place to float64 (NA_real_ payloads; every int32 exact) */
+      const int32_t *s32 = (const int32_t *) src;
+      int32_t *d32 = (int32_t *) v.buf;
+      int na = 0;
+      for (size_t i = 0; i < nelts; i++) {
+        na |= s32[i] == MIZU_NA_INT32;
+        d32[i] = s32[i];
+      }
+      PyBuffer_Release(&v);
+      if (!na) return arr;
+      PyObject *f64 = NULL;
+      PyObject *empty2 = numpy_empty();
+      if (empty2 != NULL) {
+        PyObject *a2 = PyTuple_Pack(1, PyLong_FromSize_t(nelts));
+        PyObject *k2 = Py_BuildValue("{s:s}", "dtype", "float64");
+        f64 = (a2 != NULL && k2 != NULL) ?
+          PyObject_Call(empty2, a2, k2) : NULL;
+        Py_XDECREF(a2);
+        Py_XDECREF(k2);
+        Py_DECREF(empty2);
+      }
+      if (f64 == NULL) {
+        Py_DECREF(arr);
+        return NULL;
+      }
+      Py_buffer fv;
+      if (PyObject_GetBuffer(f64, &fv, PyBUF_ND | PyBUF_WRITABLE) < 0) {
+        Py_DECREF(f64);
+        Py_DECREF(arr);
+        return NULL;
+      }
+      double *fd = (double *) fv.buf;
+      const uint64_t na_bits = PYMIZU_NA_REAL_BITS;
+      for (size_t i = 0; i < nelts; i++) {
+        if (d32[i] == MIZU_NA_INT32)
+          memcpy(fd + i, &na_bits, 8);
+        else
+          fd[i] = (double) d32[i];
+      }
+      PyBuffer_Release(&fv);
+      Py_DECREF(arr);
+      return f64;
+    }
+    if (type == MIZU_TYPE_INT64 && foreign) {
+      /* warn-only: the dtype never changes, so the scan joins the copy */
+      const int64_t *s64 = (const int64_t *) src;
+      int64_t *d64 = (int64_t *) v.buf;
+      int na = 0;
+      for (size_t i = 0; i < nelts; i++) {
+        na |= s64[i] == MIZU_NA_INT64;
+        d64[i] = s64[i];
+      }
+      PyBuffer_Release(&v);
+      if (na &&
+          PyErr_WarnEx(PyExc_UserWarning,
+                       "pymizu: an int64 vector from R carries NA values, "
+                       "which numpy int64 cannot represent: they read as "
+                       "-2^63 (use .to_arrow() for the NA-honest form)",
+                       1) < 0) {
+        /* warnings-as-errors: the ordinary consumed content failure
+           (INTEROP.md §6) — the slot is consumed, never wedged */
+        Py_DECREF(arr);
+        return NULL;
+      }
+      return arr;
     }
     memcpy(v.buf, src, len);
     PyBuffer_Release(&v);
@@ -1934,6 +2034,8 @@ static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 typedef struct {
   mizu_shm *shm;
   long pid;             /* the fork guard, mirroring view_dealloc */
+  uint8_t *bits;        /* the LGL bit-pack, built at export (owned) */
+  uint8_t *valid;       /* a lazily built validity bitmap (owned) */
 } arrow_loan;
 
 static void arrow_schema_release(ArrowSchema *s) {
@@ -1945,6 +2047,8 @@ static void arrow_array_release(ArrowArray *a) {
   if (loan != NULL) {
     if (loan->pid == mizu_self_pid()) mizu_zc_unref(loan->shm);
     mizu_shm_close(loan->shm, 0);
+    free(loan->bits);
+    free(loan->valid);
     free(loan);
   }
   free((void *) a->buffers);
@@ -1981,8 +2085,10 @@ PyDoc_STRVAR(arrow_c_array_doc,
 Export the view through the Arrow C Data Interface: any Arrow consumer\n\
 (pyarrow, polars, duckdb) wraps the shared pages zero-copy. The export\n\
 holds its own mapping and refcount loan, released by the consumer's\n\
-release callback. R's NA sentinels have no Arrow nulls: NA_integer_\n\
-reads as INT_MIN, NA_real_ as a NaN payload.");
+release callback. A logical exports as Arrow bool with a validity bitmap\n\
+(the bit-packed values built at export); an integer or int64 exports with\n\
+a validity bitmap when NAs are present — R's sentinels become Arrow\n\
+nulls. NA_real_ reads as a NaN payload.");
 
 static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
                                     PyObject *kw) {
@@ -1997,13 +2103,16 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
      only answer. The capsule is borrowed; never released here. */
   MizuShmView *v = (MizuShmView *) obj;
   const char *fmt;
+  int pack_lgl = 0, want_valid = 0;
   switch (v->type) {
-  case MIZU_TYPE_INT:
   case MIZU_TYPE_LGL:
-    fmt = "i";   /* Arrow bool is bit-packed: LGL cannot zero-copy as bool */
+    fmt = "b";   /* every Arrow export of LGL is Arrow bool (3.2) */
+    pack_lgl = 1;
+    want_valid = 1;
     break;
+  case MIZU_TYPE_INT: fmt = "i"; want_valid = 1; break;
   case MIZU_TYPE_REAL: fmt = "g"; break;
-  case MIZU_TYPE_INT64: fmt = "l"; break;
+  case MIZU_TYPE_INT64: fmt = "l"; want_valid = 1; break;
   case MIZU_TYPE_RAW: fmt = "C"; break;
   default:
     PyErr_SetString(PyExc_TypeError,
@@ -2049,13 +2158,105 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
   }
   loan->shm = shm;
   loan->pid = mizu_self_pid();
+  loan->bits = NULL;
+  loan->valid = NULL;
+  const uint8_t *base = (const uint8_t *) mizu_shm_addr(shm);
+  const int64_t n =
+    (int64_t) (v->len / (Py_ssize_t) mizu_type_elt_size(v->type));
+  const size_t nb = ((size_t) n + 7) / 8;
+  /* the validity source: the region's section when present, the lazy
+     sentinel build when absent ({0, 0}), none when known-NA-free
+     ({0, -1}) */
+  const uint8_t *validity = NULL;
+  int64_t null_count = 0;
+  int build_valid = 0;
+  if (want_valid) {
+    int64_t voff, vcount;
+    memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
+    memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
+    if (voff > 0) {
+      validity = base + voff;
+      null_count = vcount;
+    } else if (vcount == 0) {
+      build_valid = 1;
+    }
+  }
+  if (pack_lgl) {
+    /* the bit-packed values build at export, nulls or not; the lazy
+       validity build fuses into the same pass */
+    loan->bits = (uint8_t *) calloc(nb != 0 ? nb : 1, 1);
+    if (loan->bits == NULL) goto nomem;
+    const int32_t *d32 = (const int32_t *) (base + MIZU_HEADER_SIZE);
+    if (build_valid) {
+      loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
+      if (loan->valid == NULL) goto nomem;
+      memset(loan->valid, 0xFF, nb);
+      if (n % 8 != 0)
+        loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
+      for (int64_t i = 0; i < n; i++) {
+        if (d32[i] == MIZU_NA_INT32) {
+          null_count++;
+          loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+        } else if (d32[i] != 0) {
+          loan->bits[i / 8] |= (uint8_t) (1u << (i % 8));
+        }
+      }
+      if (null_count == 0) {
+        free(loan->valid);   /* clean: no bitmap */
+        loan->valid = NULL;
+      } else {
+        validity = loan->valid;
+      }
+    } else {
+      /* the section (or known-NA-free) defines the nulls; the pack is
+         values only (a null lane's bit is don't-care, Arrow masks it) */
+      for (int64_t i = 0; i < n; i++)
+        if (d32[i] != 0) loan->bits[i / 8] |= (uint8_t) (1u << (i % 8));
+    }
+    buffers[1] = loan->bits;
+  } else {
+    buffers[1] = base + MIZU_HEADER_SIZE;
+    if (build_valid) {
+      /* scan-only for INT/INT64: the values stay the region's pages. One
+         fused pass counts and clears into an optimistically allocated
+         bitmap, freed when clean. Typed sentinel constants per branch —
+         an int64 sentinel variable against int32 loads miscompiles here
+         (clang 17/21 -O2 widens the loads). */
+      loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
+      if (loan->valid == NULL) goto nomem;
+      memset(loan->valid, 0xFF, nb);
+      if (n % 8 != 0)
+        loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
+      if (v->type == MIZU_TYPE_INT) {
+        const int32_t *d32 = (const int32_t *) (base + MIZU_HEADER_SIZE);
+        for (int64_t i = 0; i < n; i++)
+          if (d32[i] == MIZU_NA_INT32) {
+            null_count++;
+            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+          }
+      } else {
+        const int64_t *d64 = (const int64_t *) (base + MIZU_HEADER_SIZE);
+        for (int64_t i = 0; i < n; i++)
+          if (d64[i] == MIZU_NA_INT64) {
+            null_count++;
+            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+          }
+      }
+      if (null_count == 0) {
+        free(loan->valid);
+        loan->valid = NULL;
+      } else {
+        validity = loan->valid;
+      }
+    }
+  }
   schema->format = fmt;
   schema->release = arrow_schema_release;
-  array->length =
-    (int64_t) (v->len / (Py_ssize_t) mizu_type_elt_size(v->type));
+  array->length = n;
+  array->null_count = null_count;
   array->n_buffers = 2;
   array->buffers = buffers;
-  buffers[1] = (const uint8_t *) mizu_shm_addr(shm) + MIZU_HEADER_SIZE;
+  buffers[0] = validity;
   array->private_data = loan;
   array->release = arrow_array_release;
   PyObject *out = PyTuple_New(2);
@@ -2067,6 +2268,11 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
   PyTuple_SET_ITEM(out, 0, scap);
   PyTuple_SET_ITEM(out, 1, acap);
   return out;
+nomem:
+  Py_DECREF(scap);
+  Py_DECREF(acap);
+  PyErr_NoMemory();
+  return NULL;
 }
 
 static PyMethodDef view_methods[] = {
@@ -2623,7 +2829,9 @@ static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
     int type = *(*p)++;
     uint64_t n = codec_get64(p);
     if (n > UINT32_MAX || (uint64_t) (end - *p) < n) return NULL;
-    PyObject *r = read_raw(*p, (uint32_t) n, type);
+    /* the private codec is same-language only: the identity read, no
+       scan gate (foreign = 0) */
+    PyObject *r = read_raw(*p, (uint32_t) n, type, 0);
     if (r != NULL) *p += n;
     return r;
   }
@@ -2950,6 +3158,23 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
   }
 }
 
+/* The copied-read scan gate (3.2): is the frame's writer a foreign
+   language? A channel reads its peer's identity word off the handshake; a
+   pool result's writer is the pool's worker word (re-read through the
+   mapping — 0 until the first join reads as same-language, matching the
+   ctx's peer_lang 0 convention). */
+static int read_foreign(const mizu_read_ctx *ctx) {
+  mizu_handle *h = ctx->handle;
+  if (h != NULL && mizu_handle_kind(h) == MIZU_HTYPE_POOL) {
+    uint32_t lang =
+      (uint32_t) (mizu_pool_worker_ident((mizu_pool *) h) & 0xff);
+    return lang != 0 && lang != MIZU_LANG_PYTHON;
+  }
+  MizuHandleCtx *hctx = (MizuHandleCtx *) ctx->binding_ctx;
+  return hctx != NULL && hctx->peer_lang != 0 &&
+         hctx->peer_lang != MIZU_LANG_PYTHON;
+}
+
 static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
                             size_t limit, mizu_read_ctx *ctx) {
   switch (hdr->kind) {
@@ -2957,7 +3182,7 @@ static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
     Py_RETURN_NONE;
   case MIZU_KIND_RAWVEC:
     if (hdr->len > limit) break;
-    return read_raw(payload, hdr->len, (int) hdr->aux);
+    return read_raw(payload, hdr->len, (int) hdr->aux, read_foreign(ctx));
   case MIZU_KIND_RAWSPILL:
     if (mizu_aux_hi(hdr->aux)) {
       /* pool framing: the region name in the payload, its length and the
@@ -2969,12 +3194,13 @@ static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
       mizu_shm *shm = mizu_read_region(ctx, payload, name_len);
       if (shm == NULL) return NULL;          /* ctx->gone set */
       if ((uint64_t) hdr->len > (uint64_t) shm->size) break;
-      return read_raw((const uint8_t *) shm->addr, hdr->len, type);
+      return read_raw((const uint8_t *) shm->addr, hdr->len, type,
+                      read_foreign(ctx));
     }
     /* the channel's arena framing is resolved to its byte range by the
        transport before the call */
     if (hdr->len > limit) break;
-    return read_raw(payload, hdr->len, (int) hdr->aux);
+    return read_raw(payload, hdr->len, (int) hdr->aux, read_foreign(ctx));
   case MIZU_KIND_STR1: {
     if (hdr->aux == MIZU_STR1_NA) {
       if (hdr->len != 0) break;

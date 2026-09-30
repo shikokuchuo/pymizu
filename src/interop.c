@@ -18,11 +18,6 @@
 
 #include "pyinterop.h"
 
-/* R's verbatim NA_real_ bits (the corpus pins them; the core's
-   MIZU_NA_REAL_BITS is the quiet-bit-set twin — ISNA reads either, but an
-   R->Python->R relay compares NaN payloads bitwise). */
-#define PYMIZU_NA_REAL_BITS 0x7FF00000000007A2ULL
-
 static PyObject *MizuError;
 static PyObject *MizuDeclinedError;
 

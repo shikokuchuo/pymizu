@@ -8,6 +8,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import warnings
 
 import pytest
 
@@ -177,6 +178,121 @@ def test_py_peer_string_view_echo(r_mizu):
         r_ch.close()
 
 
+def test_r_peer_copied_read_na_rules(r_mizu):
+    # the copied-read rule (3.2): a foreign INT with NAs reads float64
+    # with NA_real_-payload NaNs on the raw tiers; LGL reads bool_ when
+    # NA-free, int32 with the sentinel otherwise; the zero-copy view stays
+    # int32 on the raw page buffer
+    np = pytest.importorskip("numpy")
+    src = """
+mizu::mizu_send(ch, c(1L, NA_integer_, 3L))                    # RAWVEC
+x <- rep(1:100, length.out = 30000); x[5] <- NA_integer_       # arena
+mizu::mizu_send(ch, x)
+v <- rep(1:100, length.out = 1e6); v[7] <- NA_integer_         # the view
+mizu::mizu_send(ch, v)
+mizu::mizu_send(ch, c(TRUE, FALSE, TRUE))
+mizu::mizu_send(ch, c(TRUE, NA, FALSE))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        a = ch.recv(30)
+        assert a.dtype == np.float64
+        assert a[0] == 1 and np.isnan(a[1]) and a[2] == 3
+        e = ch.recv(30)
+        assert e.dtype == np.float64
+        assert np.where(np.isnan(e))[0].tolist() == [4]
+        f = ch.recv(30)
+        assert f.dtype == np.int32 and not f.flags.writeable
+        assert np.where(f == -2**31)[0].tolist() == [6]
+        b = ch.recv(30)
+        assert b.dtype == np.bool_ and list(b) == [True, False, True]
+        c = ch.recv(30)
+        assert c.dtype == np.int32 and list(c) == [1, -2**31, 0]
+    finally:
+        ch.close()
+
+
+def test_r_peer_view_arrow_na_rules(r_mizu):
+    # every Arrow export of LGL is Arrow bool with a validity bitmap
+    # (the bit-pack built at export); INT exports int32 with a validity
+    # bitmap, built lazily off the sentinels on a pre-section region
+    pa = pytest.importorskip("pyarrow")
+    src = """
+l <- rep(c(TRUE, FALSE, NA), length.out = 1e6)
+mizu::mizu_send(ch, l)
+cl <- rep(c(TRUE, FALSE), length.out = 1e6)
+mizu::mizu_send(ch, cl)
+i <- rep(1:100, length.out = 1e6); i[3] <- NA_integer_
+mizu::mizu_send(ch, i)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        la = pa.array(ch.recv(30).base)
+        assert la.type == pa.bool_() and la.null_count == 333333
+        assert la.slice(0, 4).to_pylist() == [True, False, None, True]
+        ca = pa.array(ch.recv(30).base)
+        assert ca.type == pa.bool_() and ca.null_count == 0
+        assert ca.slice(0, 3).to_pylist() == [True, False, True]
+        ia = pa.array(ch.recv(30).base)
+        assert ia.type == pa.int32() and ia.null_count == 1
+        assert ia.slice(0, 4).to_pylist() == [1, 2, None, 4]
+    finally:
+        ch.close()
+
+
+def test_r_peer_int64_na_warns(r_mizu):
+    # int64 keeps its dtype and warns on a detected INT64_MIN (3.2's
+    # warn-only rule), naming .to_arrow() as the NA-honest accessor
+    np = pytest.importorskip("numpy")
+    src = r"""
+fromle <- function(r) readBin(r, "double", size = 8L, endian = "little",
+                              n = length(r) %/% 8L)
+v <- structure(fromle(as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x80,
+                               7, 0, 0, 0, 0, 0, 0, 0))),
+               class = "integer64")
+mizu::mizu_send(ch, v)
+w <- structure(fromle(as.raw(c(1, 0, 0, 0, 0, 0, 0, 0,
+                               2, 0, 0, 0, 0, 0, 0, 0))),
+               class = "integer64")
+mizu::mizu_send(ch, w)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        with pytest.warns(UserWarning, match="to_arrow"):
+            a = ch.recv(30)
+        assert a.dtype == np.int64 and list(a) == [-(2**63), 7]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            b = ch.recv(30)
+        assert list(b) == [1, 2]
+    finally:
+        ch.close()
+
+
+def test_py_peer_int_sentinels_stay_exact():
+    # the copied-read scans are gated on a foreign writer: a
+    # Python<->Python int32 holding a genuine -2^31 (or int64 a -2^63)
+    # round-trips unchanged, dtype and value, no warning (3.2)
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
+    try:
+        a = np.array([1, -2**31, 3], dtype=np.int32)
+        assert ch.send(a) is True
+        got = ch.recv(30)
+        assert got.dtype == np.int32 and list(got) == [1, -2**31, 3]
+        b = np.array([1, -2**63], dtype=np.int64)
+        assert ch.send(b) is True
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            got = ch.recv(30)
+        assert got.dtype == np.int64 and list(got) == [1, -2**63]
+    finally:
+        ch.close()
+
+
 def test_r_peer_echo_roundtrip(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
@@ -272,7 +388,8 @@ mizu::mizu_send(ch, if (isTRUE(ok)) v else "R check failed")
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         assert ch.send(np.array([-(2**63), 7], dtype=np.int64)) is True
-        got = ch.recv(30)
+        with pytest.warns(UserWarning, match="to_arrow"):
+            got = ch.recv(30)   # 3.2's warn-only rule: dtype unchanged
         assert isinstance(got, np.ndarray) and got.dtype == np.int64
         assert list(got) == [-(2**63), 2**53 + 1]
     finally:
@@ -478,12 +595,13 @@ def test_py_r_py_documented_shifts(r_mizu):
         assert ch.send(-(2**63)) is True
         assert ch.recv(30) is None
         # an int32 array holding -2^31: R reads NA_integer_ (the value
-        # shift); the return array keeps the sentinel in place until the
-        # copied-read rule lands (3.2)
+        # shift); the return hop applies the copied-read rule (3.2) —
+        # a foreign INT with NAs reads float64 with NA_real_-payload NaNs
         a = np.array([1, -2147483648, 3], dtype=np.int32)
         assert ch.send(a) is True
         got = ch.recv(30)
-        assert got.dtype == np.int32 and got[1] == -2147483648
+        assert got.dtype == np.float64
+        assert got[0] == 1 and np.isnan(got[1]) and got[2] == 3
         # bytes -> a uint8 array
         assert ch.send(b"\x00\x01") is True
         assert np.array_equal(ch.recv(30), [0, 1])
@@ -521,6 +639,7 @@ report(list(1L, "a", list(TRUE, 2.5)))
 report(list(a = 1L, b = list(z = NULL)))
 report(c(1.5, 2.5))
 report(c(1L, 2L, 3L))
+report(c(TRUE, FALSE, TRUE))   # NA-free logical stays exact (3.2)
 report(c(1+2i, -3+0.5i))
 report(matrix(1:6, 2, 3))
 report(matrix(c(1+1i, 2+2i, 3+3i, 4+4i), 2))
@@ -576,10 +695,10 @@ report2(.POSIXct(1700000000, tz = ""),
 report2(.POSIXct(1700000000, tz = "Europe/Paris"),
         .POSIXct(1700000000, tz = "UTC"))      # a named zone normalizes
 report2(c(TRUE, NA), c(1L, NA))                # logical with NA -> integer
-# integer with NA is exact until 3.2's copied-read rule: RAWVEC INT
-# reads as int32 with the sentinel in place
-report2(c(1L, NA, -3L), c(1L, NA, -3L))
-report2(c(1L, NA), c(1L, NA))
+# integer with NA: 3.2's copied-read rule reads the foreign INT as
+# float64 with NA_real_-payload NaNs — the relay returns numeric (3.2)
+report2(c(1L, NA, -3L), c(1, NA, -3))
+report2(c(1L, NA), c(1, NA))
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
