@@ -63,7 +63,9 @@ jobs:
         run: echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Build and install
-        run: pip install . pytest numpy pyarrow polars cloudpickle coverage
+        # tzdata: the IANA database zoneinfo falls back to (Windows runners
+        # have no system database).
+        run: pip install . pytest numpy pyarrow polars cloudpickle coverage tzdata
 
       # The cross-language tests need an Rscript with the installed mizu
       # package (their fixture probe-skips otherwise); Linux legs only.

@@ -175,7 +175,10 @@ def test_temporal_shapes():
     assert got == np.array(["2023-11-14T22:13:20"], dtype="datetime64[us]")[0]
     # an aware datetime converts to its UTC instant
     import zoneinfo
-    zi = zoneinfo.ZoneInfo("Europe/Paris")
+    try:
+        zi = zoneinfo.ZoneInfo("Europe/Paris")
+    except zoneinfo.ZoneInfoNotFoundError:
+        pytest.skip("no IANA time zone database (install tzdata)")
     got = _read(
         _pymizu._write_stream(
             datetime.datetime(2023, 11, 14, 22, 13, 20, tzinfo=zi)
