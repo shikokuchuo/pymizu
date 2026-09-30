@@ -56,6 +56,7 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
 static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max);
 static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
+static PyObject *view_to_object(PyObject *view, int type);
 
 static PyObject *numpy_module(void);
 
@@ -427,13 +428,19 @@ int mizu_py_np_kind(PyObject *obj) {
    reservation failure: the caller falls back to a copy tier, then pickle. */
 
 /* Identity staging: reserve, then one memcpy. Returns 0 staged, -1
-   pickle. */
+   pickle. A flat SHM_VEC reserve leaves the validity words {0, 0}; a
+   Python buffer carries no NAs, so stamp known-NA-free — the reader's NA
+   verdict then needs no data scan, and a pymizu-staged INT_MIN stays a
+   value. (The conversion stage is the exception: its masked writes can
+   carry real NAs, so it leaves {0, 0} for the lazy scan.) */
 static int stage_raw(const Py_buffer *v, int type, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
   size_t n = (size_t) v->len;
   uint8_t *dst = mizu_stage_raw(h, (uint64_t) n, type, hdr, payload,
                                inline_max);
   if (dst == NULL) return -1;
+  if (hdr->kind == MIZU_KIND_SHM_VEC)
+    mizu_mizh_validity_set(dst - MIZU_HEADER_SIZE, 0, -1);
   memcpy(dst, v->buf, n);
   return 0;
 }
@@ -1295,6 +1302,8 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
     }
     uint8_t *base = (uint8_t *) shm->addr;
     mizu_mizh_write(base, type, (int64_t) (n / mizu_type_elt_size(type)));
+    /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp) */
+    mizu_mizh_validity_set(base, 0, -1);
     memcpy(base + MIZU_HEADER_SIZE, v.buf, n);
     mizu_stage_retain_zc(h, shm);
     *(*p)++ = PYMIZU_TAG_BUFREF;
@@ -1846,6 +1855,8 @@ typedef struct {
   uint8_t *data;          /* the region base + MIZU_HEADER_SIZE */
   Py_ssize_t len;         /* data bytes */
   int type;               /* the wire type tag */
+  signed char na_state;   /* to_numpy's cached verdict: 0 unknown,
+                             1 NA-free, -1 has-NAs (the {0, 0} scan only) */
   long pid;
   Py_ssize_t shape[1];
   Py_ssize_t strides[1];
@@ -2275,9 +2286,178 @@ nomem:
   return NULL;
 }
 
+/* The validity section's verdict, no data read: 1 known-NA-free, -1 NAs
+   present (*bitmap the section), 0 absent ({0, 0}) — the fallback-scan
+   state (to_numpy's rule, read off the region before any scan). */
+static int view_valid_section(const MizuShmView *v, const uint8_t **bitmap) {
+  const uint8_t *base = (const uint8_t *) mizu_shm_addr(v->owner->shm);
+  int64_t voff, vcount;
+  memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
+  memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
+  if (voff > 0) {
+    if (bitmap != NULL) *bitmap = base + voff;
+    return vcount == 0 ? 1 : -1;
+  }
+  return vcount == -1 ? 1 : 0;
+}
+
+/* np.empty(n, dtype=dt) with its writable buffer in hand; the caller
+   fills, releases, and keeps the array. NULL with an exception. */
+static PyObject *numpy_sink(const char *dt, size_t n, Py_buffer *out) {
+  PyObject *empty = numpy_empty();
+  if (empty == NULL) return NULL;
+  PyObject *args = PyTuple_Pack(1, PyLong_FromSize_t(n));
+  PyObject *kw = Py_BuildValue("{s:s}", "dtype", dt);
+  PyObject *arr = (args != NULL && kw != NULL) ?
+    PyObject_Call(empty, args, kw) : NULL;
+  Py_XDECREF(args);
+  Py_XDECREF(kw);
+  Py_DECREF(empty);
+  if (arr == NULL) return NULL;
+  if (PyObject_GetBuffer(arr, out, PyBUF_ND | PyBUF_WRITABLE) < 0) {
+    Py_DECREF(arr);
+    return NULL;
+  }
+  return arr;
+}
+
+/* LGL: a bool_ copy when NA-free — on {0, 0} the scan fuses into the
+   conversion copy, and a detected INT_MIN discards it and reverts to the
+   int32 view (the cached verdict settles repeat calls). */
+static PyObject *view_lgl_to_numpy(MizuShmView *v, int64_t n) {
+  const uint8_t *bitmap = NULL;
+  int sec = view_valid_section(v, &bitmap);
+  if (sec < 0 || v->na_state < 0) {
+    Py_INCREF(v);
+    return view_to_object((PyObject *) v, v->type);
+  }
+  Py_buffer bv;
+  PyObject *arr = numpy_sink("bool", (size_t) n, &bv);
+  if (arr == NULL) return NULL;
+  const int32_t *s32 = (const int32_t *) v->data;
+  uint8_t *d = (uint8_t *) bv.buf;
+  int na = 0;
+  if (sec == 0 && v->na_state == 0) {
+    for (int64_t i = 0; i < n; i++) {
+      na |= s32[i] == MIZU_NA_INT32;
+      d[i] = s32[i] != 0;
+    }
+    v->na_state = na ? -1 : 1;
+  } else {
+    for (int64_t i = 0; i < n; i++) d[i] = s32[i] != 0;
+  }
+  PyBuffer_Release(&bv);
+  if (!na) return arr;
+  Py_DECREF(arr);
+  Py_INCREF(v);
+  return view_to_object((PyObject *) v, v->type);
+}
+
+/* INT: the int32 view itself when NA-free, else a float64 copy with
+   NA_real_ payloads — positions off the section bitmap when present (no
+   element scan), the sentinel test otherwise; every int32 exact in
+   float64. */
+static PyObject *view_int_to_numpy(MizuShmView *v, int64_t n) {
+  const uint8_t *bitmap = NULL;
+  int sec = view_valid_section(v, &bitmap);
+  if (sec > 0 || v->na_state > 0) {
+    Py_INCREF(v);
+    return view_to_object((PyObject *) v, v->type);
+  }
+  if (sec == 0 && v->na_state == 0) {
+    const int32_t *s32 = (const int32_t *) v->data;
+    int na = 0;
+    for (int64_t i = 0; i < n; i++)
+      if (s32[i] == MIZU_NA_INT32) {
+        na = 1;
+        break;
+      }
+    v->na_state = na ? -1 : 1;
+    if (!na) {
+      Py_INCREF(v);
+      return view_to_object((PyObject *) v, v->type);
+    }
+  }
+  Py_buffer fv;
+  PyObject *arr = numpy_sink("float64", (size_t) n, &fv);
+  if (arr == NULL) return NULL;
+  const int32_t *s32 = (const int32_t *) v->data;
+  double *fd = (double *) fv.buf;
+  const uint64_t na_bits = PYMIZU_NA_REAL_BITS;
+  for (int64_t i = 0; i < n; i++) {
+    int na = bitmap != NULL ? !(bitmap[i / 8] & (1u << (i % 8)))
+                            : s32[i] == MIZU_NA_INT32;
+    if (na)
+      memcpy(fd + i, &na_bits, 8);
+    else
+      fd[i] = (double) s32[i];
+  }
+  PyBuffer_Release(&fv);
+  return arr;
+}
+
+PyDoc_STRVAR(view_to_numpy_doc,
+"to_numpy() -> numpy.ndarray\n\n\
+The view as a numpy array under the copied-read NA rules: a logical\n\
+reads as bool_ when NA-free (the int32 view otherwise), an integer as\n\
+float64 with R's NA_real_ payload when NAs are present (the int32 view\n\
+otherwise), an int64 is always the int64 view, warning on an NA verdict\n\
+(.to_arrow() is the NA-honest accessor). NA-freeness rides the region's\n\
+validity section before any data scan; the {0, 0} fallback scan's\n\
+verdict is cached on the view. Every other wire type is the zero-copy\n\
+view itself.");
+
+static PyObject *view_to_numpy(PyObject *obj, PyObject *Py_UNUSED(dummy)) {
+  MizuShmView *v = (MizuShmView *) obj;
+  if (numpy_module() == NULL) {
+    PyErr_SetString(PyExc_ImportError, "pymizu: to_numpy() requires numpy");
+    return NULL;
+  }
+  const int64_t n =
+    (int64_t) (v->len / (Py_ssize_t) mizu_type_elt_size(v->type));
+  if (v->type == MIZU_TYPE_LGL) return view_lgl_to_numpy(v, n);
+  if (v->type == MIZU_TYPE_INT) return view_int_to_numpy(v, n);
+  if (v->type == MIZU_TYPE_INT64) {
+    int sec = view_valid_section(v, NULL);
+    int has_na;
+    if (sec != 0) {
+      has_na = sec < 0;
+    } else {
+      if (v->na_state == 0) {
+        const int64_t *s64 = (const int64_t *) v->data;
+        int na = 0;
+        for (int64_t i = 0; i < n; i++)
+          if (s64[i] == MIZU_NA_INT64) {
+            na = 1;
+            break;
+          }
+        v->na_state = na ? -1 : 1;
+      }
+      has_na = v->na_state < 0;
+    }
+    if (has_na &&
+        PyErr_WarnEx(PyExc_UserWarning,
+                     "pymizu: an int64 view carries NA values, which numpy "
+                     "int64 cannot represent: they read as -2^63 (use "
+                     ".to_arrow() for the NA-honest form)", 1) < 0)
+      return NULL;
+  }
+  Py_INCREF(v);
+  return view_to_object((PyObject *) v, v->type);
+}
+
+PyDoc_STRVAR(view_to_arrow_doc,
+"to_arrow() -> (schema capsule, array capsule)\n\n\
+The Arrow C Data Interface export, re-exposed as a named method —\n\
+identical to __arrow_c_array__().");
+
 static PyMethodDef view_methods[] = {
   {"__arrow_c_array__", (PyCFunction)(void (*)(void)) view_arrow_c_array,
    METH_VARARGS | METH_KEYWORDS, arrow_c_array_doc},
+  {"to_arrow", (PyCFunction)(void (*)(void)) view_arrow_c_array,
+   METH_VARARGS | METH_KEYWORDS, view_to_arrow_doc},
+  {"to_numpy", (PyCFunction)(void (*)(void)) view_to_numpy, METH_NOARGS,
+   view_to_numpy_doc},
   {NULL}
 };
 
@@ -2504,11 +2684,18 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
   return out;
 }
 
+PyDoc_STRVAR(strview_to_arrow_doc,
+"to_arrow() -> (schema capsule, array capsule)\n\n\
+The Arrow C Data Interface export, re-exposed as a named method —\n\
+identical to __arrow_c_array__().");
+
 static PyMethodDef strview_methods[] = {
   {"to_list", (PyCFunction)(void (*)(void)) strview_to_list, METH_NOARGS,
    strview_to_list_doc},
   {"__arrow_c_array__", (PyCFunction)(void (*)(void)) strview_arrow_c_array,
    METH_VARARGS | METH_KEYWORDS, strview_arrow_c_array_doc},
+  {"to_arrow", (PyCFunction)(void (*)(void)) strview_arrow_c_array,
+   METH_VARARGS | METH_KEYWORDS, strview_to_arrow_doc},
   {NULL}
 };
 

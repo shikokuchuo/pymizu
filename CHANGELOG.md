@@ -10,6 +10,17 @@ Initial pre-release.
 
 ### Added
 
+- `_ShmView.to_numpy()` and `.to_arrow()` (Phase 3.4): a received view's
+  conveniences. `to_numpy()` applies the copied-read NA rules to the view
+  tiers — a logical is a `bool_` copy when NA-free, an integer a float64
+  copy with `NA_real_` payloads when NAs are present, int64 always the
+  int64 view (warning on an NA verdict) — with NA-freeness read off the
+  region's validity section before any data scan; the `{0, 0}` fallback
+  scan's verdict is cached on the view. `.to_arrow()` re-exposes the
+  `__arrow_c_array__` export as a named method, on the string view too.
+  pymizu now stamps its own buffer stages known-NA-free (`{0, -1}` in the
+  region's validity words), so a genuine `-2^31`/`-2^63` in a Python
+  array survives `to_numpy()` as a value.
 - Honest numpy dtypes on the copied reads (Phase 3.2): an R logical
   vector with no `NA` now reads as numpy `bool_` on the raw tiers (one
   holding an `NA` stays int32 with the documented `-2^31` sentinel), and

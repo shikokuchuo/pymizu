@@ -242,6 +242,75 @@ mizu::mizu_recv(ch, timeout = 60)
         ch.close()
 
 
+def test_r_peer_view_to_numpy(r_mizu):
+    # _ShmView.to_numpy() (3.4): the copied-read rule over views, with
+    # NA-freeness read off the region's validity section before any scan
+    # ({0, 0} pre-section regions here — the fallback scan, cached)
+    np = pytest.importorskip("numpy")
+    src = """
+l <- rep(c(TRUE, FALSE, NA), length.out = 1e6)
+mizu::mizu_send(ch, l)
+cl <- rep(c(TRUE, FALSE), length.out = 1e6)
+mizu::mizu_send(ch, cl)
+i <- rep(1:100, length.out = 1e6); i[3] <- NA_integer_
+mizu::mizu_send(ch, i)
+ci <- rep(1:100, length.out = 1e6)
+mizu::mizu_send(ch, ci)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        a = ch.recv(30).base.to_numpy()          # LGL with NAs: the view
+        assert a.dtype == np.int32 and not a.flags.writeable
+        assert list(a[:3]) == [1, 0, -2**31]
+        b = ch.recv(30).base.to_numpy()          # clean LGL: a bool_ copy
+        assert b.dtype == np.bool_ and list(b[:3]) == [True, False, True]
+        c = ch.recv(30).base.to_numpy()          # INT with an NA: float64
+        assert c.dtype == np.float64
+        assert c[0] == 1 and np.isnan(c[2]) and c[3] == 4
+        d = ch.recv(30).base.to_numpy()          # clean INT: the view
+        assert d.dtype == np.int32 and not d.flags.writeable
+        assert d[0] == 1 and d[-1] == 100
+    finally:
+        ch.close()
+
+
+def test_r_peer_view_to_arrow(r_mizu):
+    # .to_arrow() re-exposes the __arrow_c_array__ export (3.4): LGL is
+    # Arrow bool, INT64 carries its validity bitmap
+    pa = pytest.importorskip("pyarrow")
+    src = """
+l <- rep(c(TRUE, FALSE, NA), length.out = 1e6)
+mizu::mizu_send(ch, l)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        arr = pa.Array._import_from_c_capsule(*ch.recv(30).base.to_arrow())
+        assert arr.type == pa.bool_() and arr.null_count == 333333
+        assert arr.slice(0, 3).to_pylist() == [True, False, None]
+    finally:
+        ch.close()
+
+
+def test_py_peer_stamped_region_to_numpy():
+    # pymizu stamps its own buffer stages known-NA-free ({0, -1}): a
+    # genuine -2^31 in a Python int32 survives to_numpy as a value — the
+    # section settles the verdict, no scan, no conversion
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
+    try:
+        a = np.arange(200000, dtype=np.int32)
+        a[5] = -2**31
+        assert ch.send(a) is True
+        back = ch.recv(30)               # the echo REFs the region back
+        out = back.base.to_numpy()
+        assert out.dtype == np.int32 and out[5] == -2**31
+        assert np.shares_memory(out, back)
+    finally:
+        ch.close()
+
+
 def test_r_peer_int64_na_warns(r_mizu):
     # int64 keeps its dtype and warns on a detected INT64_MIN (3.2's
     # warn-only rule), naming .to_arrow() as the NA-honest accessor
