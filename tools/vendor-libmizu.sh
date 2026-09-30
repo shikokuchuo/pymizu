@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="18a1e5fabeb96ede8dcc79b867c53f89973d406d"  # libmizu: Corpus: R's verbatim NA_real_ bits; scalar-form len-1 attr values
+PIN="0cce6cd83fc7adfcb0c25d9d5e0fdcd044743566"  # libmizu: Add mizu_handle_keep_out (the tx-keeper count, channel handles)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
