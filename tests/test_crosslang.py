@@ -1552,3 +1552,181 @@ def _polars_col_buffers(pf):
         if arr.release:
             ctypes.CFUNCTYPE(None, ctypes.POINTER(ArrowArray))(
                 arr.release)(ctypes.byref(arr))
+
+
+# Phase 3.6/3.8: attributed layouts Python -> R (the MIZL frame writer) and
+# the export-provenance REF on the round trip.
+
+
+R_FRAME_READ = r"""
+df <- mizu::mizu_recv(ch, timeout = 60)
+res <- c(
+  is.data.frame(df) && nrow(df) == 300000L && ncol(df) == 4L,
+  identical(names(df), c("i", "x", "s", "f")),
+  is.integer(df[["i"]]) && is.double(df[["x"]]) &&
+    is.character(df[["s"]]) && is.factor(df[["f"]]),
+  sum(is.na(df[["i"]])) == 30000L && sum(is.na(df[["x"]])) == 30000L,
+  sum(is.na(df[["s"]])) == 30000L && sum(is.na(df[["f"]])) == 30000L,
+  identical(levels(df[["f"]]), c("v", "w", "u")),   # first-seen order
+  identical(df[["i"]][1:4], c(NA_integer_, 1:3)),
+  identical(df[["x"]][2], 0.5),
+  identical(df[["s"]][1:3], c(NA, "s1", "s2"))
+)
+mizu::mizu_send(ch, res)
+"""
+
+
+def test_py_peer_polars_frame_to_dataframe(r_mizu):
+    # a polars frame past the floor stages as one MIZL region (string_view
+    # columns gathered): R reads a data.frame
+    pl = pytest.importorskip("polars")
+    n = 300000
+    ch = pymizu.Channel.create(R_FRAME_READ, launcher=r_mizu)
+    try:
+        ch.send(pl.DataFrame({
+            "i": pl.Series([None if k % 10 == 0 else k for k in range(n)],
+                           dtype=pl.Int32),
+            "x": pl.Series([None if k % 10 == 0 else k * 0.5
+                            for k in range(n)], dtype=pl.Float64),
+            "s": pl.Series([None if k % 10 == 0 else f"s{k % 100}"
+                            for k in range(n)], dtype=pl.String),
+            "f": pl.Series([None if k % 10 == 0 else ["u", "v", "w"][k % 3]
+                            for k in range(n)], dtype=pl.Categorical),
+        }))
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+R_FRAME_READ2 = r"""
+df <- mizu::mizu_recv(ch, timeout = 60)
+res <- c(
+  is.data.frame(df) && nrow(df) == 200000L,
+  bit64::is.integer64(df[["l"]]),
+  inherits(df[["d"]], "Date"),
+  inherits(df[["p"]], "POSIXct") && attr(df[["p"]], "tzone") == "UTC",
+  is.factor(df[["f"]]) && identical(levels(df[["f"]]), c("a", "b")),
+  sum(is.na(df[["d"]])) == 20000L,
+  identical(df[["l"]][1:3], bit64::as.integer64(1:3)),
+  identical(df[["d"]][2], as.Date("2020-01-02")),
+  identical(df[["f"]][1:3], factor(c("a", "b", "a"), levels = c("a", "b")))
+)
+mizu::mizu_send(ch, res)
+"""
+
+
+def test_py_peer_pyarrow_frame_kinds(r_mizu):
+    # pyarrow: int64 -> integer64, date32 -> Date, timestamp -> POSIXct
+    # (tzone kept), dictionary -> factor
+    pa = pytest.importorskip("pyarrow")
+    import datetime
+    n = 200000
+    ch = pymizu.Channel.create(R_FRAME_READ2, launcher=r_mizu)
+    try:
+        ch.send(pa.table({
+            "l": pa.array([k + 1 for k in range(n)], type=pa.int64()),
+            "d": pa.array([None if k % 10 == 0 else
+                           datetime.date(2020, 1, 1) +
+                           datetime.timedelta(days=k)
+                           for k in range(n)], type=pa.date32()),
+            "p": pa.array([datetime.datetime(2021, 1, 1) +
+                           datetime.timedelta(seconds=k)
+                           for k in range(n)], type=pa.timestamp("us")),
+            "f": pa.array([["a", "b"][k % 2] for k in range(n)],
+                          type=pa.string()).dictionary_encode(),
+        }))
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+R_FRAME_RELAY = r"""
+df <- data.frame(i = 1:300000, x = runif(300000),
+                 l = bit64::as.integer64(1:300000))
+mizu::mizu_send(ch, df)
+y <- mizu::mizu_recv(ch, timeout = 60)   # the re-sent frame
+rc <- .Call(mizu:::mizu_zc_refcount, y)
+mizu::mizu_send(ch, c(rc[[1]] >= 2L, rc[[2]] %% 2L == 1L, identical(y, df)))
+"""
+
+
+def test_py_peer_frame_relay_refs_unmodified(r_mizu):
+    # R -> polars -> R of an unmodified fixed-width frame: the return hop
+    # is a REF naming R's own region (the provenance record), so R reads a
+    # REFHELD view of it, identical() to what it sent
+    pl = pytest.importorskip("polars")
+    ch = pymizu.Channel.create(R_FRAME_RELAY, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        df = pl.DataFrame(f)
+        assert ch.send(df) is True
+        # the REF emit marked the region (the refcount delta races R's
+        # producer-loan reap; the flag is the deterministic read)
+        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+R_FRAME_RELAY_MOD = r"""
+df <- data.frame(i = 1:300000, x = runif(300000))
+mizu::mizu_send(ch, df)
+y <- mizu::mizu_recv(ch, timeout = 60)
+want <- df[-nrow(df), ]
+mizu::mizu_send(ch, c(is.data.frame(y), nrow(y) == nrow(want),
+                      identical(y, want)))
+"""
+
+
+def test_py_peer_frame_relay_modified_copies(r_mizu):
+    # a modified frame (head) fails the record: the MIZL write, the
+    # modified values arriving — never the original region
+    pl = pytest.importorskip("polars")
+    ch = pymizu.Channel.create(R_FRAME_RELAY_MOD, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        df = pl.DataFrame(f)
+        flags0 = f.to_dict()["i"].base.flags
+        assert ch.send(df.head(299999)) is True
+        assert f.to_dict()["i"].base.flags == flags0   # no REF emit
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+R_FRAME_REFS = r"""
+df <- data.frame(i = 1:300000, s = rep(c("a", "b", NA), 100000),
+                 f = factor(rep(c("u", "v"), 150000)),
+                 stringsAsFactors = FALSE)
+mizu::mizu_send(ch, df)
+y <- mizu::mizu_recv(ch, timeout = 60)
+rc <- .Call(mizu:::mizu_zc_refcount, y)
+mizu::mizu_send(ch, c(rc[[1]] >= 2L, rc[[2]] %% 2L == 1L, identical(y, df)))
+"""
+
+
+def test_py_peer_frame_resend_refs(r_mizu):
+    # the received region-backed Frame re-sent whole is the 3.7 REF route
+    # (string and factor columns included): R reads its own region back
+    ch = pymizu.Channel.create(R_FRAME_REFS, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        assert ch.send(f) is True
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+def test_py_peer_pyarrow_relay_refs_strings(r_mizu):
+    # pyarrow hands back every exported buffer, string and dictionary
+    # columns included, so its unmodified round trip REFs the whole frame
+    pa = pytest.importorskip("pyarrow")
+    ch = pymizu.Channel.create(R_FRAME_REFS, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        t = pa.table(f)
+        assert ch.send(t) is True
+        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert all(ch.recv(60))
+    finally:
+        ch.close()

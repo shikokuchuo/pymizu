@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "pyinterop.h"
+#include "pyshmframe.h"
 
 static PyObject *MizuError;
 static PyObject *MizuDeclinedError;
@@ -322,6 +323,137 @@ static void ixe_posixct(ixw *w, const int64_t *counts, uint64_t n,
   const char *one[1] = { tz };
   int64_t len[1] = { (int64_t) strlen(tz) };
   ixe_strv(w, 1, one, len);
+}
+
+// The layout attribute blobs (pyshmframe.h's; complete 'I' streams) ----------------
+
+/* The frame dict's names value: the corpus's scalar form at length 1. */
+static void ixe_names(ixw *w, char **names, int n) {
+  if (n == 1) {
+    IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), names[0],
+                               (int32_t) strlen(names[0])));
+    return;
+  }
+  IXW_PUT(w, mizu_ix_put_strv_begin(IXW_DST(w), (uint64_t) n));
+  for (int i = 0; i < n; i++)
+    IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), names[i],
+                                  (int32_t) strlen(names[i])));
+}
+
+/* The factor dict {levels, class = "factor"} — the inline attr shape's
+   form exactly, as a complete stream. */
+size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
+                           const int32_t *offs, int64_t nlev) {
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
+  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
+  ixe_key(&w, "levels");
+  if (nlev == 1) {
+    IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), bytes, offs[1] - offs[0]));
+  } else {
+    IXW_PUT(&w, mizu_ix_put_strv_begin(IXW_DST(&w), (uint64_t) nlev));
+    for (int64_t i = 0; i < nlev; i++)
+      IXW_PUT(&w, mizu_ix_put_strelt(IXW_DST(&w), bytes + offs[i],
+                                     offs[i + 1] - offs[i]));
+  }
+  ixe_key(&w, "class");
+  {
+    static const char *cls[1] = { "factor" };
+    ixe_class(&w, cls, 1);
+  }
+  return w.total;
+}
+
+size_t mizu_py_blob_date(uint8_t *dst) {
+  static const char *cls[1] = { "Date" };
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
+  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 1));
+  ixe_key(&w, "class");
+  ixe_class(&w, cls, 1);
+  return w.total;
+}
+
+size_t mizu_py_blob_ts(uint8_t *dst, const char *tz) {
+  static const char *cls[2] = { "POSIXct", "POSIXt" };
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
+  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
+  ixe_key(&w, "class");
+  ixe_class(&w, cls, 2);
+  ixe_key(&w, "tzone");
+  IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), tz, (int32_t) strlen(tz)));
+  return w.total;
+}
+
+/* The frame dict {names, class = "data.frame", row.names}: row.names the
+   automatic c(NA, -n), or a same-language Frame's int32 / character form.
+   0 with an exception set on a malformed row_names (never on the size
+   pass's own account). */
+size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
+                          PyObject *row_names) {
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
+  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 3));
+  ixe_key(&w, "names");
+  ixe_names(&w, names, ncols);
+  ixe_key(&w, "class");
+  {
+    static const char *cls[1] = { "data.frame" };
+    ixe_class(&w, cls, 1);
+  }
+  ixe_key(&w, "row.names");
+  if (row_names == NULL || row_names == Py_None) {
+    int64_t vals[2] = { 0, -rows };
+    int na[2] = { 1, 0 };
+    ixe_intv(&w, 2, vals, na);
+    return w.total;
+  }
+  if (PyList_Check(row_names)) {
+    Py_ssize_t nr = PyList_GET_SIZE(row_names);
+    if (nr != (Py_ssize_t) rows) goto malformed;
+    if (nr == 1) {
+      Py_ssize_t len;
+      const char *u =
+        PyUnicode_AsUTF8AndSize(PyList_GET_ITEM(row_names, 0), &len);
+      if (u == NULL) return 0;
+      IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), u, (int32_t) len));
+    } else {
+      IXW_PUT(&w, mizu_ix_put_strv_begin(IXW_DST(&w), (uint64_t) nr));
+      for (Py_ssize_t i = 0; i < nr; i++) {
+        Py_ssize_t len;
+        const char *u =
+          PyUnicode_AsUTF8AndSize(PyList_GET_ITEM(row_names, i), &len);
+        if (u == NULL) return 0;
+        IXW_PUT(&w, mizu_ix_put_strelt(IXW_DST(&w), u, (int32_t) len));
+      }
+    }
+    return w.total;
+  }
+  if (PyObject_CheckBuffer(row_names)) {
+    Py_buffer v;
+    if (PyObject_GetBuffer(row_names, &v, PyBUF_ND | PyBUF_FORMAT) < 0)
+      return 0;
+    int ok = v.strides == NULL && v.ndim == 1 &&
+      v.len == (Py_ssize_t) rows * 4 &&
+      mizu_py_wire_type_of(&v) == MIZU_TYPE_INT;
+    if (ok) ixe_intv_i32(&w, (const int32_t *) v.buf, (Py_ssize_t) rows);
+    PyBuffer_Release(&v);
+    if (!ok) goto malformed;
+    return w.total;
+  }
+malformed:
+  PyErr_SetString(MizuError, "pymizu: a Frame's row_names are not int32 "
+                  "or character of the row count");
+  return 0;
 }
 
 // Frame (the columnar home) ---------------------------------------------------------
@@ -3485,6 +3617,7 @@ typedef struct frame_export {
 static void frame_export_decref(frame_export *ex) {
   if (atomic_fetch_sub_explicit(&ex->refs, 1, memory_order_acq_rel) != 1)
     return;
+  pymizu_shmframe_pv_unregister(ex);   /* before the mapping closes */
   if (ex->acq != NULL) {
     mizu_py_debug_span_remove(mizu_shm_addr(ex->acq));
     if (ex->acq_pid == mizu_self_pid()) mizu_zc_unref(ex->acq);
@@ -3844,6 +3977,11 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
   st->get_last_error = fx_get_last_error;
   st->release = fx_stream_release;
   st->private_data = ex;
+  /* the export-provenance record (3.8): what this acquisition hands out,
+     so an unmodified round trip of the frame stages as REF */
+  if (ex->acq != NULL)
+    pymizu_shmframe_pv_register(ex->acq, ncols, ex->cname_ptrs, ex->col_s,
+                                ex->col_a, ex);
   PyObject *cap = PyCapsule_New(st, "arrow_array_stream", fx_capsule_free);
   if (cap == NULL) {
     fx_stream_release(st);
@@ -4360,13 +4498,9 @@ nomem:
 
 // The Arrow stream front-end ----------------------------------------------------------
 
-/* The held batches of a producer stream (single-consumption: pulled once,
-   in the size pass, and written from in the write pass). */
-typedef struct {
-  ArrowArray *arrs;
-  size_t nb, cap;
-  int64_t rows;
-} ixs_hold;
+/* The pulled-batch state (ixs_hold / ixs_pcol / ixs) and the per-batch
+   Arrow helpers (arrow_valid, arrow_str_at) are pyshmframe.h's — shared
+   with shmframe.c's MIZL writer. */
 
 static void ixs_hold_free(ixs_hold *h) {
   for (size_t i = 0; i < h->nb; i++)
@@ -4374,45 +4508,6 @@ static void ixs_hold_free(ixs_hold *h) {
   free(h->arrs);
   memset(h, 0, sizeof(*h));
 }
-
-/* The validity bit for element k of a batch (Arrow LSB-first). */
-static int arrow_valid(const ArrowArray *a, int64_t k) {
-  if (a->null_count == 0 || a->buffers[0] == NULL) return 1;
-  int64_t i = a->offset + k;
-  const uint8_t *bm = (const uint8_t *) a->buffers[0];
-  return (bm[i >> 3] >> (i & 7)) & 1;
-}
-
-enum { PC_CVT, PC_STR, PC_DICT, PC_DATE, PC_TS };
-
-typedef struct {
-  int kind;
-  const cvt_row *row;   /* PC_CVT */
-  int str_form;         /* PC_STR/PC_DICT: 1 utf8, 2 large_utf8, 3 view */
-  double ts_scale;      /* PC_TS */
-  char tz[64];          /* PC_TS */
-  char idx_w;           /* PC_DICT: the index width */
-  int idx_signed;
-} ixs_pcol;
-
-typedef struct {
-  ArrowArrayStream *st;
-  PyObject *cap;
-  ArrowSchema schema;
-  int schema_owned;
-  int borrowed_hold;   /* the hold is a borrowed single batch (a capsule
-                          pair), never pulled or released */
-  ixs_hold hold;
-  ixs_pcol *cols;
-  int ncols;
-  int single;
-  /* per-dictionary-column canonical levels (batch 0's), read at
-     validation */
-  int32_t **lev_offs;
-  uint8_t **lev_bytes;
-  int64_t *nlevs;
-  int64_t *lev_blens;
-} ixs;
 
 static void ixs_free(ixs *x) {
   if (!x->borrowed_hold) {
@@ -4440,37 +4535,6 @@ static void ixs_free(ixs *x) {
 static void ixs_decline(const char *what) {
   PyErr_Format(MizuDeclinedError,
                "pymizu: value is not portable to the peer (%s)", what);
-}
-
-/* The string forms' per-batch element access: utf8 (i32 offsets),
-   large_utf8 (i64), string_view (16-byte views). */
-static int arrow_str_at(const ArrowArray *a, int64_t k, int form,
-                        const uint8_t **ptr, int32_t *len) {
-  if (!arrow_valid(a, k)) return 0;
-  int64_t i = a->offset + k;
-  if (form == 1) {
-    const int32_t *offs = (const int32_t *) a->buffers[1];
-    *ptr = (const uint8_t *) a->buffers[2] + offs[i];
-    *len = offs[i + 1] - offs[i];
-  } else if (form == 2) {
-    const int64_t *offs = (const int64_t *) a->buffers[1];
-    *ptr = (const uint8_t *) a->buffers[2] + offs[i];
-    *len = (int32_t) (offs[i + 1] - offs[i]);
-  } else {
-    const uint8_t *vw = (const uint8_t *) a->buffers[1] + i * 16;
-    int32_t l;
-    memcpy(&l, vw, 4);
-    if (l <= 12) {
-      *ptr = vw + 4;
-    } else {
-      int32_t bi, off;
-      memcpy(&bi, vw + 8, 4);
-      memcpy(&off, vw + 12, 4);
-      *ptr = (const uint8_t *) a->buffers[2 + bi] + off;
-    }
-    *len = l;
-  }
-  return 1;
 }
 
 /* The dictionary levels of batch 0 (the canonical set later batches must
@@ -4930,6 +4994,15 @@ static int ixs_check_batch(ixs *x, const ArrowArray *a) {
       ixs_decline("an invalid Arrow C Data Interface batch");
       return -1;
     }
+    /* R raw vectors have no NA: the masked convert would write a 4-byte
+       sentinel into a 1-byte column (the array front-end declines there
+       too) */
+    if (pc->kind == PC_CVT && pc->row->wire == MIZU_TYPE_RAW &&
+        c->buffers[0] != NULL && c->null_count != 0) {
+      ixs_decline("Arrow nulls cannot cross in a uint8 column "
+                  "(R raw vectors have no NA)");
+      return -1;
+    }
   }
   return 0;
 }
@@ -5125,6 +5198,27 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
       rc = 0;
     } else {
+      /* the MIZL tier (3.6/3.8): past the zero-copy gate, no churn, and
+         the peer passing the frame conjunction — the provenance REF of an
+         unmodified round trip first, else the layout write; anything less
+         falls to the copy tiers */
+      const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
+        (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
+      if (n > zc_gate && !mizu_handle_churn(h)) {
+        int any_str = 0;
+        for (int i = 0; i < x->ncols; i++)
+          any_str |= x->cols[i].kind == PC_STR;
+        const uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL |
+          (any_str ? MIZU_CAP_MIZS : 0u);
+        if ((x->caps & need) == need) {
+          rc = pymizu_shmframe_pv_match(x, names, hdr, payload,
+                                        inline_max);
+          if (rc == 0) goto done;
+          rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max,
+                                     h, 0);
+          if (rc >= 0) goto done;
+        }
+      }
       uint8_t *buf = malloc(n);
       if (buf == NULL) {
         PyErr_NoMemory();
@@ -5281,7 +5375,7 @@ static int ixs_stage_arrow_pair(PyObject *obj, mizu_slot_hdr *hdr,
 /* The __arrow_c_stream__ front-end. */
 int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint8_t *payload, uint32_t inline_max,
-                                 mizu_handle *h) {
+                                 mizu_handle *h, uint32_t peer_caps) {
   if (Py_TYPE(obj) == &MizuFrameType) return -1;   /* the writer's case */
   if (!PyObject_HasAttrString(obj, "__arrow_c_stream__"))
     return PyObject_HasAttrString(obj, "__arrow_c_array__") ?
@@ -5330,7 +5424,86 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
   memset(&x, 0, sizeof(x));
   x.st = st;
   x.cap = cap;
+  x.caps = peer_caps;
   int rc = ixs_run(&x, hdr, payload, inline_max, h);
+  ixs_free(&x);
+  return rc;
+}
+
+/* The same-language MIZL branch (Phase 3.6): a Frame past the zero-copy
+   floor stages as one MIZL region on same-language handles — the true
+   mirror of R's MIZL, container-exact (it reads back as a region-backed
+   Frame), while pandas, polars and pyarrow frames keep pickle. Below the
+   floor, under churn, or on any decline (a complex column) it falls back
+   to pickle: -1 with the error cleared. */
+static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
+                              uint32_t inline_max, mizu_handle *h) {
+  char **names = NULL;
+  int rc = -1;
+  memset(&x->schema, 0, sizeof(x->schema));
+  if (x->st->get_schema(x->st, &x->schema) != 0) goto out;
+  x->schema_owned = 1;
+  if (x->schema.format == NULL || x->schema.release == NULL ||
+      strcmp(x->schema.format, "+s") != 0)
+    goto out;
+  x->ncols = (int) x->schema.n_children;
+  if (x->ncols < 1 || x->schema.children == NULL) goto out;
+  x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
+  if (x->cols == NULL) goto out;
+  names = ixs_names(x);
+  if (names == NULL) goto out;
+  for (int i = 0; i < x->ncols; i++)
+    if (ixs_classify(x, i, x->schema.children[i], 0) < 0) goto out;
+  if (ixs_pull(x) < 0 || ixs_validate_dicts(x) < 0) goto out;
+  {
+    ixe e = { NULL, 0 };
+    e.total += mizu_ix_put_header(NULL);
+    ixs_emit_frame(&e, x, names);
+    const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
+      (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
+    if (e.total <= zc_gate || mizu_handle_churn(h)) goto out;
+  }
+  rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max, h, 1);
+out:
+  free(names);
+  if (rc != 0) {
+    PyErr_Clear();
+    rc = -1;
+  }
+  return rc;
+}
+
+/* stage_impl's exact-Frame branch (pyinterop.h). 0 staged, -1 fall back
+   to pickle. */
+int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
+                            uint8_t *payload, uint32_t inline_max,
+                            mizu_handle *h) {
+  if (Py_TYPE(obj) != &MizuFrameType) return -1;
+  MizuFrame *f = (MizuFrame *) obj;
+  PyObject *args = PyTuple_New(0);
+  if (args == NULL) {
+    PyErr_Clear();
+    return -1;
+  }
+  PyObject *cap = Frame_arrow_c_stream(f, args, NULL);
+  Py_DECREF(args);
+  if (cap == NULL) {
+    PyErr_Clear();
+    return -1;
+  }
+  ArrowArrayStream *st = (ArrowArrayStream *) PyCapsule_GetPointer(
+    cap, "arrow_array_stream");
+  if (st == NULL) {
+    Py_DECREF(cap);
+    PyErr_Clear();
+    return -1;
+  }
+  ixs x;
+  memset(&x, 0, sizeof(x));
+  x.st = st;
+  x.cap = cap;
+  x.row_names = f->row_names;
+  int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h);
   ixs_free(&x);
   return rc;
 }
@@ -5509,6 +5682,7 @@ int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
                              PyObject *declined_error) {
   MizuError = mizu_error;
   MizuDeclinedError = declined_error;
+  mizu_py_shmframe_register(mizu_error, declined_error);
   static PyMethodDef rebuild_def = {
     "_frame_rebuild", frame_rebuild, METH_VARARGS,
     "Rebuild a Frame from its pickle state (facade use only)."

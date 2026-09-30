@@ -1425,7 +1425,7 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
 
 static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                       uint32_t inline_max, mizu_handle *h,
-                      uint32_t peer_lang) {
+                      uint32_t peer_lang, uint32_t peer_caps) {
   /* the reader-language policy (DESIGN.md's): same-language handles keep
      the private path ('P' codec, pickle, identity raw tiers); a foreign
      peer gets the interchange order — the conversion pass and the Arrow
@@ -1462,7 +1462,8 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     if (stage_ref_str(obj, hdr, payload, inline_max) == 0) return 0;
     PyObject *list = strview_to_list(obj, NULL);
     if (list == NULL) return 1;
-    int rc = stage_impl(list, hdr, payload, inline_max, h, peer_lang);
+    int rc = stage_impl(list, hdr, payload, inline_max, h, peer_lang,
+                        peer_caps);
     Py_DECREF(list);
     return rc;
   }
@@ -1512,7 +1513,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       int arc = stage_arrow(obj, hdr, payload, inline_max, h);
       if (arc >= 0) return arc;
       int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
-                                             inline_max, h);
+                                             inline_max, h, peer_caps);
       if (src >= 0) return src;
     }
     return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
@@ -1538,6 +1539,11 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     Py_DECREF(stream);
     return rc;
   }
+  /* a Frame past the zc floor stages MIZL on same-language handles too
+     (container-exact: it reads back as a region-backed Frame); below the
+     floor or on a decline it pickles (3.6) */
+  if (pymizu_frame_stage_mizl(obj, hdr, payload, inline_max, h) == 0)
+    return 0;
   int crc = stage_codec(obj, hdr, payload, inline_max, h);
   if (crc >= 0) return crc;
   PyObject *stream =
@@ -1601,8 +1607,9 @@ static int py_stage(void *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     return rc;
   }
   uint32_t peer_lang = hctx != NULL ? hctx->peer_lang : 0;
+  uint32_t peer_caps = hctx != NULL ? hctx->peer_caps : 0;
   int rc = stage_impl((PyObject *) obj, hdr, payload, inline_max, h,
-                      peer_lang);
+                      peer_lang, peer_caps);
   PyGILState_Release(gil);
   return rc;
 }
@@ -2088,6 +2095,12 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
     rc = ref_emit(shm, hdr, payload, inline_max);
   Py_DECREF(view);
   return rc;
+}
+
+/* shmframe.c's provenance match stages through the same emit (pyinterop.h). */
+int mizu_py_ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
+                     uint32_t inline_max) {
+  return ref_emit(shm, hdr, payload, inline_max);
 }
 
 /* The string view's REF half: an exact _ShmStrView re-sent whole. The view

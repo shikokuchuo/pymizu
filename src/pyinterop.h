@@ -121,11 +121,26 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 
 /* The __arrow_c_stream__ front-end (foreign handles only): struct schemas
    write the frame shape, non-struct the bare-bytes tiers / 0x0b / the
-   temporal and factor shapes. 0 staged, 1 error (DeclinedError for a
-   value without a portable home), -1 not a stream producer. */
+   temporal and factor shapes; past the zero-copy floor a frame the peer's
+   capability mask admits stages as one MIZL region (or REF on an
+   unmodified round trip). 0 staged, 1 error (DeclinedError for a value
+   without a portable home), -1 not a stream producer. */
 int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint8_t *payload, uint32_t inline_max,
-                                 mizu_handle *h);
+                                 mizu_handle *h, uint32_t peer_caps);
+
+/* The same-language MIZL branch (stage_impl's, ahead of pickle): an exact
+   pymizu.Frame past the zero-copy floor stages as one MIZL region
+   (container-exact). 0 staged, -1 fall back to pickle (never an error). */
+int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
+                            uint8_t *payload, uint32_t inline_max,
+                            mizu_handle *h);
+
+/* The REF emit shared by the whole-view re-sends and the 3.8 provenance
+   match: REFHELD OR'd, the region name the payload. 0 staged, -1 the name
+   cannot ride the payload. */
+int mizu_py_ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
+                     uint32_t inline_max);
 
 /* The 'I' builder: one stream -> one Python object. NULL with an
    exception set (the cursor's informative text, the no-home decline, or

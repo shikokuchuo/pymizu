@@ -274,15 +274,23 @@ def trace_to_file(path):
     return True
 
 
-def foreign_pair():
+def frame_unpickle(payload):
+    """A Frame result for pool tests: Frames are not constructible
+    directly, so the worker rebuilds one through its pickle form."""
+    import pickle
+
+    return pickle.loads(payload)
+
+
+def foreign_pair(caps=0):
     """An in-process channel whose host end stages interop: the attach
-    side reports (R, caps 0) as its identity word, so the host reads a
+    side reports (R, caps) as its identity word, so the host reads a
     foreign peer word at ready_wait. The reverse direction stays
     same-language (the attach side reads the host's Python word)."""
     from pymizu import _pymizu
 
     h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
-    p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, caps))
     p.ready_set()
     assert h.ready_wait(10)
     return h, p

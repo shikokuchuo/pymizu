@@ -46,7 +46,7 @@ core_sources = sorted(glob.glob("src/vendor/libmizu/*.c"))
 ext_modules = [
     Extension(
         "pymizu._pymizu",
-        sources=["src/_pymizu.c", "src/map.c", "src/interop.c"] + core_sources,
+        sources=["src/_pymizu.c", "src/map.c", "src/interop.c", "src/shmframe.c"] + core_sources,
         include_dirs=["src/vendor/libmizu"],
         extra_compile_args=[] if os.name == "nt" else ["-std=c11", "-pthread"],
         extra_link_args=[] if os.name == "nt" else ["-pthread"],

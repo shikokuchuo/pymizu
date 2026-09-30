@@ -10,6 +10,25 @@ Initial pre-release.
 
 ### Added
 
+- Attributed layouts Python → R (Phase 3.6): a frame past the zero-copy
+  floor now stages as one MIZL region instead of an interchange copy —
+  any `__arrow_c_stream__` producer (polars, pyarrow, pandas) on a
+  channel whose peer passes the capability conjunction, and
+  `pymizu.Frame` values on same-language handles and homogeneous pools
+  (container-exact: a `Frame` reads back as a region-backed `Frame`).
+  Atomic columns write bare element bytes with the Arrow validity
+  bitmaps fused into the in-band sentinels and landed in the layout's
+  validity sections; string columns write the MIZS block; dictionary
+  columns write INT32 leaves of 1-based codes with the factor blob;
+  `date32`/`timestamp` columns write Date/POSIXct leaves. A peer short
+  of the conjunction gets the interchange copy, as before.
+- Export-provenance REF (Phase 3.8): a region-backed `Frame`'s Arrow
+  exports are recorded per acquisition, and an outgoing frame whose
+  columns all match one acquisition's record — an unmodified
+  R → polars/pyarrow → R round trip — stages as the region's REF, zero
+  payload bytes. Modifications (new nulls, a cast, a rename, a shorter
+  selection, a computed column, re-viewed strings) fail the record and
+  take the layout write.
 - Region-backed trees, `Frame`s and factors (Phase 3.5): an R list tree
   past the zero-copy floor now crosses as one MIZL region — a plain
   `list` of views (no attributes), a `dict` of views (names only), or a
@@ -27,6 +46,7 @@ Initial pre-release.
   `large_utf8` in place, and `to_dict()` gives read-only numpy views for
   numeric columns. pymizu now advertises `MIZU_CAP_ATTRS | MIZU_CAP_MIZL`
   in its identity word, so a mizu peer stages these layouts for it.
+
 - `_ShmView.to_numpy()` and `.to_arrow()` (Phase 3.4): a received view's
   conveniences. `to_numpy()` applies the copied-read NA rules to the view
   tiers — a logical is a `bool_` copy when NA-free, an integer a float64
@@ -141,6 +161,9 @@ Initial pre-release.
 
 ### Fixed
 
+- A `uint8` column carrying Arrow nulls in a frame is now declined
+  (`R raw vectors have no NA`), matching the array front-end — the
+  masked convert wrote a 4-byte sentinel into the 1-byte column.
 - The `Frame` Arrow export's schema and array release callbacks now
   cascade to children and dictionaries, per the C Data Interface
   contract (consumers release only the struct they received). pyarrow
