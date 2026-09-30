@@ -119,6 +119,38 @@ int mizu_py_cvt_warn(const cvt_warn *warn);
 int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                     uint32_t inline_max, mizu_handle *h);
 
+/* This binding's identity word, the one binding fill (channel and pool). */
+#define MIZU_PY_IDENT \
+  MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL)
+
+/* The task stream (0x12) writer (Phase 4): the header fields then the
+   code string, the positional list and the named dict emitted off the
+   spec's components, elements through the generic writer; the target is
+   the pool word's language byte. 0 staged, 1 error (DeclinedError for a
+   non-portable argument — a foreign task with non-portable args can
+   never run, so no fallback — MizuError otherwise). */
+int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
+                         uint8_t *payload, uint32_t inline_max,
+                         mizu_handle *h, uint64_t ident);
+
+/* The exec-hook decode and run of a task stream (Phase 4): validates the
+   header and the per-kind shape off the cursor — ident_out takes the
+   submitter identity ahead of every field read — then executes: name
+   kind by importlib resolution and vectorcall straight off the cursor,
+   source kind by the ast split with the arguments bound in a fresh
+   namespace. Returns the result, or NULL with an exception set (the exec
+   hook publishes it — every path is catching). */
+PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
+                             uint64_t *ident_out);
+
+/* The test hooks' halves: the task writer as bytes, and the decode as
+   components (target, kind, ident, code, positional list, named dict) —
+   the golden corpus drives them. */
+PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
+                                      PyObject *args, PyObject *kwargs,
+                                      uint32_t target, uint64_t ident);
+PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n);
+
 /* The __arrow_c_stream__ front-end (foreign handles only): struct schemas
    write the frame shape, non-struct the bare-bytes tiers / 0x0b / the
    temporal and factor shapes; past the zero-copy floor a frame the peer's

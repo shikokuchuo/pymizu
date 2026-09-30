@@ -30,6 +30,7 @@ from pymizu._pymizu import (
     TaskError,
     WorkerDiedError,
     __core_version__,
+    _call_frame,
     _channel_attach,
     _channel_new,
     _pool_attach,
@@ -44,7 +45,7 @@ from pymizu._pymizu import (
 from pymizu._pymizu import (
     prune as _prune,
 )
-from pymizu._r import r_launcher
+from pymizu._r import r_launcher, r_pool_launcher
 
 __version__ = "0.1.0.dev0"
 
@@ -227,6 +228,117 @@ def _default_worker_launcher() -> _Callable[[str, int], _subprocess.Popen]:
     return launch
 
 
+_LANG_R = 2
+_LANG_PYTHON = 3
+
+_R_NAME_RE = _re.compile(r"[A-Za-z0-9.]+:{2,3}[A-Za-z.][A-Za-z0-9._]*\Z")
+_PY_NAME_RE = _re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+\Z"
+)
+
+
+class call:
+    """A task specification for a pool of another language's workers.
+
+    Describes a call for :meth:`Pool.submit`: a qualified name
+    (``"mod.fn"`` for Python workers, ``"pkg::fn"`` for R workers) or a
+    ``source=`` string in the workers' language, plus the constant
+    arguments. The spec describes a call; it is not a value. The
+    language never appears at the call site — Pool.submit resolves the
+    workers' language from the pool itself — and a bare (unqualified)
+    name errors at submit, not here.
+
+    Unnamed arguments map to the positional list and keyword arguments
+    to the named dict, matching R's mixed-call convention. Arguments
+    must be portable values (the interchange subset documented under
+    :meth:`Channel.send`): a non-portable argument raises
+    :class:`DeclinedError` at submit, never a fallback.
+
+    A ``source=`` task evaluates in a fresh namespace with the keyword
+    arguments bound as names and positional arguments bound as ``_1``,
+    ``_2``, ... The result is the trailing expression's value, or None
+    when the source ends with a statement.
+    """
+
+    __slots__ = ("code", "kind", "args", "kwargs")
+
+    def __init__(
+        self,
+        name: str | None = None,
+        /,
+        *args: _Any,
+        source: str | None = None,
+        **kwargs: _Any,
+    ):
+        if (name is None) == (source is None):
+            raise TypeError(
+                "pymizu: exactly one of 'name' or 'source' must be given"
+            )
+        code = name if source is None else source
+        if not isinstance(code, str):
+            raise TypeError("pymizu: 'name' and 'source' must be str")
+        self.code = code
+        self.kind = 0 if source is None else 1
+        self.args = args
+        self.kwargs = kwargs
+
+    def __repr__(self) -> str:
+        head = self.code if self.kind == 0 else f"source={self.code!r}"
+        return f"pymizu.call({head}, ...)"
+
+
+def _check_qualified(code: str, kind: int, lang: int) -> None:
+    """The name-kind qualifier check, syntax-shaped per worker language.
+
+    Runs at submit (where the language is always known), before args
+    staging: a bare name with non-portable args raises this error, never
+    the portability one. An unknown language defers to the worker's
+    resolution error stream.
+    """
+    if kind != 0:
+        return
+    if lang == _LANG_R:
+        ok = _R_NAME_RE.fullmatch(code)
+    elif lang == _LANG_PYTHON:
+        ok = _PY_NAME_RE.fullmatch(code)
+    else:
+        return
+    if not ok:
+        raise TypeError(
+            "pymizu: a name-kind task needs a qualified name "
+            f"('mod.fn' for Python workers, 'pkg::fn' for R workers): {code!r}"
+        )
+
+
+def _check_native(ident: tuple[int, int] | None, verb: str) -> None:
+    """The private-frame guard: a foreign pool takes spec tasks only."""
+    if ident is not None and ident[0] != _LANG_PYTHON:
+        raise MizuError(
+            "pymizu: this pool's workers are not Python — "
+            f"{verb} needs a pymizu.call() spec on a foreign pool"
+        )
+
+
+def _exec_source(source: str, ns: dict) -> _Any:
+    """Run a source-kind task: the arguments are bound in ``ns``; the
+    result is the trailing expression's value, else None (the ast split:
+    exec the prefix, eval the tail). Called by the worker's exec hook."""
+    import ast
+
+    tree = ast.parse(source)
+    body = tree.body
+    if body and isinstance(body[-1], ast.Expr):
+        if len(body) > 1:
+            prefix = ast.fix_missing_locations(
+                ast.Module(body=body[:-1], type_ignores=[])
+            )
+            exec(compile(prefix, "<task>", "exec"), ns)
+        tail = ast.fix_missing_locations(ast.Expression(body[-1].value))
+        return eval(compile(tail, "<task>", "eval"), ns)
+    exec(compile(tree, "<task>", "exec"), ns)
+    return None
+
+
 class Pool:
     """A shared-memory work-stealing task pool handle (process-private).
 
@@ -343,9 +455,27 @@ class Pool:
         A buffer-protocol argument (e.g. a numpy array) past the
         zero-copy floor crosses as a read-only view over shared pages,
         not a writable copy.
+
+        With a :class:`pymizu.call` spec as ``fn`` (no ``*args`` /
+        ``**kwargs`` — the spec carries them), the task stream crosses
+        in the neutral interchange format: this is how a pool of another
+        language's workers is driven (spawn them with
+        :func:`pymizu.r_pool_launcher`). On a foreign pool a plain
+        callable errors locally, naming the spec verb.
         """
+        if type(fn) is call:
+            if args or kwargs:
+                raise TypeError(
+                    "pymizu: a call spec carries its own arguments"
+                )
+            ident = self._h._worker_ident()
+            if ident is None:
+                raise MizuError("pymizu: no worker has joined this pool")
+            _check_qualified(fn.code, fn.kind, ident[0])
+            return self._h.submit(_call_frame(fn), timeout)
         if not callable(fn):
             raise TypeError("pymizu: fn must be callable")
+        _check_native(self._h._worker_ident(), "Pool.submit")
         return self._h.submit(_task_frame(fn, args, kwargs), timeout)
 
     def submit_batch(
@@ -360,6 +490,7 @@ class Pool:
         handles stay valid and collectible. Use functools.partial to bind
         arguments.
         """
+        _check_native(self._h._worker_ident(), "Pool.submit_batch")
         payloads = []
         for fn in fns:
             if not callable(fn):
@@ -664,9 +795,11 @@ __all__ = [
     "__core_version__",
     "__version__",
     "abi_version",
+    "call",
     "current_pool",
     "is_remote_error",
     "is_sentinel",
     "prune",
     "r_launcher",
+    "r_pool_launcher",
 ]

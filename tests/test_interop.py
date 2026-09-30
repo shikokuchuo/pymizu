@@ -47,7 +47,25 @@ def test_golden_corpus():
         value = case["value"]
         if kind == "read-err":
             with pytest.raises(pymizu.MizuError):
-                _read(CORPUS[cid])
+                # err-taskdec- rows ride the task decoder, the rest the
+                # value reader
+                if cid.startswith("err-taskdec-"):
+                    _pymizu._read_task(bytes.fromhex(CORPUS[cid]))
+                else:
+                    _read(CORPUS[cid])
+            continue
+        if kind == "task":
+            home = ixn.parse(value)
+            got = _pymizu._read_task(bytes.fromhex(CORPUS[cid]))
+            assert tuple(got[:4]) == (
+                home.target, home.kind, home.ident, home.code,
+            ), cid
+            assert ixn.ix_same(got[4], home.positional), cid
+            assert ixn.ix_same(got[5], home.named), cid
+            assert _pymizu._write_task(
+                home.code, home.kind, tuple(home.positional), home.named,
+                home.target, home.ident,
+            ).hex() == CORPUS[cid], cid
             continue
         if kind == "write-decline":
             if cid in SKIP_WRITE_DECLINE:

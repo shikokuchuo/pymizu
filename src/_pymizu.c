@@ -200,6 +200,28 @@ static PyObject *task_frame_new(PyObject *fn, PyObject *args,
   return f;
 }
 
+/* The spec submit's payload marker (Phase 4): items 0/1 = spec/ident
+   (ident None for this build's word — a test-only override otherwise).
+   The stage hook recognizes the exact type ahead of the codec, the
+   _TaskFrame pattern; a bare spec reaching stage_impl — a value, a
+   result — is an ordinary object. */
+static PyTypeObject MizuCallFrameType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pymizu._CallFrame",
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A pool task payload marked for the interop task stream.",
+};
+
+static PyObject *call_frame_new(PyObject *spec, PyObject *ident) {
+  PyObject *f = MizuCallFrameType.tp_alloc(&MizuCallFrameType, 2);
+  if (f == NULL) return NULL;
+  Py_INCREF(spec);
+  Py_INCREF(ident);
+  PyTuple_SET_ITEM(f, 0, spec);
+  PyTuple_SET_ITEM(f, 1, ident);
+  return f;
+}
+
 // Errors -------------------------------------------------------------------------
 
 /* create/attach failure: the core composed the message (size + hint) in the
@@ -1458,8 +1480,11 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   if (Py_TYPE(obj) == &MizuShmStrViewType) {
     /* a region-backed string view re-sent whole: its region name (REF,
        zero payload bytes — the string view admits no buffer, so whole is
-       the only case); the name-fits gate's fallback is the by-value list */
-    if (stage_ref_str(obj, hdr, payload, inline_max) == 0) return 0;
+       the only case); the name-fits gate's fallback is the by-value list.
+       Foreign: only when the peer wraps MIZS (§4.2's filter) */
+    if (!foreign || (peer_caps & MIZU_CAP_MIZS)) {
+      if (stage_ref_str(obj, hdr, payload, inline_max) == 0) return 0;
+    }
     PyObject *list = strview_to_list(obj, NULL);
     if (list == NULL) return 1;
     int rc = stage_impl(list, hdr, payload, inline_max, h, peer_lang,
@@ -1470,9 +1495,12 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   {
     /* a region-backed Frame re-sent whole: the region name (REF, the
        3.7 rule extended to the frame home); anything else takes the
-       by-value paths below */
+       by-value paths below. Foreign: the frame layouts need ATTRS|MIZL */
     PyObject *flo = mizu_py_frame_loan(obj);
     if (flo != NULL &&
+        (!foreign ||
+         (peer_caps & (MIZU_CAP_ATTRS | MIZU_CAP_MIZL)) ==
+           (MIZU_CAP_ATTRS | MIZU_CAP_MIZL)) &&
         ref_emit(mizu_py_loan_shm(flo), hdr, payload, inline_max) == 0)
       return 0;
   }
@@ -1493,9 +1521,9 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
           int type = wire_type_of(&v);
           if (type != 0)
             rc = stage_raw(&v, type, hdr, payload, inline_max, h);
-          else if (foreign && mizu_handle_kind(h) != MIZU_HTYPE_POOL)
+          else if (foreign)
             /* the conversion pass is foreign-only: same-language
-               channels keep identity dtypes and pickle the rest */
+               handles keep identity dtypes and pickle the rest */
             rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);
         }
       }
@@ -1509,14 +1537,34 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
        stream front-end (__arrow_c_stream__), then the 'I' writer —
        whose decline is the send-time DeclinedError */
-    if (mizu_handle_kind(h) != MIZU_HTYPE_POOL) {
-      int arc = stage_arrow(obj, hdr, payload, inline_max, h);
-      if (arc >= 0) return arc;
-      int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
-                                             inline_max, h, peer_caps);
-      if (src >= 0) return src;
-    }
+    int arc = stage_arrow(obj, hdr, payload, inline_max, h);
+    if (arc >= 0) return arc;
+    int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
+                                           inline_max, h, peer_caps);
+    if (src >= 0) return src;
     return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
+  }
+  if (Py_TYPE(obj) == &MizuCallFrameType) {
+    /* the spec submit (Pool.submit of a pymizu.call): the task stream
+       off the spec's components — the exact-type match ahead of the
+       codec, the _TaskFrame pattern */
+    PyObject *ident = PyTuple_GET_ITEM(obj, 1);
+    uint64_t word = MIZU_PY_IDENT;
+    if (ident != Py_None) {
+      /* test-only identity override, the _ident= pattern: a (lang, caps)
+         pair stands in for this build's word */
+      if (!PyTuple_Check(ident) || PyTuple_GET_SIZE(ident) != 2) {
+        PyErr_SetString(PyExc_TypeError,
+                        "pymizu: expected an identity pair (lang, caps)");
+        return 1;
+      }
+      long lang = PyLong_AsLong(PyTuple_GET_ITEM(ident, 0));
+      long caps = PyLong_AsLong(PyTuple_GET_ITEM(ident, 1));
+      if ((lang == -1 || caps == -1) && PyErr_Occurred()) return 1;
+      word = MIZU_IDENT((uint32_t) lang, (uint32_t) caps);
+    }
+    return pymizu_ix_stage_task(PyTuple_GET_ITEM(obj, 0), hdr, payload,
+                                inline_max, h, word);
   }
   if (Py_TYPE(obj) == &MizuTaskFrameType) {
     /* before the codec: the codec's exact-type tuple check would reject
@@ -1573,7 +1621,10 @@ typedef struct {
    identity word (the language registry byte and the capability mask,
    Phase 0's identity exchange). peer_lang 0 is "not yet read" and
    behaves as same-language; the host reads it when ready_wait returns,
-   the peer at attach. Pools are homogeneous: their word stays 0.
+   the peer at attach. On a pool worker the pair carries the §4.2 foreign
+   result policy — set from the task stream's submitter identity around
+   one publish, 0 otherwise — and pool_ident caches the pool word (0
+   until a worker joins, re-read while 0).
    err_exc is the peer shim's err-send exception (_send_error); the stage
    hook pointer-matches it and frames the err stream. NULL when idle; set
    and cleared within the _send_error veneer, whose argument roots it. */
@@ -1581,6 +1632,8 @@ typedef struct {
   MizuViewCache vc;
   uint32_t peer_lang;
   uint32_t peer_caps;
+  uint64_t pool_ident;     /* pool: the cached pool word (0 until a worker
+                              joins; re-read while 0, never reset after) */
   PyObject *err_exc;
 } MizuHandleCtx;
 
@@ -4079,7 +4132,7 @@ static int frame_err_exc(PyObject *exc, uint8_t *payload,
    budget; framed INLINE in the sink's buffer wherever the envelope fits, so
    the publish itself cannot fail. Returns 0 on publish (or a cancel beat),
    nonzero on infrastructure failure. */
-static int publish_exc(mizu_result_sink *sink) {
+static int publish_exc(mizu_result_sink *sink, uint64_t sub_ident) {
   PyObject *type = NULL, *value = NULL, *tb = NULL;
   PyErr_Fetch(&type, &value, &tb);
   PyErr_NormalizeException(&type, &value, &tb);
@@ -4116,6 +4169,40 @@ static int publish_exc(mizu_result_sink *sink) {
     return 1;                    /* allocation failure: the worker goes down */
   }
   uint32_t budget = sink->inline_max;
+  /* the ERR format keys on the task stream's submitter identity (§4.2):
+     a foreign submitter gets the neutral err stream every binding reads —
+     the private pickle envelope would be unreadable there. Bounded by
+     construction, INLINE, cannot fail */
+  if (sub_ident != 0 && (sub_ident & 0xff) != MIZU_LANG_PYTHON) {
+    uint64_t widx = 0;
+    if (eidx != NULL) {
+      unsigned long long v = PyLong_AsUnsignedLongLong(eidx);
+      if (v == (unsigned long long) -1 && PyErr_Occurred())
+        PyErr_Clear();
+      else
+        widx = (uint64_t) v;
+    }
+    Py_ssize_t tn_n = 0, ms_n = 0, tb_n = 0;
+    const char *tn_s = PyUnicode_AsUTF8AndSize(tname, &tn_n);
+    const char *ms_s = PyUnicode_AsUTF8AndSize(msg, &ms_n);
+    const char *tb_s = PyUnicode_AsUTF8AndSize(tbs, &tb_n);
+    if (tn_s == NULL || ms_s == NULL || tb_s == NULL) {
+      PyErr_Clear();               /* a lone surrogate is no detail */
+      static const char empty[] = "";
+      if (tn_s == NULL) { tn_s = empty; tn_n = 0; }
+      if (ms_s == NULL) { ms_s = empty; ms_n = 0; }
+      if (tb_s == NULL) { tb_s = empty; tb_n = 0; }
+    }
+    size_t n = pymizu_ix_write_err(sink->payload, budget,
+                                   tn_s, (size_t) tn_n, ms_s, (size_t) ms_n,
+                                   tb_s, (size_t) tb_n, eidx != NULL, widx);
+    int rc = mizu_result_publish_err(sink, NULL, (uint32_t) n);
+    Py_DECREF(tname);
+    Py_DECREF(msg);
+    Py_DECREF(tbs);
+    Py_XDECREF(eidx);
+    return rc < 0;
+  }
   PyObject *env = NULL, *stream = NULL;
   for (int attempt = 0; attempt < 5; attempt++) {
     PyObject *cand = eidx != NULL ? PyTuple_Pack(4, tname, msg, tbs, eidx)
@@ -4188,6 +4275,73 @@ infra:
   return 1;
 }
 
+/* The entry's byte span for the task-magic dispatch (§4.2): INLINE,
+   RAWVEC and STR1 in place; a SHM_RAW entry opened first through the
+   read ctx's open cache (a spilled task stream's offsets are stream
+   offsets, not entry-payload offsets). Private frames are codec streams
+   on INLINE / SHM_RAW, so the inline byte tiers carry only crafted
+   entries; RAWSPILL is skipped (its bytes are vector data, not a
+   stream). NULL for every other kind, and for a vanished region
+   (ctx->gone set). */
+static const uint8_t *pool_entry_bytes(const mizu_slot_hdr *hdr,
+                                       const uint8_t *payload, size_t limit,
+                                       mizu_read_ctx *ctx, size_t *out_len) {
+  switch (hdr->kind) {
+  case MIZU_KIND_INLINE:
+    if (hdr->len > limit) return NULL;
+    *out_len = hdr->len;
+    return payload;
+  case MIZU_KIND_RAWVEC:
+  case MIZU_KIND_STR1:
+    *out_len = hdr->len;
+    return payload;
+  case MIZU_KIND_SHM_RAW: {
+    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) return NULL;
+    mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
+    if (shm == NULL) return NULL;          /* ctx->gone set */
+    *out_len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
+      (size_t) hdr->aux : (size_t) shm->size;
+    return (const uint8_t *) shm->addr;
+  }
+  default:
+    return NULL;
+  }
+}
+
+/* The task-stream path: decode and run (pymizu_ix_task_run stashes the
+   submitter identity ahead of every field read), then publish under the
+   §4.2 discipline — a foreign submitter's result stages through the
+   handle's policy fields (the capability mask rides the stash), a
+   decline there recovered as the task's error stream. */
+static int py_exec_task(mizu_result_sink *sink, const uint8_t *bytes,
+                        size_t blen, MizuHandleCtx *hctx) {
+  uint64_t sub_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
+  PyObject *value = pymizu_ix_task_run(bytes, blen, &sub_ident);
+  if (value == NULL) {
+    if (!PyErr_ExceptionMatches(PyExc_Exception))
+      return 1;      /* BaseException: the worker goes down */
+    return publish_exc(sink, sub_ident);
+  }
+  const int foreign = (sub_ident & 0xff) != 0 &&
+    (sub_ident & 0xff) != MIZU_LANG_PYTHON;
+  if (foreign && hctx != NULL) {
+    hctx->peer_lang = (uint32_t) (sub_ident & 0xff);
+    hctx->peer_caps = (uint32_t) (sub_ident >> 32);
+  }
+  int rc = mizu_result_publish(sink, (void *) value);
+  Py_DECREF(value);
+  if (foreign && hctx != NULL) {
+    hctx->peer_lang = 0;
+    hctx->peer_caps = 0;
+  }
+  if (rc < 0 && PyErr_Occurred()) {
+    /* staging the result failed (a value without a portable home): the
+       §4.2 gate — recover as the task's error stream */
+    rc = publish_exc(sink, sub_ident) != 0 ? -1 : 0;
+  }
+  return rc < 0;
+}
+
 /* The worker's task: decode the (callable, args, kwargs) frame, call, and
    publish through the sink. Two error disciplines, both honored without a
    longjmp: a task's own error (any Exception) is caught into the
@@ -4195,20 +4349,59 @@ infra:
    distinction — and KeyboardInterrupt / SystemExit escape as infrastructure
    failure (the hard-crash semantics: the worker goes down and the reaper's
    DIED verdict fails the task). Runs with the GIL held: the worker veneer
-   never releases it. */
+   never releases it. The dispatch ahead of the private read: a task stream
+   (an 'I' frame with the task tag at stream offset 2) runs the §4.2 path;
+   a foreign private frame ('R' or an R_Serialize 'B'/'X'/'A' at a Python
+   worker — the registry test the channel read hook runs) fails with the
+   neutral err stream; the target-byte check is one byte compare between a
+   torn or mis-stamped stream and executing another language's code. */
 static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
                    size_t limit, mizu_result_sink *sink, int catching,
                    mizu_read_ctx *ctx) {
   (void) catching;
-  PyObject *task = read_impl(hdr, payload, limit, ctx);
+  MizuHandleCtx *hctx = (MizuHandleCtx *) ctx->binding_ctx;
+  if (hctx != NULL) {
+    /* the per-task reset: a raised foreign-result publish leaves the
+       handle's policy fields set — a later task must not inherit them */
+    hctx->peer_lang = 0;
+    hctx->peer_caps = 0;
+  }
+  size_t blen = 0;
+  const uint8_t *bytes = pool_entry_bytes(hdr, payload, limit, ctx, &blen);
+  if (bytes == NULL && ctx->gone) {
+    /* the enqueuer died and its region went along: the task can never
+       run anywhere — it fails as DIED, and the drain continues */
+    mizu_result_publish_died(sink);
+    return 0;
+  }
+  if (bytes != NULL) {
+    if (blen >= 3 && bytes[0] == MIZU_INTEROP_MAGIC &&
+        bytes[2] == MIZU_IX_TAG_TASK) {
+      if (blen >= 4 && bytes[3] != MIZU_LANG_PYTHON) {
+        PyErr_Format(MizuError,
+                     "pymizu: task language mismatch (the task targets "
+                     "language %u, this worker is Python)",
+                     (unsigned) bytes[3]);
+        return publish_exc(sink, MIZU_IDENT(MIZU_LANG_BYTES, 0));
+      }
+      return py_exec_task(sink, bytes, blen, hctx);
+    }
+    if (bytes[0] == MIZU_CODEC_MAGIC || bytes[0] == 'B' ||
+        bytes[0] == 'X' || bytes[0] == 'A') {
+      PyErr_SetString(MizuError, "pymizu: task in a foreign private codec");
+      return publish_exc(sink, MIZU_IDENT(MIZU_LANG_BYTES, 0));
+    }
+  }
+  /* a spilled private frame reads from the bytes the dispatch already
+     resolved — a second open would be a cache probe at best */
+  PyObject *task = hdr->kind == MIZU_KIND_SHM_RAW && bytes != NULL ?
+    read_stream(bytes, blen, ctx) : read_impl(hdr, payload, limit, ctx);
   if (task == NULL) {
     if (ctx->gone) {
-      /* the enqueuer died and its region went along: the task can never
-         run anywhere — it fails as DIED, and the drain continues */
       mizu_result_publish_died(sink);
       return 0;
     }
-    return publish_exc(sink);    /* the decode failure is the task's error */
+    return publish_exc(sink, 0);   /* the decode failure is the task's error */
   }
   PyObject *fn = NULL, *args = NULL, *kwargs = NULL;
   int shape_ok = PyTuple_Check(task) && PyTuple_GET_SIZE(task) == 3;
@@ -4222,7 +4415,7 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
   if (!shape_ok) {
     Py_DECREF(task);
     PyErr_SetString(MizuError, "pymizu: corrupt task payload");
-    return publish_exc(sink);
+    return publish_exc(sink, 0);
   }
   PyObject *value =
     PyObject_Call(fn, args, kwargs == Py_None ? NULL : kwargs);
@@ -4231,7 +4424,7 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
     if (!PyErr_ExceptionMatches(PyExc_Exception))
       return 1;      /* BaseException: the worker goes down; the exception
                         stays set for the worker entry to report */
-    return publish_exc(sink);
+    return publish_exc(sink, 0);
   }
   int rc = mizu_result_publish(sink, (void *) value);
   Py_DECREF(value);
@@ -4239,7 +4432,7 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
     /* staging the result failed (an unpicklable object): recover as the
        task's ERR result. The handle's recorded stage error is stale-only —
        nothing reads it while exec keeps returning 0. */
-    rc = publish_exc(sink) != 0 ? -1 : 0;
+    rc = publish_exc(sink, 0) != 0 ? -1 : 0;
   }
   return rc < 0;
 }
@@ -4259,8 +4452,7 @@ static void chan_binding(mizu_binding *b) {
   b->read = py_chan_read;   /* the consume-on-decline read_fn; pools keep
                                py_read */
   b->check = py_check;
-  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON,
-                       MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL);
+  b->ident = MIZU_PY_IDENT;
   /* exec/park/sweep/drop NULL: a channel never evals; submitter handles
      release the GIL around the whole verb, so no park hook; staging pins
      nothing, so no drop hook. */
@@ -4781,8 +4973,7 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->check = py_check;
   b->exec = worker ? py_exec : NULL;
   b->park = worker ? py_park : NULL;
-  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON,
-                       MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL);
+  b->ident = MIZU_PY_IDENT;
   /* sweep/drop NULL: no per-handle caches, and staging pins nothing */
 }
 
@@ -4993,6 +5184,25 @@ static PyObject *Pool_submit(MizuPool *self, PyObject *args, PyObject *kw) {
     return NULL;
   }
   return pool_raise(self);
+}
+
+PyDoc_STRVAR(pool_worker_ident_doc,
+"_worker_ident() -> (int, int) | None\n\n\
+The pool's worker identity word as (language, capabilities), or None\n\
+while no worker has joined. The word never resets once set; while None\n\
+it is re-read on every call (an attach can race ahead of the first\n\
+join).");
+
+static PyObject *Pool_worker_ident(MizuPool *self,
+                                   PyObject *Py_UNUSED(args)) {
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
+  if (hctx->pool_ident == 0)
+    hctx->pool_ident = mizu_pool_worker_ident(p);
+  if (hctx->pool_ident == 0) Py_RETURN_NONE;
+  return Py_BuildValue("(I I)", (unsigned) (hctx->pool_ident & 0xff),
+                       (unsigned) (uint32_t) (hctx->pool_ident >> 32));
 }
 
 PyDoc_STRVAR(pool_submit_batch_doc,
@@ -5842,6 +6052,8 @@ static PyMethodDef Pool_methods[] = {
    METH_VARARGS | METH_KEYWORDS, pool_submit_doc},
   {"submit_batch", (PyCFunction)(void (*)(void)) Pool_submit_batch,
    METH_VARARGS | METH_KEYWORDS, pool_submit_batch_doc},
+  {"_worker_ident", (PyCFunction) Pool_worker_ident, METH_NOARGS,
+   pool_worker_ident_doc},
   {"collect_any", (PyCFunction)(void (*)(void)) Pool_collect_any,
    METH_VARARGS | METH_KEYWORDS, pool_collect_any_doc},
   {"collect_all", (PyCFunction)(void (*)(void)) Pool_collect_all,
@@ -6377,6 +6589,67 @@ static PyObject *pymizu_task_frame(PyObject *Py_UNUSED(module),
   return task_frame_new(args[0], args[1], args[2]);
 }
 
+PyDoc_STRVAR(call_frame_doc,
+"_call_frame(spec, ident=None) -> tuple\n\n\
+The Pool.submit payload marker for a pymizu.call spec: tagged for the\n\
+interop task stream. Facade use only.");
+
+static PyObject *pymizu_call_frame(PyObject *Py_UNUSED(module),
+                                   PyObject *const *args,
+                                   Py_ssize_t nargs) {
+  if (nargs < 1 || nargs > 2) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _call_frame expects (spec, ident=None)");
+    return NULL;
+  }
+  return call_frame_new(args[0], nargs == 2 ? args[1] : Py_None);
+}
+
+PyDoc_STRVAR(write_task_doc,
+"_write_task(code, kind, args, kwargs, target, ident) -> bytes\n\n\
+Frame a task stream (tag 0x12) from its components, the exec hook's\n\
+wire form. Exposed for the test suite (the golden corpus drives it).");
+
+static PyObject *pymizu_write_task(PyObject *Py_UNUSED(module),
+                                   PyObject *const *args,
+                                   Py_ssize_t nargs) {
+  if (nargs != 6) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _write_task expects (code, kind, args, kwargs, "
+                    "target, ident)");
+    return NULL;
+  }
+  long kind = PyLong_AsLong(args[1]);
+  long target = PyLong_AsLong(args[4]);
+  unsigned long long ident = PyLong_AsUnsignedLongLong(args[5]);
+  if ((kind == -1 || target == -1 ||
+        ident == (unsigned long long) -1) && PyErr_Occurred())
+    return NULL;
+  if (target < 0 || target > 255) {
+    PyErr_SetString(PyExc_ValueError, "pymizu: expected a language byte");
+    return NULL;
+  }
+  return pymizu_ix_write_task_stream(args[0], kind, args[2], args[3],
+                                     (uint32_t) target, (uint64_t) ident);
+}
+
+PyDoc_STRVAR(read_task_doc,
+"_read_task(stream) -> (target, kind, ident, code, positional, named)\n\n\
+Decode a task stream (tag 0x12) to its components: the exec-hook\n\
+decode's shape checks, no resolution or eval. Exposed for the test\n\
+suite (the golden corpus drives it).");
+
+static PyObject *pymizu_read_task(PyObject *Py_UNUSED(module),
+                                  PyObject *arg) {
+  if (!PyBytes_Check(arg)) {
+    PyErr_SetString(PyExc_TypeError, "pymizu: expected a bytes stream");
+    return NULL;
+  }
+  return pymizu_ix_read_task_components(
+    (const uint8_t *) PyBytes_AS_STRING(arg),
+    (size_t) PyBytes_GET_SIZE(arg));
+}
+
 PyDoc_STRVAR(read_stream_doc,
 "_read_stream(stream) -> object\n\n\
 Decode a serialized-stream frame (the read side's parser, exposed for\n\
@@ -6530,6 +6803,11 @@ static PyMethodDef pymizu_methods[] = {
    pool_worker_join_doc},
   {"_task_frame", (PyCFunction)(void (*)(void)) pymizu_task_frame,
    METH_FASTCALL, task_frame_doc},
+  {"_call_frame", (PyCFunction)(void (*)(void)) pymizu_call_frame,
+   METH_FASTCALL, call_frame_doc},
+  {"_write_task", (PyCFunction)(void (*)(void)) pymizu_write_task,
+   METH_FASTCALL, write_task_doc},
+  {"_read_task", pymizu_read_task, METH_O, read_task_doc},
   {"_read_stream", pymizu_read_stream, METH_O, read_stream_doc},
   {"_write_stream", pymizu_write_stream, METH_O, write_stream_doc},
   {"_write_err", (PyCFunction)(void (*)(void)) pymizu_write_err,
@@ -6586,6 +6864,8 @@ PyInit__pymizu(void)
   if (PyType_Ready(&MizuShmLoanType) < 0) return NULL;
   MizuTaskFrameType.tp_base = &PyTuple_Type;
   if (PyType_Ready(&MizuTaskFrameType) < 0) return NULL;
+  MizuCallFrameType.tp_base = &PyTuple_Type;
+  if (PyType_Ready(&MizuCallFrameType) < 0) return NULL;
 
   /* cloudpickle when installed, stock pickle otherwise; both read each
      other's protocol-4 streams */

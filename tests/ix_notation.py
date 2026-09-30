@@ -35,6 +35,17 @@ class ExpectedError:
     index: object = None  # int when the flags carry one (0-based)
 
 
+@dataclass
+class ExpectedTask:
+    """A task home: the decoded components (a task is not a value)."""
+    target: int
+    kind: int
+    ident: int
+    code: str
+    positional: list
+    named: dict
+
+
 def load_cases(path):
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -230,6 +241,22 @@ class _Parser:
         self.expect(",")
         keys, values = self.pairs()
         return attr_home(x, dict(zip(keys, values, strict=True)))
+
+    def v_task(self):
+        self.expect("(")
+        target = int(self.token(","))
+        self.expect(",")
+        kind = int(self.token(","))
+        self.expect(",")
+        ident = int(self.token(","))
+        self.expect(",")
+        code = self.value()
+        self.expect(",")
+        positional = self.value()
+        self.expect(",")
+        named = self.value()
+        self.expect(")")
+        return ExpectedTask(target, kind, ident, code, positional, named)
 
     def v_err(self):
         self.expect("(")

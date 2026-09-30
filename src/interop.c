@@ -5557,6 +5557,498 @@ static void ixw_stream(ixw *w, PyObject *obj) {
   ixw_node(w, obj);
 }
 
+// Task streams (Phase 4) -------------------------------------------------------
+
+static void ixw_raise(ixw *w);
+
+/* The two-pass task walk off the spec's components: the header fields,
+   then the code string, the positional list and the named dict —
+   elements through the generic writer, never an intermediate object. */
+static void ixw_task(ixw *w, const char *code, Py_ssize_t code_n, int kind,
+                     PyObject *args, PyObject *kwargs, uint32_t target,
+                     uint64_t ident) {
+  IXW_PUT(w, mizu_ix_put_header(IXW_DST(w)));
+  IXW_PUT(w, mizu_ix_put_task(IXW_DST(w), (int) target, kind, ident));
+  IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), code, (int32_t) code_n));
+  w->depth++;
+  Py_ssize_t na = PyTuple_GET_SIZE(args);
+  IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) na));
+  for (Py_ssize_t i = 0; i < na && !w->decline; i++) {
+    size_t save = w->path_len;
+    ixw_path_index(w, i);
+    ixw_node(w, PyTuple_GET_ITEM(args, i));
+    if (!w->decline) ixw_path_pop(w, save);
+  }
+  Py_ssize_t nk = PyDict_Size(kwargs);
+  IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), (uint64_t) nk));
+  PyObject *k, *v;
+  Py_ssize_t pos = 0;
+  while (!w->decline && PyDict_Next(kwargs, &pos, &k, &v)) {
+    if (!PyUnicode_CheckExact(k)) {
+      ixw_decline_type(w, k, "a non-str dict key has no portable home");
+      break;
+    }
+    Py_ssize_t kn;
+    const char *ks = PyUnicode_AsUTF8AndSize(k, &kn);
+    if (ks == NULL) {
+      PyErr_Clear();
+      ixw_decline(w, "a dict key is not writable as UTF-8 "
+                    "(a lone surrogate)");
+      break;
+    }
+    size_t save = w->path_len;
+    ixw_path_key(w, k);
+    IXW_PUT(w, mizu_ix_put_key(IXW_DST(w), ks, (uint32_t) kn));
+    ixw_node(w, v);
+    if (!w->decline) ixw_path_pop(w, save);
+  }
+  w->depth--;
+}
+
+int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
+                         uint8_t *payload, uint32_t inline_max,
+                         mizu_handle *h, uint64_t ident) {
+  if (mizu_handle_kind(h) != MIZU_HTYPE_POOL) {
+    PyErr_SetString(MizuError, "pymizu: a call spec submits through "
+                    "Pool.submit");
+    return 1;
+  }
+  PyObject *code = NULL, *kind_o = NULL, *args = NULL, *kwargs = NULL;
+  int rc = 1;
+  code = PyObject_GetAttrString(spec, "code");
+  kind_o = PyObject_GetAttrString(spec, "kind");
+  args = PyObject_GetAttrString(spec, "args");
+  kwargs = PyObject_GetAttrString(spec, "kwargs");
+  if (code == NULL || kind_o == NULL || args == NULL || kwargs == NULL)
+    goto out;
+  const char *code_s = NULL;
+  Py_ssize_t code_n = 0;
+  if (PyUnicode_CheckExact(code))
+    code_s = PyUnicode_AsUTF8AndSize(code, &code_n);
+  long kind = PyLong_CheckExact(kind_o) ? PyLong_AsLong(kind_o) : -1;
+  if (code_s == NULL || kind < 0 || kind > 255 ||
+      !PyTuple_CheckExact(args) || !PyDict_CheckExact(kwargs)) {
+    PyErr_SetString(MizuError, "pymizu: a malformed call spec");
+    goto out;
+  }
+  /* the target is the pool word's language byte (re-read: a submit can
+     race ahead of the first join; the word never resets once set) */
+  const uint64_t word = mizu_pool_worker_ident((mizu_pool *) h);
+  if (word == 0) {
+    PyErr_SetString(MizuError, "pymizu: no worker has joined this pool");
+    goto out;
+  }
+  {
+    ixw w;
+    memset(&w, 0, sizeof(w));
+    memcpy(w.path, "args", 5);
+    w.path_len = 4;
+    ixw_task(&w, code_s, code_n, (int) kind, args, kwargs,
+             (uint32_t) (word & 0xff), ident);
+    if (w.decline) {
+      ixw_raise(&w);
+      goto out;
+    }
+    size_t n = w.total;
+    ixw w2;
+    memcpy(&w2, &w, sizeof(w2));
+    w2.total = 0;
+    w2.decline = 0;
+    memset(&w2.warn, 0, sizeof(w2.warn));
+    if (n <= (size_t) inline_max) {
+      w2.dst = payload;
+      ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
+               (uint32_t) (word & 0xff), ident);
+      if (mizu_py_cvt_warn(&w2.warn) != 0) goto out;
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = 0;          /* no keeperless claim: inert on task entries */
+      rc = 0;
+    } else {
+      uint8_t *buf = malloc(n);
+      if (buf == NULL) {
+        PyErr_NoMemory();
+        goto out;
+      }
+      w2.dst = buf;
+      ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
+               (uint32_t) (word & 0xff), ident);
+      int wrc = mizu_py_cvt_warn(&w2.warn);
+      if (wrc == 0)
+        rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
+      free(buf);
+    }
+  }
+out:
+  Py_XDECREF(code);
+  Py_XDECREF(kind_o);
+  Py_XDECREF(args);
+  Py_XDECREF(kwargs);
+  return rc;
+}
+
+/* The _write_task test hook's half: the task writer as bytes. */
+PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
+                                      PyObject *args, PyObject *kwargs,
+                                      uint32_t target, uint64_t ident) {
+  if (!PyUnicode_CheckExact(code) || !PyTuple_CheckExact(args) ||
+      !PyDict_CheckExact(kwargs)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _write_task expects (str, int, tuple, dict)");
+    return NULL;
+  }
+  Py_ssize_t code_n;
+  const char *code_s = PyUnicode_AsUTF8AndSize(code, &code_n);
+  if (code_s == NULL) return NULL;
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  memcpy(w.path, "args", 5);
+  w.path_len = 4;
+  ixw_task(&w, code_s, code_n, (int) kind, args, kwargs, target, ident);
+  if (w.decline) {
+    ixw_raise(&w);
+    return NULL;
+  }
+  size_t n = w.total;
+  uint8_t *buf = malloc(n != 0 ? n : 1);
+  if (buf == NULL) return PyErr_NoMemory();
+  ixw w2;
+  memcpy(&w2, &w, sizeof(w2));
+  w2.dst = buf;
+  w2.total = 0;
+  w2.decline = 0;
+  memset(&w2.warn, 0, sizeof(w2.warn));
+  ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs, target, ident);
+  if (mizu_py_cvt_warn(&w2.warn) != 0) {
+    free(buf);
+    return NULL;
+  }
+  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
+                                            (Py_ssize_t) n);
+  free(buf);
+  return out;
+}
+
+// The task stream decode (Phase 4) ---------------------------------------------
+
+static PyObject *ixt_stop_tls(void) {
+  PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+  return NULL;
+}
+
+static int ixt_next(mizu_ix *cur, mizu_ix_item *it) {
+  if (mizu_ix_next(cur, it) != MIZU_OK) {
+    ixt_stop_tls();
+    return -1;
+  }
+  return 0;
+}
+
+/* The per-field shape checks of the exec decode and the hook decode: the
+   field tags are the builder's check, not the cursor's — a wrong tag is
+   the informative "wrong shape for its kind". */
+static int ixt_want_code(mizu_ix *cur, mizu_ix_item *it) {
+  if (ixt_next(cur, it) < 0) return -1;
+  if (it->kind != MIZU_IX_STR1 || it->na) {
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: the code "
+                    "field is not a string");
+    return -1;
+  }
+  return 0;
+}
+
+static int ixt_want_list(mizu_ix *cur, mizu_ix_item *it) {
+  if (ixt_next(cur, it) < 0) return -1;
+  if (it->kind != MIZU_IX_LIST) {
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: the "
+                    "positional field is not a list");
+    return -1;
+  }
+  return 0;
+}
+
+static int ixt_want_dict(mizu_ix *cur, mizu_ix_item *it) {
+  if (ixt_next(cur, it) < 0) return -1;
+  if (it->kind != MIZU_IX_DICT) {
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: the named "
+                    "field is not a dict");
+    return -1;
+  }
+  return 0;
+}
+
+/* The task header: the TASK item and the supported kinds. */
+static int ixt_open(mizu_ix *cur, const uint8_t *src, size_t n,
+                    mizu_ix_item *it) {
+  if (mizu_ix_open(cur, src, n) != MIZU_OK) {
+    ixt_stop_tls();
+    return -1;
+  }
+  if (ixt_next(cur, it) < 0) return -1;
+  if (it->kind != MIZU_IX_TASK) {
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: no task "
+                    "tag");
+    return -1;
+  }
+  if (it->task_kind > 1) {
+    PyErr_Format(MizuError, "pymizu: unsupported task kind 0x%02X",
+                 it->task_kind);
+    return -1;
+  }
+  return 0;
+}
+
+/* One named-argument key: a bare string under the duplicate-key rule (the
+   builder's check — the cursor holds no key set). */
+static PyObject *ixt_key(mizu_ix *cur, PyObject *keyset) {
+  mizu_ix_item key;
+  if (ixt_next(cur, &key) < 0) return NULL;
+  if (key.kind != MIZU_IX_STR || !key.key) {
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: a dict "
+                    "key was expected");
+    return NULL;
+  }
+  PyObject *ko = PyUnicode_FromStringAndSize((const char *) key.ptr,
+                                             (Py_ssize_t) key.len);
+  if (ko == NULL) return NULL;
+  int dup = PySet_Contains(keyset, ko);
+  if (dup < 0) {
+    Py_DECREF(ko);
+    return NULL;
+  }
+  if (dup) {
+    Py_DECREF(ko);
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: a "
+                    "duplicate dict key");
+    return NULL;
+  }
+  if (PySet_Add(keyset, ko) < 0) {
+    Py_DECREF(ko);
+    return NULL;
+  }
+  return ko;
+}
+
+/* Resolve the qualified name through the worker's own module machinery
+   (there is no name registry): split at the last dot, import the module,
+   take the attribute. */
+static PyObject *ixt_resolve_name(const unsigned char *code, uint64_t len) {
+  uint64_t dot = len;
+  while (dot > 0 && code[dot - 1] != '.') dot--;
+  if (dot <= 1 || dot == len) {
+    PyErr_SetString(MizuError, "pymizu: malformed task stream: the task "
+                    "name is not qualified");
+    return NULL;
+  }
+  PyObject *modname = PyUnicode_FromStringAndSize((const char *) code,
+                                                  (Py_ssize_t) (dot - 1));
+  PyObject *attr = PyUnicode_FromStringAndSize((const char *) code + dot,
+                                               (Py_ssize_t) (len - dot));
+  if (modname == NULL || attr == NULL) {
+    Py_XDECREF(modname);
+    Py_XDECREF(attr);
+    return NULL;
+  }
+  PyObject *importlib = PyImport_ImportModule("importlib");
+  PyObject *mod = importlib == NULL ? NULL :
+    PyObject_CallMethod(importlib, "import_module", "O", modname);
+  Py_XDECREF(importlib);
+  Py_DECREF(modname);
+  if (mod == NULL) {
+    Py_DECREF(attr);
+    return NULL;              /* ImportError: the task's error */
+  }
+  PyObject *fn = PyObject_GetAttr(mod, attr);
+  Py_DECREF(mod);
+  Py_DECREF(attr);
+  return fn;                  /* AttributeError likewise: the task's */
+}
+
+/* pymizu._exec_source, resolved lazily (the package is fully imported by
+   the time a task runs). */
+static PyObject *exec_source_fn(void) {
+  static PyObject *fn = NULL;
+  if (fn == NULL) {
+    PyObject *mod = PyImport_ImportModule("pymizu");
+    if (mod == NULL) return NULL;
+    fn = PyObject_GetAttrString(mod, "_exec_source");
+    Py_DECREF(mod);
+  }
+  return fn;
+}
+
+/* The exec-hook decode and run: the call is built straight off the cursor
+   — name kind: an argument array plus a kwnames tuple for
+   PyObject_Vectorcall; source kind: the arguments bound in a fresh
+   namespace over __builtins__ (positional as "_1", "_2", ...), then the
+   ast split (exec the prefix, eval the trailing expression). The stream
+   is fully validated before anything executes. */
+PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
+                             uint64_t *ident_out) {
+  mizu_ix cur;
+  mizu_ix_item it, code, pos, named;
+  if (ixt_open(&cur, src, n, &it) < 0) return NULL;
+  *ident_out = it.u64[0];
+  const int kind = (int) it.task_kind;
+  if (ixt_want_code(&cur, &code) < 0) return NULL;
+  PyObject *fn = NULL, *ns = NULL;
+  if (kind == 0) {
+    fn = ixt_resolve_name(code.ptr, code.len);
+    if (fn == NULL) return NULL;
+  } else {
+    ns = PyDict_New();
+    if (ns == NULL) return NULL;
+    if (PyDict_SetItemString(ns, "__builtins__", PyEval_GetBuiltins()) < 0) {
+      Py_DECREF(ns);
+      return NULL;
+    }
+  }
+  PyObject *result = NULL, *kwnames = NULL, *keyset = NULL;
+  PyObject **args = NULL;
+  size_t nargs = 0, nkw = 0, filled = 0;
+  int ok = 0;
+  if (ixt_want_list(&cur, &pos) < 0) goto out;
+  nargs = (size_t) pos.count;
+  args = PyMem_Malloc((nargs != 0 ? nargs : 1) * sizeof(PyObject *));
+  if (args == NULL) {
+    PyErr_NoMemory();
+    goto out;
+  }
+  for (size_t i = 0; i < nargs; i++) {
+    PyObject *v = ixr_value(&cur);
+    if (v == NULL) goto out;
+    if (kind == 0) {
+      args[filled++] = v;
+    } else {
+      char key[16];
+      snprintf(key, sizeof key, "_%zu", i + 1);
+      int rc = PyDict_SetItemString(ns, key, v);
+      Py_DECREF(v);
+      if (rc < 0) goto out;
+    }
+  }
+  if (ixt_want_dict(&cur, &named) < 0) goto out;
+  nkw = (size_t) named.count;
+  if (nkw != 0) {
+    keyset = PySet_New(NULL);
+    if (keyset == NULL) goto out;
+    if (kind == 0) {
+      kwnames = PyTuple_New((Py_ssize_t) nkw);
+      if (kwnames == NULL) goto out;
+      PyObject **grown =
+        PyMem_Realloc(args, (nargs + nkw) * sizeof(PyObject *));
+      if (grown == NULL) {
+        PyErr_NoMemory();
+        goto out;
+      }
+      args = grown;
+    }
+    for (size_t j = 0; j < nkw; j++) {
+      PyObject *ko = ixt_key(&cur, keyset);
+      if (ko == NULL) goto out;
+      PyObject *v = ixr_value(&cur);
+      if (v == NULL) {
+        Py_DECREF(ko);
+        goto out;
+      }
+      if (kind == 0) {
+        PyTuple_SET_ITEM(kwnames, (Py_ssize_t) j, ko);
+        args[filled++] = v;
+      } else {
+        int rc = PyDict_SetItem(ns, ko, v);
+        Py_DECREF(ko);
+        Py_DECREF(v);
+        if (rc < 0) goto out;
+      }
+    }
+  }
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    ixt_stop_tls();
+    goto out;
+  }
+  ok = 1;
+out:
+  if (ok) {
+    if (kind == 0) {
+      result = PyObject_Vectorcall(fn, args, (Py_ssize_t) nargs,
+                                   nkw != 0 ? kwnames : NULL);
+    } else {
+      PyObject *cs = PyUnicode_FromStringAndSize((const char *) code.ptr,
+                                                 (Py_ssize_t) code.len);
+      PyObject *efn = exec_source_fn();
+      if (cs != NULL && efn != NULL)
+        result = PyObject_CallFunctionObjArgs(efn, cs, ns, NULL);
+      Py_XDECREF(cs);
+    }
+  }
+  for (size_t i = 0; i < filled; i++) Py_DECREF(args[i]);
+  PyMem_Free(args);
+  Py_XDECREF(kwnames);
+  Py_XDECREF(keyset);
+  Py_XDECREF(fn);
+  Py_XDECREF(ns);
+  return result;
+}
+
+/* The _read_task test hook's half: the same cursor walk and shape checks,
+   building the components for inspection (no resolution, no eval). */
+PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
+  mizu_ix cur;
+  mizu_ix_item it, code, pos, named;
+  if (ixt_open(&cur, src, n, &it) < 0) return NULL;
+  if (ixt_want_code(&cur, &code) < 0) return NULL;
+  if (ixt_want_list(&cur, &pos) < 0) return NULL;
+  PyObject *positional = NULL, *kwargs = NULL, *keyset = NULL, *out = NULL;
+  positional = PyList_New((Py_ssize_t) pos.count);
+  if (positional == NULL) return NULL;
+  for (uint64_t i = 0; i < pos.count; i++) {
+    PyObject *v = ixr_value(&cur);
+    if (v == NULL) goto fail;
+    PyList_SET_ITEM(positional, (Py_ssize_t) i, v);
+  }
+  if (ixt_want_dict(&cur, &named) < 0) goto fail;
+  kwargs = PyDict_New();
+  if (kwargs == NULL) goto fail;
+  keyset = PySet_New(NULL);
+  if (keyset == NULL) goto fail;
+  for (uint64_t j = 0; j < named.count; j++) {
+    PyObject *ko = ixt_key(&cur, keyset);
+    if (ko == NULL) goto fail;
+    PyObject *v = ixr_value(&cur);
+    if (v == NULL) {
+      Py_DECREF(ko);
+      goto fail;
+    }
+    int rc = PyDict_SetItem(kwargs, ko, v);
+    Py_DECREF(ko);
+    Py_DECREF(v);
+    if (rc < 0) goto fail;
+  }
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    ixt_stop_tls();
+    goto fail;
+  }
+  {
+    PyObject *cs = PyUnicode_FromStringAndSize((const char *) code.ptr,
+                                               (Py_ssize_t) code.len);
+    if (cs == NULL) goto fail;
+    PyObject *idn = PyLong_FromUnsignedLongLong(it.u64[0]);
+    if (idn == NULL) {
+      Py_DECREF(cs);
+      goto fail;
+    }
+    out = Py_BuildValue("(i i N N N N)", (int) it.target,
+                        (int) it.task_kind, idn, cs, positional, kwargs);
+  }
+  Py_XDECREF(keyset);
+  return out;
+fail:
+  Py_XDECREF(positional);
+  Py_XDECREF(kwargs);
+  Py_XDECREF(keyset);
+  return NULL;
+}
+
 static void ixw_raise(ixw *w) {
   PyObject *msg = PyUnicode_FromFormat(
     "pymizu: value is not portable to the peer (%s at %s)", w->reason,

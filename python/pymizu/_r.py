@@ -104,3 +104,58 @@ def r_launcher(
         )
 
     return launch
+
+
+def r_pool_launcher(
+    *,
+    rscript: str | None = None,
+    stdout: _Any = None,
+    stderr: _Any = None,
+) -> _Callable[[str, int], _subprocess.Popen]:
+    """Return a ``Pool.create`` launcher spawning R workers.
+
+    Each worker runs the R package ``mizu``: the returned
+    ``callable(token, slot)`` spawns ``rscript`` on the package's static
+    child runner with ``mizu:::worker_main(<token>, <slot>)`` as the
+    entry expression and the probed library paths propagated in argv
+    (without them the workers cannot ``library(mizu)`` from the host's
+    libraries). Requires Rscript on the PATH (or passed as ``rscript``)
+    and an installed ``mizu`` with source string support — MizuError is
+    raised here, before any pool exists, otherwise. The mirror of the R
+    package's ``mizu_py_pool_launcher()``.
+
+    The first worker's join records the workers' language in the pool,
+    so the launcher carries no language attribute: a pool of R workers
+    takes :class:`pymizu.call` specifications through ``Pool.submit()``,
+    and a plain callable errors locally naming the spec verb. A launcher
+    that spawns the wrong language fails at join, not at the first task.
+    """
+    if rscript is None:
+        rscript = _shutil.which("Rscript")
+        if rscript is None:
+            raise MizuError(
+                "pymizu: r_pool_launcher() needs Rscript on the PATH "
+                "(or pass rscript=)"
+            )
+    found = _find_mizu(rscript)
+    if found is None:
+        raise MizuError(
+            "pymizu: r_pool_launcher() needs the R package 'mizu' (with "
+            f"source string support) installed for {rscript}"
+        )
+    script, libs = found
+
+    def launch(token: str, slot: int) -> _subprocess.Popen:
+        expr = f'mizu:::worker_main("{token}",{slot}L)'
+        return _subprocess.Popen(
+            [
+                rscript,
+                script,
+                expr.encode("utf-8").hex(),
+                libs.encode("utf-8").hex(),
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    return launch

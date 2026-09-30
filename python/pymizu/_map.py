@@ -103,6 +103,26 @@ class _Ctx:
 _ctx_cache: dict[str, _Ctx] = {}
 
 
+def _map_check_native(pool: _Any, fn: _Any) -> None:
+    """The map guard for a foreign pool: a native fn fails fast at the
+    entry point (its runner tasks are same-language private frames that
+    would otherwise each fail remotely, one error per runner). A spec fn
+    is the cross-language map, which lands in a later phase."""
+    ident = pool._h._worker_ident()
+    if ident is None or ident[0] == 3:  # 3 = Python
+        return
+    import pymizu
+
+    if isinstance(fn, pymizu.call):
+        raise TypeError(
+            "pymizu: cross-language Pool.map() is not supported yet"
+        )
+    raise TypeError(
+        "pymizu: this pool's workers are not Python — Pool.map() needs a "
+        "pymizu.call() spec as 'fn' on a foreign pool"
+    )
+
+
 def _raw_accessor(view: _Any, tag: int) -> _Callable[[int], _Any]:
     """Wrap the region's raw x section once: a numpy array over the mapping
     when numpy is present, else a cast memoryview. Indexing yields one
@@ -324,6 +344,7 @@ def pool_map(
     only the GC backstop)."""
     import pymizu
 
+    _map_check_native(pool, fn)
     if not callable(fn):
         raise TypeError("pymizu: fn must be callable")
     args = tuple(args)
@@ -719,6 +740,7 @@ class PreparedMap:
     ) -> None:
         import pymizu
 
+        _map_check_native(pool, fn)
         if not callable(fn):
             raise TypeError("pymizu: fn must be callable")
         self._pymizu = pymizu
