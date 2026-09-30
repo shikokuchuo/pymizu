@@ -388,8 +388,7 @@ static int bitmap_at(const uint8_t *bm, int64_t i) {
 static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
                               int fortran) {
   PyObject *np = mizu_py_numpy_module();
-  if (np == NULL) return NULL;
-  if (np == Py_None) {
+  if (np == NULL) {
     PyErr_SetString(MizuError,
                     "pymizu: this interop read needs numpy (install it)");
     return NULL;
@@ -523,8 +522,7 @@ static PyObject *ixr_vec_conv(const char *dt, const uint8_t *ptr,
 static PyObject *ixr_vec_raw(const char *dt, const uint8_t *ptr,
                              uint64_t count, size_t elt) {
   PyObject *np = mizu_py_numpy_module();
-  if (np == NULL) return NULL;
-  if (np == Py_None) return ixr_memoryview(ptr, (size_t) count * elt);
+  if (np == NULL) return ixr_memoryview(ptr, (size_t) count * elt);
   return ixr_vec_conv(dt, ptr, count, elt, NULL, NULL);
 }
 
@@ -539,8 +537,7 @@ static PyObject *ixr_vec(int wire_type, const uint8_t *ptr, uint64_t count) {
   case MIZU_TYPE_LGL: {
     int na = span_has_na32((const int32_t *) ptr, n);
     PyObject *np = mizu_py_numpy_module();
-    if (np == NULL) return NULL;
-    if (np == Py_None) return ixr_memoryview(ptr, n * 4);
+    if (np == NULL) return ixr_memoryview(ptr, n * 4);
     if (na) return ixr_vec_conv("int32", ptr, count, 4, NULL, NULL);
     i32_span s = { (const int32_t *) ptr, count };
     return ixr_vec_conv("bool", ptr, count, 1, conv_lgl_bool, &s);
@@ -549,8 +546,7 @@ static PyObject *ixr_vec(int wire_type, const uint8_t *ptr, uint64_t count) {
     int na = span_has_na32((const int32_t *) ptr, n);
     if (!na) return ixr_vec_raw("int32", ptr, count, 4);
     PyObject *np = mizu_py_numpy_module();
-    if (np == NULL) return NULL;
-    if (np == Py_None) return ixr_memoryview(ptr, n * 4);
+    if (np == NULL) return ixr_memoryview(ptr, n * 4);
     i32_span s = { (const int32_t *) ptr, count };
     return ixr_vec_conv("float64", ptr, count, 8, conv_int_f64, &s);
   }
@@ -994,8 +990,7 @@ static PyObject *ixr_value(mizu_ix *cur) {
    NaT; a fractional Date is the informative decline. */
 static PyObject *realv_to_datetime(const uint8_t *ptr, uint64_t n, int days) {
   PyObject *np = mizu_py_numpy_module();
-  if (np == NULL) return NULL;
-  if (np == Py_None) {
+  if (np == NULL) {
     PyErr_SetString(MizuError, "pymizu: a temporal interop read needs "
                     "numpy (install it)");
     return NULL;
@@ -1050,8 +1045,7 @@ static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
     return NULL;
   }
   PyObject *np = mizu_py_numpy_module();
-  if (np == NULL) return NULL;
-  if (np == Py_None) {
+  if (np == NULL) {
     PyErr_SetString(MizuError, "pymizu: a dim-array interop read needs "
                     "numpy (install it)");
     return NULL;
@@ -2364,7 +2358,7 @@ static void ixw_node(ixw *w, PyObject *obj) {
       ixw_path_index(w, i);
       ixw_node(w, is_list ? PyList_GET_ITEM(obj, i) :
                 PyTuple_GET_ITEM(obj, i));
-      ixw_path_pop(w, save);
+      if (!w->decline) ixw_path_pop(w, save);
     }
     w->depth--;
     return;
@@ -2392,7 +2386,7 @@ static void ixw_node(ixw *w, PyObject *obj) {
       ixw_path_key(w, k);
       IXW_PUT(w, mizu_ix_put_key(IXW_DST(w), ks, (uint32_t) kn));
       ixw_node(w, v);
-      ixw_path_pop(w, save);
+      if (!w->decline) ixw_path_pop(w, save);
     }
     w->depth--;
     return;
@@ -2518,8 +2512,7 @@ static PyObject *fcol_to_obj(const fcol *c) {
     return ixr_vec_raw("complex128", c->values, n, 16);
   case FCOL_LGL: {
     PyObject *np = mizu_py_numpy_module();
-    if (np == NULL) return NULL;
-    if (np == Py_None) return ixr_memoryview(c->values, (size_t) c->n * 4);
+    if (np == NULL) return ixr_memoryview(c->values, (size_t) c->n * 4);
     if (span_has_na32((const int32_t *) c->values, (size_t) c->n))
       return ixr_vec_conv("int32", c->values, n, 4, NULL, NULL);
     i32_span s = { (const int32_t *) c->values, n };
@@ -2530,8 +2523,7 @@ static PyObject *fcol_to_obj(const fcol *c) {
     return fcol_to_list(c);
   case FCOL_DATE: {
     PyObject *np = mizu_py_numpy_module();
-    if (np == NULL) return NULL;
-    if (np == Py_None) {
+    if (np == NULL) {
       PyErr_SetString(MizuError, "pymizu: a Date column needs numpy for "
                       "to_dict() (install it)");
       return NULL;
@@ -2542,8 +2534,7 @@ static PyObject *fcol_to_obj(const fcol *c) {
   }
   case FCOL_TS: {
     PyObject *np = mizu_py_numpy_module();
-    if (np == NULL) return NULL;
-    if (np == Py_None) {
+    if (np == NULL) {
       PyErr_SetString(MizuError, "pymizu: a POSIXct column needs numpy "
                       "for to_dict() (install it)");
       return NULL;

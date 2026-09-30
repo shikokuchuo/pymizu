@@ -587,10 +587,13 @@ def test_export_complex_rejected(echo):
 
 def test_export_r_logical_and_na(r_mizu):
     # R logical exports as int32 (Arrow bool is bit-packed); R's NA
-    # sentinels arrive as visible values with null_count == 0 (documented)
+    # sentinels arrive as visible values with null_count == 0 (documented).
+    # The peer waits for the host's ack: a clean exit would otherwise race
+    # the payload regions' teardown against the host's reads
     src = """
 mizu::mizu_send(ch, rep(c(TRUE, FALSE, NA), length.out = 100000))
 mizu::mizu_send(ch, rep(c(1L, NA), length.out = 100000))
+mizu::mizu_recv(ch, timeout = 30)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
@@ -604,6 +607,7 @@ mizu::mizu_send(ch, rep(c(1L, NA), length.out = 100000))
         assert arr.type == pa.int32()
         assert arr[:2].to_pylist() == [1, -2147483648]
         assert arr.null_count == 0
+        ch.send("ack")
     finally:
         ch.close()
 
