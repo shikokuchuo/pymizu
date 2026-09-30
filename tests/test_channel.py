@@ -725,13 +725,16 @@ def test_r_interop_list_crosses():
 
 @r_only
 def test_r_interop_string_vector_crosses():
-    # a character vector past the zero-copy floor: pymizu declares no
-    # MIZU_CAP_MIZS, so R sends the interchange strv copy — a list of str
+    # a character vector past the zero-copy floor: pymizu declares
+    # MIZU_CAP_MIZS, so R stages MIZS — a region-backed string view whose
+    # to_list() is the explicit copy (below the floor, the strv copy)
     ch = _r_channel(
         "{ mizu_send(ch, rep('x', 100000))\n" + _R_ECHO + " }"
     )
     try:
-        assert ch.recv(timeout=10) == ["x"] * 100000
+        v = ch.recv(timeout=10)
+        assert type(v).__name__ == "_ShmStrView"
+        assert v.to_list() == ["x"] * 100000
     finally:
         ch.close()
 

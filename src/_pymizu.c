@@ -45,13 +45,17 @@ static PyTypeObject MizuPoolType;
 static PyTypeObject MizuTaskType;
 static PyTypeObject MizuCaughtType;
 static PyTypeObject MizuShmViewType;
+static PyTypeObject MizuShmStrViewType;
 static PyTypeObject MizuShmOwnerType;
 static PyTypeObject MizuTaskFrameType;
 
 /* The REF stage for a received view re-sent whole (defined with the view
-   type below; stage_impl runs first in the file). */
+   types below; stage_impl runs first in the file). */
 static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max);
+static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
+                         uint32_t inline_max);
+static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
 
 static PyObject *numpy_module(void);
 
@@ -1440,6 +1444,17 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       return 0;
     }
   }
+  if (Py_TYPE(obj) == &MizuShmStrViewType) {
+    /* a region-backed string view re-sent whole: its region name (REF,
+       zero payload bytes — the string view admits no buffer, so whole is
+       the only case); the name-fits gate's fallback is the by-value list */
+    if (stage_ref_str(obj, hdr, payload, inline_max) == 0) return 0;
+    PyObject *list = strview_to_list(obj, NULL);
+    if (list == NULL) return 1;
+    int rc = stage_impl(list, hdr, payload, inline_max, h, peer_lang);
+    Py_DECREF(list);
+    return rc;
+  }
   if (PyObject_CheckBuffer(obj) && !buffer_subclass_reject(obj)) {
     Py_buffer v;
     /* not PyBUF_C_CONTIGUOUS (it implies WRITABLE): a read-only buffer —
@@ -1736,6 +1751,24 @@ typedef struct {
   Py_ssize_t strides[1];
 } MizuShmView;
 
+/* A region-backed string view (MIZS): the same owner and loan machinery as
+   the MIZH view, no buffer export — to_list() is the one string copy, an
+   explicit one, and __arrow_c_array__ hands Arrow the string block's
+   large_utf8 buffers in place. The wrap checks the two end offsets in
+   O(1); every span is bounds-checked as read (the R reader's
+   discipline). */
+typedef struct {
+  PyObject_HEAD
+  MizuShmOwner *owner;
+  const uint8_t *validity;   /* ceil(n / 8) bytes, LSB-first, 1 = present */
+  const int64_t *offsets;    /* (n + 1) i64 offsets */
+  const uint8_t *encoding;   /* n encoding bytes (MIZU_CE_*) */
+  const uint8_t *data;       /* the packed string bytes */
+  int64_t n;
+  int64_t str_bytes;         /* the packed area's size; bounds each span */
+  long pid;
+} MizuShmStrView;
+
 static const char *view_format(int type) {
   switch (type) {
   case MIZU_TYPE_REAL: return "d";
@@ -1833,18 +1866,36 @@ static MizuShmView *view_behind(PyObject *obj) {
   return NULL;
 }
 
+/* The REF emit shared by every whole-view re-send: the region name and
+   zero payload bytes — the mirror of mizu's mizu_zc_ref_stage. Before the
+   name goes out the region is marked REFHELD: its holder set widens beyond
+   the direct peer, so the producer's death verdict must leak + unlink
+   rather than force-reclaim (mizu.h). Every consumer mapping has page 0
+   read-write for the counted add, so the flag store goes through the
+   owner's mapping. 0 staged, -1 the name cannot ride the payload (the
+   caller falls through to a by-value stage). */
+static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
+                    uint32_t inline_max) {
+  if (shm == NULL || shm->name_len <= 0 ||
+      (size_t) shm->name_len > (size_t) inline_max)
+    return -1;
+  atomic_fetch_or_explicit(mizu_zc_flags_(mizu_shm_addr(shm)),
+                           MIZU_ZC_FLAG_REFHELD, memory_order_acq_rel);
+  hdr->kind = MIZU_KIND_REF;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = 0;
+  memcpy(payload, shm->name, shm->name_len);
+  return 0;
+}
+
 /* REF: a received view re-sent whole crosses as its region's name and zero
-   payload bytes — the mirror of mizu's mizu_zc_ref_stage. The buffer must
-   be the view's exact bytes (a slice, a reshape or a dtype reinterpretation
-   goes by value) at the view's wire type — an LGL view read as int32
-   included, so a logical relayed whole returns to R as a logical. Before
-   the name goes out the region is marked REFHELD: its holder set widens
-   beyond the direct peer, so the producer's death verdict must leak +
-   unlink rather than force-reclaim (mizu.h). Every consumer mapping has
-   page 0 read-write for the counted add, so the flag store goes through
-   the owner's mapping. There is no COW-materialized case to exclude (R's
-   data2 rule): a view refuses writable buffers, so its bytes are never
-   private. 0 staged, -1 not a whole view (the caller falls through). */
+   payload bytes. The buffer must be the view's exact bytes (a slice, a
+   reshape or a dtype reinterpretation goes by value) at the view's wire
+   type — an LGL view read as int32 included, so a logical relayed whole
+   returns to R as a logical. There is no COW-materialized case to exclude
+   (R's data2 rule): a view refuses writable buffers, so its bytes are
+   never private. 0 staged, -1 not a whole view (the caller falls
+   through). */
 static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max) {
   MizuShmView *view = view_behind(obj);
@@ -1854,18 +1905,21 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
   int type = wire_type_of(v);
   if (shm != NULL && v->buf == (void *) view->data && v->len == view->len &&
       (type == view->type ||
-       (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL)) &&
-      shm->name_len > 0 && (size_t) shm->name_len <= (size_t) inline_max) {
-    atomic_fetch_or_explicit(mizu_zc_flags_(mizu_shm_addr(shm)),
-                             MIZU_ZC_FLAG_REFHELD, memory_order_acq_rel);
-    hdr->kind = MIZU_KIND_REF;
-    hdr->len = (uint32_t) shm->name_len;
-    hdr->aux = 0;
-    memcpy(payload, shm->name, shm->name_len);
-    rc = 0;
-  }
+       (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL)))
+    rc = ref_emit(shm, hdr, payload, inline_max);
   Py_DECREF(view);
   return rc;
+}
+
+/* The string view's REF half: an exact _ShmStrView re-sent whole. The view
+   admits no buffer, so whole is the only case — the fallback (the name
+   does not fit) is the caller's by-value list. 0 staged, -1 not
+   stageable. */
+static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
+                         uint32_t inline_max) {
+  MizuShmStrView *sv = (MizuShmStrView *) obj;
+  return ref_emit(sv->owner != NULL ? sv->owner->shm : NULL, hdr, payload,
+                  inline_max);
 }
 
 // Arrow export (the view's __arrow_c_array__) ------------------------------------
@@ -2038,6 +2092,281 @@ static PyTypeObject MizuShmViewType = {
   .tp_methods = view_methods,
 };
 
+// Region-backed string views (MIZS) ----------------------------------------------
+
+static void strview_dealloc(MizuShmStrView *self) {
+  if (self->owner != NULL) {
+    if (self->pid == mizu_self_pid())
+      mizu_zc_unref(self->owner->shm);   /* the consumer's loan, once-only */
+    Py_DECREF(self->owner);
+  }
+  MizuShmStrViewType.tp_free((PyObject *) self);
+}
+
+/* The per-element span check, fused into every read loop. */
+static int strview_span(const MizuShmStrView *sv, int64_t i, int64_t *lo,
+                        int64_t *hi) {
+  *lo = sv->offsets[i];
+  *hi = sv->offsets[i + 1];
+  return *lo >= 0 && *hi >= *lo && *hi <= sv->str_bytes;
+}
+
+PyDoc_STRVAR(strview_to_list_doc,
+"to_list() -> list[str | None]\n\n\
+Materialize the strings: the one copy the view makes, an explicit one.\n\
+NA elements read as None. A latin1/bytes-marked element declines (the\n\
+sender's MIZS filter keeps one off this path — a defense), as does an\n\
+element that is not valid UTF-8.");
+
+static PyObject *strview_to_list(PyObject *obj, PyObject *Py_UNUSED(dummy)) {
+  MizuShmStrView *sv = (MizuShmStrView *) obj;
+  PyObject *out = PyList_New((Py_ssize_t) sv->n);
+  if (out == NULL) return NULL;
+  for (int64_t i = 0; i < sv->n; i++) {
+    PyObject *s = NULL;
+    if (sv->validity[i / 8] & (1u << (i % 8))) {
+      int64_t lo, hi;
+      unsigned enc = sv->encoding[i];
+      if (!strview_span(sv, i, &lo, &hi)) {
+        PyErr_SetString(MizuError,
+                        "pymizu: invalid string data in shared region");
+      } else if (enc == MIZU_CE_LATIN1 || enc == MIZU_CE_BYTES) {
+        PyErr_Format(MizuError,
+                     "pymizu: string %lld has an encoding that does not "
+                     "cross (latin1/bytes)", (long long) i);
+      } else {
+        /* CE_UTF8 and CE_NATIVE both decode as UTF-8 (a native-marked
+           element the sender admitted is UTF-8-validated there; the strict
+           decode below is the defense) */
+        s = PyUnicode_FromStringAndSize((const char *) sv->data + lo,
+                                        (Py_ssize_t) (hi - lo));
+      }
+      if (s == NULL) {
+        Py_DECREF(out);
+        return NULL;
+      }
+    } else {
+      s = Py_None;
+      Py_INCREF(s);
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, s);
+  }
+  return out;
+}
+
+/* Strict UTF-8 validation of a CE_NATIVE span at Arrow export (the
+   sender's MIZS filter admits a native-marked element only when it
+   validates as UTF-8; this is the reader-side defense). */
+static int utf8_valid(const uint8_t *s, int64_t n) {
+  int64_t i = 0;
+  while (i < n) {
+    uint8_t c = s[i];
+    if (c < 0x80) {
+      i++;
+      continue;
+    }
+    int64_t need;
+    uint32_t cp;
+    if ((c & 0xE0) == 0xC0) {
+      need = 1;
+      cp = c & 0x1F;
+      if (cp == 0) return 0;                 /* overlong */
+    } else if ((c & 0xF0) == 0xE0) {
+      need = 2;
+      cp = c & 0x0F;
+    } else if ((c & 0xF8) == 0xF0) {
+      need = 3;
+      cp = c & 0x07;
+    } else {
+      return 0;
+    }
+    if (i + need >= n) return 0;
+    for (int64_t k = 1; k <= need; k++) {
+      if ((s[i + k] & 0xC0) != 0x80) return 0;
+      cp = (cp << 6) | (s[i + k] & 0x3F);
+    }
+    if ((need == 1 && cp < 0x80) || (need == 2 && cp < 0x800) ||
+        (need == 3 && cp < 0x10000) || cp > 0x10FFFF ||
+        (cp >= 0xD800 && cp <= 0xDFFF))
+      return 0;                              /* overlong / out of range */
+    i += need + 1;
+  }
+  return 1;
+}
+
+PyDoc_STRVAR(strview_arrow_c_array_doc,
+"__arrow_c_array__(requested_schema=None) -> (schema capsule, array capsule)\n\n\
+Export the strings through the Arrow C Data Interface as large_utf8:\n\
+the validity bitmap, the i64 offsets and the packed bytes are Arrow's\n\
+three buffers, handed over in place (zero-copy) on the export's own\n\
+mapping and refcount loan. Every element must be UTF-8-marked; a\n\
+latin1/bytes element declines the export, naming its index.");
+
+static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
+                                       PyObject *kw) {
+  static char *kwlist[] = {"requested_schema", NULL};
+  PyObject *requested = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:__arrow_c_array__",
+                                   kwlist, &requested))
+    return NULL;
+  /* requested_schema ignored — the one Arrow representation, as for the
+     MIZH view's export */
+  MizuShmStrView *sv = (MizuShmStrView *) obj;
+  if (sv->owner == NULL) {
+    PyErr_SetString(MizuError, "pymizu: the view has no region");
+    return NULL;
+  }
+  /* one fused pass ahead of the export: span bounds and encoding bytes
+     (the consumer reads the buffers unguarded), UTF-8-validating
+     CE_NATIVE spans, the null count */
+  int64_t null_count = 0;
+  for (int64_t i = 0; i < sv->n; i++) {
+    if (!(sv->validity[i / 8] & (1u << (i % 8)))) {
+      null_count++;
+      continue;
+    }
+    int64_t lo, hi;
+    unsigned enc = sv->encoding[i];
+    if (!strview_span(sv, i, &lo, &hi)) {
+      PyErr_SetString(MizuError,
+                      "pymizu: invalid string data in shared region");
+      return NULL;
+    }
+    if (enc == MIZU_CE_LATIN1 || enc == MIZU_CE_BYTES) {
+      PyErr_Format(MizuError,
+                   "pymizu: string %lld has an encoding that does not cross "
+                   "to Arrow (latin1/bytes)", (long long) i);
+      return NULL;
+    }
+    if (enc == MIZU_CE_NATIVE && !utf8_valid(sv->data + lo, hi - lo)) {
+      PyErr_Format(MizuError,
+                   "pymizu: string %lld is not valid UTF-8", (long long) i);
+      return NULL;
+    }
+  }
+  /* a fresh mapping of the same region (pages shared); the counted add
+     rides the open, exactly as in view_arrow_c_array */
+  mizu_shm *shm;
+  if (mizu_shm_open_view(&shm, mizu_shm_name(sv->owner->shm)) != MIZU_OK) {
+    raise_tls();
+    return NULL;
+  }
+  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
+  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
+  const void **buffers = (const void **) calloc(3, sizeof(void *));
+  arrow_loan *loan = (arrow_loan *) malloc(sizeof(arrow_loan));
+  PyObject *scap = schema != NULL ?
+    PyCapsule_New(schema, "arrow_schema", arrow_schema_cap_free) : NULL;
+  PyObject *acap = array != NULL ?
+    PyCapsule_New(array, "arrow_array", arrow_array_cap_free) : NULL;
+  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
+    if (scap == NULL) free(schema);
+    if (acap == NULL) free(array);
+    Py_XDECREF(scap);
+    Py_XDECREF(acap);
+    free(buffers);
+    free(loan);
+    mizu_zc_unref(shm);
+    mizu_shm_close(shm, 0);
+    if (!PyErr_Occurred()) PyErr_NoMemory();
+    return NULL;
+  }
+  loan->shm = shm;
+  loan->pid = mizu_self_pid();
+  mizu_mizs_geom g = mizu_mizs_geometry(sv->n);
+  const uint8_t *block =
+    (const uint8_t *) mizu_shm_addr(shm) + MIZU_HEADER_SIZE;
+  schema->format = "U";   /* large_utf8 */
+  schema->release = arrow_schema_release;
+  array->length = sv->n;
+  array->null_count = null_count;
+  array->n_buffers = 3;
+  array->buffers = buffers;
+  buffers[0] = block + g.validity;
+  buffers[1] = block + g.offsets;
+  buffers[2] = block + g.data;
+  array->private_data = loan;
+  array->release = arrow_array_release;
+  PyObject *out = PyTuple_New(2);
+  if (out == NULL) {
+    Py_DECREF(scap);
+    Py_DECREF(acap);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, scap);
+  PyTuple_SET_ITEM(out, 1, acap);
+  return out;
+}
+
+static PyMethodDef strview_methods[] = {
+  {"to_list", (PyCFunction)(void (*)(void)) strview_to_list, METH_NOARGS,
+   strview_to_list_doc},
+  {"__arrow_c_array__", (PyCFunction)(void (*)(void)) strview_arrow_c_array,
+   METH_VARARGS | METH_KEYWORDS, strview_arrow_c_array_doc},
+  {NULL}
+};
+
+static PyTypeObject MizuShmStrViewType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pymizu._ShmStrView",
+  .tp_basicsize = sizeof(MizuShmStrView),
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A zero-copy string view over a shared-memory region (MIZS).",
+  .tp_dealloc = (destructor) strview_dealloc,
+  .tp_methods = strview_methods,
+};
+
+/* Validate the MIZS header at the region base and wrap it as a string
+   view. aux != 0 (the SHM_VEC wire form) cross-checks the staged type and
+   exact byte count against the header. Attributes (names/class) decline —
+   the sender's foreign filter keeps an attributed string vector off this
+   path. On failure the exception is set here and the caller subs the
+   loan. */
+static PyObject *strview_wrap(MizuShmOwner *owner, uint64_t aux) {
+  mizu_shm *shm = owner->shm;
+  const uint8_t *base = (const uint8_t *) mizu_shm_addr(shm);
+  size_t size = mizu_shm_size(shm);
+  int64_t n = 0, block = 0, attrs = 0;
+  if (mizu_mizs_check(base, size, &n, &block, &attrs) != 0)
+    goto corrupt;
+  if (aux != 0 &&
+      ((uint32_t) mizu_aux_type(aux) != (uint32_t) MIZU_TYPE_STR ||
+       mizu_aux_hi(aux) !=
+         (uint64_t) ((int64_t) MIZU_HEADER_SIZE + block + attrs)))
+    goto corrupt;
+  if (attrs != 0) {
+    PyErr_SetString(MizuError,
+                    "pymizu: R shared-string payload carries attributes "
+                    "(names/class), which do not cross the view tier");
+    return NULL;
+  }
+  {
+    mizu_mizs_geom g = mizu_mizs_geometry(n);
+    const uint8_t *offs = base + MIZU_HEADER_SIZE + g.offsets;
+    int64_t first, last;
+    memcpy(&first, offs, 8);
+    memcpy(&last, offs + 8 * n, 8);
+    if (first != 0 || last < 0 || last > block - g.data)
+      goto corrupt;
+    MizuShmStrView *sv =
+      (MizuShmStrView *) MizuShmStrViewType.tp_alloc(&MizuShmStrViewType, 0);
+    if (sv == NULL) return NULL;
+    Py_INCREF(owner);
+    sv->owner = owner;
+    sv->validity = base + MIZU_HEADER_SIZE + g.validity;
+    sv->offsets = (const int64_t *) (base + MIZU_HEADER_SIZE + g.offsets);
+    sv->encoding = base + MIZU_HEADER_SIZE + g.encoding;
+    sv->data = base + MIZU_HEADER_SIZE + g.data;
+    sv->n = n;
+    sv->str_bytes = block - g.data;
+    sv->pid = mizu_self_pid();
+    return (PyObject *) sv;
+  }
+corrupt:
+  PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+  return NULL;
+}
+
 static PyObject *numpy_module(void) {
   if (!mizu_numpy_probed) {
     mizu_numpy_probed = 1;
@@ -2110,8 +2439,13 @@ static PyObject *view_wrap_region(MizuShmOwner *owner, uint64_t aux) {
   if (size >= (int64_t) MIZU_HEADER_SIZE) {
     uint32_t magic;
     memcpy(&magic, base, 4);
+    if (magic == MIZU_MAGIC_STR) {
+      PyObject *sv = strview_wrap(owner, aux);
+      if (sv == NULL) mizu_zc_unref(shm);
+      return sv;
+    }
     if (magic != MIZU_MAGIC_VEC) {
-      err = "pymizu: unsupported shared-payload layout (R string/list views "
+      err = "pymizu: unsupported shared-payload layout (R list views "
             "cannot cross to Python)";
       goto fail;
     }
@@ -3181,7 +3515,7 @@ static void chan_binding(mizu_binding *b) {
   b->read = py_chan_read;   /* the consume-on-decline read_fn; pools keep
                                py_read */
   b->check = py_check;
-  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, 0);
+  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS);
   /* exec/park/sweep/drop NULL: a channel never evals; submitter handles
      release the GIL around the whole verb, so no park hook; staging pins
      nothing, so no drop hook. */
@@ -3702,7 +4036,7 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->check = py_check;
   b->exec = worker ? py_exec : NULL;
   b->park = worker ? py_park : NULL;
-  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, 0);
+  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS);
   /* sweep/drop NULL: no per-handle caches, and staging pins nothing */
 }
 
@@ -5499,6 +5833,7 @@ PyInit__pymizu(void)
   if (PyType_Ready(&MizuPoolType) < 0) return NULL;
   if (PyType_Ready(&MizuTaskType) < 0) return NULL;
   if (PyType_Ready(&MizuShmViewType) < 0) return NULL;
+  if (PyType_Ready(&MizuShmStrViewType) < 0) return NULL;
   if (PyType_Ready(&MizuShmOwnerType) < 0) return NULL;
   MizuTaskFrameType.tp_base = &PyTuple_Type;
   if (PyType_Ready(&MizuTaskFrameType) < 0) return NULL;

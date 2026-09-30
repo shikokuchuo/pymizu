@@ -68,6 +68,115 @@ def test_r_peer_view_relayed_by_reference(r_mizu):
         ch.close()
 
 
+R_STR_VIEW = """
+x <- rep(c("hello", NA_character_, "", "héllo ✓", strrep("long ", 2000)),
+         length.out = 20000)
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
+"""
+
+
+def test_r_peer_string_vector_view(r_mizu):
+    # an R character vector past the floor crosses as a region-backed
+    # string view (MIZS): to_list() is the explicit copy
+    ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
+    try:
+        v = ch.recv(30)
+        assert type(v).__name__ == "_ShmStrView"
+        want = ["hello", None, "", "héllo ✓", "long " * 2000]
+        got = v.to_list()
+        assert len(got) == 20000
+        assert got[:5] == want and got[5:10] == want
+    finally:
+        ch.close()
+
+
+def test_r_peer_string_view_arrow(r_mizu):
+    # the string block is Arrow large_utf8-shaped: the export hands the
+    # three buffers (validity bitmap, i64 offsets, packed bytes) in place
+    pa = pytest.importorskip("pyarrow")
+    ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
+    try:
+        v = ch.recv(30)
+        arr = pa.array(v)
+        assert arr.type == pa.large_string()
+        assert arr.null_count == 4000
+        want = ["hello", None, "", "héllo ✓", "long " * 2000]
+        assert arr.slice(0, 10).to_pylist() == want + want
+    finally:
+        ch.close()
+
+
+def test_r_peer_string_view_polars(r_mizu):
+    pl = pytest.importorskip("polars")
+    ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
+    try:
+        s = pl.Series(ch.recv(30))
+        assert s.dtype == pl.String and len(s) == 20000
+        assert s.null_count() == 4000
+        assert s.head(6).to_list() == ["hello", None, "", "héllo ✓",
+                                       "long " * 2000, "hello"]
+    finally:
+        ch.close()
+
+
+R_STR_RELAY = """
+x <- rep(c("alpha", NA_character_, "beta", strrep("s", 5000)),
+         length.out = 3000)
+mizu::mizu_send(ch, x)
+y <- mizu::mizu_recv(ch, timeout = 30)
+flags <- .Call(mizu:::mizu_zc_refcount, y)[[2L]]
+mizu::mizu_send(ch, c(
+  .Call(mizu:::mizu_zc_view_check, y),
+  flags %% 2L == 1L,
+  identical(y, x)
+))
+"""
+
+
+def test_r_peer_string_view_relayed_by_reference(r_mizu):
+    # R -> Python -> R: the return hop is a REF naming R's own region, so
+    # R gets a view of it (REFHELD) that is identical() to what it sent
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_STR_RELAY, launcher=r_mizu)
+    try:
+        v = ch.recv(30)
+        assert type(v).__name__ == "_ShmStrView"
+        assert ch.send(v) is True
+        assert np.asarray(ch.recv(30)).tolist() == [1, 1, 1]
+    finally:
+        ch.close()
+
+
+PY_ECHO = """
+while True:
+    x = ch.recv(30)
+    if pymizu.is_sentinel(x):
+        break
+    ch.send(x)
+"""
+
+
+def test_py_peer_string_view_echo(r_mizu):
+    # Python -> Python: a received string view re-sent crosses as REF; the
+    # echo peer's read resolves it to the same region's string view
+    r_ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
+    py_ch = pymizu.Channel.create(
+        "import pymizu\n" + PY_ECHO,
+    )
+    try:
+        v = r_ch.recv(30)
+        assert type(v).__name__ == "_ShmStrView"
+        assert py_ch.send(v) is True
+        back = py_ch.recv(30)
+        assert type(back).__name__ == "_ShmStrView"
+        assert back.to_list()[:5] == ["hello", None, "", "héllo ✓",
+                                      "long " * 2000]
+    finally:
+        py_ch.close()
+        r_ch.close()
+
+
 def test_r_peer_echo_roundtrip(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)

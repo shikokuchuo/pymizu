@@ -10,6 +10,16 @@ Initial pre-release.
 
 ### Added
 
+- Region-backed string views (the MIZS layout): an R character vector
+  past the zero-copy floor now arrives as a `_ShmStrView` over the shared
+  pages — no copy. `to_list()` materializes the explicit `list[str |
+  None]` copy; `__arrow_c_array__` exports Arrow `large_utf8` with the
+  validity bitmap, i64 offsets and packed bytes handed over in place
+  (pyarrow/polars consumers read the region directly). A view re-sent
+  whole crosses back as a reference (zero payload bytes), on
+  same-language channels too. pymizu advertises `MIZU_CAP_MIZS` in its
+  identity word from this release, so an R sender stages string vectors
+  for it on the layout tier instead of the interchange copy.
 - The err stream (the `'I'` err tag, 0x11): an uncaught exception in a
   channel peer now crosses to the host as a value before the close
   signal, on every channel — same-language included. `python -m
