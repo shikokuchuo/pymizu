@@ -39,9 +39,6 @@ PyAPI_DATA(PyTypeObject) PyFunction_Type;
   MIZU_STR(MIZU_VERSION_MAJOR) "." MIZU_STR(MIZU_VERSION_MINOR) "."           \
   MIZU_STR(MIZU_VERSION_PATCH)
 
-/* R's cetype_t marks (the STR1 aux values), fixed by the wire format. */
-enum { MIZU_CE_NATIVE = 0, MIZU_CE_UTF8 = 1, MIZU_CE_LATIN1 = 2, MIZU_CE_BYTES = 3 };
-
 static PyTypeObject MizuChannelType;
 static PyTypeObject MizuPoolType;
 static PyTypeObject MizuTaskType;
@@ -2078,9 +2075,10 @@ static PyObject *view_wrap_region(MizuShmOwner *owner, uint64_t aux) {
       goto fail;
     }
   }
-  /* size, magic, wire type, and the extents ride the core's MIZH check;
-     attribute policy stays here */
-  if (mizu_mizh_check(base, (size_t) size, &type, &length) != 0)
+  /* size, magic, wire type, the extents, the flags word and the validity
+     section ride the core's MIZH check; attribute policy stays here */
+  int64_t valid[2];
+  if (mizu_mizh_check(base, (size_t) size, &type, &length, valid) != 0)
     goto corrupt;
   size_t elt = mizu_type_elt_size(type);
   {
@@ -3069,6 +3067,7 @@ static void chan_binding(mizu_binding *b) {
   b->read = py_chan_read;   /* the consume-on-decline read_fn; pools keep
                                py_read */
   b->check = py_check;
+  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, 0);
   /* exec/park/sweep/drop NULL: a channel never evals; submitter handles
      release the GIL around the whole verb, so no park hook; staging pins
      nothing, so no drop hook. */
@@ -3538,6 +3537,7 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->check = py_check;
   b->exec = worker ? py_exec : NULL;
   b->park = worker ? py_park : NULL;
+  b->ident = MIZU_IDENT(MIZU_LANG_PYTHON, 0);
   /* sweep/drop NULL: no per-handle caches, and staging pins nothing */
 }
 

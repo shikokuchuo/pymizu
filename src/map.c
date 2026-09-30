@@ -21,8 +21,6 @@
 #include "mizu.h"
 #include "mizu_ext.h"
 
-#define MIZU_PYMAP_MAGIC 0x4D4D5950u   /* "PYMM" — this binding's morsel tag */
-
 static PyObject *MizuErr;   /* pymizu.MizuError (borrowed at registration) */
 static PyObject *MizuShmErr;   /* pymizu.ShmError */
 
@@ -170,7 +168,7 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   /* the binding-side checks above pre-validate the geometry, so a layout
      refusal is always a size overflow */
   mizu_morsel_hdr h;
-  uint64_t size = mizu_morsel_layout(&h, MIZU_PYMAP_MAGIC, (uint64_t) n_ll,
+  uint64_t size = mizu_morsel_layout(&h, (uint64_t) n_ll,
                                     (uint64_t) ms_ll, (uint64_t) desc.len,
                                     have_x ? (uint32_t) x_tag : 0,
                                     have_x ? (uint64_t) xbuf.len : 0,
@@ -276,8 +274,7 @@ static PyObject *py_map_open(PyObject *Py_UNUSED(module), PyObject *arg) {
     return NULL;
   }
   mizu_morsel_hdr h;
-  const char *err = mizu_morsel_hdr_check(shm->addr, shm->size,
-                                         MIZU_PYMAP_MAGIC, &h);
+  const char *err = mizu_morsel_hdr_check(shm->addr, shm->size, &h);
   if (err != NULL) {
     mizu_shm_close(shm, 0);
     PyErr_Format(MizuErr, "pymizu: invalid map region: %s", err);
