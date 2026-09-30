@@ -188,6 +188,22 @@ A `pymizu.Frame` is the `data.frame` home: named columns with a row count.
 Any Arrow consumer takes the frame in one line — `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)` — with factor columns as dictionary columns, logical columns as Arrow `bool`, `Date` as `date32`, and `POSIXct` as `timestamp[us]`.
 A `Frame` pickles, so Python-to-Python channels carry it; on a foreign channel it writes the `data.frame` shape again through its own export.
 
+Zero-copy frames, both directions:
+
+- A `data.frame` past a size floor (32 KiB) crosses as one shared-memory region — the Python side reads a region-backed `Frame`: numeric columns are read-only numpy views over the shared pages, string columns read off their region block, factor columns are dictionary-encoded, integer64 columns tag-carried.
+- A frame sent from Python past the same floor — polars, pyarrow, pandas (through its pyarrow export), or a `Frame` — stages as one region too: R reads a `data.frame` in place.
+- The capability handshake sends a peer that has not implemented the layouts an interchange copy instead — the value always crosses.
+- An unmodified round trip moves nothing: a frame imported from a region and sent back (`pl.from_arrow(f)`, `pa.table(f)`) re-stages as the region's name, zero payload bytes. polars re-views string columns, so a frame holding one round-trips as a fresh region instead; pyarrow keeps them.
+- A live polars or pyarrow consumer pins the frame's region loan until `del` + GC. Long-lived imports want that discipline: enough pinned loans trip the producer's churn fallback, and later sends degrade to the copy tiers.
+
+Attribute and temporal rows:
+
+- A factor crosses as `list[str | None]` (standalone) or a dictionary column (in a frame); a standalone factor past the floor is a region read.
+- A `Date` crosses as `datetime64[D]` / Arrow `date32`; a `POSIXct` as naive `datetime64[us]` / `timestamp[us, tz]` — µs the precision unit, NaT ↔ `NA`, a named zone kept as `Frame` column metadata and dropped from a standalone vector; naive Python datetimes write `tzone = "UTC"`.
+- A `difftime`, `POSIXlt`, `timedelta64`, Arrow `date64`/`time`/`duration`/`interval`, and ordered dictionaries (polars Enums) decline at send time — a `difftime` crosses manually as an epoch-plus-units dict.
+- An R `names` vector declines on a foreign channel (numpy has no per-element names); a matrix crosses value-exact — F order at the far side, the data never transposed; `dimnames` and character matrices decline.
+- Cross-language sends copy ALTREP values by value (a zero-copy region past the floor, an interchange copy below it): value-exact, representation not preserved, the sender's compact vector untouched.
+
 ### The dtype matrix
 
 Conversion happens once, at send time, fused into the copy that staging always is.
@@ -215,9 +231,13 @@ NA semantics:
 
 - R's missing values are sentinels in the data: `INT_MIN` for integer/logical, `INT64_MIN` for integer64, a specific NaN payload (`NA_real_`) for double.
   Python to R: Arrow nulls convert to the sentinels, so R sees correct `NA`s.
-  R to Python: no Arrow nulls are synthesized — `NA_integer_` reads as `-2147483648`, `NA_integer64_` as `-9223372036854775808`, `NA_real_` as a NaN.
-- A genuine int32 value of `-2147483648` collides with the NA sentinel and reads as `NA` in R; likewise an int64 value of `-9223372036854775808` (`INT64_MIN`) reads as `NA_integer64_`.
-  numpy sends stay silent; an Arrow int32 send with a validity bitmap warns once — int64 sends are never scanned, so that collision stays silent too.
+  R to Python: the read depends on the accessor, not the tier:
+  - copied reads (`list(...)`, `Frame.to_dict()`) are honest: a logical is `bool_` when NA-free, else int32; an integer is int32 when NA-free, else float64 with `NA_real_`-payload NaNs (every int32 is exact there); the integer scan runs only for an R writer, so a Python-to-Python int32 array keeps int32 and any genuine `-2^31` values.
+  - zero-copy views stay sentinel-typed on the raw page buffer; `.to_numpy()` applies the same rule, reading NA-freeness off the region's validity section before any data scan.
+  - int64 keeps its dtype in every numpy home and warns on a detected `INT64_MIN` (a copied read, `.to_numpy()`), naming `.to_arrow()` as the NA-honest accessor; a genuine Python `-2^63` round-trips unwarned.
+  - every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the tier or content; integer exports are int32/int64 with a validity bitmap.
+- A genuine int32 value of `-2147483648` collides with the NA sentinel and reads as `NA` in R on every tier (R's integer has no room for it); likewise an int64 value of `-9223372036854775808` (`INT64_MIN`) reads as `NA_integer64_`.
+  numpy sends stay silent; an Arrow int32 send with a validity bitmap warns once.
 - Python-side compute treats `NA_real_` as a NaN value; whether the exact payload survives arithmetic is platform-dependent — do not rely on it either way.
 
 Round trips are stable after the first hop, and a pure pass-through echo is bit-exact: an untouched received view re-stages by reference (its region name, no payload bytes), so even the `NA_real_` payload survives a relay. A slice or a dtype view of a received view re-stages by value.
@@ -233,17 +253,17 @@ Round trips are stable after the first hop, and a pure pass-through echo is bit-
 | uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
 | float32 | double | float64 | widened, values exact |
 | float64 | double | float64 | exact |
-| bool | logical | int32 0/1 | dtype lost |
+| bool | logical | `bool_` (int32 with NAs) | dtype lost |
 | complex64 / complex128 | complex | complex128 | exact |
 
 | R sends | Python sees | Back in R | |
 |----|----|----|----|
-| integer | int32 | integer | exact |
-| integer64 (bit64) | int64 | integer64 | exact |
+| integer | int32 (float64 with NAs) | integer | exact |
+| integer64 (bit64) | int64 (warns on an `NA` verdict) | integer64 | exact; a genuine Python `-2^63` arrives as `NA` |
 | double | float64 | double | exact |
 | raw | uint8 | raw | exact |
 | complex | complex128 | complex | exact |
-| logical | int32 | **integer** | the tag does not survive the Python hop (values do) |
+| logical | `bool_` (int32 with NAs) | **integer** | the tag does not survive a by-value Python hop (values do); a whole view re-sent crosses by reference, logical intact |
 
 The channel/pool split: pools are Python-both-ends by construction, so pool task results keep the lossless pickle path for every dtype.
 Python-to-Python channels keep identity dtypes and pickle everything else unchanged (the identity exchange reports the peer's language at handshake; the conversion pass is foreign-only).
