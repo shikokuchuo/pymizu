@@ -165,8 +165,27 @@ tools/vendor-libmizu.sh` for a local checkout).
   per-spawn command file). The probe (Rscript + an installed mizu with
   the source-drop path) runs at factory call, cached per Rscript, and
   fails fast with `MizuError` before any channel region exists.
-  Channel-only: pools can't mix languages (task frames are
-  language-specific pickles).
+  `pymizu.r_pool_launcher()` is the pool-side mirror
+  (`mizu:::worker_main(<token>, <slot>)`).
+- Tier-A mixed-language pools (Phase 4): `pymizu.call()` builds a task
+  spec (qualified `"mod.fn"` name or `source=`, args/kwargs) and
+  `Pool.submit(spec)` stages it as the `'I'` task stream (tag 0x12)
+  via the submit-private `_CallFrame` (exact-type match in
+  `stage_impl`, the `_TaskFrame` pattern; the override ident rides the
+  frame's second item). The exec hook dispatches on the tag ahead of
+  the private read (`pool_entry_bytes` resolves INLINE/RAWVEC/STR1/
+  SHM_RAW first; byte-3 misroute guard; an R-magic private frame gets
+  the neutral err stream), and `pymizu_ix_task_run` (interop.c)
+  decodes straight off the cursor: importlib resolution + vectorcall,
+  or the ast split (`pymizu._exec_source`) with args bound in a fresh
+  namespace (`_1`, `_2`, ... for positional). The task stream's
+  submitter identity keys the publish formats: foreign → the err
+  stream (`publish_exc`'s foreign branch) / the foreign result policy
+  (the handle's `peer_lang`/`peer_caps` set around the publish, a
+  decline recovered as the task's err stream); same-language → the
+  private envelope. The pool word (`Pool._h._worker_ident()`, cached
+  re-read while 0) gates the private verbs: a callable submit, batch
+  or native-fn map on a foreign pool errors locally naming the spec.
 - A task error crosses as the worker's constructed, bounded (type,
   message, traceback) envelope — never a pickled exception instance; an
   unpicklable result recovers as the task's ERR.
