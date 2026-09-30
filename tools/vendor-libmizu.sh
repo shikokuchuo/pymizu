@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="8339da8128bff0bdb46b50b5915a2e244b479f92"  # libmizu: Cross-language 1.6a: interop cursor, emit helpers, golden corpus
+PIN="18a1e5fabeb96ede8dcc79b867c53f89973d406d"  # libmizu: Corpus: R's verbatim NA_real_ bits; scalar-form len-1 attr values
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
