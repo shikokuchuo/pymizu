@@ -183,36 +183,30 @@ mizu::mizu_send(ch, NA_character_)
         ch.close()
 
 
-def test_r_peer_python_payload_error(r_mizu):
-    src = """
-x <- tryCatch(mizu::mizu_recv(ch, timeout = 30),
-              error = function(e) conditionMessage(e))
-mizu::mizu_send(ch, if (is.character(x)) x else "no error")
-"""
-    ch = pymizu.Channel.create(src, launcher=r_mizu)
+def test_r_peer_set_declined_at_send(r_mizu):
+    # a set has no portable home: the interchange walk raises DeclinedError
+    # at send time (the peer is never sent a stream it cannot read)
+    ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch.send({1, 2, 3}) is True   # a pickled set
-        got = ch.recv(30)
-        assert "Python payload" in got
+        with pytest.raises(pymizu.DeclinedError, match="set"):
+            ch.send({1, 2, 3})
+        # the channel is unharmed: a portable value still crosses
+        assert ch.send("after") is True
+        assert ch.recv(30) == "after"
     finally:
         ch.close()
 
 
 def test_r_peer_masked_array_declined(r_mizu):
-    """A MaskedArray keeps its pickle path (the raw tier would drop the
-    mask), so on an R channel it is a declined "Python payload" — consumed,
-    and the next message arrives. The remedy is the Arrow import."""
+    """A MaskedArray is a buffer subclass (the raw tier would drop the
+    mask): DeclinedError at send on a foreign channel, and the channel is
+    unharmed for a portable value after it."""
     np = pytest.importorskip("numpy")
-    src = """
-err <- tryCatch(mizu::mizu_recv(ch, timeout = 30), error = function(e) e)
-stopifnot(is(err, "error"))
-x <- mizu::mizu_recv(ch, timeout = 30)
-mizu::mizu_send(ch, x)
-"""
-    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
         m = np.ma.MaskedArray([1.0, 2.0], mask=[True, False])
-        assert ch.send(m) is True
+        with pytest.raises(pymizu.DeclinedError, match="buffer subclass"):
+            ch.send(m)
         a = np.array([1.5, 2.5])
         assert ch.send(a) is True
         assert np.array_equal(np.asarray(ch.recv(30)), a)
@@ -220,39 +214,34 @@ mizu::mizu_send(ch, x)
         ch.close()
 
 
-def test_r_peer_serialized_payload_consumed(r_mizu):
-    """An R native-serialize stream is declined and consumed (the
-    MIZU_READ_CONSUME contract): the recv raises, and a retried recv sees
-    the NEXT slot — before 0.3.0 the ring wedged behind the failed slot."""
+def test_r_peer_environment_declined_on_r_side(r_mizu):
+    """An environment has no portable home either: the R interchange
+    writer raises at send (mizu_error_not_portable), and the R side
+    reports it — the private R serialize stream never crosses."""
     src = """
-mizu::mizu_send(ch, new.env())   # the codec rejects environments: R serialize
-mizu::mizu_send(ch, "after")
+e <- tryCatch(mizu::mizu_send(ch, new.env()),
+              error = function(e) conditionMessage(e))
+mizu::mizu_send(ch, e)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        with pytest.raises(pymizu.MizuError, match="R payload"):
-            ch.recv(30)
-        assert ch.recv(30) == "after"
+        got = ch.recv(30)
+        assert "not portable" in got and "environment" in got
     finally:
         ch.close()
 
 
-def test_r_peer_batch_keeps_prefix(r_mizu):
-    """A batch that reaches a foreign payload returns the messages read
-    before it; the next receive reproduces the decline (and consumes the
-    slot), and the one after reads on. send_batch's single tail store
-    publishes the first two atomically, so the batch provably reaches the
-    foreign stream."""
+def test_r_peer_batch_of_interop_lists(r_mizu):
+    """A send_batch of R lists: every element crosses as an 'I' stream,
+    in order — the foreign-payload decline of the private-codec era is
+    gone from the interchange path."""
     src = """
-mizu::mizu_send_batch(ch, list("a", list(1, 2)))   # an 'R' codec stream
+mizu::mizu_send_batch(ch, list("a", list(1, 2)))
 mizu::mizu_send(ch, "after")
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        assert ch.recv_batch(4, timeout=30) == ["a"]
-        with pytest.raises(pymizu.MizuError, match="R payload"):
-            ch.recv(30)
-        assert ch.recv(30) == "after"
+        assert ch.recv_batch(4, timeout=30) == ["a", [1.0, 2.0], "after"]
     finally:
         ch.close()
 
