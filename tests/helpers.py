@@ -272,3 +272,17 @@ def trace_to_file(path):
 
     pymizu.current_pool().trace(hook)
     return True
+
+
+def foreign_pair():
+    """An in-process channel whose host end stages interop: the attach
+    side reports (R, caps 0) as its identity word, so the host reads a
+    foreign peer word at ready_wait. The reverse direction stays
+    same-language (the attach side reads the host's Python word)."""
+    from pymizu import _pymizu
+
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
+    p.ready_set()
+    assert h.ready_wait(10)
+    return h, p

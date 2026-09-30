@@ -32,6 +32,7 @@ PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #include "mizu.h"
 #include "mizu_ext.h"
 #include "pymap.h"
+#include "pyinterop.h"
 
 #define MIZU_STR_(x) #x
 #define MIZU_STR(x) MIZU_STR_(x)
@@ -54,6 +55,10 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
 
 static PyObject *numpy_module(void);
 
+PyObject *mizu_py_numpy_module(void) {
+  return numpy_module();
+}
+
 // Module state -------------------------------------------------------------------
 
 static PyObject *MizuError;           /* base */
@@ -65,6 +70,7 @@ static PyObject *MizuStoppedError;
 static PyObject *MizuCancelledError;
 static PyObject *MizuWorkerDiedError;
 static PyObject *MizuTaskError;       /* a task's own error, re-raised */
+static PyObject *MizuDeclinedError;   /* a foreign-handle send-time decline */
 
 /* traceback.format_exception, resolved lazily on the first task error (the
    error path is cold; importing it at module init is not). */
@@ -202,33 +208,8 @@ static int raise_tls(void) {
 
 // Arrow C Data Interface ---------------------------------------------------------
 
-/* The stable C ABI structs, defined locally per the spec (the layout is
-   frozen; no headers, no dependency). Both the import front-end (a
-   producer's __arrow_c_array__) and the view's export dunder use them. */
-typedef struct ArrowSchema {
-  const char *format;
-  const char *name;
-  const char *metadata;
-  int64_t flags;
-  int64_t n_children;
-  struct ArrowSchema **children;
-  struct ArrowSchema *dictionary;
-  void (*release)(struct ArrowSchema *);
-  void *private_data;
-} ArrowSchema;
-
-typedef struct ArrowArray {
-  int64_t length;
-  int64_t null_count;
-  int64_t offset;
-  int64_t n_buffers;
-  int64_t n_children;
-  const void **buffers;
-  struct ArrowArray **children;
-  struct ArrowArray *dictionary;
-  void (*release)(struct ArrowArray *);
-  void *private_data;
-} ArrowArray;
+/* The stable C ABI structs live in pyinterop.h (shared with interop.c,
+   which adds the ArrowArrayStream half). */
 
 // Staging ------------------------------------------------------------------------
 
@@ -280,6 +261,12 @@ static int stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
   return 0;
 }
 
+int mizu_py_stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
+                        uint8_t *payload, uint32_t inline_max,
+                        mizu_handle *h) {
+  return stage_bytes(src, n, hdr, payload, inline_max, h);
+}
+
 /* The O(1) raw-tier gate (the mirror of R's attribute-free/non-ALTREP gate):
    C-contiguous, native byte order, at most 1-D, and a dtype that maps
    width-exactly onto a wire type. No bool: numpy bool is 1 byte/elt where
@@ -311,6 +298,8 @@ static int wire_type_of(const Py_buffer *v) {
 int mizu_py_wire_type_of(const Py_buffer *v) {
   return wire_type_of(v);
 }
+
+
 
 /* The buffer gates' subclass rejection: an object whose type is a strict
    subclass of a known base type keeps its pickle semantics — the raw tier
@@ -407,6 +396,22 @@ static int buffer_subclass_reject(PyObject *obj) {
   return 0;
 }
 
+/* interop.c's buffer-leaf gates ride the same probes. */
+int mizu_py_buffer_subclass_reject(PyObject *obj) {
+  return buffer_subclass_reject(obj);
+}
+
+/* 1 exact ndarray, 2 a numpy scalar, 0 neither (unknown types: 0). */
+int mizu_py_np_kind(PyObject *obj) {
+  buffer_types_probe();
+  PyTypeObject *tp = Py_TYPE(obj);
+  if (tp == mizu_np_ndarray) return 1;
+  if (mizu_np_scalars != NULL &&
+      PySet_Contains(mizu_np_scalars, (PyObject *) tp) == 1)
+    return 2;
+  return 0;
+}
+
 /* The raw-tier reserve is the core's (mizu_stage_raw): RAWVEC inline within
    the budget; past it the zero-copy SHM_VEC tier at max(inline budget,
    MIZU_ZC_FLOOR), with the copy tiers as the cheaper small end and the churn
@@ -447,25 +452,8 @@ static int stage_raw(const Py_buffer *v, int type, mizu_slot_hdr *hdr,
    Little-endian throughout (all supported platforms are; the codec
    relies on it). */
 
-enum {
-  CVT_COPY = 0,   /* identity: one memcpy per run */
-  CVT_I8_INT,     /* sign-widen */
-  CVT_I16_INT,
-  CVT_U16_INT,    /* zero-widen */
-  CVT_U32_REAL,   /* exact */
-  CVT_U64_REAL,
-  CVT_F32_REAL,   /* exact */
-  CVT_BOOL8_LGL,  /* one byte per source lane (numpy '?') -> int32 0/1 */
-  CVT_BIT_LGL,    /* one bit per source lane (Arrow 'b') -> int32 0/1 */
-  CVT_C64_CPLX    /* float re/im -> double re/im */
-};
-
-typedef struct {
-  int wire;         /* the MIZU_TYPE_* the row produces */
-  int cvt;
-  uint8_t w_in;     /* source element bytes (0: bit-packed, CVT_BIT_LGL) */
-  uint8_t w_out;
-} cvt_row;
+/* The CVT_* enum, cvt_row and cvt_warn are pyinterop.h's (shared with
+   interop.c). */
 
 static const cvt_row CVT_ROW_U8 = { MIZU_TYPE_RAW, CVT_COPY, 1, 1 };
 static const cvt_row CVT_ROW_I8 = { MIZU_TYPE_INT, CVT_I8_INT, 1, 4 };
@@ -538,14 +526,6 @@ static const cvt_row *cvt_for_arrow(const char *f) {
   return NULL;
 }
 
-/* The warning counts, emitted only after the write half completes (never
-   mid-write: under warnings-as-errors a raise must not leave a claimed
-   reservation half-written — the write finishes, the warning raises, and
-   the core rolls the unpublished reservation back). */
-typedef struct {
-  uint64_t n_range;   /* uint64 past 2^53 -> NA_real_ */
-  uint64_t n_intmin;  /* masked int32 only: a genuine INT_MIN reads as NA */
-} cvt_warn;
 
 /* Convert a run of n valid elements. Per-element memcpy keeps every
    access alignment-safe (a contiguous buffer can still be
@@ -731,6 +711,50 @@ static void convert_bit_lgl(uint8_t *dst, const uint8_t *data,
   }
 }
 
+const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
+  return cvt_for_buffer(f, itemsize);
+}
+
+const cvt_row *mizu_py_cvt_for_arrow(const char *f) {
+  return cvt_for_arrow(f);
+}
+
+/* One batch's convert into a reserved destination (interop.c's batch
+   loops ride this too): the BIT_LGL / masked / plain dispatch. The
+   warning counts ride warn; mizu_py_cvt_warn raises them after the
+   write half completes (never mid-write). */
+void mizu_py_cvt_convert(uint8_t *dst, const uint8_t *src,
+                         const uint8_t *valid, uint64_t off, size_t n,
+                         const cvt_row *row, cvt_warn *warn) {
+  if (row->cvt == CVT_BIT_LGL) {
+    convert_bit_lgl(dst, src, valid, off, n);
+  } else if (valid != NULL) {
+    convert_masked(dst, src, valid, off, n, row, warn);
+  } else {
+    cvt_run(dst, src, n, row, warn);
+  }
+}
+
+/* The conversion warnings, raised after the write half completes (never
+   mid-write: under warnings-as-errors a raise must not leave a claimed
+   reservation half-written — the write finishes, the warning raises, and
+   the core rolls the unpublished reservation back). */
+int mizu_py_cvt_warn(const cvt_warn *warn) {
+  if (warn->n_range != 0 &&
+      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                       "pymizu: %llu integer value(s) beyond +/-2^53 convert "
+                       "to NA on the R side",
+                       (unsigned long long) warn->n_range) < 0)
+    return 1;
+  if (warn->n_intmin != 0 &&
+      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                       "pymizu: %llu int32 value(s) of -2147483648 read as "
+                       "NA_integer_ in R",
+                       (unsigned long long) warn->n_intmin) < 0)
+    return 1;
+  return 0;
+}
+
 /* The conversion stage: reserve n_out bytes on the raw tiers, then one
    fused convert straight into the destination. valid != NULL runs the
    masked variant (Arrow nulls); off is the element offset (the bit
@@ -745,26 +769,8 @@ static int stage_convert(const uint8_t *src, size_t nelts,
                                row->wire, hdr, payload, inline_max);
   if (dst == NULL) return -1;
   cvt_warn warn = { 0, 0 };
-  if (row->cvt == CVT_BIT_LGL) {
-    convert_bit_lgl(dst, src, valid, off, nelts);
-  } else if (valid != NULL) {
-    convert_masked(dst, src, valid, off, nelts, row, &warn);
-  } else {
-    cvt_run(dst, src, nelts, row, &warn);
-  }
-  if (warn.n_range != 0 &&
-      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
-                       "pymizu: %llu integer value(s) beyond +/-2^53 convert "
-                       "to NA on the R side",
-                       (unsigned long long) warn.n_range) < 0)
-    return 1;
-  if (warn.n_intmin != 0 &&
-      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
-                       "pymizu: %llu int32 value(s) of -2147483648 read as "
-                       "NA_integer_ in R",
-                       (unsigned long long) warn.n_intmin) < 0)
-    return 1;
-  return 0;
+  mizu_py_cvt_convert(dst, src, valid, off, nelts, row, &warn);
+  return mizu_py_cvt_warn(&warn);
 }
 
 /* The buffer-protocol front-end: key the table by the (char, itemsize)
@@ -804,19 +810,10 @@ static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
                     "pymizu: nested Arrow types cannot cross");
     return 1;
   }
-  if (schema->dictionary != NULL) {
-    PyErr_SetString(PyExc_TypeError,
-                    "pymizu: dictionary-encoded Arrow arrays cannot cross "
-                    "(the indices would import as values); decode first");
-    return 1;
-  }
+  if (schema->dictionary != NULL) return -1;   /* the stream front-end
+                                                  writes the factor shape */
   const cvt_row *row = cvt_for_arrow(schema->format);
-  if (row == NULL) {
-    PyErr_Format(PyExc_TypeError,
-                 "pymizu: unsupported Arrow format '%s' (fixed-width numeric "
-                 "and bool arrays cross)", schema->format);
-    return 1;
-  }
+  if (row == NULL) return -1;   /* strings, temporals: the front-end's */
   /* a zero-length array short-circuits without touching the buffers:
      they may all be NULL, and memcpy(dst, NULL, 0) is UB */
   if (array->length == 0)
@@ -844,18 +841,8 @@ static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
 
 static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                        uint32_t inline_max, mizu_handle *h) {
-  if (!PyObject_HasAttrString(obj, "__arrow_c_array__")) {
-    /* a stream-only producer (ChunkedArray, Table) would pickle into a
-       downstream "Python payload" decline — name the remedy instead */
-    if (PyObject_HasAttrString(obj, "__arrow_c_stream__")) {
-      PyErr_SetString(PyExc_TypeError,
-                      "pymizu: chunked Arrow objects (ChunkedArray, Table) "
-                      "cannot cross; combine_chunks() into a single array "
-                      "first");
-      return 1;
-    }
-    return -1;
-  }
+  if (!PyObject_HasAttrString(obj, "__arrow_c_array__"))
+    return -1;   /* a stream-only producer: the front-end's case */
   PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_array__");
   if (fn == NULL) return 1;
   PyObject *pair = PyObject_CallNoArgs(fn);
@@ -1422,7 +1409,14 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
 }
 
 static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
-                      uint32_t inline_max, mizu_handle *h) {
+                      uint32_t inline_max, mizu_handle *h,
+                      uint32_t peer_lang) {
+  /* the reader-language policy (DESIGN.md's): same-language handles keep
+     the private path ('P' codec, pickle, identity raw tiers); a foreign
+     peer gets the interchange order — the conversion pass and the Arrow
+     front-ends live on the foreign path only, and a decline there
+     raises (DeclinedError) instead of falling to pickle */
+  const int foreign = peer_lang != 0 && peer_lang != MIZU_LANG_PYTHON;
   if (obj == Py_None) {
     hdr->kind = MIZU_KIND_NIL;
     hdr->len = 0;
@@ -1463,9 +1457,9 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
           int type = wire_type_of(&v);
           if (type != 0)
             rc = stage_raw(&v, type, hdr, payload, inline_max, h);
-          else if (mizu_handle_kind(h) != MIZU_HTYPE_POOL)
-            /* the conversion pass is channel-scoped: pools are
-               Python-both-ends and keep the lossless pickle path */
+          else if (foreign && mizu_handle_kind(h) != MIZU_HTYPE_POOL)
+            /* the conversion pass is foreign-only: same-language
+               channels keep identity dtypes and pickle the rest */
             rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);
         }
       }
@@ -1474,6 +1468,19 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     } else {
       PyErr_Clear();
     }
+  }
+  if (foreign) {
+    /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
+       stream front-end (__arrow_c_stream__), then the 'I' writer —
+       whose decline is the send-time DeclinedError */
+    if (mizu_handle_kind(h) != MIZU_HTYPE_POOL) {
+      int arc = stage_arrow(obj, hdr, payload, inline_max, h);
+      if (arc >= 0) return arc;
+      int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
+                                             inline_max, h);
+      if (src >= 0) return src;
+    }
+    return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
   }
   if (Py_TYPE(obj) == &MizuTaskFrameType) {
     /* before the codec: the codec's exact-type tuple check would reject
@@ -1498,12 +1505,6 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   }
   int crc = stage_codec(obj, hdr, payload, inline_max, h);
   if (crc >= 0) return crc;
-  if (mizu_handle_kind(h) != MIZU_HTYPE_POOL) {
-    /* after the codec: its exact-type checks reject Arrow producers
-       cheaply, so the scalar hot path never pays the attribute probe */
-    int arc = stage_arrow(obj, hdr, payload, inline_max, h);
-    if (arc >= 0) return arc;
-  }
   PyObject *stream =
     PyObject_CallFunction(mizu_dumps, "Oi", obj, 4);   /* protocol pinned */
   if (stream == NULL) return 1;
@@ -1514,14 +1515,40 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   return rc;
 }
 
+/* The per-handle name -> owner cache's home (its functions live with the
+   view types below): defined ahead of the stage hook, which reads the
+   peer word through MizuHandleCtx. */
+typedef struct MizuShmOwner MizuShmOwner;
+
+typedef struct {
+  MizuShmOwner *owners[MIZU_OPEN_CACHE_MAX];
+  char names[MIZU_OPEN_CACHE_MAX][MIZU_NAME_MAX];
+  uint64_t stamp[MIZU_OPEN_CACHE_MAX];
+  uint64_t tick;
+} MizuViewCache;
+
+/* The binding.ctx container: the view cache first (every existing
+   MizuViewCache * use keeps working — same address), then the peer's
+   identity word (the language registry byte and the capability mask,
+   Phase 0's identity exchange). peer_lang 0 is "not yet read" and
+   behaves as same-language; the host reads it when ready_wait returns,
+   the peer at attach. Pools are homogeneous: their word stays 0. */
+typedef struct {
+  MizuViewCache vc;
+  uint32_t peer_lang;
+  uint32_t peer_caps;
+} MizuHandleCtx;
+
 /* The binding's stage_fn, registered on every channel handle. The veneer
    released the GIL around the verb; reacquire. ctx (the view cache) is
    read-side only — staging pins nothing. */
 static int py_stage(void *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                     uint32_t inline_max, mizu_handle *h, void *ctx) {
-  (void) ctx;
   PyGILState_STATE gil = PyGILState_Ensure();
-  int rc = stage_impl((PyObject *) obj, hdr, payload, inline_max, h);
+  uint32_t peer_lang = ctx != NULL ?
+    ((const MizuHandleCtx *) ctx)->peer_lang : 0;
+  int rc = stage_impl((PyObject *) obj, hdr, payload, inline_max, h,
+                      peer_lang);
   PyGILState_Release(gil);
   return rc;
 }
@@ -1594,7 +1621,7 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type) {
    view is gone (Python refcounting gives the ordering, as with buffer
    exports). pid is the fork guard: a child-side dealloc must not close a
    mapping whose loans it never added. */
-typedef struct {
+typedef struct MizuShmOwner {
   PyObject_HEAD
   mizu_shm *shm;
   long pid;
@@ -1632,12 +1659,7 @@ static MizuShmOwner *owner_new(mizu_shm *shm) {
    create/attach) and mirrored on the Python handle object for teardown.
    No locking: verbs are single-threaded per handle role and the GIL
    serializes the read callbacks. */
-typedef struct {
-  MizuShmOwner *owners[MIZU_OPEN_CACHE_MAX];
-  char names[MIZU_OPEN_CACHE_MAX][MIZU_NAME_MAX];
-  uint64_t stamp[MIZU_OPEN_CACHE_MAX];
-  uint64_t tick;
-} MizuViewCache;
+
 
 static MizuShmOwner *view_cache_lookup(MizuViewCache *vc, const char *name) {
   for (int i = 0; i < MIZU_OPEN_CACHE_MAX; i++)
@@ -2541,8 +2563,11 @@ corrupt:
 
 /* A serialized-stream frame (INLINE / ARENA / SHM_RAW bytes). Our streams
    are pickle protocol 4 (first byte 0x80) or the compact codec
-   (MIZU_PYMIZU_CODEC_MAGIC). MIZU_CODEC_MAGIC ('R') is mizu's compact codec,
-   'B' / 'X' / 'A' the R serialize formats — no codec interop in v1. */
+   (MIZU_PYMIZU_CODEC_MAGIC); the interchange stream (MIZU_INTEROP_MAGIC,
+   'I') is every binding's cross-language form. MIZU_CODEC_MAGIC ('R') is
+   mizu's compact codec, 'B' / 'X' / 'A' the R serialize formats —
+   language-private streams a foreign peer should never have sent (the
+   identity exchange tells it so; this is a defense, not a user path). */
 static PyObject *read_stream(const uint8_t *src, size_t n,
                              mizu_read_ctx *ctx) {
   if (n == 0) {
@@ -2555,12 +2580,15 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
                                  (Py_ssize_t) n);
   case MIZU_PYMIZU_CODEC_MAGIC:
     return codec_read(src, n, ctx);
+  case MIZU_INTEROP_MAGIC:
+    return pymizu_ix_read(src, n);
   case MIZU_CODEC_MAGIC: case 'B': case 'X': case 'A':
     /* foreign stream: consume the slot (a plain failure would wedge the
        ring behind it); the verb surfaces MIZU_ERR with this message */
     ctx->flags |= MIZU_READ_CONSUME;
-    PyErr_SetString(MizuError, "pymizu: R payload (no codec interop) - "
-                    "send Python values from a pymizu peer");
+    PyErr_SetString(MizuError, "pymizu: R payload (a language-private "
+                    "stream) - send values from the portable interchange "
+                    "subset");
     return NULL;
   default:
     ctx->flags |= MIZU_READ_CONSUME;
@@ -3378,7 +3406,27 @@ static PyObject *Channel_ready_wait(MizuChannel *self, PyObject *tmo) {
   st = mizu_channel_ready_wait(c, ms);
   Py_END_ALLOW_THREADS
   if (st == MIZU_ERR) return raise_handle(self);
+  if (st == MIZU_OK) {
+    /* the peer's identity word is on the region once it attached: the
+       reader-language policy's input, cached on the handle */
+    uint64_t ident = mizu_channel_peer_ident(c);
+    MizuHandleCtx *hc = (MizuHandleCtx *) self->vcache;
+    hc->peer_lang = (uint32_t) (ident & 0xff);
+    hc->peer_caps = (uint32_t) (ident >> 32);
+  }
   return PyBool_FromLong(st == MIZU_OK);
+}
+
+PyDoc_STRVAR(peer_ident_doc,
+"_peer_ident() -> (int, int)\n\n\
+The peer's identity word as a (language, capabilities) pair (0, 0 until\n\
+the word is read: the host fills it at ready_wait, the peer at attach).");
+
+static PyObject *Channel_peer_ident(MizuChannel *self,
+                                    PyObject *Py_UNUSED(args)) {
+  const MizuHandleCtx *hc = (const MizuHandleCtx *) self->vcache;
+  return Py_BuildValue("(II)", (unsigned int) hc->peer_lang,
+                       (unsigned int) hc->peer_caps);
 }
 
 PyDoc_STRVAR(info_doc,
@@ -3479,6 +3527,8 @@ static PyMethodDef Channel_methods[] = {
   {"alive", (PyCFunction) Channel_alive, METH_NOARGS, alive_doc},
   {"ready_set", (PyCFunction) Channel_ready_set, METH_NOARGS, ready_set_doc},
   {"ready_wait", (PyCFunction) Channel_ready_wait, METH_O, ready_wait_doc},
+  {"_peer_ident", (PyCFunction) Channel_peer_ident, METH_NOARGS,
+   peer_ident_doc},
   {"info", (PyCFunction) Channel_info, METH_NOARGS, info_doc},
   {NULL, NULL, 0, NULL}
 };
@@ -4814,7 +4864,7 @@ static PyObject *pymizu_channel_new(PyObject *Py_UNUSED(module),
   opts.flags = spin ? MIZU_FLAG_SPIN : 0;
   opts.drop = drop.len > 0 ? (const uint8_t *) drop.buf : NULL;
   opts.drop_size = (uint64_t) drop.len;
-  MizuViewCache *vc = (MizuViewCache *) PyMem_Calloc(1, sizeof(MizuViewCache));
+  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
   if (vc == NULL) {
     PyBuffer_Release(&drop);
     return PyErr_NoMemory();
@@ -4842,15 +4892,20 @@ static PyObject *pymizu_channel_new(PyObject *Py_UNUSED(module),
 }
 
 PyDoc_STRVAR(channel_attach_doc,
-"_channel_attach(token) -> (_Channel, bytes)\n\n\
+"_channel_attach(token, *, _ident=None) -> (_Channel, bytes)\n\n\
 Peer side: attach to the channel named by the join token and return the\n\
 handle with the drop (the peer bootstrap bytes). The caller consumes the\n\
-drop, then signals ready_set.");
+drop, then signals ready_set. _ident is the test-only identity-word\n\
+override: a (lang, caps) pair standing in for this build's word.");
 
 static PyObject *pymizu_channel_attach(PyObject *Py_UNUSED(module),
-                                      PyObject *arg) {
-  const char *token = PyUnicode_AsUTF8(arg);
-  if (token == NULL) return NULL;
+                                      PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"token", "_ident", NULL};
+  const char *token;
+  PyObject *ident = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "s|O:_channel_attach", kwlist,
+                                   &token, &ident))
+    return NULL;
   const char *us = strchr(token, '_');
   int ok = us != NULL && us != token && us[1] != '\0' &&
            strchr(us + 1, '_') == NULL;
@@ -4860,10 +4915,21 @@ static PyObject *pymizu_channel_attach(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pymizu: malformed join token");
     return NULL;
   }
-  MizuViewCache *vc = (MizuViewCache *) PyMem_Calloc(1, sizeof(MizuViewCache));
+  long lang = -1, caps = 0;
+  if (ident != Py_None) {
+    if (!PyTuple_Check(ident) || PyTuple_GET_SIZE(ident) != 2)
+      goto bad_ident;
+    lang = PyLong_AsLong(PyTuple_GET_ITEM(ident, 0));
+    caps = PyLong_AsLong(PyTuple_GET_ITEM(ident, 1));
+    if ((lang == -1 || caps == -1) && PyErr_Occurred()) return NULL;
+    if (lang < 0 || lang > 255 || caps < 0) goto bad_ident;
+  }
+  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   chan_binding(&b);
+  if (lang >= 0)
+    b.ident = MIZU_IDENT((uint32_t) lang, (uint32_t) caps);
   b.ctx = vc;
   mizu_channel *c;
   mizu_status st;
@@ -4881,6 +4947,19 @@ static PyObject *pymizu_channel_attach(PyObject *Py_UNUSED(module),
     view_cache_free(vc);
     return NULL;
   }
+  {
+    /* the host's word is on the region at attach */
+    uint64_t word = mizu_channel_peer_ident(c);
+    MizuHandleCtx *hc = (MizuHandleCtx *) self->vcache;
+    hc->peer_lang = (uint32_t) (word & 0xff);
+    hc->peer_caps = (uint32_t) (word >> 32);
+  }
+  goto attached;
+bad_ident:
+  PyErr_SetString(PyExc_ValueError,
+                  "pymizu: _ident must be a (lang, caps) pair of ints");
+  return NULL;
+attached:;
   /* borrowed drop bytes, valid until destroy — copy out for the caller */
   const uint8_t *bytes;
   uint64_t n;
@@ -4968,7 +5047,7 @@ static PyObject *pymizu_pool_new(PyObject *Py_UNUSED(module),
   opts.per_worker_cap = (uint32_t) deq;
   opts.result_slots = (uint32_t) rslots;
   opts.slot_size = (uint32_t) slot;
-  MizuViewCache *vc = (MizuViewCache *) PyMem_Calloc(1, sizeof(MizuViewCache));
+  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   pool_binding(&b, 0);
@@ -5004,7 +5083,7 @@ static PyObject *pymizu_pool_attach(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pymizu: malformed join token");
     return NULL;
   }
-  MizuViewCache *vc = (MizuViewCache *) PyMem_Calloc(1, sizeof(MizuViewCache));
+  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   pool_binding(&b, 0);
@@ -5034,19 +5113,40 @@ Worker side: attach to the pool named by the join token as worker `slot`\n\
 The entry point is python -m pymizu.worker.");
 
 static PyObject *pymizu_pool_worker_join(PyObject *Py_UNUSED(module),
-                                        PyObject *args) {
+                                        PyObject *args, PyObject *kw) {
+  static char *kwlist[] = {"token", "slot", "_ident", NULL};
   const char *token;
   unsigned int slot;
-  if (!PyArg_ParseTuple(args, "sI:_pool_worker_join", &token, &slot))
+  PyObject *ident = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "sI|O:_pool_worker_join",
+                                   kwlist, &token, &slot, &ident))
     return NULL;
   if (!token_valid(token)) {
     PyErr_SetString(PyExc_ValueError, "pymizu: malformed join token");
     return NULL;
   }
-  MizuViewCache *vc = (MizuViewCache *) PyMem_Calloc(1, sizeof(MizuViewCache));
+  long lang = -1, caps = 0;
+  if (ident != Py_None) {
+    if (!PyTuple_Check(ident) || PyTuple_GET_SIZE(ident) != 2) {
+      PyErr_SetString(PyExc_ValueError,
+                      "pymizu: _ident must be a (lang, caps) pair of ints");
+      return NULL;
+    }
+    lang = PyLong_AsLong(PyTuple_GET_ITEM(ident, 0));
+    caps = PyLong_AsLong(PyTuple_GET_ITEM(ident, 1));
+    if ((lang == -1 || caps == -1) && PyErr_Occurred()) return NULL;
+    if (lang < 0 || lang > 255 || caps < 0) {
+      PyErr_SetString(PyExc_ValueError,
+                      "pymizu: _ident must be a (lang, caps) pair of ints");
+      return NULL;
+    }
+  }
+  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   pool_binding(&b, 1);
+  if (lang >= 0)
+    b.ident = MIZU_IDENT((uint32_t) lang, (uint32_t) caps);
   b.ctx = vc;
   mizu_pool *p;
   mizu_status st;
@@ -5107,6 +5207,17 @@ static PyObject *pymizu_read_stream(PyObject *Py_UNUSED(module),
       PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   }
   return r;
+}
+
+PyDoc_STRVAR(write_stream_doc,
+"_write_stream(obj) -> bytes\n\n\
+Encode a value as an 'I' interchange stream (the write side's walk,\n\
+exposed for the test suite: the golden corpus drives it). Raises\n\
+DeclinedError for a value outside the portable subset.");
+
+static PyObject *pymizu_write_stream(PyObject *Py_UNUSED(module),
+                                     PyObject *arg) {
+  return pymizu_ix_write_stream(arg);
 }
 
 PyDoc_STRVAR(is_sentinel_doc,
@@ -5175,16 +5286,18 @@ static PyObject *pymizu_tune_malloc(PyObject *Py_UNUSED(module),
 static PyMethodDef pymizu_methods[] = {
   {"_channel_new", (PyCFunction)(void (*)(void)) pymizu_channel_new,
    METH_VARARGS | METH_KEYWORDS, channel_new_doc},
-  {"_channel_attach", (PyCFunction) pymizu_channel_attach, METH_O,
-   channel_attach_doc},
+  {"_channel_attach", (PyCFunction)(void (*)(void)) pymizu_channel_attach,
+   METH_VARARGS | METH_KEYWORDS, channel_attach_doc},
   {"_pool_new", (PyCFunction)(void (*)(void)) pymizu_pool_new,
    METH_VARARGS | METH_KEYWORDS, pool_new_doc},
   {"_pool_attach", (PyCFunction) pymizu_pool_attach, METH_O, pool_attach_doc},
-  {"_pool_worker_join", (PyCFunction) pymizu_pool_worker_join, METH_VARARGS,
+  {"_pool_worker_join", (PyCFunction)(void (*)(void))
+   pymizu_pool_worker_join, METH_VARARGS | METH_KEYWORDS,
    pool_worker_join_doc},
   {"_task_frame", (PyCFunction)(void (*)(void)) pymizu_task_frame,
    METH_FASTCALL, task_frame_doc},
   {"_read_stream", pymizu_read_stream, METH_O, read_stream_doc},
+  {"_write_stream", pymizu_write_stream, METH_O, write_stream_doc},
   {"is_sentinel", pymizu_is_sentinel, METH_O, is_sentinel_doc},
   {"abi_version", (PyCFunction) pymizu_abi_version, METH_NOARGS, abi_version_doc},
   {"prune", (PyCFunction) pymizu_prune, METH_NOARGS, prune_doc},
@@ -5292,7 +5405,12 @@ PyInit__pymizu(void)
       add_exception(m, &MizuTaskError, "pymizu.TaskError", MizuError,
                     "The task callable raised. Carries 'remote_type' and "
                     "'remote_traceback' attributes describing the "
-                    "worker-side exception.") < 0) {
+                    "worker-side exception.") < 0 ||
+      add_exception(m, &MizuDeclinedError, "pymizu.DeclinedError",
+                    PyExc_TypeError,
+                    "A send on a foreign-language channel of a value "
+                    "outside the portable interchange subset. Carries "
+                    "'path' and 'reason' attributes.") < 0) {
     Py_DECREF(m);
     return NULL;
   }
@@ -5302,7 +5420,8 @@ PyInit__pymizu(void)
       PyModule_AddObject(m, "_Task", (PyObject *) &MizuTaskType) < 0 ||
       PyModule_AddStringConstant(m, "__core_version__",
                                  MIZU_VERSION_STRING) < 0 ||
-      mizu_py_map_register(m, MizuError, MizuShmError) < 0) {
+      mizu_py_map_register(m, MizuError, MizuShmError) < 0 ||
+      mizu_py_interop_register(m, MizuError, MizuDeclinedError) < 0) {
     Py_DECREF(m);
     return NULL;
   }

@@ -19,6 +19,8 @@ from pymizu._pymizu import (
     PEER_GONE,
     TIMEOUT,
     CancelledError,
+    DeclinedError,
+    Frame,
     MizuError,
     ShmError,
     SlotsExhaustedError,

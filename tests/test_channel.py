@@ -691,55 +691,46 @@ def test_r_interop_r_produces():
 
 
 @r_only
-def test_r_interop_attrs_rejected():
-    # attributes (names/dim/class) cannot cross to a Python buffer
+def test_r_interop_named_vector_declined_at_send():
+    # a named atomic vector has no portable home: the interchange writer
+    # raises at R send time (the identity exchange tells R what pymizu
+    # can read), and the R side reports the classed decline
     src = (
         "{ y <- cumsum(rep(1.0, 1000000));"
-        " names(y) <- paste0('n', seq_along(y)); mizu_send(ch, y)\n"
+        " names(y) <- paste0('n', seq_along(y));"
+        " e <- tryCatch({ mizu_send(ch, y); 'no error' },"
+        "   error = function(e) conditionMessage(e));"
+        " mizu_send(ch, e)\n"
         + _R_ECHO
         + " }"
     )
     ch = _r_channel(src)
     try:
-        with pytest.raises(pymizu.MizuError, match="attributes"):
-            ch.recv(timeout=10)
+        got = ch.recv(timeout=10)
+        assert "not portable" in got and "named atomic vector" in got
     finally:
         ch.close()
 
 
 @r_only
-def test_r_interop_codec_payload_rejected():
-    # an R list stages as an INLINE mizu-codec stream ('R' magic): declined
-    # with the informative foreign-payload error, not "unrecognized"
+def test_r_interop_list_crosses():
+    # an R list is the interchange stream now ('I' magic): it crosses to a
+    # Python list, no longer a declined "R payload"
     ch = _r_channel("{ mizu_send(ch, list(1L, 2.5, 'x'))\n" + _R_ECHO + " }")
     try:
-        with pytest.raises(pymizu.MizuError, match="R payload"):
-            ch.recv(timeout=10)
+        assert ch.recv(timeout=10) == [1, 2.5, "x"]
     finally:
         ch.close()
 
 
 @r_only
-def test_r_interop_declines_are_consumed():
-    # every channel read failure is consumed: the next message arrives
-    # instead of the ring wedging behind the declined slot
+def test_r_interop_string_vector_crosses():
+    # a character vector past the zero-copy floor: pymizu declares no
+    # MIZU_CAP_MIZS, so R sends the interchange strv copy — a list of str
     ch = _r_channel(
-        "{ y <- cumsum(rep(1.0, 1000000));"
-        " names(y) <- paste0('n', seq_along(y)); mizu_send(ch, y)\n"
-        " mizu_send(ch, rep('x', 100000))\n"
-        " mizu_send(ch, rawToChar(as.raw(c(0x61, 0xff))))\n"
-        " mizu_send(ch, 'done')\n" + _R_ECHO + " }"
+        "{ mizu_send(ch, rep('x', 100000))\n" + _R_ECHO + " }"
     )
     try:
-        # a named numeric vector past the zero-copy floor (attributed MIZH)
-        with pytest.raises(pymizu.MizuError, match="attributes"):
-            ch.recv(timeout=10)
-        # a character vector past the floor (MIZS)
-        with pytest.raises(pymizu.MizuError, match="cannot cross to Python"):
-            ch.recv(timeout=10)
-        # a non-UTF-8 native string (STR1)
-        with pytest.raises(pymizu.MizuError, match="not valid UTF-8"):
-            ch.recv(timeout=10)
-        assert ch.recv(timeout=10) == "done"
+        assert ch.recv(timeout=10) == ["x"] * 100000
     finally:
         ch.close()

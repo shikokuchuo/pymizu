@@ -10,7 +10,7 @@ import gc
 import warnings
 
 import pytest
-from tests.helpers import ret_arrow_nulls, ret_int64_array
+from tests.helpers import foreign_pair, ret_arrow_nulls, ret_int64_array
 
 import pymizu
 
@@ -230,25 +230,32 @@ def test_int64_exact_and_sentinel(rcheck):
         r_case(rcheck, "over1", np.array([2**53 + 1], dtype=np.uint64))
 
 
-def test_range_warning_as_error(echo):
+def test_range_warning_as_error():
+    # the uint64 conversion is foreign-only (same-language channels pickle):
     # under warnings-as-errors the warning raises, but only after the write
-    # half completed: nothing half-published, the channel stays consistent
+    # half completed — nothing half-published, the channel stays consistent
+    h, p = foreign_pair()
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
-            echo.send(np.array([2**53 + 1], dtype=np.uint64))
-    assert echo.send(np.array([1.0, 2.0])) is True
-    assert np.array_equal(echo.recv(timeout=5), [1.0, 2.0])
+            h.send(np.array([2**53 + 1], dtype=np.uint64))
+    assert h.send(np.array([1.0, 2.0])) is True
+    assert np.array_equal(p.recv(timeout=5), [1.0, 2.0])
+    p.destroy()
+    h.destroy()
 
 
-def test_prefixed_buffer_formats(echo):
+def test_prefixed_buffer_formats():
     # ctypes exports a '<'-prefixed format ('<i', or '<l' on Windows):
-    # '='/'<' byte-order prefixes convert (every supported platform is
-    # little-endian); '>'/'!' still fall to pickle
+    # '='/'<' byte-order prefixes convert on foreign channels (every
+    # supported platform is little-endian); '>'/'!' still decline
+    h, p = foreign_pair()
     buf = (ctypes.c_int32 * 3)(7, 8, 9)
     assert memoryview(buf).format in ("<i", "<l")
-    assert echo.send(buf) is True
-    assert list(echo.recv(timeout=5)) == [7, 8, 9]
+    assert h.send(buf) is True
+    assert list(p.recv(timeout=5)) == [7, 8, 9]
+    p.destroy()
+    h.destroy()
 
 
 # -- Arrow import -------------------------------------------------------------
@@ -316,48 +323,53 @@ def test_arrow_null_count_unknown(rcheck):
     assert list(b) == [10, 20, 30, 40, 50]
 
 
-def test_arrow_rejections(echo):
+def test_arrow_rejections_foreign():
+    # the send-time declines on a foreign channel
+    h, p = foreign_pair()
     # uint8 with nulls: RAWSXP has no NA
     with pytest.raises(TypeError, match="raw vectors have no NA"):
-        echo.send(pa.array([1, None], type=pa.uint8()))
-    # strings and temporal: unsupported formats
-    with pytest.raises(TypeError, match="unsupported Arrow format"):
-        echo.send(pa.array(["a", "b"]))
-    with pytest.raises(TypeError, match="unsupported Arrow format"):
-        echo.send(pa.array([1, 2], type=pa.timestamp("s")))
+        h.send(pa.array([1, None], type=pa.uint8()))
     # nested
     with pytest.raises(TypeError, match="nested"):
-        echo.send(pa.array([[1, 2], [3]]))
-    # dictionary-encoded: presents the index format ("i") — reject, or the
-    # indices would silently import as values
-    with pytest.raises(TypeError, match="dictionary-encoded"):
-        echo.send(pa.array([1, 2, 1]).dictionary_encode())
-    # stream-only producers: name the remedy
-    with pytest.raises(TypeError, match="combine_chunks"):
-        echo.send(pa.chunked_array([[1, 2], [3]]))
-    with pytest.raises(TypeError, match="combine_chunks"):
-        echo.send(pa.table({"a": [1, 2]}))
+        h.send(pa.array([[1, 2], [3]]))
+    # a time32 column: no portable home
+    with pytest.raises(pymizu.DeclinedError, match="no portable home"):
+        h.send(pa.table({"t": pa.array([1], type=pa.time32("s"))}))
+    # decimal: no portable home
+    with pytest.raises(pymizu.DeclinedError, match="no portable home"):
+        h.send(pa.table({"d": pa.array([1], type=pa.decimal128(5, 2))}))
+    # strings, timestamps and chunked producers cross now (the stream
+    # front-end): a string array as 0x0b, a timestamp as POSIXct
+    assert h.send(pa.array(["a", "b"])) is True
+    assert p.recv(timeout=5) == ["a", "b"]
+    assert h.send(pa.chunked_array([[1, 2], [3]])) is True
+    assert list(p.recv(timeout=5)) == [1, 2, 3]
+    p.destroy()
+    h.destroy()
 
 
-def test_arrow_invalid_capsules(echo):
+def test_arrow_invalid_capsules():
     # an already-consumed struct has release == NULL (the spec's move
     # semantics): the first send consumes it, the replay rejects
-    p = _PatchedArray(pa.array([1, 2, 3], type=pa.int32()))
-    assert echo.send(p) is True
-    assert list(echo.recv(timeout=5)) == [1, 2, 3]
+    h, p = foreign_pair()
+    patched = _PatchedArray(pa.array([1, 2, 3], type=pa.int32()))
+    assert h.send(patched) is True
+    assert list(p.recv(timeout=5)) == [1, 2, 3]
     with pytest.raises(TypeError, match="invalid Arrow"):
-        echo.send(p)
+        h.send(patched)
     # null_count < -1 rejects
     with pytest.raises(TypeError, match="invalid Arrow"):
-        echo.send(_PatchedArray(pa.array([1, 2, 3], type=pa.int32()),
-                                null_count=-2))
+        h.send(_PatchedArray(pa.array([1, 2, 3], type=pa.int32()),
+                             null_count=-2))
     # an exception from the dunder itself propagates
     class Boom:
         def __arrow_c_array__(self):
             raise ValueError("boom")
 
     with pytest.raises(ValueError, match="boom"):
-        echo.send(Boom())
+        h.send(Boom())
+    p.destroy()
+    h.destroy()
 
 
 # -- the channel gate ------------------------------------------------------
@@ -375,22 +387,26 @@ def test_pool_results_keep_pickle(pool):
     assert out.to_pylist() == [1, None, 3]
 
 
-def test_py_py_channel_normalizes(echo):
-    # a channel peer's language is unknowable at stage time: non-wire
-    # dtypes convert on Py->Py channels too (int64 is a wire type and
-    # crosses exactly; uint64 still converts). The escape hatch for an
-    # exact Py->Py send of a converting dtype: nest the array in a
-    # container (keeps the pickle path)
-    assert echo.send(np.array([1, 2, 3], dtype=np.int64)) is True
-    assert echo.recv(timeout=5).dtype == np.int64
-    assert echo.send(np.array([1, 2, 3], dtype=np.uint64)) is True
-    assert echo.recv(timeout=5).dtype == np.float64
-    assert echo.send((np.array([1, 2, 3], dtype=np.uint64),)) is True
-    assert echo.recv(timeout=5)[0].dtype == np.uint64
-    # Arrow nulls convert to the NA sentinel, indistinguishable from a
-    # genuine INT_MIN on the Python side
-    assert echo.send(pa.array([1, None, 3], type=pa.int32())) is True
-    assert list(echo.recv(timeout=5)) == [1, -2147483648, 3]
+def test_py_py_channel_exactness(echo):
+    # the reader-language identity exchange: every Python<->Python channel
+    # knows its peer, so non-wire dtypes keep the lossless pickle path and
+    # round-trip unchanged (the conversion pass is foreign-only)
+    for a in [
+        np.array([True, False]),
+        np.array([1, 2, 3], dtype=np.int8),
+        np.array([1, 2, 3], dtype=np.uint64),
+        np.array([1, 2, 3], dtype=np.float32),
+        np.array([1, 2, 3], dtype=np.int64),
+    ]:
+        assert echo.send(a) is True
+        b = echo.recv(timeout=5)
+        assert b.dtype == a.dtype and np.array_equal(b, a)
+    # Arrow producers pickle unchanged too
+    t = pa.table({"a": [1, None, 3]})
+    assert echo.send(t) is True
+    assert echo.recv(timeout=5).equals(t)
+    assert echo.send(pa.chunked_array([[1, 2], [3]])) is True
+    assert echo.recv(timeout=5).to_pylist() == [1, 2, 3]
 
 
 # -- round-trip fidelity ---------------------------------------------------
