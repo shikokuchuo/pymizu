@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.10.18">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>pool – pymizu 水</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../">
+<script src="../site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="../site_libs/quarto-html/popper.min.js"></script>
+<script src="../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../site_libs/quarto-html/quarto-syntax-highlighting-64a204ab8560d761af7679ceaba22944.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../site_libs/bootstrap/bootstrap-d779191fb58665fba6013d76b5d4c7b3.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="../index.html">
+    <span class="navbar-title">pymizu 水</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://github.com/shikokuchuo/pymizu"> <i class="bi bi-github" role="img" aria-label="pymizu on GitHub">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">pymizu 水</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Guide</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../channels.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channels</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../pools.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Task pools</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Parallel map</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../interop.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">R interop</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../benchmarks.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Benchmarks</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">API reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#pymizu.Pool" id="toc-pymizu.Pool" class="nav-link active" data-scroll-target="#pymizu.Pool">Pool</a>
+  <ul class="collapse">
+  <li><a href="#attributes" id="toc-attributes" class="nav-link" data-scroll-target="#attributes">Attributes</a></li>
+  <li><a href="#methods" id="toc-methods" class="nav-link" data-scroll-target="#methods">Methods</a>
+  <ul class="collapse">
+  <li><a href="#pymizu.Pool.attach" id="toc-pymizu.Pool.attach" class="nav-link" data-scroll-target="#pymizu.Pool.attach">attach</a></li>
+  <li><a href="#pymizu.Pool.collect_all" id="toc-pymizu.Pool.collect_all" class="nav-link" data-scroll-target="#pymizu.Pool.collect_all">collect_all</a></li>
+  <li><a href="#pymizu.Pool.collect_any" id="toc-pymizu.Pool.collect_any" class="nav-link" data-scroll-target="#pymizu.Pool.collect_any">collect_any</a></li>
+  <li><a href="#pymizu.Pool.create" id="toc-pymizu.Pool.create" class="nav-link" data-scroll-target="#pymizu.Pool.create">create</a></li>
+  <li><a href="#pymizu.Pool.destroy" id="toc-pymizu.Pool.destroy" class="nav-link" data-scroll-target="#pymizu.Pool.destroy">destroy</a></li>
+  <li><a href="#pymizu.Pool.dump" id="toc-pymizu.Pool.dump" class="nav-link" data-scroll-target="#pymizu.Pool.dump">dump</a></li>
+  <li><a href="#pymizu.Pool.map" id="toc-pymizu.Pool.map" class="nav-link" data-scroll-target="#pymizu.Pool.map">map</a></li>
+  <li><a href="#pymizu.Pool.map_prepare" id="toc-pymizu.Pool.map_prepare" class="nav-link" data-scroll-target="#pymizu.Pool.map_prepare">map_prepare</a></li>
+  <li><a href="#pymizu.Pool.map_run" id="toc-pymizu.Pool.map_run" class="nav-link" data-scroll-target="#pymizu.Pool.map_run">map_run</a></li>
+  <li><a href="#pymizu.Pool.retire" id="toc-pymizu.Pool.retire" class="nav-link" data-scroll-target="#pymizu.Pool.retire">retire</a></li>
+  <li><a href="#pymizu.Pool.spawn_workers" id="toc-pymizu.Pool.spawn_workers" class="nav-link" data-scroll-target="#pymizu.Pool.spawn_workers">spawn_workers</a></li>
+  <li><a href="#pymizu.Pool.stats" id="toc-pymizu.Pool.stats" class="nav-link" data-scroll-target="#pymizu.Pool.stats">stats</a></li>
+  <li><a href="#pymizu.Pool.status" id="toc-pymizu.Pool.status" class="nav-link" data-scroll-target="#pymizu.Pool.status">status</a></li>
+  <li><a href="#pymizu.Pool.stop" id="toc-pymizu.Pool.stop" class="nav-link" data-scroll-target="#pymizu.Pool.stop">stop</a></li>
+  <li><a href="#pymizu.Pool.submit" id="toc-pymizu.Pool.submit" class="nav-link" data-scroll-target="#pymizu.Pool.submit">submit</a></li>
+  <li><a href="#pymizu.Pool.submit_batch" id="toc-pymizu.Pool.submit_batch" class="nav-link" data-scroll-target="#pymizu.Pool.submit_batch">submit_batch</a></li>
+  <li><a href="#pymizu.Pool.trace" id="toc-pymizu.Pool.trace" class="nav-link" data-scroll-target="#pymizu.Pool.trace">trace</a></li>
+  </ul></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content"><header id="title-block-header" class="quarto-title-block"></header>
+
+
+
+
+<section id="pymizu.Pool" class="level1">
+<h1>Pool</h1>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>Pool()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A shared-memory work-stealing task pool handle (process-private).</p>
+<p>Create the controller side with :meth:<code>create</code> (which spawns the workers, <code>python -m pymizu.worker</code>); other processes join as submitters with :meth:<code>attach</code>. The pool’s lifetime is bound to the creating process: dropping the handle shuts the pool down as :meth:<code>stop</code> does, but without the wait. Handles do not survive <code>fork()</code>.</p>
+<p>Task callables ride pickle: under stock pickle a submitted callable must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently.</p>
+<section id="attributes" class="level2">
+<h2 class="anchored" data-anchor-id="attributes">Attributes</h2>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Name</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="#pymizu.Pool.token">token</a></td>
+<td>The join token for worker/submitter attach.</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="methods" class="level2">
+<h2 class="anchored" data-anchor-id="methods">Methods</h2>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Name</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="#pymizu.Pool.attach">attach</a></td>
+<td>Attach to a live pool as a submitter, by its join token.</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.collect_all">collect_all</a></td>
+<td>Wait until every task is terminal; return all values in input</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.collect_any">collect_any</a></td>
+<td>Wait on several tasks; return <code>(index, value)</code> of the first</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.create">create</a></td>
+<td>Create a pool and spawn its worker processes.</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.destroy">destroy</a></td>
+<td>Tear down the pool handle immediately, without the shutdown</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.dump">dump</a></td>
+<td>A read-only debugging snapshot of the whole pool region (dict).</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.map">map</a></td>
+<td>Map <code>fn</code> over the elements of <code>x</code> on the pool; return the</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.map_prepare">map_prepare</a></td>
+<td>Stage a map once for repeated runs; return a map handle.</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.map_run">map_run</a></td>
+<td>Run a map handle from <code>map_prepare</code> once; return its results</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.retire">retire</a></td>
+<td>Ask the worker in <code>slot</code> to exit cleanly (non-blocking).</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.spawn_workers">spawn_workers</a></td>
+<td>Spawn <code>n</code> additional workers into free registry slots and wait</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.stats">stats</a></td>
+<td>Cumulative per-worker and per-submitter counters since each</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.status">status</a></td>
+<td>A read-only wire-state snapshot of the pool (dict).</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.stop">stop</a></td>
+<td>Orderly shutdown (controller only): broadcast shutdown, cancel</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.submit">submit</a></td>
+<td>Submit <code>fn(*args, **kwargs)</code> as a task; return a Task handle.</td>
+</tr>
+<tr class="even">
+<td><a href="#pymizu.Pool.submit_batch">submit_batch</a></td>
+<td>Submit one task per zero-arg callable in <code>fns</code> in one crossing.</td>
+</tr>
+<tr class="odd">
+<td><a href="#pymizu.Pool.trace">trace</a></td>
+<td>Register a hook called as <code>fn(event, id)</code> at each task</td>
+</tr>
+</tbody>
+</table>
+<section id="pymizu.Pool.attach" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.attach">attach</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>Pool.attach(token)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Attach to a live pool as a submitter, by its join token.</p>
+<p>The token travels out of band: it is <code>pool.token</code> on the creator.</p>
+</section>
+<section id="pymizu.Pool.collect_all" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.collect_all">collect_all</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>Pool.collect_all(tasks, timeout<span class="op">=</span><span class="va">None</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Wait until every task is terminal; return all values in input order. On the first non-OK outcome by position, raise with an <code>index</code> attribute (0-based) — handles up to it inclusive are consumed, the rest stay collectible. The TIMEOUT sentinel consumes nothing.</p>
+</section>
+<section id="pymizu.Pool.collect_any" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.collect_any">collect_any</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>Pool.collect_any(tasks, timeout<span class="op">=</span><span class="va">None</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Wait on several tasks; return <code>(index, value)</code> of the first terminal one, or the TIMEOUT sentinel. A non-OK outcome raises with an <code>index</code> attribute (0-based).</p>
+</section>
+<section id="pymizu.Pool.create" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.create">create</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>Pool.create(</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    workers<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    max_workers<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    max_submitters<span class="op">=</span><span class="dv">8</span>,</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    injection_cap<span class="op">=</span><span class="dv">1024</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    per_worker_cap<span class="op">=</span><span class="dv">1024</span>,</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    result_slots<span class="op">=</span><span class="dv">4096</span>,</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    slot_size<span class="op">=</span><span class="dv">512</span>,</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>    launcher<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>    startup_timeout<span class="op">=</span><span class="fl">30.0</span>,</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Create a pool and spawn its worker processes.</p>
+<p><code>workers</code> worker processes join the pool’s registry (capacity <code>max_workers</code>). <code>result_slots</code> bounds each submitter’s outstanding (uncollected) tasks; <code>slot_size</code> is the bytes per queue entry and result slot — a payload past the inline budget travels in a fresh region per payload. <code>launcher</code> is a <code>callable(token, slot)</code> arranging for a Python process to run <code>python -m pymizu.worker &lt;token&gt; &lt;slot&gt;</code>; the default spawns <code>sys.executable</code> directly.</p>
+</section>
+<section id="pymizu.Pool.destroy" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.destroy">destroy</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>Pool.destroy()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Tear down the pool handle immediately, without the shutdown broadcast or the wait. Workers exit once they observe the controller gone.</p>
+</section>
+<section id="pymizu.Pool.dump" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.dump">dump</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>Pool.dump()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A read-only debugging snapshot of the whole pool region (dict).</p>
+</section>
+<section id="pymizu.Pool.map" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.map">map</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>Pool.<span class="bu">map</span>(</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    fn,</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    x,</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    args<span class="op">=</span>(),</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    kwargs<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    chunks<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    seed<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    timeout<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    template<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    collect<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Map <code>fn</code> over the elements of <code>x</code> on the pool; return the results as a list in input order.</p>
+<p>One call stages <code>fn</code>, the constant <code>args</code>/<code>kwargs</code>, and <code>x</code> exactly once (a shared region, or inline in chunk tasks when small), then submits one <em>runner</em> task per live worker; runners self-schedule adaptively sized element batches off a shared cursor. A C-contiguous buffer of a supported dtype (float64/int32/int64/complex128/uint8) travels as bare bytes — workers wrap it once and index per element. <code>chunks</code> overrides the morsel count (the scheduling granularity). <code>seed</code> (an int or bytes) derives deterministic per-element streams of the stdlib <code>random</code> module: element <code>i</code> runs under <code>random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))</code>, identical for any chunking, worker count, or steal order. Pass <code>seed=(seed, offset)</code> to shift every element’s stream by <code>offset</code> positions, for maps split across runs or processes.</p>
+<p><code>fn</code> may be a :class:<code>pymizu.call</code> specification instead of a callable — the way to map over a foreign pool (one spawned with :func:<code>r_pool_launcher</code>). A spec always stages a shared region: the descriptor crosses in the interchange format and each runner task carries a region reference any worker language reads. The element fills the spec’s first positional slot (name kind) or binds as <code>x</code> (source kind), and the spec’s own constant arguments ride with it — so <code>args</code> and <code>kwargs</code> must be empty with a spec. Constants and elements must be portable values; a non-portable one raises :class:<code>DeclinedError</code> at stage time. <code>seed=</code> carries as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (32-bit-ranged on R workers); invariance holds within a worker language, never identical draws across languages.</p>
+<p><code>template</code> is an exemplar buffer (e.g.&nbsp;<code>numpy.empty(m, dtype=...)</code>) declaring that every <code>fn</code> result is <code>m</code> values of that dtype: results are written in place into a shared <code>n x m</code> output area and never serialized. Each result must be a matching buffer — or, for <code>m == 1</code>, a plain Python scalar. With a template, <code>collect="copy"</code> (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape <code>(n, m)</code> — <code>(n,)</code> for <code>m == 1</code>; <code>collect="view"</code> returns it zero-copy, with the map region’s teardown deferred to the view’s.</p>
+<p>A task error re-raises as TaskError carrying the failing element’s 0-based <code>index</code>; failure is fail-fast (peers stop within about one batch). Worker death raises WorkerDiedError carrying the lost element ranges as <code>lost</code> (0-based half-open <code>(lo, hi)</code> pairs, conservative). On <code>timeout</code> expiry the outstanding work is cancelled and the TIMEOUT sentinel is returned, never raised.</p>
+</section>
+<section id="pymizu.Pool.map_prepare" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.map_prepare">map_prepare</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>Pool.map_prepare(</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    fn,</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    x,</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    args<span class="op">=</span>(),</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>    kwargs<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>    chunks<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    seed<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>    template<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>    collect<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Stage a map once for repeated runs; return a map handle.</p>
+<p>Takes the same arguments as <code>map</code> (minus <code>timeout</code>, which is per-run). The descriptor pickle, the region create, and the worker-side attach are paid once here; each <code>map_run</code> re-arms in O(1) and reuses the workers’ cached contexts. A run collected with <code>collect="view"</code> hands its region to the view, so the next run restages into a fresh one. Close the handle (or use it as a context manager) to unlink the region.</p>
+</section>
+<section id="pymizu.Pool.map_run" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.map_run">map_run</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>Pool.map_run(prepared, x<span class="op">=</span><span class="va">None</span>, timeout<span class="op">=</span><span class="va">None</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Run a map handle from <code>map_prepare</code> once; return its results (the same shapes and outcome taxonomy as <code>map</code>).</p>
+<p><code>x</code> replaces the staged data for this and later runs: a raw-buffer replacement of the same dtype and length swaps in place (a memcpy over the region, no restage); anything else restages transparently.</p>
+</section>
+<section id="pymizu.Pool.retire" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.retire">retire</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>Pool.retire(slot)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Ask the worker in <code>slot</code> to exit cleanly (non-blocking).</p>
+</section>
+<section id="pymizu.Pool.spawn_workers" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.spawn_workers">spawn_workers</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>Pool.spawn_workers(n<span class="op">=</span><span class="dv">1</span>, <span class="op">*</span>, launcher<span class="op">=</span><span class="va">None</span>, startup_timeout<span class="op">=</span><span class="fl">30.0</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Spawn <code>n</code> additional workers into free registry slots and wait for them to join. Returns the slot indices spawned into.</p>
+</section>
+<section id="pymizu.Pool.stats" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.stats">stats</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>Pool.stats()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Cumulative per-worker and per-submitter counters since each participant joined (dict with <code>workers</code> and <code>submitters</code> lists).</p>
+</section>
+<section id="pymizu.Pool.status" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.status">status</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>Pool.status()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A read-only wire-state snapshot of the pool (dict).</p>
+</section>
+<section id="pymizu.Pool.stop" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.stop">stop</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>Pool.stop(timeout<span class="op">=</span><span class="fl">5.0</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Orderly shutdown (controller only): broadcast shutdown, cancel pending tasks, wait up to <code>timeout</code> seconds for clean worker exits, and unlink. Idempotent.</p>
+</section>
+<section id="pymizu.Pool.submit" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.submit">submit</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>Pool.submit(fn, <span class="op">/</span>, <span class="op">*</span>args, timeout<span class="op">=</span><span class="va">None</span>, <span class="op">**</span>kwargs)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Submit <code>fn(*args, **kwargs)</code> as a task; return a Task handle.</p>
+<p>Blocks only for injection-ring space, up to <code>timeout</code> seconds (None waits indefinitely): SubmitTimeoutError on expiry, SlotsExhaustedError / StoppedError on the fatal outcomes.</p>
+<p><code>timeout</code> belongs to the submission, not to <code>fn</code>: a callable taking its own <code>timeout=</code> keyword argument cannot receive it through <code>**kwargs</code> here — bind it first with <code>functools.partial(fn, timeout=...)</code>.</p>
+<p>A buffer-protocol argument (e.g.&nbsp;a numpy array) past the zero-copy floor crosses as a read-only view over shared pages, not a writable copy.</p>
+<p>With a :class:<code>pymizu.call</code> spec as <code>fn</code> (no <code>*args</code> / <code>**kwargs</code> — the spec carries them), the task stream crosses in the neutral interchange format: this is how a pool of another language’s workers is driven (spawn them with :func:<code>pymizu.r_pool_launcher</code>). On a foreign pool a plain callable errors locally, naming the spec verb.</p>
+</section>
+<section id="pymizu.Pool.submit_batch" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.submit_batch">submit_batch</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>Pool.submit_batch(fns, <span class="op">*</span>, timeout<span class="op">=</span><span class="va">None</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Submit one task per zero-arg callable in <code>fns</code> in one crossing.</p>
+<p>Ring-full past <code>timeout</code> ends the batch short — the returned handles stay valid and collectible. Use functools.partial to bind arguments.</p>
+</section>
+<section id="pymizu.Pool.trace" class="level3">
+<h3 class="anchored" data-anchor-id="pymizu.Pool.trace">trace</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb18"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>Pool.trace(fn)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Register a hook called as <code>fn(event, id)</code> at each task lifecycle event this process observes: <code>"submit"</code> on the submitting thread; <code>"start"</code>, <code>"done"</code>, <code>"error"</code>, <code>"drop"</code>, <code>"rehome"</code> on worker handles. <code>id</code> is <code>"&lt;submitter slot&gt;:&lt;counter&gt;"</code>, stable across processes. Registration is per-handle and per-process; <code>None</code> removes the hook. A hook exception is written as unraisable, never propagated into the pool.</p>
+
+
+</section>
+</section>
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/shikokuchuo\.github\.io\/pymizu\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

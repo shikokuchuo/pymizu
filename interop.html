@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.10.18">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>R interop – pymizu 水</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<link href="./benchmarks.html" rel="next">
+<link href="./map.html" rel="prev">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-64a204ab8560d761af7679ceaba22944.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-d779191fb58665fba6013d76b5d4c7b3.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">pymizu 水</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://github.com/shikokuchuo/pymizu"> <i class="bi bi-github" role="img" aria-label="pymizu on GitHub">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./channels.html">Guide</a></li><li class="breadcrumb-item"><a href="./interop.html">R interop</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">pymizu 水</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Guide</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./channels.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channels</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./pools.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Task pools</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Parallel map</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./interop.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">R interop</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./benchmarks.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Benchmarks</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">API reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#r-channel-peers" id="toc-r-channel-peers" class="nav-link active" data-scroll-target="#r-channel-peers">R channel peers</a></li>
+  <li><a href="#mixed-language-pools" id="toc-mixed-language-pools" class="nav-link" data-scroll-target="#mixed-language-pools">Mixed-language pools</a></li>
+  <li><a href="#mapping-over-a-foreign-pool" id="toc-mapping-over-a-foreign-pool" class="nav-link" data-scroll-target="#mapping-over-a-foreign-pool">Mapping over a foreign pool</a></li>
+  <li><a href="#what-crosses-the-language-boundary" id="toc-what-crosses-the-language-boundary" class="nav-link" data-scroll-target="#what-crosses-the-language-boundary">What crosses the language boundary</a></li>
+  <li><a href="#pymizu.frame" id="toc-pymizu.frame" class="nav-link" data-scroll-target="#pymizu.frame">pymizu.Frame</a></li>
+  <li><a href="#zero-copy-frames-both-directions" id="toc-zero-copy-frames-both-directions" class="nav-link" data-scroll-target="#zero-copy-frames-both-directions">Zero-copy frames, both directions</a></li>
+  <li><a href="#attribute-and-temporal-rows" id="toc-attribute-and-temporal-rows" class="nav-link" data-scroll-target="#attribute-and-temporal-rows">Attribute and temporal rows</a></li>
+  <li><a href="#the-dtype-matrix" id="toc-the-dtype-matrix" class="nav-link" data-scroll-target="#the-dtype-matrix">The dtype matrix</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./channels.html">Guide</a></li><li class="breadcrumb-item"><a href="./interop.html">R interop</a></li></ol></nav>
+<div class="quarto-title">
+<h1 class="title">R interop</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>The channel speaks a language-agnostic wire protocol, so the process at the other end does not have to be Python. <a href="https://github.com/shikokuchuo/mizu">mizu</a> is the R binding of the same shared-memory core, and a channel or pool connects the two languages directly.</p>
+<section id="r-channel-peers" class="level2">
+<h2 class="anchored" data-anchor-id="r-channel-peers">R channel peers</h2>
+<p>A channel peer can be an R process that runs the <code>mizu</code> package. Pass the peer program as R source, and set the launcher to <code>pymizu.r_launcher()</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">"""</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="st">library(mizu)</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="st">repeat {</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="st">  x &lt;- mizu_recv(ch, timeout = 30)</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="st">  if (inherits(x, "mizu_sentinel")) break</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="st">  mizu_send(ch, x)</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="st">}</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>,</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    launcher<span class="op">=</span>pymizu.r_launcher(),</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>ch.send(np.array([<span class="fl">1.5</span>, <span class="fl">2.5</span>, <span class="fl">3.5</span>]))   <span class="co"># arrives in R as a numeric vector</span></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(ch.recv(timeout<span class="op">=</span><span class="dv">5</span>))            <span class="co"># echoes back as a float64 array</span></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>r_launcher()</code> needs R and the <code>mizu</code> R package installed. If R or the package is missing, it raises <code>MizuError</code> before the channel is created. Pass <code>rscript=</code> to use a specific R installation; successful probes are cached per Rscript.</p>
+<p>A launcher is one callable that takes the join token and spawns the peer process. For a different spawn method, write your own launcher.</p>
+<p>The reverse direction is also possible: an R host spawns a Python peer with <code>mizu::mizu_py_launcher()</code>.</p>
+</section>
+<section id="mixed-language-pools" class="level2">
+<h2 class="anchored" data-anchor-id="mixed-language-pools">Mixed-language pools</h2>
+<p>A pool’s workers can be R processes, driven through the neutral task format: <code>pymizu.r_pool_launcher()</code> spawns them, and <code>pymizu.call()</code> describes the task — a qualified name (<code>"pkg::fn"</code> for R, <code>"mod.fn"</code> for Python) or a <code>source=</code> string, plus the constant arguments:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>pool <span class="op">=</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_pool_launcher())</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>t <span class="op">=</span> pool.submit(pymizu.call(<span class="st">"stats::quantile"</span>, np.arange(<span class="fl">101.0</span>),</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>                            probs<span class="op">=</span>np.array([<span class="fl">0.25</span>, <span class="fl">0.5</span>, <span class="fl">0.75</span>]), names<span class="op">=</span><span class="va">False</span>))</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(t.collect())                  <span class="co"># [ 25.  50.  75.]</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>t2 <span class="op">=</span> pool.submit(pymizu.call(source<span class="op">=</span><span class="st">"y &lt;- x * 2</span><span class="ch">\n</span><span class="st">y + 1"</span>, x<span class="op">=</span><span class="dv">20</span>))</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(t2.collect())                 <span class="co"># 41</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>pool.stop()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Unnamed arguments map to the positional list and keyword arguments to the named dict, matching R’s mixed-call convention. A <code>source=</code> task evaluates in a fresh namespace with the keyword arguments bound as names and positional arguments bound as <code>_1</code>, <code>_2</code>, …; the result is the trailing expression’s value.</p>
+<p>The workers’ language comes from the pool itself — there is no language argument and no override. A plain callable on a foreign pool errors locally naming <code>pymizu.call()</code>; a bare unqualified name errors at submit; a non-portable argument declines at submit with <code>DeclinedError</code>. Task errors cross as <code>TaskError</code> with the remote type preserved (<code>remote_type == "simpleError"</code> from R), and a result without a portable home fails the task with one naming the type. The reverse direction mirrors: <code>mizu::mizu_pool()</code> with <code>mizu::mizu_py_pool_launcher()</code>, and <code>mizu::mizu_submit_call()</code> with <code>mizu::mizu_call()</code> specs. Mixed workers in one pool and by-reference task arguments are deliberately out of scope for now.</p>
+</section>
+<section id="mapping-over-a-foreign-pool" class="level2">
+<h2 class="anchored" data-anchor-id="mapping-over-a-foreign-pool">Mapping over a foreign pool</h2>
+<p>A spec is also a map’s <code>fn</code> — <code>Pool.map()</code> / <code>Pool.map_prepare()</code> over a foreign pool (and <code>mizu::mizu_map()</code> mirrors in R):</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>pool <span class="op">=</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_pool_launcher())</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(<span class="st">"stats::median"</span>), x)</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(source<span class="op">=</span><span class="st">"summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"</span>),</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>         folds, template<span class="op">=</span><span class="fl">0.0</span>)   <span class="co"># each fold a dict; the element binds as x</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>pool.stop()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The map element fills the spec’s first positional slot (name kind) or binds as <code>x</code> (source kind), so the map’s own <code>args=</code>/<code>kwargs=</code> must be empty — constants ride the spec. <code>template=</code> and <code>collect=</code> work unchanged, and a per-element error crosses with its <code>index</code>. <code>seed=</code> carries as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (32-bit-ranged on R workers); invariance holds within a worker language, never identical draws across languages.</p>
+</section>
+<section id="what-crosses-the-language-boundary" class="level2">
+<h2 class="anchored" data-anchor-id="what-crosses-the-language-boundary">What crosses the language boundary</h2>
+<ul>
+<li>Python scalars (<code>bool</code>/<code>int</code>/<code>float</code>/<code>complex</code>/<code>str</code>/<code>None</code>), lists, and dicts with <code>str</code> keys cross both ways — R sees its own logical/integer/double/complex/character/list values back. A <code>tuple</code> reads back as a <code>list</code> (the documented relay shift; the spec-table shifts all live in the interop plan’s dtype matrix).</li>
+<li>A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector — and back. See the <a href="#the-dtype-matrix">dtype matrix</a> below.</li>
+<li>A multi-dimensional numpy array of a mapped dtype arrives as an R <code>dim</code> array (a matrix is the 2-D case) — C order, F order, strided, it crosses value-exact (F order at the far side). <code>datetime64</code> arrays of the day/week units arrive as <code>Date</code>, of the sub-day units as <code>POSIXct</code>; stdlib <code>datetime.date</code> and <code>datetime.datetime</code> scalars write the length-1 forms.</li>
+<li>An Arrow array arrives as an R vector, with Arrow nulls as R missing values: <code>ch.send(pa.array([1, None, 3]))</code>. Anything with <code>__arrow_c_array__</code> works (pyarrow, polars, a duckdb result column).</li>
+<li>An Arrow stream — a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with <code>__arrow_c_stream__</code> — arrives as an R <code>data.frame</code> (dictionary-encoded columns as factors, <code>date32</code>/<code>timestamp</code> as <code>Date</code>/<code>POSIXct</code>), or a Series as a plain vector. An R <code>data.frame</code> arrives as a <code>pymizu.Frame</code> (below); a factor as <code>list[str | None]</code>.</li>
+<li><code>bytes</code> stages as a raw vector.</li>
+<li>Strings cross both ways (<code>str</code> rides the shared STR1 tier); <code>NA_character_</code> arrives as <code>None</code>; a string vector arrives as <code>list[str | None]</code>.</li>
+<li>A large R atomic vector arrives as a zero-copy, read-only numpy view over the shared pages — no copy, no parse. Without numpy it arrives as a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: <code>pa.array(view)</code>, <code>pl.from_arrow(view)</code>.</li>
+<li>Everything outside the portable subset raises <code>pymizu.DeclinedError</code> at send time (a subclass of <code>TypeError</code>), carrying <code>path</code> and <code>reason</code> attributes.</li>
+</ul>
+</section>
+<section id="pymizu.frame" class="level2">
+<h2 class="anchored" data-anchor-id="pymizu.frame">pymizu.Frame</h2>
+<p>A <code>pymizu.Frame</code> is the <code>data.frame</code> home: named columns with a row count. <code>frame.to_dict()</code> gives the column dict with no Arrow library (numpy arrays where installed, memoryviews otherwise; strings and factors as <code>list[str | None]</code>); <code>frame.names</code> and <code>frame.row_names</code> carry the metadata. Any Arrow consumer takes the frame in one line — <code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>, <code>pd.DataFrame.from_arrow(f)</code> — with factor columns as dictionary columns, logical columns as Arrow <code>bool</code>, <code>Date</code> as <code>date32</code>, and <code>POSIXct</code> as <code>timestamp[us]</code>. A <code>Frame</code> pickles, so Python-to-Python channels carry it; on a foreign channel it writes the <code>data.frame</code> shape again through its own export.</p>
+</section>
+<section id="zero-copy-frames-both-directions" class="level2">
+<h2 class="anchored" data-anchor-id="zero-copy-frames-both-directions">Zero-copy frames, both directions</h2>
+<ul>
+<li>A <code>data.frame</code> past a size floor (32 KiB) crosses as one shared-memory region — the Python side reads a region-backed <code>Frame</code>: numeric columns are read-only numpy views over the shared pages, string columns read off their region block, factor columns are dictionary-encoded, integer64 columns tag-carried.</li>
+<li>A frame sent from Python past the same floor — polars, pyarrow, pandas (through its pyarrow export), or a <code>Frame</code> — stages as one region too: R reads a <code>data.frame</code> in place.</li>
+<li>The capability handshake sends a peer that has not implemented the layouts an interchange copy instead — the value always crosses.</li>
+<li>An unmodified round trip moves nothing: a frame imported from a region and sent back (<code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>) re-stages as the region’s name, zero payload bytes. polars re-views string columns, so a frame holding one round-trips as a fresh region instead; pyarrow keeps them.</li>
+<li>A live polars or pyarrow consumer pins the frame’s region loan until <code>del</code> + GC. Long-lived imports want that discipline: enough pinned loans trip the producer’s churn fallback, and later sends degrade to the copy tiers.</li>
+</ul>
+</section>
+<section id="attribute-and-temporal-rows" class="level2">
+<h2 class="anchored" data-anchor-id="attribute-and-temporal-rows">Attribute and temporal rows</h2>
+<ul>
+<li>A factor crosses as <code>list[str | None]</code> (standalone) or a dictionary column (in a frame); a standalone factor past the floor is a region read.</li>
+<li>A <code>Date</code> crosses as <code>datetime64[D]</code> / Arrow <code>date32</code>; a <code>POSIXct</code> as naive <code>datetime64[us]</code> / <code>timestamp[us, tz]</code> — µs the precision unit, NaT ↔︎ <code>NA</code>, a named zone kept as <code>Frame</code> column metadata and dropped from a standalone vector; naive Python datetimes write <code>tzone = "UTC"</code>.</li>
+<li>A <code>difftime</code>, <code>POSIXlt</code>, <code>timedelta64</code>, Arrow <code>date64</code>/<code>time</code>/<code>duration</code>/<code>interval</code>, and ordered dictionaries (polars Enums) decline at send time — a <code>difftime</code> crosses manually as an epoch-plus-units dict.</li>
+<li>An R <code>names</code> vector declines on a foreign channel (numpy has no per-element names); a matrix crosses value-exact — F order at the far side, the data never transposed; <code>dimnames</code> and character matrices decline.</li>
+<li>Cross-language sends copy ALTREP values by value (a zero-copy region past the floor, an interchange copy below it): value-exact, representation not preserved, the sender’s compact vector untouched.</li>
+</ul>
+</section>
+<section id="the-dtype-matrix" class="level2">
+<h2 class="anchored" data-anchor-id="the-dtype-matrix">The dtype matrix</h2>
+<p>Conversion happens once, at send time, fused into the copy that staging always is. Identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Python sends</th>
+<th>R receives</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>bytes</code> / uint8</td>
+<td>raw</td>
+<td>Arrow uint8 with nulls: <code>TypeError</code> (R raw has no NA)</td>
+</tr>
+<tr class="even">
+<td>int8 / int16 / uint16</td>
+<td>integer</td>
+<td>widened, exact</td>
+</tr>
+<tr class="odd">
+<td>int32</td>
+<td>integer</td>
+<td></td>
+</tr>
+<tr class="even">
+<td>uint32</td>
+<td>double</td>
+<td>widened, exact</td>
+</tr>
+<tr class="odd">
+<td>int64</td>
+<td>integer64 (bit64’s layout)</td>
+<td>native wire type, bit-exact; <code>INT64_MIN</code> reads as <code>NA</code></td>
+</tr>
+<tr class="even">
+<td>uint64</td>
+<td>double</td>
+<td>exact to ±2^53; past it, <code>NA</code> plus one warning</td>
+</tr>
+<tr class="odd">
+<td>float32 / float64</td>
+<td>double</td>
+<td></td>
+</tr>
+<tr class="even">
+<td>bool</td>
+<td>logical</td>
+<td></td>
+</tr>
+<tr class="odd">
+<td>complex64 / complex128</td>
+<td>complex</td>
+<td>(buffer protocol only; Arrow has no standard complex)</td>
+</tr>
+<tr class="even">
+<td>Arrow bool / numeric with nulls</td>
+<td>logical / numeric with <code>NA</code></td>
+<td>the validity bitmap is honored, slices included</td>
+</tr>
+<tr class="odd">
+<td>Arrow strings (utf8 / large_utf8 / string_view)</td>
+<td>character</td>
+<td>a Series arrives as <code>list[str \| None]</code>; a column as a frame column</td>
+</tr>
+<tr class="even">
+<td>Arrow <code>date32</code> / <code>timestamp[u]</code></td>
+<td><code>Date</code> / <code>POSIXct</code></td>
+<td>the zone name rides a frame column’s metadata</td>
+</tr>
+<tr class="odd">
+<td>Arrow dictionary-encoded</td>
+<td>factor</td>
+<td>an ordered dictionary declines (<code>polars Enum</code>: cast to <code>pl.Categorical</code>)</td>
+</tr>
+<tr class="even">
+<td>Arrow ChunkedArray / Table / Series</td>
+<td>vector / <code>data.frame</code></td>
+<td>batches concatenate on the stage copy</td>
+</tr>
+<tr class="odd">
+<td>Arrow nested, decimal, time32/64, duration, interval</td>
+<td>—</td>
+<td><code>DeclinedError</code> at send time</td>
+</tr>
+</tbody>
+</table>
+<p>NA semantics:</p>
+<ul>
+<li>R’s missing values are sentinels in the data: <code>INT_MIN</code> for integer/logical, <code>INT64_MIN</code> for integer64, a specific NaN payload (<code>NA_real_</code>) for double. Python to R: Arrow nulls convert to the sentinels, so R sees correct <code>NA</code>s. R to Python: the read depends on the accessor, not the tier:
+<ul>
+<li>copied reads (<code>list(...)</code>, <code>Frame.to_dict()</code>) are honest: a logical is <code>bool_</code> when NA-free, else int32; an integer is int32 when NA-free, else float64 with <code>NA_real_</code>-payload NaNs (every int32 is exact there); the integer scan runs only for an R writer, so a Python-to-Python int32 array keeps int32 and any genuine <code>-2^31</code> values.</li>
+<li>zero-copy views stay sentinel-typed on the raw page buffer; <code>.to_numpy()</code> applies the same rule, reading NA-freeness off the region’s validity section before any data scan.</li>
+<li>int64 keeps its dtype in every numpy home and warns on a detected <code>INT64_MIN</code> (a copied read, <code>.to_numpy()</code>), naming <code>.to_arrow()</code> as the NA-honest accessor; a genuine Python <code>-2^63</code> round-trips unwarned.</li>
+<li>every Arrow export of a logical is Arrow <code>bool</code> with a validity bitmap, whatever the tier or content; integer exports are int32/int64 with a validity bitmap.</li>
+</ul></li>
+<li>A genuine int32 value of <code>-2147483648</code> collides with the NA sentinel and reads as <code>NA</code> in R on every tier (R’s integer has no room for it); likewise an int64 value of <code>-9223372036854775808</code> (<code>INT64_MIN</code>) reads as <code>NA_integer64_</code>. numpy sends stay silent; an Arrow int32 send with a validity bitmap warns once.</li>
+<li>Python-side compute treats <code>NA_real_</code> as a NaN value; whether the exact payload survives arithmetic is platform-dependent — do not rely on it either way.</li>
+</ul>
+<p>Round trips are stable after the first hop, and a pure pass-through echo is bit-exact: an untouched received view re-stages by reference (its region name, no payload bytes), so even the <code>NA_real_</code> payload survives a relay. A slice or a dtype view of a received view re-stages by value.</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Python sends</th>
+<th>R sees</th>
+<th>Back in Python</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>uint8</td>
+<td>raw</td>
+<td>uint8</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>int8 / int16 / uint16</td>
+<td>integer</td>
+<td>int32</td>
+<td>widened, values exact</td>
+</tr>
+<tr class="odd">
+<td>int32</td>
+<td>integer</td>
+<td>int32</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>uint32</td>
+<td>double</td>
+<td>float64</td>
+<td>exact</td>
+</tr>
+<tr class="odd">
+<td>int64</td>
+<td>integer64</td>
+<td>int64</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>uint64, ≤ ±2^53</td>
+<td>double</td>
+<td>float64</td>
+<td>dtype lost, values exact</td>
+</tr>
+<tr class="odd">
+<td>uint64, past ±2^53</td>
+<td><code>NA</code></td>
+<td>NaN</td>
+<td>lost on the first hop</td>
+</tr>
+<tr class="even">
+<td>float32</td>
+<td>double</td>
+<td>float64</td>
+<td>widened, values exact</td>
+</tr>
+<tr class="odd">
+<td>float64</td>
+<td>double</td>
+<td>float64</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>bool</td>
+<td>logical</td>
+<td><code>bool_</code> (int32 with NAs)</td>
+<td>dtype lost</td>
+</tr>
+<tr class="odd">
+<td>complex64 / complex128</td>
+<td>complex</td>
+<td>complex128</td>
+<td>exact</td>
+</tr>
+</tbody>
+</table>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>R sends</th>
+<th>Python sees</th>
+<th>Back in R</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>integer</td>
+<td>int32 (float64 with NAs)</td>
+<td>integer</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>integer64 (bit64)</td>
+<td>int64 (warns on an <code>NA</code> verdict)</td>
+<td>integer64</td>
+<td>exact; a genuine Python <code>-2^63</code> arrives as <code>NA</code></td>
+</tr>
+<tr class="odd">
+<td>double</td>
+<td>float64</td>
+<td>double</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>raw</td>
+<td>uint8</td>
+<td>raw</td>
+<td>exact</td>
+</tr>
+<tr class="odd">
+<td>complex</td>
+<td>complex128</td>
+<td>complex</td>
+<td>exact</td>
+</tr>
+<tr class="even">
+<td>logical</td>
+<td><code>bool_</code> (int32 with NAs)</td>
+<td><strong>integer</strong></td>
+<td>the tag does not survive a by-value Python hop (values do); a whole view re-sent crosses by reference, logical intact</td>
+</tr>
+</tbody>
+</table>
+<p>The channel/pool split: pools are Python-both-ends by construction, so pool task results keep the lossless pickle path for every dtype. Python-to-Python channels keep identity dtypes and pickle everything else unchanged (the identity exchange reports the peer’s language at handshake; the conversion pass is foreign-only). For an exact Python-to-Python channel send of a non-identity dtype, no nesting is needed — it pickles.</p>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/shikokuchuo\.github\.io\/pymizu\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="./map.html" class="pagination-link" aria-label="Parallel map">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Parallel map</span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="./benchmarks.html" class="pagination-link" aria-label="Benchmarks">
+        <span class="nav-page-text">Benchmarks</span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
