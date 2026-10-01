@@ -502,9 +502,8 @@ def test_map_spec_raw_x_section(pool):
     import numpy as np
 
     x = np.arange(8, dtype=np.float64)
-    assert pool.map(pymizu.call("math.log1p"), x) == [
-        np.log1p(v) for v in x
-    ]
+    # libm's log1p and numpy's can differ by 1 ulp; compare approximately
+    assert pool.map(pymizu.call("math.log1p"), x) == pytest.approx(np.log1p(x))
 
 
 def test_map_spec_template_and_view(pool):
