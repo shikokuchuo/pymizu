@@ -25,8 +25,9 @@ website:
           - interop.qmd
       - benchmarks.qmd
       - section: "API reference"
+        href: reference/index.qmd
         contents:
-          - reference/
+          - auto: reference/*
 
 format:
   html:
