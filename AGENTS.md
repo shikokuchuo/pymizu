@@ -163,6 +163,17 @@ tools/vendor-libmizu.sh` for a local checkout).
   does the counted add (`mizu_zc_ref`) without a fresh open/mmap. Only
   the mapping is cached — MIZH header validation runs per read. An
   evicted owner's mapping closes when its last view is gone.
+- The MIZL frame writer's provenance registry (`src/shmframe.c`): an
+  outgoing frame whose columns all match one registered export stages
+  as the region's REF (Phase 3.8); per column, a matched column
+  crosses as a remote leaf (MIZL directory tag 33, F2.3) — the
+  identifier span, the referenced leaf's attrs size and validity claim
+  as resolved, gated per frame on `MIZU_CAP_MIZL_REF` (bit 4; a peer
+  short of it gets full layout leaves). The reader's frame path
+  (`tree_column_remote` in interop.c) resolves a remote column onto a
+  per-column hold — a fresh mapping plus counted loan, released pure-C
+  in `fcol_free` (the GIL-free export discipline); the generic tree
+  walk resolves through `mizu_py_view_resolve_checked`.
 - Arrow interop: `Channel.send` accepts any `__arrow_c_array__` producer
   (pyarrow, polars, duckdb; the `cvt_for_arrow` pass). Arrow nulls become
   R missing values. A received zero-copy view exports to an Arrow consumer

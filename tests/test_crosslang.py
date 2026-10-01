@@ -1752,6 +1752,40 @@ def test_py_peer_frame_relay_one_computed_remote_leaves(r_mizu):
         ch.close()
 
 
+R_VIEW_COLUMN_FRAME = r"""
+x <- runif(300000)
+mizu::mizu_send(ch, x)
+v <- mizu::mizu_recv(ch, timeout = 60)   # the REF echo's view of x's region
+df <- data.frame(a = runif(300000), b = seq_len(300000) + 0)
+df[["b"]] <- v
+mizu::mizu_send(ch, df)
+mizu::mizu_send(ch, identical(v, x))
+"""
+
+
+def test_py_peer_frame_with_view_column_remote_leaf(r_mizu):
+    # F2.5: R stages a frame whose column is a received view — the column
+    # crosses as a remote leaf (directory tag 33), the production caller
+    # of the frame path's per-column hold (F2.3)
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_VIEW_COLUMN_FRAME, launcher=r_mizu)
+    try:
+        x = ch.recv(60)
+        ch.send(x)   # the REF echo: v resolves to a view of x's region
+        f = ch.recv(60)
+        d = f.to_dict()
+        # the remote column's region word is x's own (the aliasing
+        # proof), REFHELD from R's emit hook
+        assert d["b"].base.refcount == x.base.refcount
+        assert x.base.flags & 1 == 1
+        assert d["b"].dtype == np.float64
+        assert d["b"][0:3].tolist() == x[0:3].tolist()   # the view's values
+        assert d["a"].dtype == np.float64
+        assert ch.recv(60) is True
+    finally:
+        ch.close()
+
+
 R_FRAME_REFS = r"""
 df <- data.frame(i = 1:300000, s = rep(c("a", "b", NA), 100000),
                  f = factor(rep(c("u", "v"), 150000)),
