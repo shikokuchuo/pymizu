@@ -210,12 +210,29 @@ tools/vendor-libmizu.sh` for a local checkout).
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
 - Map conventions (`src/map.c`, `python/pymizu/_map.py`):
-  - One fresh region per map (own `MIZU_PYMAP_MAGIC` "PYMM",
+  - One fresh region per map (the core-owned `MIZU_MORSEL_MAGIC`,
     `MIZU_ABI_VERSION`-keyed).
     The protocol half — header layout, CLAIM-word claim CAS, AIMD sizing,
     reset/trim, cancel, lost-set scan — is the core's morsel module
     (`mizu_morsel_*`, vendored `morsel.c`; one layout for both bindings). Runners are ordinary tasks submitted with
     `MIZU_ENTRY_RUNNER` via `_Pool._submit_runner`.
+  - Cross-language maps (Phase 5): a `pymizu.call` spec as
+    `Pool.map()`'s `fn` always takes the region path (the blob path's
+    chunk tasks are private frames). The descriptor is the `'I'` form
+    (`_pymizu._map_desc_write` / `_map_desc_read`: `list[task, x|nil]`,
+    the spec a nested kind 0/1 task tag); runners submit as kind-2
+    task streams off the submit-private `_RunnerFrame`
+    (`pymizu_ix_stage_runner`: region name, ordinal<<32|generation in
+    one i64, seed nil or the `(seed, offset)` i64 pair). The exec hook
+    dispatches kind 2 (`pymizu_ix_runner_run` → `_map._runner_ix`),
+    so the runner is always same-language as the worker; `_map_ctx`
+    picks the descriptor reader on the first byte, with source-kind
+    specs becoming per-element closures (`_source_fn`, the ast split
+    hoisted per runner, the element bound as `x`). A spec map takes
+    int seeds only (`_seed_wire`: bytes has no i64 form; R workers cap
+    at R's int32 range, checked at the map entry). Foreign collects
+    normalize the R workers' (morsel start, morsel count) histories to
+    element spans (`_runs_to_spans`) for the splice and lost-set scan.
   - The pool-signal capsule is worker-local only (raw addresses — a
     runner calls `_Pool._signals()` on its own handle, never one from
     the submitter). The cancel word is the fail-fast store, set by an
@@ -247,7 +264,9 @@ tools/vendor-libmizu.sh` for a local checkout).
   - `Pool.map(seed=...)`: deterministic per-element streams of the stdlib
     `random` module — `random.seed(SHA-256(seed_bytes + (i +
     offset).to_bytes(8, "little")))`; `seed=(seed, offset)` shifts every
-    element's stream by `offset`.
+    element's stream by `offset`. On a spec map the (seed, offset) pair
+    crosses as i64s and the worker rebuilds `str(seed).encode("ascii")`
+    — identical draws to a native int-seeded run.
 - Commit messages are a single line (subject only, no body).
 - Never push without explicit approval — every push must be approved by
   the user first.
@@ -269,6 +288,9 @@ tools/vendor-libmizu.sh` for a local checkout).
   the shipped `pymizu.r_launcher()` — it catches the `MizuError` as the
   skip, so the probe logic has exactly one home (`_r.py`);
   `test_r_launcher_missing_rscript` runs without R.
+  `tests/test_crosslang_pool.py` / `tests/test_crosslang_map.py` drive
+  real R workers (`pymizu.r_pool_launcher()` fixtures) for the Phase 4 /
+  Phase 5 acceptance gates.
 - `tests/test_no_numpy.py` exercises the numpy-less paths in a subprocess
   whose PYTHONPATH shim makes `import numpy` raise ImportError (the
   `_TAG_MV` memoryview rows standing in for `_TAG_NP`), in both the

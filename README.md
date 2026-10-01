@@ -188,6 +188,20 @@ Task errors cross as `TaskError` with the remote type preserved (`remote_type ==
 The reverse direction mirrors: `mizu::mizu_pool()` with `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
 Mixed workers in one pool and by-reference task arguments are deliberately out of scope for now.
 
+A spec is also a map's `fn` — `Pool.map()` / `Pool.map_prepare()` over a foreign pool (and `mizu::mizu_map()` mirrors in R):
+
+```python
+pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
+pool.map(pymizu.call("stats::median"), x)
+pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
+         folds, template=0.0)   # each fold a dict; the element binds as x
+pool.stop()
+```
+
+The map element fills the spec's first positional slot (name kind) or binds as `x` (source kind), so the map's own `args=`/`kwargs=` must be empty — constants ride the spec.
+`template=` and `collect=` work unchanged, and a per-element error crosses with its `index`.
+`seed=` carries as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (32-bit-ranged on R workers); invariance holds within a worker language, never identical draws across languages.
+
 What crosses the language boundary:
 
 - Python scalars (`bool`/`int`/`float`/`complex`/`str`/`None`), lists, and dicts with `str` keys cross both ways — R sees its own logical/integer/double/complex/character/list values back.

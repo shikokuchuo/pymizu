@@ -551,6 +551,21 @@ class Pool:
         ``seed=(seed, offset)`` to shift every element's stream by
         ``offset`` positions, for maps split across runs or processes.
 
+        ``fn`` may be a :class:`pymizu.call` specification instead of a
+        callable — the way to map over a foreign pool (one spawned with
+        :func:`r_pool_launcher`). A spec always stages a shared region:
+        the descriptor crosses in the interchange format and each runner
+        task carries a region reference any worker language reads. The
+        element fills the spec's first positional slot (name kind) or
+        binds as ``x`` (source kind), and the spec's own constant
+        arguments ride with it — so ``args`` and ``kwargs`` must be empty
+        with a spec. Constants and elements must be portable values; a
+        non-portable one raises :class:`DeclinedError` at stage time.
+        ``seed=`` carries as a language-neutral pair and each worker
+        language derives its own streams, so a spec map takes int seeds
+        only (32-bit-ranged on R workers); invariance holds within a
+        worker language, never identical draws across languages.
+
         ``template`` is an exemplar buffer (e.g. ``numpy.empty(m,
         dtype=...)``) declaring that every ``fn`` result is ``m`` values
         of that dtype: results are written in place into a shared
