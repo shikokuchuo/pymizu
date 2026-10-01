@@ -564,6 +564,11 @@ typedef struct {
   uint8_t codes1;     /* DICT: the region's 1-based R codes — the export
                          shifts to 0-based into codes0 */
   uint8_t enc_ok;     /* STR64: the encoding check ran (once, at export) */
+  mizu_shm *hold;     /* a remote column's own mapping of the referenced
+                         region (the frame's loan does not cover it) — its
+                         counted loan is released here, the frame_export
+                         acquisition's pure-C discipline */
+  long hold_pid;      /* the fork guard */
 } fcol;
 
 /* The column block: C-owned (no PyObject inside — the Arrow export's
@@ -589,6 +594,10 @@ static void fcol_free(fcol *c) {
   free(c->lev_off);
   free(c->bits);
   free(c->codes0);
+  if (c->hold != NULL) {
+    if (c->hold_pid == mizu_self_pid()) mizu_zc_unref(c->hold);
+    mizu_shm_close(c->hold, 0);
+  }
 }
 
 static void frame_cols_decref(frame_cols *fc) {
@@ -2052,32 +2061,195 @@ static void tree_valid(fcol *c, const uint8_t *base, const int64_t valid[2]) {
   }
 }
 
+static int tree_column(const uint8_t *base, size_t size, int64_t i,
+                       fcol *c);
+static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
+                            fcol *c);
+
+/* The path half of a remote leaf's resolve: each intermediate a bare VEC
+   leaf, the terminal entry handed out with its tree — pymizu_tree_walk_
+   path's discipline, describing rather than wrapping. 0 ok, -1 corrupt. */
+static int tree_ref_path(const uint8_t *base, size_t size, const char *path,
+                         const uint8_t **out_base, size_t *out_size,
+                         int64_t *out_idx, mizu_mizl_entry *ent) {
+  const char *p = path;
+  if (*p++ != '[') return -1;
+  const uint8_t *cur = base;
+  size_t cursz = size;
+  for (;;) {
+    if (*p < '1' || *p > '9') return -1;
+    uint64_t v = (uint64_t) (*p++ - '0');
+    while (*p >= '0' && *p <= '9') {
+      const uint64_t d = (uint64_t) (*p - '0');
+      if (v > (uint64_t) INT64_MAX / 10 ||
+          (v == (uint64_t) INT64_MAX / 10 &&
+           d > (uint64_t) INT64_MAX % 10))
+        return -1;
+      v = v * 10 + d;
+      p++;
+    }
+    const int64_t idx = (int64_t) v - 1;
+    if (mizu_mizl_elem(cur, cursz, idx, ent) != 0) return -1;
+    if (*p == ']') {
+      if (p[1] != '\0') return -1;
+      *out_base = cur;
+      *out_size = cursz;
+      *out_idx = idx;
+      return 0;
+    }
+    if (*p != ',') return -1;
+    p++;
+    if ((ent->sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
+        ent->attrs_size != 0)
+      return -1;
+    cur += ent->data_offset;
+    cursz = (size_t) ent->data_size;
+  }
+}
+
+/* A remote leaf (MIZL directory tag 33): the column lives in another
+   region and crosses by reference. Resolve the identifier span, validate
+   the entry's claims against the referenced leaf, then the local leaf
+   dispatch on the referenced region — a path recurses, a bare name fills
+   off the root's synthesized entry. The column's bytes live in a region
+   the frame's loan does not cover: a fresh mapping and its counted loan
+   hang off the fcol's hold. Every decline is the corrupt-or-newer shape —
+   behind the capability gate, meeting one unadvertised is exactly that. */
+static int tree_column_remote(const uint8_t *base, const mizu_mizl_entry *e,
+                              fcol *c) {
+  char id[256];
+  memcpy(id, base + e->data_offset, (size_t) e->data_size);
+  id[e->data_size] = '\0';
+  const char *brack = strchr(id, '[');
+  size_t name_len = brack != NULL ? (size_t) (brack - id) : strlen(id);
+  char name[MIZU_NAME_MAX];
+  if (name_len == 0 || name_len >= sizeof name) goto corrupt;
+  memcpy(name, id, name_len);
+  name[name_len] = '\0';
+  mizu_shm *shm;
+  if (mizu_shm_open_view(&shm, name) != MIZU_OK) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a remote "
+                    "leaf's referenced region is gone)");
+    return -1;
+  }
+  const uint8_t *rbase = (const uint8_t *) mizu_shm_addr(shm);
+  const size_t rsize = mizu_shm_size(shm);
+  if (rsize < MIZU_HEADER_SIZE) goto corrupt_release;
+
+  /* the referenced leaf's descriptor: a bare name off the root header (a
+     synthesized entry for the fill), a path off the terminal entry */
+  mizu_mizl_entry ref;
+  const uint8_t *fbase = rbase;
+  size_t fsize = rsize;
+  int64_t fidx = -1;
+  int na_free = 0;
+  if (brack == NULL) {
+    uint32_t magic;
+    memcpy(&magic, rbase, 4);
+    if (magic == MIZU_MAGIC_VEC) {
+      int type;
+      int64_t n, valid[2], attrs;
+      if (mizu_mizh_check(rbase, rsize, &type, &n, valid) != 0)
+        goto corrupt_release;
+      memcpy(&attrs, rbase + 16, 8);
+      ref.data_offset = MIZU_HEADER_SIZE;
+      ref.data_size = n * (int64_t) mizu_type_elt_size(type) + attrs;
+      ref.sexptype = type;
+      ref.attrs_size = (int32_t) attrs;
+      ref.length = n;
+      ref.valid[0] = valid[0];
+      ref.valid[1] = valid[1];
+      na_free = valid[0] == 0 && valid[1] == -1;
+    } else if (magic == MIZU_MAGIC_STR) {
+      int64_t n, block, attrs;
+      if (mizu_mizs_check(rbase, rsize, &n, &block, &attrs) != 0)
+        goto corrupt_release;
+      ref.data_offset = MIZU_HEADER_SIZE;
+      ref.data_size = block + attrs;
+      ref.sexptype = MIZU_TYPE_STR;
+      ref.attrs_size = (int32_t) attrs;
+      ref.length = n;
+      ref.valid[0] = 0;
+      ref.valid[1] = 0;
+    } else {
+      int64_t n, aoff, attrs, valid[2];
+      if (mizu_mizl_check(rbase, rsize, &n, &aoff, &attrs, valid) != 0)
+        goto corrupt_release;
+      int32_t n32;
+      memcpy(&n32, rbase + 4, 4);
+      ref.data_offset = MIZU_HEADER_SIZE;
+      ref.data_size = 0;
+      ref.sexptype = MIZU_TYPE_VEC;
+      ref.attrs_size = (int32_t) attrs;
+      ref.length = n32;
+      ref.valid[0] = 0;
+      ref.valid[1] = 0;
+    }
+  } else {
+    if (tree_ref_path(rbase, rsize, brack, &fbase, &fsize, &fidx,
+                      &ref) != 0)
+      goto corrupt_release;
+    const int32_t rtag = ref.sexptype & ~(int32_t) MIZU_MIZL_S4;
+    na_free = ref.valid[0] == 0 && ref.valid[1] == -1 &&
+      (mizu_type_elt_size(rtag) != 0 || rtag == PYMIZU_MIZL_TAG_REF);
+  }
+
+  /* the entry's claims, validated against the resolved leaf */
+  if (ref.length != e->length || ref.attrs_size != e->attrs_size ||
+      (e->valid[0] == 0 && e->valid[1] == -1 && !na_free)) {
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a remote "
+                    "leaf's claims do not match the referenced region)");
+    goto release;
+  }
+
+  int rc = brack == NULL ? tree_column_fill(rbase, &ref, c) :
+    tree_column(fbase, fsize, fidx, c);
+  if (rc != 0) goto release;   /* the fill's own error stands */
+  if (c->hold == NULL) {
+    c->hold = shm;
+    c->hold_pid = mizu_self_pid();
+  } else {
+    /* a chained reference: the column borrows the deeper region alone —
+       this one serves nothing further */
+    mizu_zc_unref(shm);
+    mizu_shm_close(shm, 0);
+  }
+  return 0;
+corrupt:
+  PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a remote "
+                  "leaf of an unexpected form)");
+  return -1;
+corrupt_release:
+  PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a remote "
+                  "leaf's referenced region is corrupt)");
+release:
+  mizu_zc_unref(shm);
+  mizu_shm_close(shm, 0);
+  return -1;
+}
+
 /* A frame column off an MIZL directory entry: the §1.0 column set only —
    attribute-free atomics (tag 32 the int64 form) borrow the leaf's bytes,
    a factor blob makes a dictionary column (owned levels, borrowed 1-based
    codes), Date/POSIXct blobs convert (owned), a string leaf borrows its
-   MIZS block; anything else declines informatively. */
-static int tree_column(const uint8_t *base, size_t size, int64_t i,
-                       fcol *c) {
-  mizu_mizl_entry e;
-  if (mizu_mizl_elem(base, size, i, &e) != 0) {
-    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
-    return -1;
-  }
-  memset(c, 0, sizeof(*c));
-  if (e.sexptype & MIZU_MIZL_S4) {
+   MIZS block, a remote leaf resolves by reference; anything else declines
+   informatively. */
+static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
+                            fcol *c) {
+  if (e->sexptype & MIZU_MIZL_S4) {
     PyErr_SetString(MizuError, "pymizu: no portable home for a frame "
                     "column with the S4 bit");
     return -1;
   }
-  const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
-  const uint8_t *data = base + e.data_offset;
-  const int64_t body = e.data_size - (int64_t) e.attrs_size;
+  const int32_t tag = e->sexptype & ~(int32_t) MIZU_MIZL_S4;
+  const uint8_t *data = base + e->data_offset;
+  const int64_t body = e->data_size - (int64_t) e->attrs_size;
+  if (tag == PYMIZU_MIZL_TAG_REF) return tree_column_remote(base, e, c);
   if (tag == MIZU_TYPE_STR) {
-    if (e.attrs_size != 0) goto newer;
-    mizu_mizs_geom g = mizu_mizs_geometry(e.length);
+    if (e->attrs_size != 0) goto newer;
+    mizu_mizs_geom g = mizu_mizs_geometry(e->length);
     c->kind = FCOL_STR64;
-    c->n = e.length;
+    c->n = e->length;
     c->values = (uint8_t *) data;   /* the block */
     c->valid = (uint8_t *) (data + g.validity);
     c->bytes_len = body - g.data;
@@ -2090,7 +2262,7 @@ static int tree_column(const uint8_t *base, size_t size, int64_t i,
                     "column of this form (a list or serialized leaf)");
     return -1;
   }
-  if (e.attrs_size == 0) {
+  if (e->attrs_size == 0) {
     int kind;
     switch (tag) {
     case MIZU_TYPE_REAL: kind = FCOL_F64; break;
@@ -2101,14 +2273,14 @@ static int tree_column(const uint8_t *base, size_t size, int64_t i,
     default: kind = FCOL_LGL; break;   /* MIZU_TYPE_LGL (tags pre-checked) */
     }
     c->kind = kind;
-    c->n = e.length;
+    c->n = e->length;
     c->values = (uint8_t *) data;
     c->borrowed = 1;
-    tree_valid(c, base, e.valid);
+    tree_valid(c, base, e->valid);
     return 0;
   }
   int nent = 0;
-  attr_ent *ents = blob_attrs(data + body, (size_t) e.attrs_size, &nent);
+  attr_ent *ents = blob_attrs(data + body, (size_t) e->attrs_size, &nent);
   if (ents == NULL) return -1;
   int rc = -1;
   attr_ent *cls = attr_find(ents, nent, "class");
@@ -2120,20 +2292,20 @@ static int tree_column(const uint8_t *base, size_t size, int64_t i,
     if (levels_read(lv, &c->lev_off, &c->bytes, &c->nlev,
                     &c->bytes_len) == 0) {
       c->kind = FCOL_DICT;
-      c->n = e.length;
+      c->n = e->length;
       c->values = (uint8_t *) data;   /* the 1-based codes */
       c->codes1 = 1;
       c->borrowed = 1;
-      tree_valid(c, base, e.valid);
+      tree_valid(c, base, e->valid);
       rc = 0;
     }
   } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
              tag == MIZU_TYPE_REAL) {
-    rc = fcol_date_fill((const double *) data, (uint64_t) e.length, c);
+    rc = fcol_date_fill((const double *) data, (uint64_t) e->length, c);
   } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
              class_is(cls, "POSIXct", "POSIXt") &&
              tag == MIZU_TYPE_REAL) {
-    rc = fcol_ts_fill((const double *) data, (uint64_t) e.length,
+    rc = fcol_ts_fill((const double *) data, (uint64_t) e->length,
                       tz != NULL && tz->kind == AV_STR ?
                         (const char *) tz->val.ptr : "",
                       tz != NULL && tz->kind == AV_STR ?
@@ -2147,6 +2319,18 @@ newer:
   PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                   "(a frame column of an unexpected form)");
   return -1;
+}
+
+/* The directory-entry read, then the fill. */
+static int tree_column(const uint8_t *base, size_t size, int64_t i,
+                       fcol *c) {
+  mizu_mizl_entry e;
+  if (mizu_mizl_elem(base, size, i, &e) != 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return -1;
+  }
+  memset(c, 0, sizeof(*c));
+  return tree_column_fill(base, &e, c);
 }
 
 /* The {dim} blob's home: the borrowed 1-D view reshaped order="F" —
@@ -2324,6 +2508,17 @@ static PyObject *tree_element(PyObject *owner, PyObject *loan,
     mizu_mizs_geom g = mizu_mizs_geometry(e.length);
     return mizu_py_strview_borrow(owner, loan, data, e.length,
                                   body - g.data);
+  }
+  if (tag == PYMIZU_MIZL_TAG_REF) {
+    /* a remote leaf: resolve + the claim validation, the wrap a
+       standalone view (its own owner — one loan per remote leaf; no
+       handle ctx here, so the open rides no cache) */
+    char id[256];
+    memcpy(id, data, (size_t) e.data_size);
+    id[e.data_size] = '\0';
+    return mizu_py_view_resolve_checked(
+      id, (size_t) e.data_size, NULL, e.length, (int64_t) e.attrs_size,
+      e.valid[0] == 0 && e.valid[1] == -1);
   }
   const size_t elt = mizu_type_elt_size(tag);
   if (elt == 0) {
@@ -3520,11 +3715,36 @@ static void fcol_view_valid(const fcol *c, const uint8_t **valid,
 }
 
 /* to_dict's column object: a borrowed fixed-width column wraps as a view
-   over the region (owner/loan the frame's anchor); the rest copy. */
+   over the region (owner/loan the frame's anchor); the rest copy. A
+   remote column borrows a region the frame's anchor does not cover: the
+   wrap rides a fresh open of the referenced region (the copy tiers the
+   fallback on a gone one). */
 static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                              PyObject *loan) {
   uint64_t n = (uint64_t) c->n;
-  if (c->borrowed) {
+  if (c->borrowed && c->hold != NULL) {
+    int type;
+    switch (c->kind) {
+    case FCOL_F64: type = MIZU_TYPE_REAL; break;
+    case FCOL_I32: type = MIZU_TYPE_INT; break;
+    case FCOL_I64: type = MIZU_TYPE_INT64; break;
+    case FCOL_U8: type = MIZU_TYPE_RAW; break;
+    case FCOL_C128: type = MIZU_TYPE_CPLX; break;
+    default: type = 0; break;
+    }
+    if (type != 0) {
+      const uint8_t *valid;
+      int64_t nulls;
+      fcol_view_valid(c, &valid, &nulls);
+      PyObject *v = mizu_py_view_borrow_remote(
+        c->hold, c->values, valid,
+        (Py_ssize_t) c->n * (Py_ssize_t) mizu_type_elt_size(type),
+        type, nulls);
+      if (v != NULL) return v;
+      PyErr_Clear();   /* a gone referenced region: the copy forms below */
+    }
+  }
+  if (c->borrowed && c->hold == NULL) {
     int type;
     switch (c->kind) {
     case FCOL_F64: type = MIZU_TYPE_REAL; break;
@@ -4104,10 +4324,12 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     a->release = NULL;
     /* a borrowed column's region pointers rebase onto this export's own
        mapping (an owned product — the lazy bitmap, the codes shift, the
-       bit-pack — does not) */
+       bit-pack — does not). A remote column borrows its hold's region,
+       not the frame's: no rebase — the export's fc reference pins the
+       hold through the same release chain. */
     const uint8_t *vals = c->values;
     const uint8_t *vld = c->valid;
-    if (c->borrowed) {
+    if (c->borrowed && c->hold == NULL) {
       vals += ex->acq_delta;
       if (vld != NULL && !c->valid_owned) vld += ex->acq_delta;
     }
@@ -5404,8 +5626,26 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
           rc = pymizu_shmframe_pv_match(x, names, hdr, payload,
                                         inline_max);
           if (rc == 0) goto done;
+          /* the per-column REF (F2): the whole-frame path behind, any
+             matched column goes out as a remote leaf — the conditional
+             conjunction: a peer short of the bit gets full layout leaves
+             for every column, never a partial-remote tree */
+          struct pv_entry const **hits =
+            calloc((size_t) x->ncols, sizeof(*hits));
+          if (hits == NULL) {
+            PyErr_NoMemory();
+            goto done;
+          }
+          int nremote = pymizu_shmframe_pv_match_cols(x, names, hits);
+          if (nremote == 0 ||
+              (x->caps & (need | MIZU_CAP_MIZL_REF)) !=
+                (need | MIZU_CAP_MIZL_REF)) {
+            free(hits);
+            hits = NULL;
+          }
           rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max,
-                                     h, 0);
+                                     h, 0, hits);
+          free(hits);
           if (rc >= 0) goto done;
         }
       }
@@ -5653,7 +5893,8 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
       (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
     if (e.total <= zc_gate || mizu_handle_churn(h)) goto out;
   }
-  rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max, h, 1);
+  rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max, h, 1,
+                             NULL);
 out:
   free(names);
   if (rc != 0) {

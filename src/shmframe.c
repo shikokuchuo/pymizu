@@ -73,6 +73,9 @@ typedef struct {
   int64_t nulls;     /* Arrow nulls across the column's batches */
   int64_t str_bytes; /* PC_STR: the packed byte total */
   const char *tz;    /* PC_TS: the tzone the leaf blob writes */
+  int64_t ref_attrs; /* remote leaf: the referenced leaf's attrs blob size */
+  int64_t ref_claim; /* remote leaf: the validity claim (-1 known-NA-free,
+                        else 0) */
 } sf_col;
 
 /* The packed string byte total: per batch the offset span when no nulls
@@ -334,9 +337,49 @@ static void sf_bitmap_write(uint8_t *dst, ixs *x, int col, int64_t rows) {
 
 // The writer driver ---------------------------------------------------------------
 
+/* The provenance registry's record types, ahead of the writer for the
+   remote-leaf claims (the registry itself is below). */
+#define PYMIZU_PV_MAX 256
+#define PV_NBUFS 4
+
+typedef struct {
+  const char *name;      /* borrowed: the export's name store */
+  const char *fmt;       /* borrowed: a literal or the export's fmts */
+  int64_t length, offset, null_count, n_buffers;
+  const void *bufs[PV_NBUFS];
+  int has_dict;
+  const char *dfmt;
+  int64_t dlength, doffset, dnull_count, dn_buffers;
+  const void *dbufs[PV_NBUFS];
+} pv_col;
+
+typedef struct pv_entry {
+  const void *owner;     /* the frame_export (the unregister key) */
+  mizu_shm *acq;         /* borrowed: the frame_export owns the mapping */
+  long pid;              /* the fork guard */
+  int ncols;
+  pv_col *cols;
+  struct pv_entry *next;
+} pv_entry;
+
+/* The identifier span of a remote leaf: name[leaf] with the 1-based leaf
+   index — at most MIZU_NAME_MAX + 13 bytes (dst sized for it). */
+static size_t sf_ref_span(char *dst, const mizu_shm *acq, int leaf) {
+  memcpy(dst, acq->name, (size_t) acq->name_len);
+  return (size_t) acq->name_len +
+    (size_t) snprintf(dst + acq->name_len, 14, "[%d]", leaf);
+}
+
+/* The writer driver. hits (NULL on the same-language path, or when the
+   peer is short of MIZU_CAP_MIZL_REF) is pymizu_shmframe_pv_match_cols's
+   per-column provenance map: a matched column goes out as a remote leaf
+   (directory tag 33) — the identifier span, the referenced leaf's attrs
+   size and validity claim as resolved, no body, blob or bitmap — and each
+   distinct referenced region takes one REFHELD OR per send. */
 int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
                           uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h, int same_lang) {
+                          mizu_handle *h, int same_lang,
+                          struct pv_entry const **hits) {
   const int ncols = x->ncols;
   const int64_t rows = x->hold.rows;
   int rc = 1;
@@ -349,8 +392,31 @@ int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
   /* the size pass: per-column bodies and blobs, the root blob, the tail */
   size_t cur = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (size_t) ncols);
   int any_atomic_nulls = 0;
+  int any_remote_unknown = 0;
   for (int i = 0; i < ncols; i++) {
-    if (sf_size_col(x, i, &cols[i], same_lang) < 0) goto out;
+    if (hits != NULL && hits[i] != NULL) {
+      /* a remote leaf: the claims read off the referenced leaf (the match
+         pins its export, so the mapping is valid) */
+      mizu_mizl_entry re;
+      if (mizu_mizl_elem(mizu_shm_addr(hits[i]->acq),
+                         mizu_shm_size(hits[i]->acq), (int64_t) i,
+                         &re) == 0) {
+        const int32_t rtag = re.sexptype & ~(int32_t) MIZU_MIZL_S4;
+        char spanbuf[MIZU_NAME_MAX + 14];
+        cols[i].body = (int64_t) sf_ref_span(spanbuf, hits[i]->acq, i + 1);
+        cols[i].blob = 0;
+        cols[i].nulls = 0;
+        cols[i].ref_attrs = re.attrs_size;
+        cols[i].ref_claim = mizu_type_elt_size(rtag) != 0 &&
+          re.valid[0] == 0 && re.valid[1] == -1 ? -1 : 0;
+        if (cols[i].ref_claim != -1) any_remote_unknown = 1;
+      } else {
+        hits[i] = NULL;   /* a torn referenced tree: the layout write takes it */
+      }
+    }
+    if (hits == NULL || hits[i] == NULL) {
+      if (sf_size_col(x, i, &cols[i], same_lang) < 0) goto out;
+    }
     cur += MIZU_ALIGN64((size_t) (cols[i].body + cols[i].blob));
     if (x->cols[i].kind != PC_STR && cols[i].nulls > 0)
       any_atomic_nulls = 1;
@@ -360,7 +426,10 @@ int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
   if (root_blob <= 0) goto out;
   const size_t attrs_off = cur;
   cur += MIZU_ALIGN64((size_t) root_blob);
-  if (any_atomic_nulls) {
+  /* the tail rides whenever a table is emitted: local nulls, or a remote
+     column that cannot claim known-NA-free (its row is the claim alone —
+     a remote column adds no bitmap and no count to the header validity) */
+  if (any_atomic_nulls || any_remote_unknown) {
     for (int i = 0; i < ncols; i++) {
       if (x->cols[i].kind == PC_STR || cols[i].nulls == 0) continue;
       cur = MIZU_ALIGN64(cur) + ((size_t) rows + 7) / 8;
@@ -387,36 +456,54 @@ int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
     const ixs_pcol *pc = &x->cols[i];
     sf_elem entry;
     entry.data_offset = (int64_t) cur;
-    entry.attrs_size = (int32_t) cols[i].blob;
     entry.length = rows;
     uint8_t *dst = base + cur;
-    switch (pc->kind) {
-    case PC_CVT:
-      entry.sexptype = pc->row->wire;
-      sf_write_cvt(dst, x, i, &warn);
-      break;
-    case PC_STR:
-      entry.sexptype = MIZU_TYPE_STR;
-      sf_write_str(dst, x, i, rows, cols[i].nulls > 0);
-      break;
-    case PC_DICT:
-      entry.sexptype = MIZU_TYPE_INT;
-      sf_write_dict(dst, x, i);
-      mizu_py_blob_factor(dst + cols[i].body, x->lev_bytes[i],
-                          x->lev_offs[i], x->nlevs[i]);
-      break;
-    case PC_DATE:
-      entry.sexptype = MIZU_TYPE_REAL;
-      sf_write_date(dst, x, i);
-      mizu_py_blob_date(dst + cols[i].body);
-      break;
-    case PC_TS:
-      entry.sexptype = MIZU_TYPE_REAL;
-      sf_write_ts(dst, x, i);
-      mizu_py_blob_ts(dst + cols[i].body, cols[i].tz);
-      break;
+    if (hits != NULL && hits[i] != NULL) {
+      /* the remote leaf: the identifier span, the referenced leaf's attrs
+         size as resolved — no local bytes */
+      entry.sexptype = PYMIZU_MIZL_TAG_REF;
+      entry.attrs_size = (int32_t) cols[i].ref_attrs;
+      entry.data_size = cols[i].body;
+      sf_ref_span((char *) dst, hits[i]->acq, i + 1);
+      /* one REFHELD OR per distinct referenced region per send: the
+         holder set widens beyond the direct peer (the ref_emit pattern) */
+      int seen = 0;
+      for (int k = 0; k < i; k++)
+        if (hits[k] == hits[i]) seen = 1;
+      if (!seen)
+        atomic_fetch_or_explicit(
+          mizu_zc_flags_(mizu_shm_addr(hits[i]->acq)), MIZU_ZC_FLAG_REFHELD,
+          memory_order_acq_rel);
+    } else {
+      entry.attrs_size = (int32_t) cols[i].blob;
+      switch (pc->kind) {
+      case PC_CVT:
+        entry.sexptype = pc->row->wire;
+        sf_write_cvt(dst, x, i, &warn);
+        break;
+      case PC_STR:
+        entry.sexptype = MIZU_TYPE_STR;
+        sf_write_str(dst, x, i, rows, cols[i].nulls > 0);
+        break;
+      case PC_DICT:
+        entry.sexptype = MIZU_TYPE_INT;
+        sf_write_dict(dst, x, i);
+        mizu_py_blob_factor(dst + cols[i].body, x->lev_bytes[i],
+                            x->lev_offs[i], x->nlevs[i]);
+        break;
+      case PC_DATE:
+        entry.sexptype = MIZU_TYPE_REAL;
+        sf_write_date(dst, x, i);
+        mizu_py_blob_date(dst + cols[i].body);
+        break;
+      case PC_TS:
+        entry.sexptype = MIZU_TYPE_REAL;
+        sf_write_ts(dst, x, i);
+        mizu_py_blob_ts(dst + cols[i].body, cols[i].tz);
+        break;
+      }
+      entry.data_size = cols[i].body + cols[i].blob;
     }
-    entry.data_size = cols[i].body + cols[i].blob;
     memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &entry,
            sizeof(entry));
     cur += MIZU_ALIGN64((size_t) entry.data_size);
@@ -426,11 +513,18 @@ int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
   mizu_py_blob_frame(base + cur, names, ncols, rows, x->row_names);
   cur += MIZU_ALIGN64((size_t) root_blob);
 
-  /* the validity tail: a bitmap per NA-ful atomic leaf, then the table —
-     a clean run collapses to the header's known-NA-free and no tail
-     bytes; a string leaf's nulls ride its block, its entry {0, 0} */
+  /* the validity tail: a bitmap per NA-ful local atomic leaf, then the
+     table — a clean run collapses to the header's known-NA-free and no
+     tail bytes, but only when every remote column claims known-NA-free
+     too (the header never speaks for a remote column); a string leaf's
+     nulls ride its block, its entry {0, 0} */
   int64_t total_nulls = 0;
   for (int i = 0; i < ncols; i++) {
+    if (hits != NULL && hits[i] != NULL) {
+      tab[2 * i] = 0;
+      tab[2 * i + 1] = cols[i].ref_claim;
+      continue;
+    }
     if (x->cols[i].kind == PC_STR) {
       tab[2 * i] = 0;
       tab[2 * i + 1] = 0;
@@ -448,7 +542,7 @@ int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
     total_nulls += cols[i].nulls;
     cur = off + ((size_t) rows + 7) / 8;
   }
-  if (total_nulls > 0) {
+  if (total_nulls > 0 || any_remote_unknown) {
     size_t tab_off = MIZU_ALIGN64(cur);
     memcpy(base + tab_off, tab, 16 * (size_t) ncols);
     mizu_mizh_validity_set(base, (int64_t) tab_off, total_nulls);
@@ -494,29 +588,6 @@ out:
    names. Entries unregister at the acquisition's last release, which runs
    in pure C on any thread, so the table takes a lock. Registration is
    best-effort: a dropped record costs one layout write, never data. */
-
-#define PYMIZU_PV_MAX 256
-#define PV_NBUFS 4
-
-typedef struct {
-  const char *name;      /* borrowed: the export's name store */
-  const char *fmt;       /* borrowed: a literal or the export's fmts */
-  int64_t length, offset, null_count, n_buffers;
-  const void *bufs[PV_NBUFS];
-  int has_dict;
-  const char *dfmt;
-  int64_t dlength, doffset, dnull_count, dn_buffers;
-  const void *dbufs[PV_NBUFS];
-} pv_col;
-
-typedef struct pv_entry {
-  const void *owner;     /* the frame_export (the unregister key) */
-  mizu_shm *acq;         /* borrowed: the frame_export owns the mapping */
-  long pid;              /* the fork guard */
-  int ncols;
-  pv_col *cols;
-  struct pv_entry *next;
-} pv_entry;
 
 static pv_entry *pv_head;
 static int pv_count;
@@ -597,6 +668,36 @@ void pymizu_shmframe_pv_unregister(const void *owner) {
   PyThread_release_lock(pv_lock);
 }
 
+/* One column's match against a registered record: name, format, length,
+   offset, null count, every buffer pointer, and the dictionary
+   sub-record. */
+static int pv_col_match(const pv_col *c, const char *name,
+                        const ArrowSchema *sc, const ArrowArray *a) {
+  if (name == NULL || c->name == NULL || strcmp(name, c->name) != 0)
+    return 0;
+  if (sc->format == NULL || c->fmt == NULL ||
+      strcmp(sc->format, c->fmt) != 0)
+    return 0;
+  if ((sc->dictionary != NULL) != c->has_dict) return 0;
+  if (a->length != c->length || a->offset != c->offset ||
+      a->null_count != c->null_count || a->n_buffers != c->n_buffers)
+    return 0;
+  int64_t k;
+  for (k = 0; k < c->n_buffers; k++)
+    if (a->buffers[k] != c->bufs[k]) return 0;
+  if (c->has_dict) {
+    const ArrowArray *d = a->dictionary;
+    if (d == NULL || sc->dictionary->format == NULL || c->dfmt == NULL ||
+        strcmp(sc->dictionary->format, c->dfmt) != 0 ||
+        d->length != c->dlength || d->offset != c->doffset ||
+        d->null_count != c->dnull_count || d->n_buffers != c->dn_buffers)
+      return 0;
+    for (k = 0; k < c->dn_buffers; k++)
+      if (d->buffers[k] != c->dbufs[k]) return 0;
+  }
+  return 1;
+}
+
 /* The whole-frame match: every column equal to a leaf of the same
    acquisition — name, format, length, offset, null count, and every
    buffer pointer — in the same order, none extra or missing. 0 staged
@@ -611,38 +712,10 @@ int pymizu_shmframe_pv_match(ixs *x, char **names, mizu_slot_hdr *hdr,
   for (const pv_entry *e = pv_head; e != NULL; e = e->next) {
     if (e->pid != pid || e->ncols != x->ncols) continue;
     int i;
-    for (i = 0; i < e->ncols; i++) {
-      const pv_col *c = &e->cols[i];
-      const ArrowSchema *sc = x->schema.children[i];
-      const ArrowArray *a = root->children[i];
-      int64_t k;
-      if (names[i] == NULL || c->name == NULL ||
-          strcmp(names[i], c->name) != 0)
+    for (i = 0; i < e->ncols; i++)
+      if (!pv_col_match(&e->cols[i], names[i], x->schema.children[i],
+                        root->children[i]))
         break;
-      if (sc->format == NULL || c->fmt == NULL ||
-          strcmp(sc->format, c->fmt) != 0)
-        break;
-      if ((sc->dictionary != NULL) != c->has_dict) break;
-      if (a->length != c->length || a->offset != c->offset ||
-          a->null_count != c->null_count || a->n_buffers != c->n_buffers)
-        break;
-      for (k = 0; k < c->n_buffers; k++)
-        if (a->buffers[k] != c->bufs[k]) break;
-      if (k < c->n_buffers) break;
-      if (c->has_dict) {
-        const ArrowArray *d = a->dictionary;
-        if (d == NULL || sc->dictionary->format == NULL ||
-            c->dfmt == NULL ||
-            strcmp(sc->dictionary->format, c->dfmt) != 0 ||
-            d->length != c->dlength || d->offset != c->doffset ||
-            d->null_count != c->dnull_count ||
-            d->n_buffers != c->dn_buffers)
-          break;
-        for (k = 0; k < c->dn_buffers; k++)
-          if (d->buffers[k] != c->dbufs[k]) break;
-        if (k < c->dn_buffers) break;
-      }
-    }
     if (i == e->ncols) {
       if (mizu_py_ref_emit(e->acq, hdr, payload, inline_max) == 0) rc = 0;
       break;
@@ -650,4 +723,35 @@ int pymizu_shmframe_pv_match(ixs *x, char **names, mizu_slot_hdr *hdr,
   }
   PyThread_release_lock(pv_lock);
   return rc;
+}
+
+/* The per-column match (F2): each outgoing column against the same-index
+   record of every registered acquisition — the export's child order is
+   the MIZL directory order, so a hit references that region's leaf at the
+   position + 1 — and columns of one frame may match different
+   acquisitions (a frame assembled from two imports, which the whole-frame
+   path cannot REF). Fills hits[] with the matched entries (NULL on a
+   miss) and returns the hit count. The hits stay borrowed after the lock
+   drops: a matched column's buffers alias the acquisition's, so the
+   export outlives the stage. */
+int pymizu_shmframe_pv_match_cols(ixs *x, char **names,
+                                  struct pv_entry const **hits) {
+  if (x->hold.nb != 1 || pv_lock == NULL) return 0;
+  const ArrowArray *root = &x->hold.arrs[0];
+  const long pid = mizu_self_pid();
+  int n = 0;
+  PyThread_acquire_lock(pv_lock, 1);
+  for (int i = 0; i < x->ncols; i++) {
+    for (const pv_entry *e = pv_head; e != NULL; e = e->next) {
+      if (e->pid != pid || i >= e->ncols) continue;
+      if (pv_col_match(&e->cols[i], names[i], x->schema.children[i],
+                       root->children[i])) {
+        hits[i] = e;
+        n++;
+        break;
+      }
+    }
+  }
+  PyThread_release_lock(pv_lock);
+  return n;
 }

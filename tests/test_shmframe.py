@@ -3,6 +3,7 @@
 stages for an R peer word) and same-language channels. The real-R
 round-trips are test_crosslang.py's."""
 
+import gc
 import pickle
 
 import pytest
@@ -15,6 +16,7 @@ pa = pytest.importorskip("pyarrow", reason="the frame writer is Arrow-fed")
 np = pytest.importorskip("numpy")
 
 CAPS_R = 7   # MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL
+CAPS_R33 = CAPS_R | 16   # + MIZU_CAP_MIZL_REF (the F2 remote leaf)
 
 
 def same_pair():
@@ -390,6 +392,154 @@ def test_provenance_modifications_copy():
         d = got.to_dict()
         assert len(got) == len(mod) and check(d)
         assert f.to_dict()["i"].base.refcount == rc0   # never the REF
+        # CAPS_R has no MIZL_REF: a partial match writes every column —
+        # no remote leaves, no REFHELD (the conditional conjunction)
+        assert f.to_dict()["i"].base.flags & 1 == 0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+# F2: the per-column REF (MIZL directory tag 33)
+
+
+def test_provenance_remote_leaf_one_computed():
+    # the payoff row: one computed column — the unmodified two cross as
+    # remote leaves over the source region, the computed one a layout
+    # leaf; pymizu's own frame path reads them back (tree_column)
+    pl = pytest.importorskip("polars")
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(big_table(with_nulls=False).select(["i", "x", "l"]))
+    f = p1.recv(10)
+    df = pl.DataFrame(f).with_columns((pl.col("x") * 2).alias("x"))
+    src = f.to_dict()["i"].base   # a view over the source region
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(df)
+    got = p2.recv(10)
+    # the two holds' counted loans, one per remote column, and REFHELD
+    assert src.refcount == rc0 + 2
+    assert src.flags & 1 == 1
+    d = got.to_dict()
+    # the remote columns: views whose refcount word is the source
+    # region's own (the aliasing proof), values exact
+    assert d["i"].base.refcount == src.refcount
+    assert d["l"].base.refcount == src.refcount
+    assert d["i"][1:4].tolist() == [1, 2, 3]
+    assert d["l"][1] == 1
+    # the computed column: the new values, laid out in the frame's region
+    assert d["x"][1:4].tolist() == [1.0, 2.0, 3.0]
+    del d, got
+    gc.collect()
+    assert src.refcount == rc0   # the holds and view loans released
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_remote_leaf_two_exports():
+    # columns matched from two acquisitions: one remote leaf each (no
+    # whole-frame candidate), both regions' refcounts bump
+    pl = pytest.importorskip("polars")
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(big_table(with_nulls=False).select(["i", "x", "l"]))
+    f1 = p1.recv(10)
+    h1b, p1b = foreign_pair(caps=CAPS_R33)
+    h1b.send(big_table(with_nulls=False).select(["i", "x", "l"]))
+    f2 = p1b.recv(10)
+    df1, df2 = pl.DataFrame(f1), pl.DataFrame(f2)
+    mod = df1.with_columns(df2["l"])   # [f1.i, f1.x, f2.l]
+    src1 = f1.to_dict()["i"].base
+    src2 = f2.to_dict()["i"].base
+    rc1, rc2 = src1.refcount, src2.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(mod)
+    got = p2.recv(10)
+    assert src1.refcount == rc1 + 2    # columns i, x
+    assert src2.refcount == rc2 + 1    # column l
+    assert src1.flags & 1 == 1 and src2.flags & 1 == 1
+    d = got.to_dict()
+    assert d["i"].base.refcount == src1.refcount
+    assert d["l"].base.refcount == src2.refcount
+    assert d["i"][1:4].tolist() == [1, 2, 3]
+    assert d["x"][1] == 0.5 and d["l"][1] == 1
+    del d, got
+    gc.collect()
+    assert src1.refcount == rc1 and src2.refcount == rc2
+    h2.destroy()
+    p2.destroy()
+    p1b.destroy()
+    h1b.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_remote_leaf_all_remote_with_nulls():
+    # every column a remote leaf, matched from two acquisitions, with
+    # null-carrying referenced columns: the header tallies no remote
+    # nulls (the vcount exclusion — a tallied one would check corrupt,
+    # failing the receive), the table rows carry the claims, and the
+    # receive is exact, nulls included
+    pl = pytest.importorskip("polars")
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(big_table().select(["i", "x", "l"]))   # nulls every 10th
+    f1 = p1.recv(10)
+    h1b, p1b = foreign_pair(caps=CAPS_R33)
+    h1b.send(big_table().select(["i", "x", "l"]))
+    f2 = p1b.recv(10)
+    df1, df2 = pl.DataFrame(f1), pl.DataFrame(f2)
+    mod = df1.with_columns(df2["x"])   # [f1.i, f2.x, f1.l]
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(mod)
+    got = p2.recv(10)
+    d = got.to_dict()
+    assert d["i"][0] == -2**31 and d["i"][1] == 1
+    assert np.isnan(d["x"][0]) and d["x"][1] == 0.5
+    assert d["l"][0] == -2**63 and d["l"][1] == 1
+    h2.destroy()
+    p2.destroy()
+    p1b.destroy()
+    h1b.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_remote_leaf_dictionary():
+    # an unmodified dictionary column REFs whole — codes and levels ride
+    # the referenced leaf; a recomputed one falls to the layout write.
+    # pyarrow mutates: it hands the untouched column's buffers back
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(big_table(with_nulls=False).select(["i", "f"]))
+    f = p1.recv(10)
+    t = pa.table(f)
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    n = t.num_rows
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    mod = t.set_column(0, "i", pa.array([k * 2 for k in range(n)],
+                                        type=pa.int32()))
+    h2.send(mod)
+    got = p2.recv(10)
+    assert src.refcount == rc0 + 1             # only f is remote
+    d = got.to_dict()
+    assert d["f"][:3] == ["u", "v", "w"]       # the referenced factor leaf
+    assert d["i"][1:4].tolist() == [2, 4, 6]   # the computed column
+    # a recomputed dictionary: the layout write, no second remote leaf
+    del d, got
+    gc.collect()
+    rc1 = src.refcount
+    mod2 = t.set_column(1, "f", pa.array([f"s{k}" for k in range(n)]))
+    h2.send(mod2)
+    got = p2.recv(10)
+    assert src.refcount == rc1 + 1             # i remote, f laid out
+    d = got.to_dict()
+    assert d["f"][:3] == ["s0", "s1", "s2"]
+    assert d["i"][1:4].tolist() == [1, 2, 3]
+    del d, got
+    gc.collect()
+    assert src.refcount == rc1
     h2.destroy()
     p2.destroy()
     p1.destroy()

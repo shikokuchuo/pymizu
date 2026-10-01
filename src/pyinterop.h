@@ -122,7 +122,14 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 /* This binding's identity word, the one binding fill (channel and pool). */
 #define MIZU_PY_IDENT \
   MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS | MIZU_CAP_ATTRS | \
-             MIZU_CAP_MIZL | MIZU_CAP_TASKREF)
+             MIZU_CAP_MIZL | MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF)
+
+/* The MIZL remote-leaf directory tag (F2): the column lives in another
+   region and crosses by reference — the entry's data span is the view
+   layer's identifier string, and length / attrs_size / the validity claim
+   describe the referenced column as resolved (DESIGN.md's rules; the
+   vendored core's tag-33 checks). */
+#define PYMIZU_MIZL_TAG_REF 33
 
 /* The task stream (0x12) writer (Phase 4): the header fields then the
    code string, the positional list and the named dict emitted off the
@@ -217,6 +224,16 @@ int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
 PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
                                mizu_read_ctx *ctx);
 
+/* The remote-leaf (MIZL tag 33) resolve: mizu_py_view_resolve's wrap plus
+   the referencing entry's claim validation — the terminal leaf's
+   descriptor read off the opened region and compared against length /
+   attrs_size / na_claim before the wrap. NULL with an exception: a
+   malformed identifier or gone region (the open's own error), a
+   descriptor or claim mismatch (the corrupt-or-newer shape). */
+PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
+                                       mizu_read_ctx *ctx, int64_t length,
+                                       int64_t attrs_size, int na_claim);
+
 /* The 'I' builder: one stream -> one Python object. A 0x13 ref leaf
    resolves through ctx's view cache on a pool handle (the collect-side
    result reader); the channel value reader declines it informatively.
@@ -262,6 +279,14 @@ PyObject *mizu_py_task_error_build(PyObject *tn, PyObject *ms,
    validity verdict (bitmap + count, NULL + -1 known-NA-free, NULL + 0
    the lazy scan) — a borrowed view never reads the region root's words. */
 PyObject *mizu_py_loan_new(PyObject *owner);
+/* to_dict's remote-column wrap: a fresh view open of the referenced
+   region (its own counted add, the loan's sub at the view's death), the
+   column's pointers rebased off the hold's mapping. NULL with an
+   exception on a gone region (the caller's fallback is the copy forms). */
+PyObject *mizu_py_view_borrow_remote(mizu_shm *hold, uint8_t *values,
+                                     const uint8_t *valid, Py_ssize_t len,
+                                     int type, int64_t nulls);
+
 PyObject *mizu_py_view_borrow(PyObject *owner, PyObject *loan,
                               uint8_t *data, Py_ssize_t len, int type,
                               const uint8_t *valid, int64_t nulls);

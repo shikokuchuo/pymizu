@@ -115,12 +115,16 @@ void mizu_py_shmframe_register(PyObject *mizu_error,
 /* The MIZL layout write over the pulled frame: one spill region — header,
    directory, column blobs, the root frame blob, the validity tail — staged
    SHM_VEC (MIZU_TYPE_VEC). same_lang selects the same-language rules (the
-   tzone string verbatim; the caller's row_names). 0 staged, 1 an exception
-   is set, -1 the region was unavailable (the caller falls back to the copy
-   tiers; no exception). */
+   tzone string verbatim; the caller's row_names). hits is the per-column
+   provenance map (NULL: every column a layout leaf): a matched column
+   goes out as a remote leaf (tag 33). 0 staged, 1 an exception is set,
+   -1 the region was unavailable (the caller falls back to the copy tiers;
+   no exception). */
+struct pv_entry;   /* shmframe.c's provenance record */
 int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
                           uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h, int same_lang);
+                          mizu_handle *h, int same_lang,
+                          struct pv_entry const **hits);
 
 /* The export-provenance registry (Phase 3.8): a region-backed Frame's Arrow
    export records what each acquisition handed out; an outgoing frame whose
@@ -132,5 +136,9 @@ void pymizu_shmframe_pv_unregister(const void *owner);
 /* 0 staged (REF), -1 no whole-frame match (the caller writes MIZL). */
 int pymizu_shmframe_pv_match(ixs *x, char **names, mizu_slot_hdr *hdr,
                              uint8_t *payload, uint32_t inline_max);
+/* The per-column match (F2): hits filled with the matched entries (NULL
+   on a miss), the hit count returned. */
+int pymizu_shmframe_pv_match_cols(ixs *x, char **names,
+                                  struct pv_entry const **hits);
 
 #endif

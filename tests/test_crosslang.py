@@ -607,7 +607,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 15)  # R: MIZS|ATTRS|MIZL|TASKREF
+        assert ch._h._peer_ident() == (2, 31)  # R: all five caps
     finally:
         ch.close()
 
@@ -1713,6 +1713,40 @@ def test_py_peer_frame_relay_modified_copies(r_mizu):
         flags0 = f.to_dict()["i"].base.flags
         assert ch.send(df.head(299999)) is True
         assert f.to_dict()["i"].base.flags == flags0   # no REF emit
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+R_FRAME_RELAY_ONE_COMPUTED = r"""
+df <- data.frame(i = 1:300000, x = runif(300000), l = 1:300000)
+mizu::mizu_send(ch, df)
+y <- mizu::mizu_recv(ch, timeout = 60)
+nm <- .Call(mizu:::mizu_zc_view_name, y[["i"]])
+rc <- .Call(mizu:::mizu_zc_refcount, y[["i"]])
+mizu::mizu_send(ch, c(
+  grepl("[", nm, fixed = TRUE),        # a remote leaf over df's own region
+  rc[[1]] >= 2L, rc[[2]] %% 2L == 1L,  # counted, REFHELD
+  identical(y[["i"]], df[["i"]]),
+  identical(y[["l"]], df[["l"]]),
+  identical(y[["x"]], 2 * df[["x"]])
+))
+"""
+
+
+def test_py_peer_frame_relay_one_computed_remote_leaves(r_mizu):
+    # R -> polars (one computed column) -> R, F2: the unmodified columns
+    # cross back as remote leaves (directory tag 33) over R's own region
+    # — R reads views of it; the computed column a layout leaf
+    pl = pytest.importorskip("polars")
+    ch = pymizu.Channel.create(R_FRAME_RELAY_ONE_COMPUTED, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        df = pl.DataFrame(f).with_columns((pl.col("x") * 2).alias("x"))
+        assert ch.send(df) is True
+        # the REFHELD store rides the send (deterministic); the values and
+        # the aliasing are R's assertions
+        assert f.to_dict()["i"].base.flags & 1 == 1
         assert all(ch.recv(60))
     finally:
         ch.close()

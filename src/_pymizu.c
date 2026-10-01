@@ -3114,6 +3114,42 @@ PyObject *mizu_py_strview_borrow(PyObject *owner_obj, PyObject *loan,
   return strview_new((MizuShmOwner *) owner_obj, loan, block, n, str_bytes);
 }
 
+/* A remote column's to_dict wrap (pyinterop.h): the frame's anchor covers
+   another region, so the view rides a fresh open of the referenced one —
+   its own counted add, the loan subbing at the view's death — with the
+   column's pointers rebased off the hold's mapping. */
+PyObject *mizu_py_view_borrow_remote(mizu_shm *hold, uint8_t *values,
+                                     const uint8_t *valid, Py_ssize_t len,
+                                     int type, int64_t nulls) {
+  mizu_shm *shm;
+  if (mizu_shm_open_view(&shm, hold->name) != MIZU_OK) {
+    PyErr_Format(MizuError, "pymizu: shared memory region not found: '%s'",
+                 hold->name);
+    return NULL;
+  }
+  PyObject *owner = (PyObject *) owner_new(shm);
+  if (owner == NULL) {
+    mizu_zc_unref(shm);
+    mizu_shm_close(shm, 0);
+    return NULL;
+  }
+  PyObject *loan = loan_new((MizuShmOwner *) owner);
+  if (loan == NULL) {
+    mizu_zc_unref(shm);
+    Py_DECREF(owner);
+    return NULL;
+  }
+  uint8_t *rbase = (uint8_t *) mizu_shm_addr(shm);
+  const uint8_t *hbase = (const uint8_t *) mizu_shm_addr(hold);
+  const uint8_t *rvalid = valid != NULL ? rbase + (valid - hbase) : NULL;
+  PyObject *out = mizu_py_view_borrow(
+    owner, loan, rbase + (values - (uint8_t *) hbase), len, type, rvalid,
+    nulls);
+  Py_DECREF(loan);
+  Py_DECREF(owner);
+  return out;
+}
+
 PyObject *mizu_py_loan_new(PyObject *owner_obj) {
   return loan_new((MizuShmOwner *) owner_obj);
 }
@@ -3415,6 +3451,90 @@ int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
   return rc;
 }
 
+/* The terminal leaf's descriptor for a remote-leaf (tag 33) validation:
+   a bare name off the root header, a path off the walked directory entry
+   (tree_ref_path's discipline). 0 ok, -1 corrupt. */
+typedef struct {
+  int64_t length;
+  int64_t attrs_size;
+  int na_free;
+} leaf_desc;
+
+static int leaf_descriptor(MizuShmOwner *owner, const char *path,
+                           leaf_desc *d) {
+  const uint8_t *base = (const uint8_t *) mizu_shm_addr(owner->shm);
+  const size_t size = mizu_shm_size(owner->shm);
+  if (size < MIZU_HEADER_SIZE) return -1;
+  if (path == NULL) {
+    uint32_t magic;
+    memcpy(&magic, base, 4);
+    if (magic == MIZU_MAGIC_VEC) {
+      int type;
+      int64_t n, valid[2], attrs;
+      if (mizu_mizh_check(base, size, &type, &n, valid) != 0) return -1;
+      memcpy(&attrs, base + 16, 8);
+      d->length = n;
+      d->attrs_size = attrs;
+      d->na_free = valid[0] == 0 && valid[1] == -1;
+      return 0;
+    }
+    if (magic == MIZU_MAGIC_STR) {
+      int64_t n, block, attrs;
+      if (mizu_mizs_check(base, size, &n, &block, &attrs) != 0) return -1;
+      d->length = n;
+      d->attrs_size = attrs;
+      d->na_free = 0;
+      return 0;
+    }
+    if (magic == MIZU_MAGIC_LIST) {
+      int64_t n, aoff, attrs, valid[2];
+      if (mizu_mizl_check(base, size, &n, &aoff, &attrs, valid) != 0)
+        return -1;
+      d->length = n;
+      d->attrs_size = attrs;
+      d->na_free = 0;
+      return 0;
+    }
+    return -1;
+  }
+  const char *p = path;
+  if (*p++ != '[') return -1;
+  const uint8_t *cur = base;
+  size_t cursz = size;
+  for (;;) {
+    if (*p < '1' || *p > '9') return -1;
+    uint64_t v = (uint64_t) (*p++ - '0');
+    while (*p >= '0' && *p <= '9') {
+      const uint64_t dv = (uint64_t) (*p - '0');
+      if (v > (uint64_t) INT64_MAX / 10 ||
+          (v == (uint64_t) INT64_MAX / 10 &&
+           dv > (uint64_t) INT64_MAX % 10))
+        return -1;
+      v = v * 10 + dv;
+      p++;
+    }
+    const int64_t idx = (int64_t) v - 1;
+    mizu_mizl_entry e;
+    if (mizu_mizl_elem(cur, cursz, idx, &e) != 0) return -1;
+    if (*p == ']') {
+      if (p[1] != '\0') return -1;
+      const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
+      d->length = e.length;
+      d->attrs_size = e.attrs_size;
+      d->na_free = e.valid[0] == 0 && e.valid[1] == -1 &&
+        (mizu_type_elt_size(tag) != 0 || tag == PYMIZU_MIZL_TAG_REF);
+      return 0;
+    }
+    if (*p != ',') return -1;
+    p++;
+    if ((e.sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
+        e.attrs_size != 0)
+      return -1;
+    cur += e.data_offset;
+    cursz = (size_t) e.data_size;
+  }
+}
+
 /* The one resolve behind the REF payload read and the 'I' ref leaf: the
    /mizu_ identifier of an object already in shm — the region name, then
    an optional [i,j,...] path into a list tree (1-based hops, the R
@@ -3452,6 +3572,67 @@ PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
   PyObject *out = pymizu_tree_walk_path(
     (PyObject *) owner, loan, (const uint8_t *) mizu_shm_addr(owner->shm),
     mizu_shm_size(owner->shm), path);
+  Py_DECREF(loan);
+  Py_DECREF(owner);
+  return out;
+}
+
+/* The remote-leaf (MIZL tag 33) resolve: mizu_py_view_resolve's open and
+   wrap, with the referencing entry's claims validated against the
+   terminal leaf's descriptor between them — a mismatch declines as a
+   corrupt or newer region, the count released before the error (never a
+   transient loan on a decline). */
+PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
+                                       mizu_read_ctx *ctx, int64_t length,
+                                       int64_t attrs_size, int na_claim) {
+  size_t name_len = 0;
+  while (name_len < id_len && id[name_len] != '[') name_len++;
+  if (name_len < sizeof(MIZU_PREFIX_LITERAL) - 1 ||
+      name_len >= MIZU_NAME_MAX ||
+      memcmp(id, MIZU_PREFIX_LITERAL,
+             sizeof(MIZU_PREFIX_LITERAL) - 1) != 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return NULL;
+  }
+  MizuShmOwner *owner =
+    open_region_owner((const uint8_t *) id, (uint32_t) name_len, ctx);
+  if (owner == NULL) return NULL;
+  char path[128];
+  const char *pp = NULL;
+  if (name_len < id_len) {
+    if (id_len - name_len >= sizeof path) {
+      mizu_zc_unref(owner->shm);
+      Py_DECREF(owner);
+      PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+      return NULL;
+    }
+    memcpy(path, id + name_len, id_len - name_len);
+    path[id_len - name_len] = '\0';
+    pp = path;
+  }
+  leaf_desc d;
+  if (leaf_descriptor(owner, pp, &d) != 0 || d.length != length ||
+      d.attrs_size != attrs_size || (na_claim && !d.na_free)) {
+    mizu_zc_unref(owner->shm);
+    Py_DECREF(owner);
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a remote "
+                    "leaf's claims do not match the referenced region)");
+    return NULL;
+  }
+  if (pp == NULL) {
+    PyObject *out = view_wrap_region(owner, 0);
+    Py_DECREF(owner);
+    return out;
+  }
+  PyObject *loan = loan_new(owner);
+  if (loan == NULL) {
+    mizu_zc_unref(owner->shm);
+    Py_DECREF(owner);
+    return NULL;
+  }
+  PyObject *out = pymizu_tree_walk_path(
+    (PyObject *) owner, loan, (const uint8_t *) mizu_shm_addr(owner->shm),
+    mizu_shm_size(owner->shm), pp);
   Py_DECREF(loan);
   Py_DECREF(owner);
   return out;
