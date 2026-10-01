@@ -2238,6 +2238,21 @@ void mizu_py_debug_span_remove(void *base) {
   atomic_flag_clear_explicit(&mizu_debug_span_lock, memory_order_release);
 }
 
+PyDoc_STRVAR(view_check_doc,
+"_view_check(obj) -> bool\n\n\
+Is obj re-sendable by reference? An exact _ShmView / _ShmStrView, or a\n\
+buffer whose .base chain ends in one over the view's exact bytes at its\n\
+wire type (the stage_ref rules).");
+
+static PyObject *pymizu_view_check(PyObject *Py_UNUSED(m), PyObject *obj) {
+  mizu_shm *shm = NULL;
+  PyObject *view = NULL;
+  uint32_t caps = 0;
+  const int ok = mizu_py_view_ref_probe(obj, &shm, &view, &caps);
+  Py_XDECREF(view);
+  return PyBool_FromLong(ok);
+}
+
 PyDoc_STRVAR(debug_export_spans_doc,
 "_debug_export_spans() -> list[(int, int)]\n\n\
 Test-only: the (address, size) spans of the live Arrow export\n\
@@ -2722,6 +2737,15 @@ static PyMethodDef view_methods[] = {
   {NULL}
 };
 
+static Py_ssize_t view_length(PyObject *self) {
+  MizuShmView *v = (MizuShmView *) self;
+  return (Py_ssize_t) ((size_t) v->len / mizu_type_elt_size(v->type));
+}
+
+static PySequenceMethods view_as_sequence = {
+  .sq_length = view_length,
+};
+
 static PyBufferProcs view_as_buffer = {
   .bf_getbuffer = view_getbuffer,
   .bf_releasebuffer = NULL,
@@ -2735,6 +2759,7 @@ static PyTypeObject MizuShmViewType = {
   .tp_doc = "A zero-copy view over a shared-memory region (buffer exporter).",
   .tp_dealloc = (destructor) view_dealloc,
   .tp_as_buffer = &view_as_buffer,
+  .tp_as_sequence = &view_as_sequence,
   .tp_getset = view_getset,
   .tp_methods = view_methods,
 };
@@ -2960,6 +2985,14 @@ PyDoc_STRVAR(strview_to_arrow_doc,
 The Arrow C Data Interface export, re-exposed as a named method —\n\
 identical to __arrow_c_array__().");
 
+static Py_ssize_t strview_length(PyObject *self) {
+  return (Py_ssize_t) ((MizuShmStrView *) self)->n;
+}
+
+static PySequenceMethods strview_as_sequence = {
+  .sq_length = strview_length,
+};
+
 static PyMethodDef strview_methods[] = {
   {"to_list", (PyCFunction)(void (*)(void)) strview_to_list, METH_NOARGS,
    strview_to_list_doc},
@@ -2977,6 +3010,7 @@ static PyTypeObject MizuShmStrViewType = {
   .tp_flags = Py_TPFLAGS_DEFAULT,
   .tp_doc = "A zero-copy string view over a shared-memory region (MIZS).",
   .tp_dealloc = (destructor) strview_dealloc,
+  .tp_as_sequence = &strview_as_sequence,
   .tp_methods = strview_methods,
 };
 
@@ -3289,7 +3323,9 @@ static MizuShmOwner *open_region_owner(const uint8_t *name, uint32_t name_len,
   char buf[MIZU_NAME_MAX];
   memcpy(buf, name, name_len);
   buf[name_len] = '\0';
-  MizuViewCache *vc = (MizuViewCache *) ctx->binding_ctx;
+  /* ctx is NULL on the map descriptor's resolve: no cache, no gone signal —
+     the open is the counted add either way */
+  MizuViewCache *vc = ctx != NULL ? (MizuViewCache *) ctx->binding_ctx : NULL;
   MizuShmOwner *owner = vc != NULL ? view_cache_lookup(vc, buf) : NULL;
   if (owner != NULL) {
     mizu_zc_ref(owner->shm);
@@ -3297,7 +3333,12 @@ static MizuShmOwner *open_region_owner(const uint8_t *name, uint32_t name_len,
   } else {
     mizu_shm *shm;
     if (mizu_shm_open_view(&shm, buf) != MIZU_OK) {
-      ctx->gone = 1;
+      if (ctx != NULL) {
+        ctx->gone = 1;
+      } else {
+        PyErr_Format(MizuError,
+                     "pymizu: shared memory region not found: '%s'", buf);
+      }
       return NULL;
     }
     owner = owner_new(shm);
@@ -3320,33 +3361,89 @@ static PyObject *read_shm_vec(const uint8_t *name, uint32_t name_len,
   return r;
 }
 
-/* REF: the /mizu_ identifier of an object already in shm — the region name,
-   then an optional [i,j,...] path into a list tree (1-based hops, the R
+/* The F1 'I' ref gate's view probe (pyinterop.h). */
+int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
+                           PyObject **out_view, uint32_t *out_caps) {
+  if (Py_TYPE(obj) == &MizuShmStrViewType) {
+    MizuShmStrView *sv = (MizuShmStrView *) obj;
+    if (sv->loan == NULL && sv->owner != NULL) {
+      *out_shm = sv->owner->shm;
+      *out_view = obj;
+      Py_INCREF(obj);
+      *out_caps = MIZU_CAP_MIZS;
+      return 1;
+    }
+    return 0;
+  }
+  if (Py_TYPE(obj) == &MizuShmViewType) {
+    MizuShmView *v = (MizuShmView *) obj;
+    if (v->loan == NULL && v->owner != NULL) {
+      *out_shm = v->owner->shm;
+      *out_view = obj;
+      Py_INCREF(obj);
+      *out_caps = 0;
+      return 1;
+    }
+    return 0;
+  }
+  Py_buffer v;
+  if (!PyObject_CheckBuffer(obj) ||
+      PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
+    PyErr_Clear();
+    return 0;
+  }
+  int rc = 0;
+  if (v.readonly && v.strides == NULL) {
+    MizuShmView *view = view_behind(obj);
+    if (view != NULL) {
+      mizu_shm *shm = view->owner != NULL ? view->owner->shm : NULL;
+      int type = wire_type_of(&v);
+      if (view->loan == NULL && shm != NULL &&
+          v.buf == (void *) view->data && v.len == view->len &&
+          (type == view->type ||
+           (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL))) {
+        *out_shm = shm;
+        *out_view = (PyObject *) view;
+        *out_caps = 0;
+        rc = 1;
+      } else {
+        Py_DECREF(view);
+      }
+    }
+  }
+  PyBuffer_Release(&v);
+  return rc;
+}
+
+/* The one resolve behind the REF payload read and the 'I' ref leaf: the
+   /mizu_ identifier of an object already in shm — the region name, then
+   an optional [i,j,...] path into a list tree (1-based hops, the R
    identifier's form). A bare name resolves to the same wrap as SHM_VEC,
    the counted add riding the open; a path resolves through the tree walk
    to the element's wrap, the tree's one loan on its anchor. */
-static PyObject *read_ref(const mizu_slot_hdr *hdr, const uint8_t *payload,
-                          mizu_read_ctx *ctx) {
-  uint32_t name_len = 0;
-  while (name_len < hdr->len && payload[name_len] != '[') name_len++;
+PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
+                               mizu_read_ctx *ctx) {
+  size_t name_len = 0;
+  while (name_len < id_len && id[name_len] != '[') name_len++;
   if (name_len < sizeof(MIZU_PREFIX_LITERAL) - 1 || name_len >= MIZU_NAME_MAX ||
-      memcmp(payload, MIZU_PREFIX_LITERAL,
+      memcmp(id, MIZU_PREFIX_LITERAL,
              sizeof(MIZU_PREFIX_LITERAL) - 1) != 0) {
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
     return NULL;
   }
-  if (name_len == hdr->len)
-    return read_shm_vec(payload, name_len, 0, ctx);
-  MizuShmOwner *owner = open_region_owner(payload, name_len, ctx);
+  if (name_len == id_len)
+    return read_shm_vec((const uint8_t *) id, (uint32_t) name_len, 0, ctx);
+  MizuShmOwner *owner =
+    open_region_owner((const uint8_t *) id, (uint32_t) name_len, ctx);
   if (owner == NULL) return NULL;
   char path[128];
-  if ((size_t) (hdr->len - name_len) >= sizeof path) {
+  if (id_len - name_len >= sizeof path) {
     Py_DECREF(owner);
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
     return NULL;
   }
-  memcpy(path, payload + name_len, (size_t) (hdr->len - name_len));
-  path[hdr->len - name_len] = '\0';
+  memcpy(path, id + name_len, id_len - name_len);
+  path[id_len - name_len] = '\0';
   PyObject *loan = loan_new(owner);
   if (loan == NULL) {
     Py_DECREF(owner);
@@ -3749,7 +3846,7 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
   case MIZU_PYMIZU_CODEC_MAGIC:
     return codec_read(src, n, ctx);
   case MIZU_INTEROP_MAGIC:
-    return pymizu_ix_read(src, n);
+    return pymizu_ix_read(src, n, ctx);
   case MIZU_CODEC_MAGIC: case 'B': case 'X': case 'A':
     /* foreign stream: consume the slot (a plain failure would wedge the
        ring behind it); the verb surfaces MIZU_ERR with this message */
@@ -3855,7 +3952,7 @@ static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
     return read_shm_vec(payload, hdr->len, hdr->aux, ctx);
   case MIZU_KIND_REF:
     if (hdr->len == 0 || hdr->len > 1024) break;   /* the identifier cap */
-    return read_ref(hdr, payload, ctx);
+    return mizu_py_view_resolve((const char *) payload, hdr->len, ctx);
   }
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
@@ -4350,13 +4447,14 @@ static const uint8_t *pool_entry_bytes(const mizu_slot_hdr *hdr,
    handle's policy fields (the capability mask rides the stash), a
    decline there recovered as the task's error stream. */
 static int py_exec_task(mizu_result_sink *sink, const uint8_t *bytes,
-                        size_t blen, MizuHandleCtx *hctx) {
+                        size_t blen, MizuHandleCtx *hctx,
+                        mizu_read_ctx *rctx) {
   uint64_t sub_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
   /* the kind byte at stream offset 4: kind 2 is the map runner — decoded
      and run against the named region by the binding's own runner loop */
   PyObject *value = blen >= 5 && bytes[4] == 2 ?
     pymizu_ix_runner_run(bytes, blen, &sub_ident) :
-    pymizu_ix_task_run(bytes, blen, &sub_ident);
+    pymizu_ix_task_run(bytes, blen, &sub_ident, rctx);
   if (value == NULL) {
     if (!PyErr_ExceptionMatches(PyExc_Exception))
       return 1;      /* BaseException: the worker goes down */
@@ -4424,7 +4522,7 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
                      (unsigned) bytes[3]);
         return publish_exc(sink, MIZU_IDENT(MIZU_LANG_BYTES, 0));
       }
-      return py_exec_task(sink, bytes, blen, hctx);
+      return py_exec_task(sink, bytes, blen, hctx, ctx);
     }
     if (bytes[0] == MIZU_CODEC_MAGIC || bytes[0] == 'B' ||
         bytes[0] == 'X' || bytes[0] == 'A') {
@@ -4486,6 +4584,17 @@ typedef struct {
   MizuViewCache *vcache;   /* the binding.ctx view cache, for teardown */
 } MizuChannel;
 
+/* The pin release (F1's D4): a ref-carrying task stream pins the spec
+   object at stage — one INCREF there, this DECREF at the entry's
+   claim-side release, so a region can never recycle under an identifier
+   in flight. Fires only on the handle-owning thread; submitter handles
+   release the GIL around the verb, so reacquire. */
+static void py_drop(void *Py_UNUSED(ctx), void *pin) {
+  PyGILState_STATE gil = PyGILState_Ensure();
+  Py_DECREF((PyObject *) pin);
+  PyGILState_Release(gil);
+}
+
 static void chan_binding(mizu_binding *b) {
   mizu_binding_init(b);
   b->stage = py_stage;
@@ -4493,9 +4602,9 @@ static void chan_binding(mizu_binding *b) {
                                py_read */
   b->check = py_check;
   b->ident = MIZU_PY_IDENT;
-  /* exec/park/sweep/drop NULL: a channel never evals; submitter handles
-     release the GIL around the whole verb, so no park hook; staging pins
-     nothing, so no drop hook. */
+  b->drop = py_drop;
+  /* exec/park/sweep NULL: a channel never evals; submitter handles
+     release the GIL around the whole verb, so no park hook. */
 }
 
 static mizu_channel *chan_get(MizuChannel *self) {
@@ -5014,7 +5123,8 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->exec = worker ? py_exec : NULL;
   b->park = worker ? py_park : NULL;
   b->ident = MIZU_PY_IDENT;
-  /* sweep/drop NULL: no per-handle caches, and staging pins nothing */
+  b->drop = py_drop;
+  /* sweep NULL: no per-handle caches */
 }
 
 static mizu_pool *pool_peek(MizuPool *self) {
@@ -6951,6 +7061,7 @@ static PyMethodDef pymizu_methods[] = {
   {"is_sentinel", pymizu_is_sentinel, METH_O, is_sentinel_doc},
   {"_debug_export_spans", (PyCFunction) pymizu_debug_export_spans,
    METH_NOARGS, debug_export_spans_doc},
+  {"_view_check", (PyCFunction) pymizu_view_check, METH_O, view_check_doc},
   {"abi_version", (PyCFunction) pymizu_abi_version, METH_NOARGS, abi_version_doc},
   {"prune", (PyCFunction) pymizu_prune, METH_NOARGS, prune_doc},
   {"_tune_malloc", (PyCFunction) pymizu_tune_malloc, METH_NOARGS,

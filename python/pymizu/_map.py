@@ -255,6 +255,18 @@ def _runner_ix(
     return _runner(region_name, k, gen, seed_spec)
 
 
+def _view_accessor(x: _Any) -> _Callable[[int], _Any]:
+    """The element accessor for a descriptor x: a resolved view reads
+    off the shared pages (an ndarray with numpy, a memoryview without), a
+    string view's one explicit copy, a plain list its own indexing."""
+    if _pymizu._view_check(x):
+        if hasattr(x, "to_list"):
+            return x.to_list().__getitem__
+        if _np is None:
+            return memoryview(x).__getitem__
+    return x.__getitem__
+
+
 def _raw_accessor(view: _Any, tag: int) -> _Callable[[int], _Any]:
     """Wrap the region's raw x section once: a numpy array over the mapping
     when numpy is present, else a cast memoryview. Indexing yields one
@@ -284,7 +296,7 @@ def _map_ctx(name: str) -> _Ctx:
             get = (
                 _raw_accessor(_pymizu._map_x_view(capsule), hdr["x_tag"])
                 if raw_x
-                else x.__getitem__
+                else _view_accessor(x)
             )
         elif raw_x:
             fn, args, kwargs = _pickle.loads(raw)
@@ -519,12 +531,16 @@ def pool_map(
 
     # the raw-x gate: a C-contiguous buffer of a supported dtype rides the
     # region as bare bytes (complex needs numpy's frombuffer); anything
-    # else pickles into the descriptor
-    probe = _pymizu._map_probe_x(x)
+    # else pickles into the descriptor. A received view x on a spec map
+    # crosses as one ref leaf instead (F1's D6): the workers read the
+    # resolved view off the shared pages
+    view_x = spec and _pymizu._view_check(x)
+    probe = None if view_x else _pymizu._map_probe_x(x)
     if probe is not None and probe[0] == 15 and _np is None:
         probe = None
     if probe is None:
-        x = list(x)
+        if not view_x:
+            x = list(x)
         n = len(x)
     else:
         n = probe[1]
@@ -1004,11 +1020,13 @@ class PreparedMap:
         """(Re)target the map at x: probe for the raw section, rebuild the
         descriptor, and recompute the morsel geometry from the pool's
         current caps."""
-        probe = _pymizu._map_probe_x(x)
+        view_x = self._spec and _pymizu._view_check(x)
+        probe = None if view_x else _pymizu._map_probe_x(x)
         if probe is not None and probe[0] == 15 and _np is None:
             probe = None
         if probe is None:
-            x = list(x)
+            if not view_x:
+                x = list(x)
             n = len(x)
         else:
             n = probe[1]

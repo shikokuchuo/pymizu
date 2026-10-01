@@ -405,3 +405,26 @@ recorded spread (memcpy 124.3, identity 102.3, int64 133.5; foreign
 widen 275.4, masked 97.3, masked int64 136.9, masked+scan 136.8).
 
 Status: 351 pass, 5 skip; ruff + pyrefly clean.
+
+## 2026-10-01 — task arguments by reference (F1)
+
+The 'I' task stream gains the ref leaf (0x13): a received view re-sent
+as an argument crosses as its identifier (REFHELD at emit, the spec
+pinned via the new drop hook to the claim-side release), and one fresh
+layout-eligible buffer argument stages a single SHM_VEC checkout (the
+frame-plan discipline: the size pass picks the first candidate whose
+remainder fits inline, abandon-and-replan on a checkout failure).
+Emission gates on the new MIZU_CAP_TASKREF (bit 3); a spec carrying a
+ref candidate to a pool without the bit declines locally. CPython's
+refcounting frees argument views at exec completion (D5 is free here).
+
+Results (8 MB float64 argument to a pool task, best-of-3): Python
+submitter -> R workers — SHM_VEC (a fresh array) 1.14 ms/task and REF
+(a received view re-sent) 1.03 ms against the pre-F1 copy's 1.59/1.51
+ms (25-32% off, the R worker's per-task floor dominating); Python pool
+flat at 0.23 ms (private frames untouched). R submitter -> Python
+workers — REF 0.12 ms (the copy's ~0.38), SHM_VEC 0.50 ms against
+0.38 ms for the copy (mizu's Arrow-ready validity scan, halved by its
+new pre-scan gate).
+
+Status: 358 pass, 5 skip; ruff + pyrefly clean.

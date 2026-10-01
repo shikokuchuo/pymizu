@@ -10,6 +10,26 @@ Initial pre-release.
 
 ### Added
 
+- Task arguments by reference (F1): the `'I'` task stream gains the ref
+  leaf (0x13), so a foreign-pool task's large arguments no longer pay a
+  full copy each way. One fresh layout-eligible buffer argument past the
+  zero-copy floor stages a single SHM_VEC layout write into the stage's
+  one spill checkout (the size pass picks the first candidate whose
+  remainder fits the inline budget; a checkout failure re-runs by
+  value), and an argument that is already a shared view (a `_ShmView` /
+  `_ShmStrView`, or a buffer whose `.base` chain ends in one over the
+  view's exact bytes at its wire type) crosses as its region identifier
+  alone — REFHELD set at emit, zero payload bytes. The submit side pins
+  the spec for the handoff (the new `drop` hook decrefs at the
+  claim-side release), and a view the task returns keeps its loan
+  through the publish. A view passed as `Pool.map()`'s `x` on a foreign
+  pool crosses the same way, the workers reading elements off the shared
+  pages. Emission gates on the new `MIZU_CAP_TASKREF` capability bit
+  (bit 3, advertised by both bindings): a spec carrying a by-reference
+  candidate to a pool without the reader declines locally at submit,
+  naming the remedy. A 0x13 leaf anywhere else (a channel value) is the
+  informative consume-decline, never a wedge.
+
 - Mixed-language pools (Phase 4): a Python submitter drives a pool of R
   workers, and vice versa. `pymizu.call("pkg::fn", ...)` or
   `pymizu.call(source=..., **names)` builds a task specification —

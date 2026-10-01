@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "pyinterop.h"
+#include <structmember.h>
 #include "pyshmframe.h"
 
 static PyObject *MizuError;
@@ -134,7 +135,14 @@ static int64_t attr_as_long(PyObject *obj, const char *name, int *ok) {
    is found here); a real dst writes behind the size pass's count and
    cannot decline. The decline record (path + reason) becomes the
    DeclinedError; warn accumulates the conversion warnings through the
-   write pass (raised after it completes, never mid-write). */
+   write pass (raised after it completes, never mid-write).
+
+   The F1 refs state: with refs, a re-sendable view emits a 0x13 leaf
+   (the caps filter read off the peer word, skipped when h is NULL) and
+   the plan's zc_node stages the stream's one SHM_VEC checkout on its
+   first encounter — a mid-write checkout failure sets abandon and
+   unwinds (the caller re-runs with no_zc = 1). ref_emitted reports a
+   ref went out: the frame pins the spec and never claims keeperless. */
 typedef struct {
   uint8_t *dst;
   size_t total;
@@ -144,7 +152,72 @@ typedef struct {
   size_t path_len;
   char reason[192];
   cvt_warn warn;
+  mizu_handle *h;
+  uint32_t caps;
+  uint32_t inline_max;
+  int churn;
+  int no_zc;
+  int refs;
+  PyObject *zc_node;
+  int zc_spent;
+  int abandon;
+  int ref_emitted;
 } ixw;
+
+// The corpus's ref marker ---------------------------------------------------------
+
+/* A region identifier standing in for a view, so the conformance loop
+   round-trips synthetic identifiers without a region: the hook writer
+   (h == NULL) emits it as a 0x13 leaf; the hook decode represents one. */
+typedef struct {
+  PyObject_HEAD
+  PyObject *id;
+} MizuIxRef;
+
+static void ixref_dealloc(PyObject *self) {
+  Py_XDECREF(((MizuIxRef *) self)->id);
+  Py_TYPE(self)->tp_free(self);
+}
+
+static int ixref_init(PyObject *self, PyObject *args, PyObject *kwargs) {
+  PyObject *id = NULL;
+  if (!PyArg_ParseTuple(args, "U", &id)) return -1;
+  Py_INCREF(id);
+  Py_XSETREF(((MizuIxRef *) self)->id, id);
+  return 0;
+}
+
+static PyMemberDef ixref_members[] = {
+  { "id", T_OBJECT_EX, offsetof(MizuIxRef, id), READONLY,
+    "the region identifier" },
+  { NULL }
+};
+
+static PyTypeObject MizuIxRefType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pymizu._IxRef",
+  .tp_basicsize = sizeof(MizuIxRef),
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "The corpus's ref marker: a region identifier standing in "
+            "for a view.",
+  .tp_dealloc = ixref_dealloc,
+  .tp_init = ixref_init,
+  .tp_new = PyType_GenericNew,
+  .tp_members = ixref_members,
+};
+
+static PyObject *ixr_ref_marker(const unsigned char *ptr, uint64_t len) {
+  MizuIxRef *self =
+    (MizuIxRef *) MizuIxRefType.tp_alloc(&MizuIxRefType, 0);
+  if (self == NULL) return NULL;
+  self->id =
+    PyUnicode_FromStringAndSize((const char *) ptr, (Py_ssize_t) len);
+  if (self->id == NULL) {
+    Py_DECREF(self);
+    return NULL;
+  }
+  return (PyObject *) self;
+}
 
 #define IXW_DST(w) ((w)->dst != NULL ? (w)->dst + (w)->total : NULL)
 #define IXW_PUT(w, call) do { \
@@ -759,8 +832,20 @@ static PyObject *ixr_vec(int wire_type, const uint8_t *ptr, uint64_t count) {
   return NULL;
 }
 
-static PyObject *ixr_value(mizu_ix *cur);
-static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols);
+/* The reader's 0x13 mode, threaded through the builder: 0 declines (the
+   channel value reader and the layout blobs — refs never cross there),
+   1 resolves through rctx's view cache (the task decode, the map
+   descriptor reader, the collect-side result reader), 2 represents the
+   identifier as a marker for the corpus's conformance loop (the hook
+   decode — never resolves, so synthetic identifiers round-trip). */
+typedef struct {
+  int refs;
+  mizu_read_ctx *rctx;
+} ixr_mode;
+
+static PyObject *ixr_value(mizu_ix *cur, const ixr_mode *mode);
+static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols,
+                           const ixr_mode *mode);
 
 static PyObject *ixr_str(const mizu_ix_item *it) {
   if (it->na) Py_RETURN_NONE;
@@ -768,7 +853,7 @@ static PyObject *ixr_str(const mizu_ix_item *it) {
                               NULL);
 }
 
-static PyObject *ixr_strv(mizu_ix *cur, uint64_t count) {
+static PyObject *ixr_strv(mizu_ix *cur, uint64_t count, const ixr_mode *mode) {
   PyObject *out = PyList_New((Py_ssize_t) count);
   if (out == NULL) return NULL;
   for (uint64_t i = 0; i < count; i++) {
@@ -788,11 +873,11 @@ static PyObject *ixr_strv(mizu_ix *cur, uint64_t count) {
   return out;
 }
 
-static PyObject *ixr_list(mizu_ix *cur, uint64_t count) {
+static PyObject *ixr_list(mizu_ix *cur, uint64_t count, const ixr_mode *mode) {
   PyObject *out = PyList_New((Py_ssize_t) count);
   if (out == NULL) return NULL;
   for (uint64_t i = 0; i < count; i++) {
-    PyObject *v = ixr_value(cur);
+    PyObject *v = ixr_value(cur, mode);
     if (v == NULL) {
       Py_DECREF(out);
       return NULL;
@@ -802,7 +887,7 @@ static PyObject *ixr_list(mizu_ix *cur, uint64_t count) {
   return out;
 }
 
-static PyObject *ixr_dict(mizu_ix *cur, uint64_t count) {
+static PyObject *ixr_dict(mizu_ix *cur, uint64_t count, const ixr_mode *mode) {
   PyObject *out = PyDict_New();
   if (out == NULL) return NULL;
   for (uint64_t i = 0; i < count; i++) {
@@ -818,7 +903,7 @@ static PyObject *ixr_dict(mizu_ix *cur, uint64_t count) {
       Py_DECREF(out);
       return NULL;
     }
-    PyObject *v = ixr_value(cur);
+    PyObject *v = ixr_value(cur, mode);
     if (v == NULL) {
       Py_DECREF(k);
       Py_DECREF(out);
@@ -869,7 +954,8 @@ static void attr_vals_free(attr_ent *ents, int n) {
 }
 
 /* Read the attr's dict (the cursor's next item is the DICT begin). */
-static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out) {
+static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
+                               const ixr_mode *mode) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK || it.kind != MIZU_IX_DICT) {
     PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
@@ -920,7 +1006,7 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out) {
       break;
     case MIZU_IX_STRV:
       ents[i].kind = AV_STRLIST;
-      ents[i].val.obj = ixr_strv(cur, vit.count);
+      ents[i].val.obj = ixr_strv(cur, vit.count, mode);
       if (ents[i].val.obj == NULL) goto fail;
       break;
     case MIZU_IX_VEC:
@@ -938,7 +1024,7 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out) {
       memcpy(&ents[i].val.v, &vit.u64[0], 8);
       break;
     default: {
-      PyObject *v = ixr_value(cur);
+      PyObject *v = ixr_value(cur, mode);
       if (v == NULL) goto fail;
       ents[i].kind = AV_OBJ;
       ents[i].val.obj = v;
@@ -976,7 +1062,7 @@ static attr_ent *blob_attrs(const uint8_t *buf, size_t size, int *n_out) {
     PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
     return NULL;
   }
-  attr_ent *ents = ixr_attr_dict(&cur, n_out);
+  attr_ent *ents = ixr_attr_dict(&cur, n_out, NULL);
   if (ents == NULL) return NULL;
   if (mizu_ix_end(&cur) != MIZU_OK) {
     PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
@@ -1139,7 +1225,7 @@ static PyObject *factor_to_list(const int32_t *codes, uint64_t n,
   return out;
 }
 
-static PyObject *ixr_attr(mizu_ix *cur);
+static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode);
 
 /* The err tag's Python home: a TaskError *value* (remote_type,
    remote_traceback, index when the flags carry one) — a received error is
@@ -1173,7 +1259,7 @@ fail:
   return NULL;
 }
 
-static PyObject *ixr_value(mizu_ix *cur) {
+static PyObject *ixr_value(mizu_ix *cur, const ixr_mode *mode) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) {
     PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
@@ -1209,15 +1295,26 @@ static PyObject *ixr_value(mizu_ix *cur) {
   case MIZU_IX_VEC:
     return ixr_vec((int) it.type, it.ptr, it.count);
   case MIZU_IX_STRV:
-    return ixr_strv(cur, it.count);
+    return ixr_strv(cur, it.count, mode);
   case MIZU_IX_LIST:
-    return ixr_list(cur, it.count);
+    return ixr_list(cur, it.count, mode);
   case MIZU_IX_DICT:
-    return ixr_dict(cur, it.count);
+    return ixr_dict(cur, it.count, mode);
   case MIZU_IX_ATTR:
-    return ixr_attr(cur);
+    return ixr_attr(cur, mode);
   case MIZU_IX_ERR:
     return ixr_err(&it);
+  case MIZU_IX_REF: {
+    if (mode == NULL || mode->refs == 0) {
+      PyErr_SetString(MizuError, "pymizu: an interop ref cannot cross as "
+                      "a channel value");
+      return NULL;
+    }
+    if (mode->refs == 2)
+      return ixr_ref_marker(it.ptr, it.len);
+    return mizu_py_view_resolve((const char *) it.ptr, (size_t) it.len,
+                                mode->rctx);
+  }
   case MIZU_IX_TASK:
     PyErr_SetString(MizuError, "pymizu: an interop task is not a value");
     return NULL;
@@ -1360,22 +1457,22 @@ static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
 /* The attr dispatcher: the value item leads, then the dict, then the
    shape decision (factor / data.frame / dim / Date / POSIXct, else the
    no-home error). */
-static PyObject *ixr_attr(mizu_ix *cur) {
+static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   mizu_ix_item vit;
   if (mizu_ix_next(cur, &vit) != MIZU_OK) {
     PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
     return NULL;
   }
   if (vit.kind == MIZU_IX_LIST)
-    return ixr_frame(cur, vit.count);
+    return ixr_frame(cur, vit.count, mode);
   PyObject *out = NULL;
   if (vit.kind == MIZU_IX_STRV) {
     /* consume the strings (a character matrix has no home) */
-    PyObject *skip = ixr_strv(cur, vit.count);
+    PyObject *skip = ixr_strv(cur, vit.count, mode);
     if (skip == NULL) return NULL;
     Py_DECREF(skip);
     int nent = 0;
-    attr_ent *ents = ixr_attr_dict(cur, &nent);
+    attr_ent *ents = ixr_attr_dict(cur, &nent, mode);
     if (ents == NULL) return NULL;
     ixr_no_home(ents, nent, "an attributed character vector");
     attr_vals_free(ents, nent);
@@ -1405,7 +1502,7 @@ static PyObject *ixr_attr(mizu_ix *cur) {
     vtype = MIZU_TYPE_INT;
   }
   int nent = 0;
-  attr_ent *ents = ixr_attr_dict(cur, &nent);
+  attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
   if (ents == NULL) return NULL;
   attr_ent *cls = attr_find(ents, nent, "class");
   attr_ent *lv = attr_find(ents, nent, "levels");
@@ -1635,7 +1732,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
       vtype = MIZU_TYPE_INT;
     }
     int nent = 0;
-    attr_ent *ents = ixr_attr_dict(cur, &nent);
+    attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
     if (ents == NULL) return -1;
     int rc = -1;
     attr_ent *cls = attr_find(ents, nent, "class");
@@ -1876,7 +1973,8 @@ static PyObject *frame_rownames_build(const attr_ent *rn, int64_t nrow) {
 
 /* The data.frame shape: read the columns, then the dict, and validate
    before installing the shell. */
-static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64) {
+static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
+                           const ixr_mode *mode) {
   if (ncols64 == 0 || ncols64 > (1u << 20)) {
     PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
                     "a frame without columns");
@@ -1896,7 +1994,7 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64) {
     }
   }
   int nent = 0;
-  attr_ent *ents = ixr_attr_dict(cur, &nent);
+  attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
   if (ents == NULL) goto fail;
   attr_ent *cls = attr_find(ents, nent, "class");
   attr_ent *nm = attr_find(ents, nent, "names");
@@ -3071,11 +3169,103 @@ static void ixw_stdlib_date(ixw *w, PyObject *obj) {
   ixe_date(w, &days, 1, 1.0);
 }
 
+/* The plan's SHM_VEC candidate: the frame_buf_write body (one MIZH
+   layout write into the stream's single spill checkout, the
+   producer-loan retain), then the ref leaf with the fresh region's name
+   (F1's D1: the one tag serves both by-reference cases). The size pass
+   counts the conservative reservation — the fresh region's name length
+   is known only at the checkout. A checkout failure (a churn race)
+   abandons: nothing is retained yet, the caller re-runs with no_zc = 1. */
+static void ixw_zc_leaf(ixw *w, PyObject *obj) {
+  if (w->dst == NULL) {
+    w->total += 2 + (MIZU_NAME_MAX - 1);
+    return;
+  }
+  Py_buffer v;
+  if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
+    PyErr_Clear();
+    /* the plan and the write cannot disagree (eligibility is a pure
+       function and no verbs run between the passes) — a caller bug */
+    ixw_decline(w, "the recorded zero-copy node is no longer eligible");
+    return;
+  }
+  int type = mizu_py_wire_type_of(&v);
+  size_t n = (size_t) v.len;
+  mizu_shm *shm = NULL;
+  if (v.strides != NULL || type == 0) {
+    PyBuffer_Release(&v);
+    ixw_decline(w, "the recorded zero-copy node is no longer eligible");
+    return;
+  }
+  if (mizu_stage_spill_get(w->h, MIZU_HEADER_SIZE + n, &shm) != MIZU_OK) {
+    PyBuffer_Release(&v);
+    w->abandon = 1;
+    w->decline = 1;
+    return;
+  }
+  uint8_t *base = (uint8_t *) mizu_shm_addr(shm);
+  mizu_mizh_write(base, type, (int64_t) (n / mizu_type_elt_size(type)));
+  /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp) */
+  mizu_mizh_validity_set(base, 0, -1);
+  memcpy(base + MIZU_HEADER_SIZE, v.buf, n);
+  PyBuffer_Release(&v);
+  mizu_stage_retain_zc(w->h, shm);
+  IXW_PUT(w, mizu_ix_put_ref(IXW_DST(w), shm->name,
+                             (uint32_t) shm->name_len));
+}
+
+/* The F1 ref gate (inline in ixw_node ahead of the dispatch): a
+   re-sendable view emits the 0x13 leaf (the region identifier, zero
+   value bytes) — REFHELD OR'd into the region's flags (the holder set
+   widens beyond the direct peer), the emission recorded for the caller's
+   spec pin (D4: the loan rides the claim-side release). A
+   caps-insufficient view falls through to the value write, the §4.2
+   filter behavior. */
 static void ixw_node(ixw *w, PyObject *obj) {
   if (w->decline) return;
   if (w->depth > MIZU_IX_DEPTH_MAX) {
     ixw_decline(w, "the value nests past the depth cap (64)");
     return;
+  }
+  if (w->refs && obj != Py_None) {
+    if (obj == w->zc_node && !w->zc_spent && w->h != NULL && !w->no_zc) {
+      w->zc_spent = 1;
+      ixw_zc_leaf(w, obj);
+      return;
+    }
+    if (w->h == NULL && Py_TYPE(obj) == &MizuIxRefType) {
+      /* the corpus's marker (the hook writer, never a live stage) */
+      MizuIxRef *m = (MizuIxRef *) obj;
+      Py_ssize_t mn;
+      const char *ms = PyUnicode_AsUTF8AndSize(m->id, &mn);
+      if (ms == NULL) {
+        PyErr_Clear();
+        ixw_decline(w, "a ref identifier is not writable as UTF-8");
+        return;
+      }
+      if (mn < 1 || mn > 255) {
+        ixw_decline(w, "a ref identifier length outside 1..255");
+        return;
+      }
+      IXW_PUT(w, mizu_ix_put_ref(IXW_DST(w), ms, (uint32_t) mn));
+      return;
+    }
+    PyObject *save = NULL;
+    mizu_shm *shm = NULL;
+    uint32_t need = 0;
+    if (mizu_py_view_ref_probe(obj, &shm, &save, &need) &&
+        (w->h == NULL || (w->caps & need) == need)) {
+      if (w->dst != NULL)
+        atomic_fetch_or_explicit(mizu_zc_flags_(mizu_shm_addr(shm)),
+                                 MIZU_ZC_FLAG_REFHELD,
+                                 memory_order_acq_rel);
+      IXW_PUT(w, mizu_ix_put_ref(IXW_DST(w), shm->name,
+                                 (uint32_t) shm->name_len));
+      w->ref_emitted = 1;
+      Py_DECREF(save);         /* the spec's pin covers the loan (D4) */
+      return;
+    }
+    Py_XDECREF(save);
   }
   if (obj == Py_None) {
     IXW_PUT(w, mizu_ix_put_nil(IXW_DST(w)));
@@ -5614,6 +5804,68 @@ static void ixw_task(ixw *w, const char *code, Py_ssize_t code_n, int kind,
   ixw_task_fields(w, code, code_n, args, kwargs);
 }
 
+/* The pre-scan's node probe (the document-order walk shares ixw_node's
+   shape): a re-sendable view sets *out_has_ref; a layout-eligible buffer
+   arg past the floor (the frame_buf_write gate) is a zc candidate. */
+static int ixp_probe(PyObject *obj, const ixw *w, int *out_has_ref,
+                     PyObject **cand, int max_cand) {
+  if (obj == Py_None) return 0;
+  mizu_shm *shm = NULL;
+  PyObject *view = NULL;
+  uint32_t need = 0;
+  if (mizu_py_view_ref_probe(obj, &shm, &view, &need)) {
+    const int ok = w->h == NULL || (w->caps & need) == need;
+    Py_DECREF(view);
+    if (ok) {
+      *out_has_ref = 1;
+      return 0;                    /* refs for free — never the zc node */
+    }
+  }
+  if (!w->churn && PyObject_CheckBuffer(obj)) {
+    Py_buffer v;
+    if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
+      const size_t zc_gate = (size_t) w->inline_max > MIZU_ZC_FLOOR ?
+        (size_t) w->inline_max : MIZU_ZC_FLOOR;
+      const int ok = v.strides == NULL && mizu_py_wire_type_of(&v) != 0 &&
+        (size_t) v.len >= zc_gate;
+      PyBuffer_Release(&v);
+      if (ok) {
+        if (max_cand > 0) cand[0] = obj;
+        return 1;
+      }
+    } else {
+      PyErr_Clear();
+    }
+  }
+  if (PyList_CheckExact(obj) || PyTuple_CheckExact(obj)) {
+    const int is_list = PyList_CheckExact(obj) != 0;
+    const Py_ssize_t n = is_list ? PyList_GET_SIZE(obj) :
+      PyTuple_GET_SIZE(obj);
+    int ncand = 0;
+    for (Py_ssize_t i = 0; i < n && ncand >= 0; i++) {
+      int got = ixp_probe(is_list ? PyList_GET_ITEM(obj, i) :
+                          PyTuple_GET_ITEM(obj, i), w, out_has_ref,
+                          cand + ncand, max_cand - ncand);
+      ncand += got;
+      if (ncand >= max_cand) ncand = -1;
+    }
+    return ncand < 0 ? max_cand : ncand;
+  }
+  if (PyDict_CheckExact(obj)) {
+    int ncand = 0;
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (ncand >= 0 && PyDict_Next(obj, &pos, &k, &v)) {
+      int got = ixp_probe(v, w, out_has_ref, cand + ncand,
+                          max_cand - ncand);
+      ncand += got;
+      if (ncand >= max_cand) ncand = -1;
+    }
+    return ncand < 0 ? max_cand : ncand;
+  }
+  return 0;
+}
+
 int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
                          uint8_t *payload, uint32_t inline_max,
                          mizu_handle *h, uint64_t ident) {
@@ -5648,10 +5900,63 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     goto out;
   }
   {
+    ixw base;
+    memset(&base, 0, sizeof(base));
+    memcpy(base.path, "args", 5);
+    base.path_len = 4;
+    base.h = h;
+    base.caps = (uint32_t) (word >> 32);
+    base.inline_max = inline_max;
+    base.churn = mizu_handle_churn(h);
+    base.refs = 1;
+    /* D3's size-pass-first: the pre-scan finds the ref/zc candidates
+       (and doubles as the D2 detector); with a zc candidate the write
+       stages the single checkout, inline-fitting by construction */
+    PyObject *cand[16];
+    int ncand = 0, has_ref = 0;
+    for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(args) && ncand >= 0; i++) {
+      int got = ixp_probe(PyTuple_GET_ITEM(args, i), &base, &has_ref,
+                          cand + ncand, 16 - ncand);
+      ncand += got;
+      if (ncand >= 16) ncand = -1;
+    }
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (ncand >= 0 && PyDict_Next(kwargs, &pos, &k, &v)) {
+      int got = ixp_probe(v, &base, &has_ref, cand + ncand, 16 - ncand);
+      ncand += got;
+      if (ncand >= 16) ncand = -1;
+    }
+    if (ncand < 0) ncand = 16;
+    PyObject *zc_node = NULL;
+    for (int i = 0; i < ncand && zc_node == NULL; i++) {
+      ixw w;
+      memcpy(&w, &base, sizeof(w));
+      w.zc_node = cand[i];
+      ixw_task(&w, code_s, code_n, (int) kind, args, kwargs,
+               (uint32_t) (word & 0xff), ident);
+      if (w.decline) {
+        ixw_raise(&w);
+        goto out;
+      }
+      if (w.total <= (size_t) inline_max) zc_node = cand[i];
+    }
+    if ((has_ref || zc_node != NULL) && !(base.caps & MIZU_CAP_TASKREF)) {
+      /* D2: fail locally rather than remotely — a remote failure loses
+         the work to a task error stream */
+      ixw w;
+      memcpy(&w, &base, sizeof(w));
+      ixw_decline(&w, "the pool's workers cannot read by-reference task "
+                      "arguments (upgrade the workers' binding)");
+      ixw_raise(&w);
+      goto out;
+    }
+    int no_zc = zc_node == NULL;
+  retry:;
     ixw w;
-    memset(&w, 0, sizeof(w));
-    memcpy(w.path, "args", 5);
-    w.path_len = 4;
+    memcpy(&w, &base, sizeof(w));
+    w.zc_node = zc_node;
+    w.no_zc = no_zc;
     ixw_task(&w, code_s, code_n, (int) kind, args, kwargs,
              (uint32_t) (word & 0xff), ident);
     if (w.decline) {
@@ -5663,17 +5968,34 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     memcpy(&w2, &w, sizeof(w2));
     w2.total = 0;
     w2.decline = 0;
+    w2.zc_spent = 0;
+    w2.ref_emitted = 0;
     memset(&w2.warn, 0, sizeof(w2.warn));
     if (n <= (size_t) inline_max) {
       w2.dst = payload;
       ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
                (uint32_t) (word & 0xff), ident);
+      if (w2.abandon) {
+        /* a mid-write checkout failure (a churn race): by value, never
+           a partial stream */
+        zc_node = NULL;
+        no_zc = 1;
+        goto retry;
+      }
       if (mizu_py_cvt_warn(&w2.warn) != 0) goto out;
       hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) n;
+      hdr->len = (uint32_t) w2.total;
       hdr->aux = 0;          /* no keeperless claim: inert on task entries */
+      if (w2.ref_emitted) {
+        /* D4: the submit-side handoff pins the spec (every view the
+           argument trees carry) until the claim-side release */
+        Py_INCREF(spec);
+        mizu_stage_pin(h, (void *) spec);
+      }
       rc = 0;
     } else {
+      /* a zc-carrying stream fits inline by construction, so this branch
+         is checkout-free — never an abandon */
       uint8_t *buf = malloc(n);
       if (buf == NULL) {
         PyErr_NoMemory();
@@ -5685,6 +6007,10 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
       int wrc = mizu_py_cvt_warn(&w2.warn);
       if (wrc == 0)
         rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
+      if (rc == 0 && w2.ref_emitted) {
+        Py_INCREF(spec);
+        mizu_stage_pin(h, (void *) spec);
+      }
       free(buf);
     }
   }
@@ -5713,6 +6039,7 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   memset(&w, 0, sizeof(w));
   memcpy(w.path, "args", 5);
   w.path_len = 4;
+  w.refs = 1;              /* the hook mode: markers and REF leaves emit */
   ixw_task(&w, code_s, code_n, (int) kind, args, kwargs, target, ident);
   if (w.decline) {
     ixw_raise(&w);
@@ -5893,7 +6220,8 @@ static PyObject *exec_source_fn(void) {
    ast split (exec the prefix, eval the trailing expression). The stream
    is fully validated before anything executes. */
 PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
-                             uint64_t *ident_out) {
+                             uint64_t *ident_out, mizu_read_ctx *ctx) {
+  const ixr_mode mode = { 1, ctx };
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
   if (ixt_open(&cur, src, n, &it, 1) < 0) return NULL;
@@ -5924,7 +6252,7 @@ PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
     goto out;
   }
   for (size_t i = 0; i < nargs; i++) {
-    PyObject *v = ixr_value(&cur);
+    PyObject *v = ixr_value(&cur, &mode);
     if (v == NULL) goto out;
     if (kind == 0) {
       args[filled++] = v;
@@ -5955,7 +6283,7 @@ PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
     for (size_t j = 0; j < nkw; j++) {
       PyObject *ko = ixt_key(&cur, keyset);
       if (ko == NULL) goto out;
-      PyObject *v = ixr_value(&cur);
+      PyObject *v = ixr_value(&cur, &mode);
       if (v == NULL) {
         Py_DECREF(ko);
         goto out;
@@ -6002,6 +6330,7 @@ out:
 /* The _read_task test hook's half: the same cursor walk and shape checks,
    building the components for inspection (no resolution, no eval). */
 PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
+  const ixr_mode mode = { 2, NULL };
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
   if (ixt_open(&cur, src, n, &it, 1) < 0) return NULL;
@@ -6011,7 +6340,7 @@ PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
   positional = PyList_New((Py_ssize_t) pos.count);
   if (positional == NULL) return NULL;
   for (uint64_t i = 0; i < pos.count; i++) {
-    PyObject *v = ixr_value(&cur);
+    PyObject *v = ixr_value(&cur, &mode);
     if (v == NULL) goto fail;
     PyList_SET_ITEM(positional, (Py_ssize_t) i, v);
   }
@@ -6023,7 +6352,7 @@ PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
   for (uint64_t j = 0; j < named.count; j++) {
     PyObject *ko = ixt_key(&cur, keyset);
     if (ko == NULL) goto fail;
-    PyObject *v = ixr_value(&cur);
+    PyObject *v = ixr_value(&cur, &mode);
     if (v == NULL) {
       Py_DECREF(ko);
       goto fail;
@@ -6068,6 +6397,9 @@ fail:
 static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
                          int kind, PyObject *args, PyObject *kwargs,
                          PyObject *x, uint32_t target, uint64_t ident) {
+  /* refs on (F1's D6): a view constant or a view x crosses as a ref —
+     the worker's map context owns the resolved view between morsels */
+  w->refs = 1;
   IXW_PUT(w, mizu_ix_put_header(IXW_DST(w)));
   IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), 2));
   IXW_PUT(w, mizu_ix_put_task(IXW_DST(w), (int) target, kind, ident));
@@ -6077,10 +6409,16 @@ static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
     IXW_PUT(w, mizu_ix_put_nil(IXW_DST(w)));
     return;
   }
-  Py_ssize_t n = PyList_GET_SIZE(x);
-  IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) n));
   memcpy(w->path, "x", 2);
   w->path_len = 1;
+  if (!PyList_CheckExact(x)) {
+    /* a view x: one ref leaf — the worker's batch loop reads the
+       resolved view off the shared pages */
+    ixw_node(w, x);
+    return;
+  }
+  Py_ssize_t n = PyList_GET_SIZE(x);
+  IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) n));
   w->depth++;
   for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
     size_t save = w->path_len;
@@ -6097,12 +6435,20 @@ static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
 PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
                                    PyObject *args, PyObject *kwargs,
                                    PyObject *x, uint32_t target) {
+  /* x is the element list, a re-sendable view (one ref leaf, F1's D6),
+     or None */
+  mizu_shm *x_shm = NULL;
+  PyObject *x_view = NULL;
+  uint32_t x_caps = 0;
+  const int x_ref = x != Py_None &&
+    mizu_py_view_ref_probe(x, &x_shm, &x_view, &x_caps);
+  Py_XDECREF(x_view);
   if (!PyUnicode_CheckExact(code) || !PyTuple_CheckExact(args) ||
       !PyDict_CheckExact(kwargs) ||
-      (x != Py_None && !PyList_CheckExact(x))) {
+      (x != Py_None && !PyList_CheckExact(x) && !x_ref)) {
     PyErr_SetString(PyExc_TypeError,
                     "pymizu: _map_desc_write expects (str, int, tuple, "
-                    "dict, list|None, int)");
+                    "dict, list|view|None, int)");
     return NULL;
   }
   Py_ssize_t code_n;
@@ -6242,6 +6588,10 @@ PyObject *pymizu_ix_write_runner_stream(PyObject *name, int64_t gen_field,
    code, positional, kwargs, x|None): the spec's components, for the
    worker's runner context to bind per element. */
 PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
+  /* refs resolve (F1's D6): a view x arrives as a ref — the worker's map
+     context owns the resolved view between morsels; one fresh open per
+     resolve, no handle cache rides a descriptor */
+  const ixr_mode mode = { 1, NULL };
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
   if (mizu_ix_open(&cur, src, n) != MIZU_OK) return ixt_stop_tls();
@@ -6269,7 +6619,7 @@ PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
   positional = PyList_New((Py_ssize_t) pos.count);
   if (positional == NULL) goto fail;
   for (uint64_t i = 0; i < pos.count; i++) {
-    PyObject *v = ixr_value(&cur);
+    PyObject *v = ixr_value(&cur, &mode);
     if (v == NULL) goto fail;
     PyList_SET_ITEM(positional, (Py_ssize_t) i, v);
   }
@@ -6281,7 +6631,7 @@ PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
   for (uint64_t j = 0; j < named.count; j++) {
     PyObject *ko = ixt_key(&cur, keyset);
     if (ko == NULL) goto fail;
-    PyObject *v = ixr_value(&cur);
+    PyObject *v = ixr_value(&cur, &mode);
     if (v == NULL) {
       Py_DECREF(ko);
       goto fail;
@@ -6291,7 +6641,7 @@ PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
     Py_DECREF(v);
     if (rc < 0) goto fail;
   }
-  x = ixr_value(&cur);
+  x = ixr_value(&cur, &mode);
   if (x == NULL) goto fail;
   if (mizu_ix_end(&cur) != MIZU_OK) {
     ixt_stop_tls();
@@ -6454,14 +6804,19 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   return rc;
 }
 
-/* The 'I' builder. */
-PyObject *pymizu_ix_read(const uint8_t *src, size_t n) {
+/* The 'I' builder. The pool collect-side result reader resolves a 0x13
+   leaf through the handle's view cache; the channel value reader
+   declines it (py_chan_read consumes the failure). */
+PyObject *pymizu_ix_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
+  const int pool = ctx != NULL && ctx->handle != NULL &&
+    mizu_handle_kind(ctx->handle) == MIZU_HTYPE_POOL;
+  const ixr_mode mode = { pool ? 1 : 0, pool ? ctx : NULL };
   mizu_ix cur;
   if (mizu_ix_open(&cur, src, n) != MIZU_OK) {
     PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
     return NULL;
   }
-  PyObject *v = ixr_value(&cur);
+  PyObject *v = ixr_value(&cur, &mode);
   if (v == NULL) return NULL;
   if (mizu_ix_end(&cur) != MIZU_OK) {
     Py_DECREF(v);
@@ -6528,7 +6883,11 @@ int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
   frame_rebuild_fn = fn;   /* borrowed stash: __reduce__ returns it */
   if (PyType_Ready(&MizuFrameType) < 0) return -1;
   Py_INCREF(&MizuFrameType);
-  return PyModule_AddObject(m, "Frame", (PyObject *) &MizuFrameType);
+  if (PyModule_AddObject(m, "Frame", (PyObject *) &MizuFrameType) < 0)
+    return -1;
+  if (PyType_Ready(&MizuIxRefType) < 0) return -1;
+  Py_INCREF(&MizuIxRefType);
+  return PyModule_AddObject(m, "_IxRef", (PyObject *) &MizuIxRefType);
 }
 
 // The Frame type object --------------------------------------------------------------

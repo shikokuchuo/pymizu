@@ -607,7 +607,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 7)  # MIZU_LANG_R, MIZS|ATTRS|MIZL
+        assert ch._h._peer_ident() == (2, 15)  # R: MIZS|ATTRS|MIZL|TASKREF
     finally:
         ch.close()
 

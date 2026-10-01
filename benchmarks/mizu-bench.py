@@ -624,6 +624,62 @@ try:
 except ImportError:
     pass
 
+# 7. task args by reference (F1) ----------------------------------------------
+
+print("\n== 7. task args by reference: 8 MB float64 arg to a pool task ==")
+
+try:
+    launcher = pymizu.r_pool_launcher()
+except pymizu.MizuError:
+    print("  Rscript with mizu not available: skipped")
+else:
+    size = 1000000  # 8 MB as float64
+    n = 24
+    x = np.random.random(size)
+
+    # same-language flat check: the private task frames are untouched
+    def same_pool(p):
+        assert p.submit(np.mean, x).collect(timeout=60) == float(x.mean())
+
+        def rep():
+            for _ in range(n):
+                p.submit(np.mean, x).collect(timeout=60)
+
+        warmup(rep, n=2)
+        note_us("arg 8 MB", "Python pool (flat)", n, rep, "us/task")
+
+    with_pool(2, same_pool)
+
+    # the F1 row: a fresh array stages one SHM_VEC layout write where the
+    # pre-F1 wire paid a full copy each way (~the payload rows' cost)
+    with pymizu.Pool.create(2, launcher=launcher) as rp:
+        assert np.isclose(
+            rp.submit(pymizu.call("base::mean", x)).collect(timeout=60),
+            float(x.mean()),
+        )
+
+        def rep_zc():
+            for _ in range(n):
+                rp.submit(pymizu.call("base::mean", x)).collect(timeout=60)
+
+        warmup(rep_zc, n=2)
+        note_us("arg 8 MB", "R pool (SHM_VEC)", n, rep_zc, "us/task")
+
+        # a received view re-sent: REF — zero payload bytes for the argument
+        view = rp.submit(pymizu.call("base::identity", x)).collect(timeout=60)
+        assert np.isclose(
+            rp.submit(pymizu.call("base::mean", view)).collect(timeout=60),
+            float(x.mean()),
+        )
+
+        def rep_ref():
+            for _ in range(n):
+                rp.submit(pymizu.call("base::mean", view)).collect(
+                    timeout=60)
+
+        warmup(rep_ref, n=2)
+        note_us("arg 8 MB", "R pool (REF)", n, rep_ref, "us/task")
+
 # summary ---------------------------------------------------------------------
 
 print("\n== summary ==")

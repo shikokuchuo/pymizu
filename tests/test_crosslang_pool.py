@@ -132,3 +132,108 @@ def test_a_worker_of_another_language_cannot_join(r_pool):
     # fails the exact-match CAS, before any task exists
     with pytest.raises(pymizu.MizuError):
         _pymizu._pool_worker_join(r_pool.token, 2)
+
+def test_large_array_arg_crosses_by_reference(r_pool):
+    import numpy as np
+
+    big = np.random.default_rng(0).random(200_000)  # 1.6 MB
+    # the value crosses, and the R worker proves the zero-copy arrival
+    assert r_pool.submit(pymizu.call("base::mean", big)).collect() == \
+        pytest.approx(float(big.mean()))
+    src = 'if (.Call(mizu:::mizu_zc_view_check, x)) "view" else "copy"'
+    assert r_pool.submit(pymizu.call(source=src, x=big)).collect() == "view"
+
+
+def test_received_view_resent_as_arg(r_pool):
+    import numpy as np
+
+    # receive a view on the Python side first: an ndarray over a _ShmView
+    big = r_pool.submit(
+        pymizu.call(source="runif(200000, 0.5, 1.5)")
+    ).collect()
+    assert type(big.base).__name__ == "_ShmView"
+    # re-send it as a task argument: REF, REFHELD, the per-task loan balanced
+    assert r_pool.submit(pymizu.call("base::mean", big)).collect() == \
+        pytest.approx(float(big.mean()))
+    assert big.base.flags & 1 == 1  # REFHELD
+    rc0 = big.base.refcount
+    r_pool.submit(pymizu.call("base::mean", big)).collect()
+    assert big.base.refcount == rc0
+    # result-is-the-arg: arrives intact, a view, elevated by our own add
+    res = r_pool.submit(pymizu.call(source="x", x=big)).collect()
+    assert type(res.base).__name__ == "_ShmView"
+    assert big.base.refcount >= rc0 + 1  # plus the async producer loan
+    np.testing.assert_array_equal(res, big)
+
+
+def test_multiple_ref_args_and_a_nested_view(r_pool):
+    import numpy as np
+
+    a = np.random.default_rng(1).random(100_000)
+    b = np.random.default_rng(2).random(100_000)
+    va = r_pool.submit(pymizu.call("base::identity", a)).collect()
+    vb = r_pool.submit(pymizu.call("base::identity", b)).collect()
+    assert type(va.base).__name__ == "_ShmView"
+    assert type(vb.base).__name__ == "_ShmView"
+    big = np.random.default_rng(3).random(100_000)
+    # two positional REFs, a named REF, a fresh SHM_VEC, one nested in a list
+    t = r_pool.submit(
+        pymizu.call(
+            None,
+            va,
+            vb,
+            source="sum(..1) + sum(..2) + sum(x[[1]]) + sum(y)",
+            x=[va],
+            y=vb,
+        )
+    )
+    expected = float(a.sum() + b.sum() + a.sum() + b.sum())
+    assert t.collect() == pytest.approx(expected)
+    rc0a, rc0b = va.base.refcount, vb.base.refcount
+    t2 = r_pool.submit(pymizu.call("base::mean", big))
+    assert t2.collect() == pytest.approx(float(big.mean()))
+    assert va.base.refcount == rc0a
+    assert vb.base.refcount == rc0b
+
+
+def test_ref_candidate_declines_without_taskref():
+    import numpy as np
+
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        # R workers without the ref reader (caps 7: no TASKREF bit)
+        _pymizu._pool_worker_join(h.token, 0, _ident=(2, 7))
+        pool = pymizu.Pool._wrap(h)
+        big = np.ones(200_000)
+        with pytest.raises(pymizu.DeclinedError, match="by-reference"):
+            pool.submit(pymizu.call("base::mean", big))
+        # an ordinary argument submits unchanged
+        assert pool.submit(pymizu.call("base::sum", [1, 2, 3])) is not None
+    finally:
+        h.destroy()
+
+
+def test_ref_to_a_vanished_region_fails_the_task(r_pool):
+    ident = 3 | (15 << 32)  # this build's word as the submitter identity
+    stream = _pymizu._write_task(
+        "base::mean", 0, (_pymizu._IxRef("/mizu_0_0"),), {}, 2, ident
+    )
+    # a hand-crafted task stream rides a RAWVEC entry to the worker's
+    # task-stream dispatch
+    t = r_pool._h.submit(stream, None)
+    with pytest.raises(pymizu.TaskError, match="not found"):
+        t.collect()
+
+
+def test_view_x_crosses_to_map_workers_as_a_ref(r_pool):
+    import numpy as np
+
+    big = r_pool.submit(pymizu.call(source="runif(100000)")).collect()
+    assert type(big.base).__name__ == "_ShmView"
+    rc0 = big.base.refcount
+    res = r_pool.map(pymizu.call("base::sqrt"), big)
+    assert res == np.sqrt(big).tolist()
+    assert big.base.flags & 1 == 1  # REFHELD
+    # the workers' map-context views release at eviction / teardown; the
+    # count never drops below the pre-map value while they hold them
+    assert big.base.refcount >= rc0

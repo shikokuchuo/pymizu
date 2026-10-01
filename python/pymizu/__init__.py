@@ -258,6 +258,14 @@ class call:
     arguments bound as names and positional arguments bound as ``_1``,
     ``_2``, ... The result is the trailing expression's value, or None
     when the source ends with a statement.
+
+    Large arguments cross to foreign workers by reference rather than by
+    copy: one fresh buffer argument past the zero-copy floor stages a
+    single layout write into a shared region (the worker reads a view
+    over it), and an argument that is already a shared view crosses as
+    its identifier alone — zero payload bytes. On a pool whose workers
+    predate the ref reader, such a task declines locally at submit
+    naming the remedy.
     """
 
     __slots__ = ("code", "kind", "args", "kwargs")

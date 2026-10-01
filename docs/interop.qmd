@@ -85,8 +85,16 @@ fails the task with one naming the type.
 The reverse direction mirrors: `mizu::mizu_pool()` with
 `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with
 `mizu::mizu_call()` specs.
-Mixed workers in one pool and by-reference task arguments are deliberately
-out of scope for now.
+
+Large arguments cross by reference rather than by copy: one fresh buffer
+argument past the zero-copy floor stages a single layout write into a
+shared region (the worker reads a view over it), and an argument that is
+already a shared view (a `_ShmView` / `_ShmStrView`, or a numpy array
+whose `.base` chain ends in one) crosses as its identifier alone — zero
+payload bytes.
+On a pool whose workers predate the ref reader, such a task declines
+locally at submit naming the remedy.
+Mixed workers in one pool remain deliberately out of scope.
 
 ## Mapping over a foreign pool
 
@@ -121,6 +129,11 @@ across languages.
 - A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an
   R vector — and back.
   See the [dtype matrix](#the-dtype-matrix) below.
+- Foreign-pool task arguments cross **by reference** past the zero-copy
+  floor: a large array argument stages one layout write into a shared
+  region, never a full copy each way, and an argument that is already a
+  shared view crosses as its identifier alone (zero payload bytes).
+  See [Mixed-language pools](#mixed-language-pools).
 - A multi-dimensional numpy array of a mapped dtype arrives as an R `dim`
   array (a matrix is the 2-D case) — C order, F order, strided, it crosses
   value-exact (F order at the far side).

@@ -146,7 +146,8 @@ class _Parser:
         self.ws()
         for name in ("lglv", "intv", "realv", "cplxv", "rawv", "strv",
                      "i64v", "list", "tuple", "dict", "attr", "lgl", "int",
-                     "real", "cplx", "str", "bytes", "err", "task", "nil"):
+                     "real", "cplx", "str", "bytes", "err", "task", "ref",
+                     "nil"):
             if self.s.startswith(name, self.i):
                 self.i += len(name)
                 return getattr(self, "v_" + name)()
@@ -194,6 +195,12 @@ class _Parser:
         v = bytes.fromhex(self.token(")"))
         self.expect(")")
         return v
+
+    def v_ref(self):
+        self.expect("(")
+        v = self.string()
+        self.expect(")")
+        return _pymizu_ixref(v)
 
     def seq(self):
         items = []
@@ -455,8 +462,18 @@ def _array_same(a, b):
     return np.array_equal(a, b)
 
 
+def _pymizu_ixref(id_):
+    import pymizu._pymizu as _p
+
+    return _p._IxRef(id_)
+
+
 def ix_same(a, b):
     """The corpus comparison: exact, NaN-payload-bitwise."""
+    import pymizu._pymizu as _p
+
+    if isinstance(b, _p._IxRef):
+        return isinstance(a, _p._IxRef) and a.id == b.id
     if isinstance(b, ExpectedFrame):
         return frame_same(a, b)
     if isinstance(b, ExpectedError):

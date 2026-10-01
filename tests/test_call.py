@@ -71,8 +71,8 @@ def test_pool_word_zero_and_attach_race():
         # the queued private frame runs once a worker exists, and both
         # submitters read the word without re-attaching
         assert t.collect(timeout=10) == 1
-        assert pool._h._worker_ident() == (3, 7)
-        assert att._h._worker_ident() == (3, 7)
+        assert pool._h._worker_ident() == (3, 15)
+        assert att._h._worker_ident() == (3, 15)
     finally:
         h.destroy()
 

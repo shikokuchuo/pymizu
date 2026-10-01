@@ -216,3 +216,36 @@ def test_mizl_frame_write_without_numpy(tmp_path):
         h.destroy()
         """,
     )
+
+
+def test_task_arg_memoryview_shm_vec_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import array
+
+        import pymizu
+        from pymizu import _map
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+        # a memoryview arg past the zero-copy floor stages SHM_VEC: the R
+        # worker receives a view (the 'I' ref leaf), not a copy
+        try:
+            launcher = pymizu.r_pool_launcher(
+                stdout=None, stderr=None
+            )
+        except pymizu.MizuError:
+            import pytest
+            pytest.skip("Rscript with the mizu package not available")
+        p = pymizu.Pool.create(1, launcher=launcher)
+        try:
+            big = memoryview(array.array("d", [1.5] * 200_000))
+            res = p.submit(pymizu.call("base::sum", big)).collect()
+            assert res.cast("d")[0] == 300000.0  # a raw memoryview sans numpy
+            src = 'if (.Call(mizu:::mizu_zc_view_check, x)) "view" else "copy"'
+            assert p.submit(pymizu.call(source=src, x=big)).collect() == "view"
+        finally:
+            p.stop()
+        """,
+    )

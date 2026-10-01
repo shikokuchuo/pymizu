@@ -121,7 +121,8 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 
 /* This binding's identity word, the one binding fill (channel and pool). */
 #define MIZU_PY_IDENT \
-  MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL)
+  MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS | MIZU_CAP_ATTRS | \
+             MIZU_CAP_MIZL | MIZU_CAP_TASKREF)
 
 /* The task stream (0x12) writer (Phase 4): the header fields then the
    code string, the positional list and the named dict emitted off the
@@ -138,10 +139,11 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
    submitter identity ahead of every field read — then executes: name
    kind by importlib resolution and vectorcall straight off the cursor,
    source kind by the ast split with the arguments bound in a fresh
-   namespace. Returns the result, or NULL with an exception set (the exec
-   hook publishes it — every path is catching). */
+   namespace. ctx (the exec hook's read ctx) homes the ref leaf's resolve
+   through the handle's view cache. Returns the result, or NULL with an
+   exception set (the exec hook publishes it — every path is catching). */
 PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
-                             uint64_t *ident_out);
+                             uint64_t *ident_out, mizu_read_ctx *ctx);
 
 /* The test hooks' halves: the task writer as bytes, and the decode as
    components (target, kind, ident, code, positional list, named dict) —
@@ -197,10 +199,30 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
 int mizu_py_ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
                      uint32_t inline_max);
 
-/* The 'I' builder: one stream -> one Python object. NULL with an
-   exception set (the cursor's informative text, the no-home decline, or
-   MemoryError). */
-PyObject *pymizu_ix_read(const uint8_t *src, size_t n);
+/* The F1 'I' ref gate's view probe (the stage_ref rules): the region
+   behind a re-sendable view — an exact _ShmView / _ShmStrView, or a
+   buffer whose .base chain ends in one over the view's exact bytes at
+   its wire type. 1 with *out_shm and *out_view (a new reference to pin;
+   the count rides it), *out_caps the layout's capability need; 0 not
+   re-sendable (a tree-borrowed leaf included — it never names the whole
+   region). */
+int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
+                           PyObject **out_view, uint32_t *out_caps);
+
+/* The 'I' ref leaf's resolve: the identifier (name, optionally
+   name[i,j,...]) to a view — the counted add riding the open (the
+   handle's view cache serves repeats when ctx is non-NULL). Returns the
+   view, NULL with an exception on a malformed identifier or a gone
+   region. */
+PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
+                               mizu_read_ctx *ctx);
+
+/* The 'I' builder: one stream -> one Python object. A 0x13 ref leaf
+   resolves through ctx's view cache on a pool handle (the collect-side
+   result reader); the channel value reader declines it informatively.
+   NULL with an exception set (the cursor's informative text, the no-home
+   decline, or MemoryError). */
+PyObject *pymizu_ix_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx);
 
 /* The err tag (0x11) framer: the three bare strings and the optional
    element index, truncated at UTF-8 boundaries to fit inline_max by
