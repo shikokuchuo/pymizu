@@ -680,6 +680,89 @@ else:
         warmup(rep_ref, n=2)
         note_us("arg 8 MB", "R pool (REF)", n, rep_ref, "us/task")
 
+# 8. frame relay: the per-column REF (F2) -------------------------------------
+
+print("\n== 8. frame relay: 10-col 1e6-row frame, R -> polars -> R ==")
+
+try:
+    import polars as pl
+except ImportError:
+    pl = None
+try:
+    frame_launcher = pymizu.r_launcher()
+except pymizu.MizuError:
+    frame_launcher = None
+
+if pl is None or frame_launcher is None:
+    print("  polars or Rscript with mizu not available: skipped")
+else:
+    n = 24
+    nrows = 1000000
+    # the return hop, ack'd per relay: unmodified is the whole-frame REF
+    # (zero payload bytes, the regression guard); one computed column is
+    # 1 layout leaf + 9 remote leaves where pre-F2 it was 10 columns'
+    # layout write
+    R_FRAME_RELAY_BENCH = r"""
+df <- as.data.frame(matrix(runif(10 * 1000000), nrow = 1000000))
+mizu::mizu_send(ch, df)
+while (TRUE) {
+  y <- mizu::mizu_recv(ch, timeout = 120)
+  if (mizu::mizu_is_sentinel(y)) break
+  mizu::mizu_send(ch, nrow(y))
+}
+"""
+    ch = pymizu.Channel.create(R_FRAME_RELAY_BENCH, launcher=frame_launcher)
+    try:
+        f = ch.recv(120)
+        df = pl.DataFrame(f)
+        mod = df.with_columns((pl.col("V10") * 2).alias("V10"))
+
+        def rep_unmod():
+            for _ in range(n):
+                ch.send(df)
+                assert ch.recv(timeout=120) == nrows
+
+        warmup(rep_unmod, n=2)
+        note_us("frame 10col relay", "R (unmodified REF)", n, rep_unmod,
+                "us/rt")
+
+        def rep_mod():
+            for _ in range(n):
+                ch.send(mod)
+                assert ch.recv(timeout=120) == nrows
+
+        warmup(rep_mod, n=2)
+        note_us("frame 10col relay", "R (one computed col)", n, rep_mod,
+                "us/rt")
+
+        # same-language flat check: the MIZL frame write carries no
+        # remote leaves on same-language handles. A pickle-rebuilt frame
+        # is heap-backed, so the REF fast path cannot fire (ahead of the
+        # close — f's region unlinks with the channel)
+        import pickle
+
+        f2 = pickle.loads(pickle.dumps(f))
+        from pymizu import _pymizu
+
+        h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+        p, _ = _pymizu._channel_attach(h.token)
+        p.ready_set()
+        assert h.ready_wait(10)
+        try:
+            def rep_same():
+                for _ in range(n):
+                    h.send(f2)
+                    p.recv(timeout=30)
+
+            warmup(rep_same, n=2)
+            note_us("frame 10col relay", "Python (flat)", n, rep_same,
+                    "us/send")
+        finally:
+            p.destroy()
+            h.destroy()
+    finally:
+        ch.close(timeout=10)
+
 # summary ---------------------------------------------------------------------
 
 print("\n== summary ==")

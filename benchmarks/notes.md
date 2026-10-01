@@ -58,6 +58,8 @@ probes and A/B isolations stay in the log.
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
+| frame 10col relay, unmodified REF | 6.5 us/rt | 2026-10-01 |
+| frame 10col relay, one computed col | 434.5 us/rt | 2026-10-01 |
 | stage widen (foreign pair) | 251.5 us/send | 2026-09-30 |
 | stage masked (foreign pair) | 97.3 us/send | 2026-10-01 |
 | stage masked int64 (foreign pair) | 136.9 us/send | 2026-10-01 |
@@ -428,3 +430,26 @@ workers — REF 0.12 ms (the copy's ~0.38), SHM_VEC 0.50 ms against
 new pre-scan gate).
 
 Status: 358 pass, 5 skip; ruff + pyrefly clean.
+
+## 2026-10-01 — the per-column frame REF (F2)
+
+The MIZL writer gains per-column provenance (directory tag 33, the
+remote leaf): a relayed frame whose columns match registered exports
+same-index crosses with one remote leaf per matched column — the
+identifier span, the referenced leaf's attrs size and validity claim as
+resolved, no body, blob or bitmap — where pre-F2 every unmatched frame
+wrote every column. The whole-frame REF fast path is unchanged (all
+columns matched, no new bit needed); a partial match joins
+MIZU_CAP_MIZL_REF (bit 4) to the frame conjunction, and a peer short of
+it gets full layout leaves. The reader's frame path resolves a remote
+column onto its own per-column hold (a fresh mapping + counted loan,
+released pure-C), the generic tree walk through the checked resolve.
+
+Results (10-column frame, 1e6 rows of float64, R -> polars -> R,
+best-of-3): unmodified relay (the whole-frame REF, the regression
+guard) 6.5 us/rt, one computed column via polars (1 layout leaf + 9
+remote leaves) 434.5 us/rt against the pre-F2 ten-column layout write
+(~4 ms/rt measured R-side, same-language flat 17.0 ms/send — pymizu's
+per-send stream pull included). New rows on the best-known table.
+
+Status: 363 pass, 5 skip; ruff + pyrefly clean.

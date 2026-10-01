@@ -194,6 +194,13 @@ channel it writes the `data.frame` shape again through its own export.
   name, zero payload bytes.
   polars re-views string columns, so a frame holding one round-trips as a
   fresh region instead; pyarrow keeps them.
+- A partially mutated frame moves one column: each column whose buffers
+  still match the import crosses as a remote leaf (MIZL directory tag 33)
+  — the region's identifier and leaf index, no column bytes — so a relay
+  with one computed column pays for one column's write, and R reads the
+  untouched columns as views of its own region.
+  A peer short of the capability bit gets full layout leaves for every
+  column (the per-frame conjunction).
 - A live polars or pyarrow consumer pins the frame's region loan until
   `del` + GC.
   Long-lived imports want that discipline: enough pinned loans trip the
