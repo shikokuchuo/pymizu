@@ -471,6 +471,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li>A frame sent from Python past the same floor — polars, pyarrow, pandas (through its pyarrow export), or a <code>Frame</code> — stages as one region too: R reads a <code>data.frame</code> in place.</li>
 <li>The capability handshake sends a peer that has not implemented the layouts an interchange copy instead — the value always crosses.</li>
 <li>An unmodified round trip moves nothing: a frame imported from a region and sent back (<code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>) re-stages as the region’s name, zero payload bytes. polars re-views string columns, so a frame holding one round-trips as a fresh region instead; pyarrow keeps them.</li>
+<li>A partially mutated frame moves one column: each column whose buffers still match the import crosses as a remote leaf (MIZL directory tag 33) — the region’s identifier and leaf index, no column bytes — so a relay with one computed column pays for one column’s write, and R reads the untouched columns as views of its own region. A peer short of the capability bit gets full layout leaves for every column (the per-frame conjunction).</li>
 <li>A live polars or pyarrow consumer pins the frame’s region loan until <code>del</code> + GC. Long-lived imports want that discipline: enough pinned loans trip the producer’s churn fallback, and later sends degrade to the copy tiers.</li>
 </ul>
 </section>
