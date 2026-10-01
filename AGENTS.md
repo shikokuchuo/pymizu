@@ -38,7 +38,10 @@ package). The governing design document is the ipc plan in the libmizu repo
   the `_pymizu.pyi` stub as package data.
 - `tests/` — pytest; see Testing.
 - `benchmarks/` — `mizu-bench.py` (report-only, asserts nothing; records
-  appended to `notes.md`) and `mizu-stdlib-bench.py` (stdlib comparison).
+  live in `notes.md`: best-known table on top — swap only on a new best,
+  dated per row — with the dated run log appended at the bottom),
+  `crosslang-map-bench.py` (the cross-language map comparison), and
+  `mizu-stdlib-bench.py` (stdlib comparison).
   Task callables live in `benchmarks/tasks.py` (same by-reference pickle
   reason as `tests/helpers.py`).
 
