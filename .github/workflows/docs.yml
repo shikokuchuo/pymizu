@@ -1,0 +1,39 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+
+      - name: Install pymizu and the docs toolchain
+        # griffe<2: quartodoc 0.11.x passes parser options griffe 2.0 removed
+        run: pip install . numpy cloudpickle jupyter quartodoc "griffe<2"
+
+      - name: Build the API reference
+        working-directory: docs
+        run: quartodoc build
+
+      - name: Render the site
+        run: quarto render docs
+
+      - name: Publish to GitHub Pages
+        uses: quarto-dev/quarto-actions/publish@v2
+        with:
+          target: gh-pages
+          path: docs/_site
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

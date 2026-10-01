@@ -44,6 +44,10 @@ package). The governing design document is the ipc plan in the libmizu repo
   `mizu-stdlib-bench.py` (stdlib comparison).
   Task callables live in `benchmarks/tasks.py` (same by-reference pickle
   reason as `tests/helpers.py`).
+- `docs/` — the Quarto documentation site: hand-written guides plus a
+  quartodoc-generated API reference. The README is the short pitch; the
+  long-form details live here (mirror of how mizu keeps them in the
+  reference vignette). `docs/reference/` is generated (gitignored).
 
 ## Build and test
 
@@ -53,7 +57,17 @@ pip install -e .       # editable
 python -m pytest tests/
 ruff check python tests benchmarks   # lint (config in pyproject.toml)
 pyrefly check                        # typecheck
+
+cd docs && quartodoc build && quarto render   # build the docs site
+quarto preview                                # local preview server
 ```
+
+Docs: rendering executes the guide examples (they spawn real channel/pool
+processes), so the render environment needs the package installed plus
+numpy, cloudpickle, and jupyter; the interop page is static (it needs R +
+mizu). quartodoc 0.11.x needs `griffe<2` (griffe 2.0 removed parser options
+quartodoc passes). A cell's displayed value must be a top-level expression —
+capture results inside `with Pool.create(...)` blocks and echo after.
 
 `setup.py` holds the explicit `ext_modules` source list (`_pymizu.c` + the
 vendored core) and a `build_ext` override forcing clang-cl on Windows
@@ -312,5 +326,10 @@ measures coverage (codecov upload from ubuntu only). Windows legs add
 the preinstalled LLVM to PATH for clang-cl. Linux legs run the
 cross-language R tests only when the `CROSSLANG_PAT` secret is set (mizu
 is a private repo; without it the steps skip and the tests probe-skip).
+
+`.github/workflows/docs.yml`: on pushes to main, installs the package plus
+the docs toolchain, runs `quartodoc build` + `quarto render` on `docs/`,
+and publishes `docs/_site` to GitHub Pages via the gh-pages branch (Pages
+must be enabled on the repo; site URL in `docs/_quarto.yml`).
 
 License: MIT.

@@ -1,0 +1,40 @@
+---
+title: "Benchmarks"
+---
+
+Communication overhead against the stdlib `concurrent.futures` pools (Apple
+M4 Pro, from `benchmarks/mizu-stdlib-bench.py`).
+
+Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled
+payloads):
+
+| Benchmark | pymizu | ProcessPoolExecutor | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
+| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 70.3 µs/elt | 176x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
+
+Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps
+CPU-bound work at a single core):
+
+| Benchmark | pymizu | ThreadPoolExecutor | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
+| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
+
+\* elt = element; microseconds of wall time per map element.
+
+These rows measure communication overhead — the cost pymizu is built to
+remove.
+The stdlib pools remain the general solution: they ask nothing of the
+platform, and their per-task cost buys features a shared-memory transport
+does not need.
+
+`benchmarks/mizu-bench.py` runs the pymizu rows standalone,
+`benchmarks/mizu-stdlib-bench.py` the comparison, and
+`benchmarks/crosslang-map-bench.py` the cross-language map comparison.
+The scripts are report-only and assert nothing about the numbers (CI runner
+timing is too variable); dated records live in `benchmarks/notes.md`.

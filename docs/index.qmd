@@ -1,0 +1,129 @@
+---
+title: "pymizu 水"
+---
+
+```
+      ________
+     /\       \
+    /  \ pymizu\
+    \  /  水   /
+     \/_______/
+```
+
+pymizu makes communication between Python processes cheap enough to divide
+work at granularities usually reserved for threads.
+
+In the default CPython build, the GIL runs CPU-bound threads on one core at a
+time, so compute parallelism in Python usually means multiple processes.
+Processes also isolate failures: a worker that crashes does not take the host
+down with it.
+
+Channels and work-stealing task pools run over POSIX shared memory (Linux,
+macOS) or Win32 file mappings (Windows).
+
+A channel is a two-way message link between a Python process and a helper
+process that it spawns.
+A pool is a set of worker processes that divide submitted tasks among
+themselves.
+In both, one process writes data and the other reads it in place — never
+copied through a socket, pipe, or file.
+
+The hot path stays in user space: single-producer single-consumer rings with
+batched publication, spin-then-park waiting, and event-driven peer-death
+detection.
+
+pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C
+library for lock-free shared-memory IPC.
+[mizu](https://github.com/shikokuchuo/mizu) binds the same core for R, so
+Python and R processes can share a channel.
+
+Pre-release.
+The API is not stable and may change at any time before a release.
+
+## Installation
+
+```sh
+pip install .
+```
+
+Requires Python 3.10 or later on a 64-bit platform.
+See [Installation](installation.qmd) for platform notes, optional extras, and
+deployment on Linux.
+
+## Channels
+
+`Channel.create()` spawns a peer process and connects both ends over a
+lock-free ring pair.
+The peer program is a Python source string, evaluated with `ch` bound to the
+peer-side handle:
+
+```{python}
+import pymizu
+
+ch = pymizu.Channel.create("""
+import pymizu
+while True:
+    x = ch.recv()
+    if x is pymizu.CLOSED:
+        break
+    ch.send(x)
+""")
+ch.send([1, "a", None])
+ch.recv(timeout=5)
+```
+
+```{python}
+ch.close()
+```
+
+Terminal states come back as sentinel singletons — `pymizu.FULL`,
+`pymizu.TIMEOUT`, `pymizu.CLOSED`, `pymizu.PEER_GONE` — tested by identity,
+never raised.
+See [Channels](channels.qmd).
+
+## Task pools
+
+`Pool.create()` spawns a pool of worker processes with work-stealing deques
+and no dispatcher in the loop.
+`pool.submit()` returns a task handle immediately; `task.collect()` waits for
+its result:
+
+```{python}
+with pymizu.Pool.create(4) as pool:
+    task = pool.submit(pow, 2, 16)
+    result = task.collect(timeout=5)
+
+result
+```
+
+See [Task pools](pools.qmd).
+
+## Parallel map
+
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input
+order.
+The function, its constant arguments, and the data are staged once; runner
+tasks self-schedule element batches off a shared cursor:
+
+```{python}
+with pymizu.Pool.create(4) as pool:
+    result = pool.map(abs, range(-5, 5))
+
+result
+```
+
+See [Parallel map](map.qmd).
+
+## Where next
+
+- [Channels](channels.qmd) — send/receive semantics, batch operations, and
+  the payload tiers.
+- [Task pools](pools.qmd) — outcomes, nested tasks, growing and observing a
+  pool.
+- [Parallel map](map.qmd) — scheduling, reproducible randomness, templates,
+  prepared maps.
+- [R interop](interop.qmd) — R peers and workers, what crosses the language
+  boundary, and the dtype matrix.
+- [Benchmarks](benchmarks.qmd) — overhead against the stdlib pools.
+- [API reference](reference/index.qmd) — the generated function and class
+  reference.

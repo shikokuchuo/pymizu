@@ -30,7 +30,24 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 Pre-release.
 The API is not stable and may change at any time before a release.
 
+## Installation
+
+```sh
+pip install .
+```
+
+Requires Python 3.10 or later on a 64-bit platform (Linux: kernel 5.3 or later; Windows: clang-cl to build).
+The extension compiles the vendored C core, so no system library is necessary.
+
+Optional extras:
+
+- `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
+- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
+
 ## Channels
+
+`Channel.create()` spawns a peer process and connects both ends over a lock-free ring pair.
+The peer program is a Python source string, evaluated with `ch` bound to the peer-side handle:
 
 ```python
 import pymizu
@@ -48,64 +65,30 @@ print(ch.recv(timeout=5))
 ch.close()
 ```
 
-`Channel.create()` spawns a peer process (`python -m pymizu.child <token>`) and connects both ends over a lock-free ring pair.
-The peer program is a Python source string, evaluated with `ch` bound to the peer-side handle.
-
 Sends never block for ring space.
 Receives report terminal states as sentinel singletons — `pymizu.FULL`, `pymizu.TIMEOUT`, `pymizu.CLOSED`, `pymizu.PEER_GONE` — tested by identity (`x is pymizu.TIMEOUT`), never raised.
 
-`None` crosses as an immediate.
-`bytes` and 1-D contiguous numpy arrays ride a serialization-free raw tier (they arrive as arrays; `bytes` arrives as uint8).
-float64, int32, int64, complex128, and uint8 cross unchanged.
-Strings cross as raw UTF-8; booleans, numbers, and flat containers of them ride a compact binary codec.
-Everything else crosses as a pickle protocol 4 stream.
-
-Every handle knows its peer's language (a per-region identity exchange at handshake).
-On a Python-to-Python channel that is the whole story: identity dtypes ride the raw tier, everything else pickles unchanged.
-On a foreign-language channel (an R peer), staging switches to the `'I'` interchange stream: the portable subset below crosses, and the conversion pass and Arrow front-ends run (any fixed-width numeric dtype converts once at send time into the nearest R-compatible wire type — see the [dtype matrix](#the-dtype-matrix)).
-A value outside the subset raises `pymizu.DeclinedError` at send time, naming the value's path and the reason; the channel is unharmed.
-
 ## Task pools
 
-```python
-import pymizu
+`Pool.create()` spawns worker processes that claim tasks from per-submitter injection rings and steal work from each other — no dispatcher in the loop:
 
+```python
 with pymizu.Pool.create(4) as pool:
     task = pool.submit(pow, 2, 16)
     print(task.collect(timeout=5))
 ```
 
-`Pool.create()` spawns worker processes (`python -m pymizu.worker <token> <slot>`) that claim tasks from per-submitter injection rings and steal work from each other.
-A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.
-
-A task callable rides pickle: under stock pickle it must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently.
-A task error re-raises on collect as `pymizu.TaskError`, carrying the remote type name and traceback text — a constructed, bounded envelope, never a pickled exception instance.
-A cancellation raises `pymizu.CancelledError`; the death of the executing worker raises `pymizu.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
-
-`Pool.collect_any()` and `Pool.collect_all()` wait on several handles at once.
-Inside a task, `pymizu.current_pool()` returns the worker's own handle: a nested submit pushes onto the worker's deque, and a nested collect helps instead of parking, so nested fan-outs never deadlock the pool.
+A task error re-raises on collect as `pymizu.TaskError`; the death of the executing worker raises `pymizu.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
 
 ## Parallel map
+
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input order.
+The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:
 
 ```python
 with pymizu.Pool.create(4) as pool:
     print(pool.map(abs, range(-5, 5)))
 ```
-
-`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input order.
-One call stages `fn`, the constant `args=`/`kwargs=`, and `x` exactly once — a shared region, or inline in chunk tasks when small — then submits one runner task per live worker.
-
-Runners self-schedule adaptively sized element batches off a shared cursor: a trivial `fn` runs in large batches at near-zero scheduling overhead; an expensive or skewed one self-limits to fine claims that keep the workers balanced.
-A 1-D C-contiguous buffer of float64, int32, int64, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing `x`.
-`chunks=` overrides the scheduling granularity outright.
-
-`seed=` (an int or bytes) derives deterministic per-element streams of the stdlib `random` module: element `i` runs under `random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))`, so results are identical for any chunking, worker count, or steal order.
-
-An error raised by `fn` re-raises as `pymizu.TaskError` carrying the failing element's 0-based `index`; failure is fail-fast — peers stop within about one batch.
-Worker death raises `pymizu.WorkerDiedError` carrying the lost element ranges as `lost` (0-based half-open pairs, conservative).
-On `timeout=` expiry the outstanding work is cancelled and the `pymizu.TIMEOUT` sentinel is returned, never raised.
-Ctrl-C during a map cancels its outstanding tasks.
-A map inside a task runs on the worker's own handle via `pymizu.current_pool()`, at fork/join cost.
 
 ## Benchmarks
 
@@ -135,7 +118,7 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 
 ## R interop
 
-A channel peer can be an R process that runs the `mizu` package.
+A channel peer can be an R process that runs the [mizu](https://github.com/shikokuchuo/mizu) package, the R binding of the same core.
 Pass the peer program as R source, and set the launcher to `pymizu.r_launcher()`:
 
 ```python
@@ -162,188 +145,12 @@ ch.close()
 `r_launcher()` needs R and the `mizu` R package installed.
 If R or the package is missing, it raises `MizuError` before the channel is created.
 
-A launcher is one callable that takes the join token and spawns the peer process.
-For a different spawn method, write your own launcher.
+Pools mix too: `pymizu.r_pool_launcher()` spawns R workers, driven through the neutral task format of `pymizu.call()` specs.
+The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and the dtype matrix — is on the [R interop](https://shikokuchuo.github.io/pymizu/interop.html) page.
 
-The reverse direction is also possible: an R host spawns a Python peer with `mizu::mizu_py_launcher()`.
+## Documentation
 
-### Mixed-language pools
-
-A pool's workers can be R processes, driven through the neutral task format: `pymizu.r_pool_launcher()` spawns them, and `pymizu.call()` describes the task — a qualified name (`"pkg::fn"` for R, `"mod.fn"` for Python) or a `source=` string, plus the constant arguments.
-
-```python
-import numpy as np
-import pymizu
-
-pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
-t = pool.submit(pymizu.call("stats::quantile", np.arange(101.0),
-                            probs=np.array([0.25, 0.5, 0.75]), names=False))
-print(t.collect())                  # [ 25.  50.  75.]
-t2 = pool.submit(pymizu.call(source="y <- x * 2\ny + 1", x=20))
-print(t2.collect())                 # 41
-pool.stop()
-```
-
-The workers' language comes from the pool itself — there is no language argument and no override.
-A plain callable on a foreign pool errors locally naming `pymizu.call()`; a bare unqualified name errors at submit; a non-portable argument declines at submit with `DeclinedError`.
-Task errors cross as `TaskError` with the remote type preserved (`remote_type == "simpleError"` from R), and a result without a portable home fails the task with one naming the type.
-The reverse direction mirrors: `mizu::mizu_pool()` with `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
-Mixed workers in one pool and by-reference task arguments are deliberately out of scope for now.
-
-A spec is also a map's `fn` — `Pool.map()` / `Pool.map_prepare()` over a foreign pool (and `mizu::mizu_map()` mirrors in R):
-
-```python
-pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
-pool.map(pymizu.call("stats::median"), x)
-pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
-         folds, template=0.0)   # each fold a dict; the element binds as x
-pool.stop()
-```
-
-The map element fills the spec's first positional slot (name kind) or binds as `x` (source kind), so the map's own `args=`/`kwargs=` must be empty — constants ride the spec.
-`template=` and `collect=` work unchanged, and a per-element error crosses with its `index`.
-`seed=` carries as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (32-bit-ranged on R workers); invariance holds within a worker language, never identical draws across languages.
-
-What crosses the language boundary:
-
-- Python scalars (`bool`/`int`/`float`/`complex`/`str`/`None`), lists, and dicts with `str` keys cross both ways — R sees its own logical/integer/double/complex/character/list values back.
-  A `tuple` reads back as a `list` (the documented relay shift; the spec-table shifts all live in the interop plan's dtype matrix).
-- A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector — and back.
-  See the dtype matrix below.
-- A multi-dimensional numpy array of a mapped dtype arrives as an R `dim` array (a matrix is the 2-D case) — C order, F order, strided, it crosses value-exact (F order at the far side).
-  `datetime64` arrays of the day/week units arrive as `Date`, of the sub-day units as `POSIXct`; stdlib `datetime.date` and `datetime.datetime` scalars write the length-1 forms.
-- An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`.
-  Anything with `__arrow_c_array__` works (pyarrow, polars, a duckdb result column).
-- An Arrow stream — a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with `__arrow_c_stream__` — arrives as an R `data.frame` (dictionary-encoded columns as factors, `date32`/`timestamp` as `Date`/`POSIXct`), or a Series as a plain vector.
-  An R `data.frame` arrives as a `pymizu.Frame` (below); a factor as `list[str | None]`.
-- `bytes` stages as a raw vector.
-- Strings cross both ways (`str` rides the shared STR1 tier); `NA_character_` arrives as `None`; a string vector arrives as `list[str | None]`.
-- A large R atomic vector arrives as a zero-copy, read-only numpy view over the shared pages — no copy, no parse.
-  Without numpy it arrives as a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: `pa.array(view)`, `pl.from_arrow(view)`.
-- Everything outside the portable subset raises `pymizu.DeclinedError` at send time (a subclass of `TypeError`), carrying `path` and `reason` attributes.
-
-A `pymizu.Frame` is the `data.frame` home: named columns with a row count.
-`frame.to_dict()` gives the column dict with no Arrow library (numpy arrays where installed, memoryviews otherwise; strings and factors as `list[str | None]`); `frame.names` and `frame.row_names` carry the metadata.
-Any Arrow consumer takes the frame in one line — `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)` — with factor columns as dictionary columns, logical columns as Arrow `bool`, `Date` as `date32`, and `POSIXct` as `timestamp[us]`.
-A `Frame` pickles, so Python-to-Python channels carry it; on a foreign channel it writes the `data.frame` shape again through its own export.
-
-Zero-copy frames, both directions:
-
-- A `data.frame` past a size floor (32 KiB) crosses as one shared-memory region — the Python side reads a region-backed `Frame`: numeric columns are read-only numpy views over the shared pages, string columns read off their region block, factor columns are dictionary-encoded, integer64 columns tag-carried.
-- A frame sent from Python past the same floor — polars, pyarrow, pandas (through its pyarrow export), or a `Frame` — stages as one region too: R reads a `data.frame` in place.
-- The capability handshake sends a peer that has not implemented the layouts an interchange copy instead — the value always crosses.
-- An unmodified round trip moves nothing: a frame imported from a region and sent back (`pl.from_arrow(f)`, `pa.table(f)`) re-stages as the region's name, zero payload bytes. polars re-views string columns, so a frame holding one round-trips as a fresh region instead; pyarrow keeps them.
-- A live polars or pyarrow consumer pins the frame's region loan until `del` + GC. Long-lived imports want that discipline: enough pinned loans trip the producer's churn fallback, and later sends degrade to the copy tiers.
-
-Attribute and temporal rows:
-
-- A factor crosses as `list[str | None]` (standalone) or a dictionary column (in a frame); a standalone factor past the floor is a region read.
-- A `Date` crosses as `datetime64[D]` / Arrow `date32`; a `POSIXct` as naive `datetime64[us]` / `timestamp[us, tz]` — µs the precision unit, NaT ↔ `NA`, a named zone kept as `Frame` column metadata and dropped from a standalone vector; naive Python datetimes write `tzone = "UTC"`.
-- A `difftime`, `POSIXlt`, `timedelta64`, Arrow `date64`/`time`/`duration`/`interval`, and ordered dictionaries (polars Enums) decline at send time — a `difftime` crosses manually as an epoch-plus-units dict.
-- An R `names` vector declines on a foreign channel (numpy has no per-element names); a matrix crosses value-exact — F order at the far side, the data never transposed; `dimnames` and character matrices decline.
-- Cross-language sends copy ALTREP values by value (a zero-copy region past the floor, an interchange copy below it): value-exact, representation not preserved, the sender's compact vector untouched.
-
-### The dtype matrix
-
-Conversion happens once, at send time, fused into the copy that staging always is.
-Identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.
-
-| Python sends | R receives | Notes |
-|----|----|----|
-| `bytes` / uint8 | raw | Arrow uint8 with nulls: `TypeError` (R raw has no NA) |
-| int8 / int16 / uint16 | integer | widened, exact |
-| int32 | integer | |
-| uint32 | double | widened, exact |
-| int64 | integer64 (bit64's layout) | native wire type, bit-exact; `INT64_MIN` reads as `NA` |
-| uint64 | double | exact to ±2^53; past it, `NA` plus one warning |
-| float32 / float64 | double | |
-| bool | logical | |
-| complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
-| Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
-| Arrow strings (utf8 / large_utf8 / string_view) | character | a Series arrives as `list[str \| None]`; a column as a frame column |
-| Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
-| Arrow dictionary-encoded | factor | an ordered dictionary declines (`polars Enum`: cast to `pl.Categorical`) |
-| Arrow ChunkedArray / Table / Series | vector / `data.frame` | batches concatenate on the stage copy |
-| Arrow nested, decimal, time32/64, duration, interval | — | `DeclinedError` at send time |
-
-NA semantics:
-
-- R's missing values are sentinels in the data: `INT_MIN` for integer/logical, `INT64_MIN` for integer64, a specific NaN payload (`NA_real_`) for double.
-  Python to R: Arrow nulls convert to the sentinels, so R sees correct `NA`s.
-  R to Python: the read depends on the accessor, not the tier:
-  - copied reads (`list(...)`, `Frame.to_dict()`) are honest: a logical is `bool_` when NA-free, else int32; an integer is int32 when NA-free, else float64 with `NA_real_`-payload NaNs (every int32 is exact there); the integer scan runs only for an R writer, so a Python-to-Python int32 array keeps int32 and any genuine `-2^31` values.
-  - zero-copy views stay sentinel-typed on the raw page buffer; `.to_numpy()` applies the same rule, reading NA-freeness off the region's validity section before any data scan.
-  - int64 keeps its dtype in every numpy home and warns on a detected `INT64_MIN` (a copied read, `.to_numpy()`), naming `.to_arrow()` as the NA-honest accessor; a genuine Python `-2^63` round-trips unwarned.
-  - every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the tier or content; integer exports are int32/int64 with a validity bitmap.
-- A genuine int32 value of `-2147483648` collides with the NA sentinel and reads as `NA` in R on every tier (R's integer has no room for it); likewise an int64 value of `-9223372036854775808` (`INT64_MIN`) reads as `NA_integer64_`.
-  numpy sends stay silent; an Arrow int32 send with a validity bitmap warns once.
-- Python-side compute treats `NA_real_` as a NaN value; whether the exact payload survives arithmetic is platform-dependent — do not rely on it either way.
-
-Round trips are stable after the first hop, and a pure pass-through echo is bit-exact: an untouched received view re-stages by reference (its region name, no payload bytes), so even the `NA_real_` payload survives a relay. A slice or a dtype view of a received view re-stages by value.
-
-| Python sends | R sees | Back in Python | |
-|----|----|----|----|
-| uint8 | raw | uint8 | exact |
-| int8 / int16 / uint16 | integer | int32 | widened, values exact |
-| int32 | integer | int32 | exact |
-| uint32 | double | float64 | exact |
-| int64 | integer64 | int64 | exact |
-| uint64, ≤ ±2^53 | double | float64 | dtype lost, values exact |
-| uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
-| float32 | double | float64 | widened, values exact |
-| float64 | double | float64 | exact |
-| bool | logical | `bool_` (int32 with NAs) | dtype lost |
-| complex64 / complex128 | complex | complex128 | exact |
-
-| R sends | Python sees | Back in R | |
-|----|----|----|----|
-| integer | int32 (float64 with NAs) | integer | exact |
-| integer64 (bit64) | int64 (warns on an `NA` verdict) | integer64 | exact; a genuine Python `-2^63` arrives as `NA` |
-| double | float64 | double | exact |
-| raw | uint8 | raw | exact |
-| complex | complex128 | complex | exact |
-| logical | `bool_` (int32 with NAs) | **integer** | the tag does not survive a by-value Python hop (values do); a whole view re-sent crosses by reference, logical intact |
-
-The channel/pool split: pools are Python-both-ends by construction, so pool task results keep the lossless pickle path for every dtype.
-Python-to-Python channels keep identity dtypes and pickle everything else unchanged (the identity exchange reports the peer's language at handshake; the conversion pass is foreign-only).
-For an exact Python-to-Python channel send of a non-identity dtype, no nesting is needed — it pickles.
-
-## Requirements
-
-- Python 3.10 or later, on a 64-bit platform.
-- Linux: kernel 5.3 or later.
-- Windows: the build requires clang-cl.
-
-## Install
-
-```sh
-pip install .
-```
-
-The extension compiles the vendored C core, so no system library is necessary.
-
-Optional extras:
-
-- `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
-- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
-
-## Linux memory allocator
-
-This section applies only to Linux with glibc.
-
-When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
-It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
-This keeps large payloads in fast memory.
-Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
-
-Your own Python process does not change.
-If you want the same settings there, set them before Python starts:
-
-```sh
-export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
-```
-
-If you have set `GLIBC_TUNABLES`, pymizu respects your values.
+The [documentation site](https://shikokuchuo.github.io/pymizu/) covers the full surface: channels and their payload tiers, task pools (batch operations, nested tasks, observing a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
 
 ## Layout
 
@@ -356,6 +163,8 @@ If you have set `GLIBC_TUNABLES`, pymizu respects your values.
   `child.py` and `worker.py` are the entry points for spawned processes (`python -m pymizu.child <token>`, `python -m pymizu.worker <suffix> <slot>`).
 - `tests/`: the pytest suite.
   `tests/helpers.py` holds the task callables (pickle sends them by reference, so the workers must import them).
+- `docs/`: the Quarto documentation site.
+  `quartodoc build` then `quarto render` in this directory builds it.
 
 ## License
 

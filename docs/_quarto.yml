@@ -1,0 +1,86 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "pymizu 水"
+  site-url: "https://shikokuchuo.github.io/pymizu/"
+  repo-url: "https://github.com/shikokuchuo/pymizu"
+  page-navigation: true
+  navbar:
+    right:
+      - icon: github
+        href: "https://github.com/shikokuchuo/pymizu"
+        aria-label: "pymizu on GitHub"
+  sidebar:
+    style: docked
+    contents:
+      - index.qmd
+      - installation.qmd
+      - section: "Guide"
+        contents:
+          - channels.qmd
+          - pools.qmd
+          - map.qmd
+          - interop.qmd
+      - benchmarks.qmd
+      - section: "API reference"
+        contents:
+          - reference/
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+
+quartodoc:
+  package: pymizu
+  dir: reference
+  title: API reference
+  sections:
+    - title: Channels
+      desc: >-
+        A two-way message link between a Python process and a helper process
+        that it spawns.
+      contents:
+        - Channel
+    - title: Task pools
+      desc: >-
+        A set of worker processes that divide submitted tasks among
+        themselves.
+      contents:
+        - Pool
+        - Task
+    - title: Cross-language interop
+      desc: >-
+        R peers and workers (the mizu R package), neutral task
+        specifications, and the data.frame's Python home.
+      contents:
+        - call
+        - r_launcher
+        - r_pool_launcher
+        - Frame
+    - title: Outcomes and errors
+      desc: >-
+        Terminal transport states return as the sentinel singletons FULL /
+        TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real
+        failures raise from the exception hierarchy.
+      contents:
+        - is_sentinel
+        - is_remote_error
+        - MizuError
+        - ShmError
+        - StartupError
+        - SubmitTimeoutError
+        - SlotsExhaustedError
+        - StoppedError
+        - CancelledError
+        - TaskError
+        - WorkerDiedError
+        - DeclinedError
+    - title: Housekeeping
+      desc: "Pool context from inside a task, and orphan reaping."
+      contents:
+        - current_pool
+        - prune
