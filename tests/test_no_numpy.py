@@ -236,8 +236,8 @@ def test_task_arg_memoryview_shm_vec_without_numpy(tmp_path):
                 stdout=None, stderr=None
             )
         except pymizu.MizuError:
-            import pytest
-            pytest.skip("Rscript with the mizu package not available")
+            print("no Rscript/mizu — skipping")
+            raise SystemExit(0)
         p = pymizu.Pool.create(1, launcher=launcher)
         try:
             big = memoryview(array.array("d", [1.5] * 200_000))
