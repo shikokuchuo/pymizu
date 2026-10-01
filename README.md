@@ -146,11 +146,11 @@ ch.close()
 If R or the package is missing, it raises `MizuError` before the channel is created.
 
 Pools mix too: `pymizu.r_pool_launcher()` spawns R workers, driven through the neutral task format of `pymizu.call()` specs.
-The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and the dtype matrix — is on the [R interop](https://shikokuchuo.github.io/pymizu/interop.html) page.
+The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and the dtype matrix — is on the [R interop](https://shikokuchuo.net/pymizu/interop.html) page.
 
 ## Documentation
 
-The [documentation site](https://shikokuchuo.github.io/pymizu/) covers the full surface: channels and their payload tiers, task pools (batch operations, nested tasks, observing a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
+The [documentation site](https://shikokuchuo.net/pymizu/) covers the full surface: channels and their payload tiers, task pools (batch operations, nested tasks, observing a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
 
 ## Layout
 

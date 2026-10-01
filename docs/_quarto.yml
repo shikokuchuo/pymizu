@@ -4,7 +4,7 @@ project:
 
 website:
   title: "pymizu 水"
-  site-url: "https://shikokuchuo.github.io/pymizu/"
+  site-url: "https://shikokuchuo.net/pymizu/"
   repo-url: "https://github.com/shikokuchuo/pymizu"
   page-navigation: true
   navbar:
