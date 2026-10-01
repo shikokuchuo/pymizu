@@ -2,118 +2,118 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://shikokuchuo.net/pymizu/installation.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/benchmarks.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/MizuError.html</loc>
-    <lastmod>2026-10-01T13:13:07.097Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.531Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html</loc>
-    <lastmod>2026-10-01T13:13:07.094Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.527Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/CancelledError.html</loc>
-    <lastmod>2026-10-01T13:13:07.101Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.536Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/prune.html</loc>
-    <lastmod>2026-10-01T13:13:07.105Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.541Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/current_pool.html</loc>
-    <lastmod>2026-10-01T13:13:07.104Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.540Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/WorkerDiedError.html</loc>
-    <lastmod>2026-10-01T13:13:07.102Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.538Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/StartupError.html</loc>
-    <lastmod>2026-10-01T13:13:07.098Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.533Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Channel.html</loc>
-    <lastmod>2026-10-01T13:13:07.076Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.504Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/call.html</loc>
-    <lastmod>2026-10-01T13:13:07.092Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.524Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/SlotsExhaustedError.html</loc>
-    <lastmod>2026-10-01T13:13:07.100Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.535Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/DeclinedError.html</loc>
-    <lastmod>2026-10-01T13:13:07.103Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.539Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/map.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/interop.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/index.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/is_sentinel.html</loc>
-    <lastmod>2026-10-01T13:13:07.095Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.529Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/index.html</loc>
-    <lastmod>2026-10-01T13:13:07.058Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.480Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/r_launcher.html</loc>
-    <lastmod>2026-10-01T13:13:07.093Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.526Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Frame.html</loc>
-    <lastmod>2026-10-01T13:13:07.095Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.528Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/SubmitTimeoutError.html</loc>
-    <lastmod>2026-10-01T13:13:07.099Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.534Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/ShmError.html</loc>
-    <lastmod>2026-10-01T13:13:07.098Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.532Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/is_remote_error.html</loc>
-    <lastmod>2026-10-01T13:13:07.096Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.530Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Pool.html</loc>
-    <lastmod>2026-10-01T13:13:07.090Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.522Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/StoppedError.html</loc>
-    <lastmod>2026-10-01T13:13:07.100Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.536Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Task.html</loc>
-    <lastmod>2026-10-01T13:13:07.091Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.523Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/TaskError.html</loc>
-    <lastmod>2026-10-01T13:13:07.102Z</lastmod>
+    <lastmod>2026-10-01T18:53:00.537Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/channels.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/pools.html</loc>
-    <lastmod>2026-10-01T13:12:15.386Z</lastmod>
+    <lastmod>2026-10-01T18:51:54.608Z</lastmod>
   </url>
 </urlset>
