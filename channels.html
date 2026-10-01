@@ -393,7 +393,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="creating-a-channel" class="level2">
 <h2 class="anchored" data-anchor-id="creating-a-channel">Creating a channel</h2>
 <p><code>Channel.create()</code> spawns the peer process (<code>python -m pymizu.child &lt;token&gt;</code>) and connects both ends. The peer program is a Python source string, evaluated in the peer with <code>ch</code> bound to its side of the channel:</p>
-<div id="3c699f53" class="cell" data-execution_count="1">
+<div id="e5ad10d1" class="cell" data-execution_count="1">
 <div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -411,7 +411,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="sending-and-receiving" class="level2">
 <h2 class="anchored" data-anchor-id="sending-and-receiving">Sending and receiving</h2>
 <p><code>ch.send()</code> publishes a payload, visible to the peer the moment the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next payload, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
-<div id="6caeb017" class="cell" data-execution_count="2">
+<div id="1c0f840b" class="cell" data-execution_count="2">
 <div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
@@ -451,7 +451,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </table>
 <p>Test them by identity — <code>x is pymizu.TIMEOUT</code> — or with <code>pymizu.is_sentinel(x)</code>. No call needs an error handler. If the peer dies, receives first drain what it already published, then report <code>PEER_GONE</code>.</p>
 <p><code>send_batch()</code> and <code>recv_batch()</code> move several payloads in one crossing — use them at rates where per-call overhead starts to matter:</p>
-<div id="da56f0e6" class="cell" data-execution_count="3">
+<div id="3537c518" class="cell" data-execution_count="3">
 <div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch(<span class="bu">range</span>(<span class="dv">4</span>))</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>ch.recv_batch(<span class="dv">4</span>, timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="cell-output cell-output-display" data-execution_count="3">
@@ -463,7 +463,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="closing" class="level2">
 <h2 class="anchored" data-anchor-id="closing">Closing</h2>
 <p><code>ch.close()</code> is the orderly shutdown: it signals the peer and waits for it to finish draining before releasing the shared resources:</p>
-<div id="a8c9a259" class="cell" data-execution_count="4">
+<div id="2875e848" class="cell" data-execution_count="4">
 <div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="cell-output cell-output-display" data-execution_count="4">
 <pre><code>True</code></pre>
