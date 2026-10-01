@@ -2924,6 +2924,8 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
   loan->shm = shm;
   loan->pid = mizu_self_pid();
   mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
+  loan->bits = NULL;
+  loan->valid = NULL;
   mizu_mizs_geom g = mizu_mizs_geometry(sv->n);
   const uint8_t *block =
     (const uint8_t *) mizu_shm_addr(shm) + MIZU_HEADER_SIZE;
@@ -4119,7 +4121,7 @@ static PyObject *traceback_text(PyObject *type, PyObject *value,
    to the slot by construction, so the publish cannot fail. */
 static int frame_err_exc(PyObject *exc, uint8_t *payload,
                          uint32_t inline_max, mizu_slot_hdr *hdr) {
-  const char *tn = PyExceptionClass_Name(Py_TYPE(exc));
+  const char *tn = PyExceptionClass_Name((PyObject *) Py_TYPE(exc));
   PyObject *tname = PyUnicode_FromString(tn != NULL ? tn : "Exception");
   PyObject *msg = PyObject_Str(exc);
   if (msg == NULL) {
@@ -4127,7 +4129,7 @@ static int frame_err_exc(PyObject *exc, uint8_t *payload,
     msg = PyUnicode_FromString("<unprintable exception>");
   }
   PyObject *tb = PyException_GetTraceback(exc);   /* new ref or NULL */
-  PyObject *tbs = traceback_text(Py_TYPE(exc), exc, tb);
+  PyObject *tbs = traceback_text((PyObject *) Py_TYPE(exc), exc, tb);
   Py_XDECREF(tb);
   if (tname == NULL || msg == NULL || tbs == NULL) {
     Py_XDECREF(tname);

@@ -131,12 +131,13 @@ def test_prepared_spec_map_re_arms_without_restage(r_pool):
 
 def test_a_dead_r_workers_lost_set_scan():
     # a killed worker mid-map reports the lost element ranges
-    p = pymizu.Pool.create(
-        1,
-        launcher=pymizu.r_pool_launcher(
+    try:
+        launcher = pymizu.r_pool_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ),
-    )
+        )
+    except pymizu.MizuError:
+        pytest.skip("Rscript with the mizu package not available")
+    p = pymizu.Pool.create(1, launcher=launcher)
     try:
         pid = p.dump()["workers"][0]["pid"]
 

@@ -219,26 +219,37 @@ def test_r_peer_view_arrow_na_rules(r_mizu):
     # (the bit-pack built at export); INT exports int32 with a validity
     # bitmap, built lazily off the sentinels on a pre-section region
     pa = pytest.importorskip("pyarrow")
+    # the acks pace the sends: each stage recycles the region the consumer
+    # just released, so the Linux churn fallback never engages
     src = """
+send <- function(x) {
+  mizu::mizu_send(ch, x)
+  mizu::mizu_recv(ch, timeout = 30)
+}
 l <- rep(c(TRUE, FALSE, NA), length.out = 1e6)
-mizu::mizu_send(ch, l)
+send(l)
 cl <- rep(c(TRUE, FALSE), length.out = 1e6)
-mizu::mizu_send(ch, cl)
+send(cl)
 i <- rep(1:100, length.out = 1e6); i[3] <- NA_integer_
-mizu::mizu_send(ch, i)
-mizu::mizu_recv(ch, timeout = 60)
+send(i)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         la = pa.array(ch.recv(30).base)
         assert la.type == pa.bool_() and la.null_count == 333333
         assert la.slice(0, 4).to_pylist() == [True, False, None, True]
+        del la  # drop the export's loan before the ack
+        ch.send(b"")
         ca = pa.array(ch.recv(30).base)
         assert ca.type == pa.bool_() and ca.null_count == 0
         assert ca.slice(0, 3).to_pylist() == [True, False, True]
+        del ca
+        ch.send(b"")
         ia = pa.array(ch.recv(30).base)
         assert ia.type == pa.int32() and ia.null_count == 1
         assert ia.slice(0, 4).to_pylist() == [1, 2, None, 4]
+        del ia
+        ch.send(b"")
     finally:
         ch.close()
 
@@ -248,30 +259,43 @@ def test_r_peer_view_to_numpy(r_mizu):
     # NA-freeness read off the region's validity section before any scan
     # ({0, 0} pre-section regions here — the fallback scan, cached)
     np = pytest.importorskip("numpy")
+    # the acks pace the sends: each stage recycles the region the consumer
+    # just released, so the Linux churn fallback never engages
     src = """
+send <- function(x) {
+  mizu::mizu_send(ch, x)
+  mizu::mizu_recv(ch, timeout = 30)
+}
 l <- rep(c(TRUE, FALSE, NA), length.out = 1e6)
-mizu::mizu_send(ch, l)
+send(l)
 cl <- rep(c(TRUE, FALSE), length.out = 1e6)
-mizu::mizu_send(ch, cl)
+send(cl)
 i <- rep(1:100, length.out = 1e6); i[3] <- NA_integer_
-mizu::mizu_send(ch, i)
+send(i)
 ci <- rep(1:100, length.out = 1e6)
-mizu::mizu_send(ch, ci)
-mizu::mizu_recv(ch, timeout = 60)
+send(ci)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         a = ch.recv(30).base.to_numpy()          # LGL with NAs: the view
         assert a.dtype == np.int32 and not a.flags.writeable
         assert list(a[:3]) == [1, 0, -2**31]
+        del a                     # the view-backed copy pins the region
+        ch.send(b"")
         b = ch.recv(30).base.to_numpy()          # clean LGL: a bool_ copy
         assert b.dtype == np.bool_ and list(b[:3]) == [True, False, True]
+        del b
+        ch.send(b"")
         c = ch.recv(30).base.to_numpy()          # INT with an NA: float64
         assert c.dtype == np.float64
         assert c[0] == 1 and np.isnan(c[2]) and c[3] == 4
+        del c
+        ch.send(b"")
         d = ch.recv(30).base.to_numpy()          # clean INT: the view
         assert d.dtype == np.int32 and not d.flags.writeable
         assert d[0] == 1 and d[-1] == 100
+        del d
+        ch.send(b"")
     finally:
         ch.close()
 
