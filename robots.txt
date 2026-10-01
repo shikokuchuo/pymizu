@@ -1,1 +1,1 @@
-Sitemap: https://shikokuchuo.github.io/pymizu/sitemap.xml
+Sitemap: https://shikokuchuo.net/pymizu/sitemap.xml
