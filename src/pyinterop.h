@@ -151,6 +151,29 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
                                       uint32_t target, uint64_t ident);
 PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n);
 
+/* The spec map's 'I' forms (Phase 5): the descriptor — one stream,
+   list[task, x | nil] — written as bytes (a decline raises
+   DeclinedError), and read back as (kind, code, positional, kwargs,
+   x|None). */
+PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
+                                   PyObject *args, PyObject *kwargs,
+                                   PyObject *x, uint32_t target);
+PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n);
+
+/* The kind-2 (runner) task stream (Phase 5): staged off a _RunnerFrame
+   (the Pool.map path, the _CallFrame pattern), written as bytes (the test
+   hook), and decoded + run by the worker's exec hook — the binding's own
+   runner loop against the named region, the submitter identity stashed
+   ahead of every field read. */
+int pymizu_ix_stage_runner(PyObject *frame, mizu_slot_hdr *hdr,
+                           uint8_t *payload, uint32_t inline_max,
+                           mizu_handle *h, uint64_t ident);
+PyObject *pymizu_ix_write_runner_stream(PyObject *name, int64_t gen_field,
+                                        PyObject *seed, uint32_t target,
+                                        uint64_t ident);
+PyObject *pymizu_ix_runner_run(const uint8_t *src, size_t n,
+                               uint64_t *ident_out);
+
 /* The __arrow_c_stream__ front-end (foreign handles only): struct schemas
    write the frame shape, non-struct the bare-bytes tiers / 0x0b / the
    temporal and factor shapes; past the zero-copy floor a frame the peer's

@@ -91,8 +91,13 @@ def test_private_verbs_fail_fast_on_a_foreign_pool():
             pool.map(abs, [-1, -2])
         with pytest.raises(TypeError, match="pymizu.call"):
             pool.map_prepare(abs, [-1, -2])
-        with pytest.raises(TypeError, match="not supported yet"):
-            pool.map(pymizu.call("math.sqrt"), [4])
+        # a spec fn passes the map guard on a foreign pool (Phase 5)
+        from pymizu import _map
+
+        assert _map._map_check_native(pool, pymizu.call("math.sqrt")) == (
+            True,
+            2,
+        )
         with pytest.raises(TypeError, match="qualified name"):
             pool.submit(pymizu.call("sqrt", 4))
     finally:

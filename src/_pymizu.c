@@ -222,6 +222,31 @@ static PyObject *call_frame_new(PyObject *spec, PyObject *ident) {
   return f;
 }
 
+/* The spec map's runner payload marker (Phase 5): items 0/1/2 = region
+   name / packed ordinal+generation int / seed pair-or-None. The stage
+   hook recognizes the exact type ahead of the codec, the _CallFrame
+   pattern, and frames the kind-2 task stream off it — a foreign worker
+   cannot run a private runner frame, so a spec map never pickles one. */
+static PyTypeObject MizuRunnerFrameType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pymizu._RunnerFrame",
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A pool runner payload marked for the interop task stream.",
+};
+
+static PyObject *runner_frame_new(PyObject *name, PyObject *gen_field,
+                                  PyObject *seed) {
+  PyObject *f = MizuRunnerFrameType.tp_alloc(&MizuRunnerFrameType, 3);
+  if (f == NULL) return NULL;
+  Py_INCREF(name);
+  Py_INCREF(gen_field);
+  Py_INCREF(seed);
+  PyTuple_SET_ITEM(f, 0, name);
+  PyTuple_SET_ITEM(f, 1, gen_field);
+  PyTuple_SET_ITEM(f, 2, seed);
+  return f;
+}
+
 // Errors -------------------------------------------------------------------------
 
 /* create/attach failure: the core composed the message (size + hint) in the
@@ -1565,6 +1590,15 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     }
     return pymizu_ix_stage_task(PyTuple_GET_ITEM(obj, 0), hdr, payload,
                                 inline_max, h, word);
+  }
+  if (Py_TYPE(obj) == &MizuRunnerFrameType) {
+    /* the spec map's runner submit (Pool.map of a pymizu.call): the
+       kind-2 task stream off the frame's fields — the exact-type match
+       ahead of the codec, the _CallFrame pattern. The identity is always
+       this build's word: a spec map is only ever submitted by its own
+       language's driver */
+    return pymizu_ix_stage_runner(obj, hdr, payload, inline_max, h,
+                                  MIZU_PY_IDENT);
   }
   if (Py_TYPE(obj) == &MizuTaskFrameType) {
     /* before the codec: the codec's exact-type tuple check would reject
@@ -4316,7 +4350,11 @@ static const uint8_t *pool_entry_bytes(const mizu_slot_hdr *hdr,
 static int py_exec_task(mizu_result_sink *sink, const uint8_t *bytes,
                         size_t blen, MizuHandleCtx *hctx) {
   uint64_t sub_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
-  PyObject *value = pymizu_ix_task_run(bytes, blen, &sub_ident);
+  /* the kind byte at stream offset 4: kind 2 is the map runner — decoded
+     and run against the named region by the binding's own runner loop */
+  PyObject *value = blen >= 5 && bytes[4] == 2 ?
+    pymizu_ix_runner_run(bytes, blen, &sub_ident) :
+    pymizu_ix_task_run(bytes, blen, &sub_ident);
   if (value == NULL) {
     if (!PyErr_ExceptionMatches(PyExc_Exception))
       return 1;      /* BaseException: the worker goes down */
@@ -6594,6 +6632,24 @@ PyDoc_STRVAR(call_frame_doc,
 The Pool.submit payload marker for a pymizu.call spec: tagged for the\n\
 interop task stream. Facade use only.");
 
+PyDoc_STRVAR(runner_frame_doc,
+"_runner_frame(name, gen_field, seed) -> tuple\n\n\
+The spec map's runner payload marker: tagged for the kind-2 interop\n\
+task stream. Facade use only (the Pool.map path builds it).");
+
+static PyObject *pymizu_runner_frame(PyObject *Py_UNUSED(module),
+                                     PyObject *const *args,
+                                     Py_ssize_t nargs) {
+  if (nargs != 3 || !PyUnicode_CheckExact(args[0]) ||
+      !PyLong_CheckExact(args[1]) ||
+      (args[2] != Py_None && !PyTuple_CheckExact(args[2]))) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _runner_frame expects (str, int, tuple|None)");
+    return NULL;
+  }
+  return runner_frame_new(args[0], args[1], args[2]);
+}
+
 static PyObject *pymizu_call_frame(PyObject *Py_UNUSED(module),
                                    PyObject *const *args,
                                    Py_ssize_t nargs) {
@@ -6631,6 +6687,77 @@ static PyObject *pymizu_write_task(PyObject *Py_UNUSED(module),
   }
   return pymizu_ix_write_task_stream(args[0], kind, args[2], args[3],
                                      (uint32_t) target, (uint64_t) ident);
+}
+
+PyDoc_STRVAR(map_desc_write_doc,
+"_map_desc_write(code, kind, args, kwargs, x, target) -> bytes\n\n\
+Frame a spec map's 'I' descriptor — list[task, x | nil] — from its\n\
+components (x the list-x, or None when the raw section carries it).\n\
+Raises DeclinedError for a value outside the portable subset.");
+
+static PyObject *pymizu_map_desc_write(PyObject *Py_UNUSED(module),
+                                       PyObject *const *args,
+                                       Py_ssize_t nargs) {
+  if (nargs != 6) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _map_desc_write expects (code, kind, args, "
+                    "kwargs, x, target)");
+    return NULL;
+  }
+  long kind = PyLong_AsLong(args[1]);
+  long target = PyLong_AsLong(args[5]);
+  if ((kind == -1 || target == -1) && PyErr_Occurred()) return NULL;
+  if (target < 0 || target > 255) {
+    PyErr_SetString(PyExc_ValueError, "pymizu: expected a language byte");
+    return NULL;
+  }
+  return pymizu_ix_write_map_desc(args[0], kind, args[2], args[3], args[4],
+                                  (uint32_t) target);
+}
+
+PyDoc_STRVAR(map_desc_read_doc,
+"_map_desc_read(stream) -> (kind, code, positional, kwargs, x)\n\n\
+Decode a spec map's 'I' descriptor: the spec's components and the list-x\n\
+(None when the raw section carries it).");
+
+static PyObject *pymizu_map_desc_read(PyObject *Py_UNUSED(module),
+                                      PyObject *arg) {
+  if (!PyBytes_CheckExact(arg)) {
+    PyErr_SetString(PyExc_TypeError, "pymizu: expected a bytes stream");
+    return NULL;
+  }
+  return pymizu_ix_read_map_desc((const uint8_t *) PyBytes_AS_STRING(arg),
+                                 (size_t) PyBytes_GET_SIZE(arg));
+}
+
+PyDoc_STRVAR(write_runner_doc,
+"_write_runner(name, gen_field, seed, target, ident) -> bytes\n\n\
+Frame a kind-2 (runner) task stream from its fields, the exec hook's\n\
+wire form. Exposed for the test suite.");
+
+static PyObject *pymizu_write_runner(PyObject *Py_UNUSED(module),
+                                     PyObject *const *args,
+                                     Py_ssize_t nargs) {
+  if (nargs != 5 || !PyUnicode_CheckExact(args[0])) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _write_runner expects (str, int, tuple|None, "
+                    "target, ident)");
+    return NULL;
+  }
+  long long gen_field = PyLong_AsLongLong(args[1]);
+  if (gen_field == -1 && PyErr_Occurred()) return NULL;
+  long target = PyLong_AsLong(args[3]);
+  unsigned long long ident = PyLong_AsUnsignedLongLong(args[4]);
+  if ((target == -1 || ident == (unsigned long long) -1) &&
+      PyErr_Occurred())
+    return NULL;
+  if (target < 0 || target > 255) {
+    PyErr_SetString(PyExc_ValueError, "pymizu: expected a language byte");
+    return NULL;
+  }
+  return pymizu_ix_write_runner_stream(args[0], (int64_t) gen_field,
+                                       args[2], (uint32_t) target,
+                                       (uint64_t) ident);
 }
 
 PyDoc_STRVAR(read_task_doc,
@@ -6805,8 +6932,15 @@ static PyMethodDef pymizu_methods[] = {
    METH_FASTCALL, task_frame_doc},
   {"_call_frame", (PyCFunction)(void (*)(void)) pymizu_call_frame,
    METH_FASTCALL, call_frame_doc},
+  {"_runner_frame", (PyCFunction)(void (*)(void)) pymizu_runner_frame,
+   METH_FASTCALL, runner_frame_doc},
   {"_write_task", (PyCFunction)(void (*)(void)) pymizu_write_task,
    METH_FASTCALL, write_task_doc},
+  {"_map_desc_write", (PyCFunction)(void (*)(void)) pymizu_map_desc_write,
+   METH_FASTCALL, map_desc_write_doc},
+  {"_map_desc_read", pymizu_map_desc_read, METH_O, map_desc_read_doc},
+  {"_write_runner", (PyCFunction)(void (*)(void)) pymizu_write_runner,
+   METH_FASTCALL, write_runner_doc},
   {"_read_task", pymizu_read_task, METH_O, read_task_doc},
   {"_read_stream", pymizu_read_stream, METH_O, read_stream_doc},
   {"_write_stream", pymizu_write_stream, METH_O, write_stream_doc},
@@ -6866,6 +7000,8 @@ PyInit__pymizu(void)
   if (PyType_Ready(&MizuTaskFrameType) < 0) return NULL;
   MizuCallFrameType.tp_base = &PyTuple_Type;
   if (PyType_Ready(&MizuCallFrameType) < 0) return NULL;
+  MizuRunnerFrameType.tp_base = &PyTuple_Type;
+  if (PyType_Ready(&MizuRunnerFrameType) < 0) return NULL;
 
   /* cloudpickle when installed, stock pickle otherwise; both read each
      other's protocol-4 streams */

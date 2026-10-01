@@ -5564,11 +5564,12 @@ static void ixw_raise(ixw *w);
 /* The two-pass task walk off the spec's components: the header fields,
    then the code string, the positional list and the named dict —
    elements through the generic writer, never an intermediate object. */
-static void ixw_task(ixw *w, const char *code, Py_ssize_t code_n, int kind,
-                     PyObject *args, PyObject *kwargs, uint32_t target,
-                     uint64_t ident) {
-  IXW_PUT(w, mizu_ix_put_header(IXW_DST(w)));
-  IXW_PUT(w, mizu_ix_put_task(IXW_DST(w), (int) target, kind, ident));
+/* The task fields' emission, shared by the task writer and the map
+   descriptor writer: the code string, the positional list and the named
+   dict, elements through the generic writer. A decline (a non-portable
+   argument, bad names) latches on w. */
+static void ixw_task_fields(ixw *w, const char *code, Py_ssize_t code_n,
+                            PyObject *args, PyObject *kwargs) {
   IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), code, (int32_t) code_n));
   w->depth++;
   Py_ssize_t na = PyTuple_GET_SIZE(args);
@@ -5603,6 +5604,14 @@ static void ixw_task(ixw *w, const char *code, Py_ssize_t code_n, int kind,
     if (!w->decline) ixw_path_pop(w, save);
   }
   w->depth--;
+}
+
+static void ixw_task(ixw *w, const char *code, Py_ssize_t code_n, int kind,
+                     PyObject *args, PyObject *kwargs, uint32_t target,
+                     uint64_t ident) {
+  IXW_PUT(w, mizu_ix_put_header(IXW_DST(w)));
+  IXW_PUT(w, mizu_ix_put_task(IXW_DST(w), (int) target, kind, ident));
+  ixw_task_fields(w, code, code_n, args, kwargs);
 }
 
 int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
@@ -5779,7 +5788,7 @@ static int ixt_want_dict(mizu_ix *cur, mizu_ix_item *it) {
 
 /* The task header: the TASK item and the supported kinds. */
 static int ixt_open(mizu_ix *cur, const uint8_t *src, size_t n,
-                    mizu_ix_item *it) {
+                    mizu_ix_item *it, int max_kind) {
   if (mizu_ix_open(cur, src, n) != MIZU_OK) {
     ixt_stop_tls();
     return -1;
@@ -5790,7 +5799,7 @@ static int ixt_open(mizu_ix *cur, const uint8_t *src, size_t n,
                     "tag");
     return -1;
   }
-  if (it->task_kind > 1) {
+  if (it->task_kind > (uint32_t) max_kind) {
     PyErr_Format(MizuError, "pymizu: unsupported task kind 0x%02X",
                  it->task_kind);
     return -1;
@@ -5887,7 +5896,7 @@ PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
                              uint64_t *ident_out) {
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
-  if (ixt_open(&cur, src, n, &it) < 0) return NULL;
+  if (ixt_open(&cur, src, n, &it, 1) < 0) return NULL;
   *ident_out = it.u64[0];
   const int kind = (int) it.task_kind;
   if (ixt_want_code(&cur, &code) < 0) return NULL;
@@ -5995,7 +6004,7 @@ out:
 PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
-  if (ixt_open(&cur, src, n, &it) < 0) return NULL;
+  if (ixt_open(&cur, src, n, &it, 1) < 0) return NULL;
   if (ixt_want_code(&cur, &code) < 0) return NULL;
   if (ixt_want_list(&cur, &pos) < 0) return NULL;
   PyObject *positional = NULL, *kwargs = NULL, *keyset = NULL, *out = NULL;
@@ -6047,6 +6056,337 @@ fail:
   Py_XDECREF(kwargs);
   Py_XDECREF(keyset);
   return NULL;
+}
+
+// Map descriptors and runner tasks (Phase 5) --------------------------------------
+
+/* The map descriptor's 'I' form, two-pass: one complete stream,
+   list[task, x | nil] — the f spec nested as a kind 0/1 task tag (target
+   byte and submitter identity included, as the exec tasks'), then the
+   list-x values as a bare 0x0c list, or nil when the raw section carries
+   them. A decline (a non-portable constant or element) latches on w. */
+static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
+                         int kind, PyObject *args, PyObject *kwargs,
+                         PyObject *x, uint32_t target, uint64_t ident) {
+  IXW_PUT(w, mizu_ix_put_header(IXW_DST(w)));
+  IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), 2));
+  IXW_PUT(w, mizu_ix_put_task(IXW_DST(w), (int) target, kind, ident));
+  ixw_task_fields(w, code, code_n, args, kwargs);
+  if (w->decline) return;
+  if (x == Py_None) {
+    IXW_PUT(w, mizu_ix_put_nil(IXW_DST(w)));
+    return;
+  }
+  Py_ssize_t n = PyList_GET_SIZE(x);
+  IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) n));
+  memcpy(w->path, "x", 2);
+  w->path_len = 1;
+  w->depth++;
+  for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
+    size_t save = w->path_len;
+    ixw_path_index(w, i);
+    ixw_node(w, PyList_GET_ITEM(x, i));
+    if (!w->decline) ixw_path_pop(w, save);
+  }
+  w->depth--;
+}
+
+/* The descriptor write as bytes: code/kind/args/kwargs the spec's
+   components, x the list-x or None (the raw section's case), target the
+   pool word's language byte. */
+PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
+                                   PyObject *args, PyObject *kwargs,
+                                   PyObject *x, uint32_t target) {
+  if (!PyUnicode_CheckExact(code) || !PyTuple_CheckExact(args) ||
+      !PyDict_CheckExact(kwargs) ||
+      (x != Py_None && !PyList_CheckExact(x))) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _map_desc_write expects (str, int, tuple, "
+                    "dict, list|None, int)");
+    return NULL;
+  }
+  Py_ssize_t code_n;
+  const char *code_s = PyUnicode_AsUTF8AndSize(code, &code_n);
+  if (code_s == NULL) return NULL;
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  memcpy(w.path, "args", 5);
+  w.path_len = 4;
+  ixw_map_desc(&w, code_s, code_n, (int) kind, args, kwargs, x, target,
+               MIZU_PY_IDENT);
+  if (w.decline) {
+    ixw_raise(&w);
+    return NULL;
+  }
+  size_t n = w.total;
+  uint8_t *buf = malloc(n != 0 ? n : 1);
+  if (buf == NULL) return PyErr_NoMemory();
+  ixw w2;
+  memcpy(&w2, &w, sizeof(w2));
+  w2.dst = buf;
+  w2.total = 0;
+  w2.decline = 0;
+  memset(&w2.warn, 0, sizeof(w2.warn));
+  ixw_map_desc(&w2, code_s, code_n, (int) kind, args, kwargs, x, target,
+               MIZU_PY_IDENT);
+  if (mizu_py_cvt_warn(&w2.warn) != 0) {
+    free(buf);
+    return NULL;
+  }
+  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
+                                            (Py_ssize_t) n);
+  free(buf);
+  return out;
+}
+
+/* The kind-2 (runner) task stream off the _RunnerFrame's fields: the
+   header, the region name, the packed ordinal+generation i64 (ordinal the
+   high 32 bits, the morsel generation the low 32 — DESIGN.md's task kind
+   registry), and the seed as nil or the (seed, offset) i64v[2]. Bounded
+   by the region name's MIZU_NAME_MAX — always inline. 0 staged, 1
+   error. */
+static size_t ixw_runner(uint8_t *dst, const char *name,
+                         Py_ssize_t name_n, int64_t gen_field,
+                         PyObject *seed, uint32_t target, uint64_t ident) {
+  size_t total = mizu_ix_put_header(dst);
+  total += mizu_ix_put_task(dst != NULL ? dst + total : NULL,
+                            (int) target, 2, ident);
+  total += mizu_ix_put_str(dst != NULL ? dst + total : NULL, name,
+                           (int32_t) name_n);
+  total += mizu_ix_put_int(dst != NULL ? dst + total : NULL, gen_field);
+  if (seed == Py_None) {
+    total += mizu_ix_put_nil(dst != NULL ? dst + total : NULL);
+  } else {
+    int64_t pair[2];
+    pair[0] = PyLong_AsLongLong(PyTuple_GET_ITEM(seed, 0));
+    pair[1] = PyLong_AsLongLong(PyTuple_GET_ITEM(seed, 1));
+    total += mizu_ix_put_vec(dst != NULL ? dst + total : NULL,
+                             MIZU_TYPE_INT64, pair, 2);
+  }
+  return total;
+}
+
+int pymizu_ix_stage_runner(PyObject *frame, mizu_slot_hdr *hdr,
+                           uint8_t *payload, uint32_t inline_max,
+                           mizu_handle *h, uint64_t ident) {
+  PyObject *name = PyTuple_GET_ITEM(frame, 0);
+  PyObject *gen = PyTuple_GET_ITEM(frame, 1);
+  PyObject *seed = PyTuple_GET_ITEM(frame, 2);
+  Py_ssize_t name_n;
+  const char *name_s = PyUnicode_AsUTF8AndSize(name, &name_n);
+  if (name_s == NULL) return 1;
+  int overflow = 0;
+  long long gen_field = PyLong_AsLongLongAndOverflow(gen, &overflow);
+  if (gen_field == -1 && (PyErr_Occurred() || overflow != 0)) {
+    if (!PyErr_Occurred())
+      PyErr_SetString(PyExc_OverflowError,
+                      "pymizu: runner generation out of int64 range");
+    return 1;
+  }
+  if (seed != Py_None &&
+      (!PyTuple_CheckExact(seed) || PyTuple_GET_SIZE(seed) != 2 ||
+       !PyLong_CheckExact(PyTuple_GET_ITEM(seed, 0)) ||
+       !PyLong_CheckExact(PyTuple_GET_ITEM(seed, 1)))) {
+    PyErr_SetString(MizuError, "pymizu: a malformed map runner frame");
+    return 1;
+  }
+  const uint64_t word = mizu_pool_worker_ident((mizu_pool *) h);
+  if (word == 0) {
+    PyErr_SetString(MizuError, "pymizu: no worker has joined this pool");
+    return 1;
+  }
+  size_t n = ixw_runner(NULL, name_s, name_n, (int64_t) gen_field, seed,
+                        (uint32_t) (word & 0xff), ident);
+  if (n <= (size_t) inline_max) {
+    ixw_runner(payload, name_s, name_n, (int64_t) gen_field, seed,
+               (uint32_t) (word & 0xff), ident);
+    hdr->kind = MIZU_KIND_INLINE;
+    hdr->len = (uint32_t) n;
+    hdr->aux = 0;          /* no keeperless claim: inert on task entries */
+    return 0;
+  }
+  /* unreachable in practice (bounded by MIZU_NAME_MAX): the spill path
+     keeps the discipline honest */
+  uint8_t *buf = malloc(n);
+  if (buf == NULL) {
+    PyErr_NoMemory();
+    return 1;
+  }
+  ixw_runner(buf, name_s, name_n, (int64_t) gen_field, seed,
+             (uint32_t) (word & 0xff), ident);
+  int rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
+  free(buf);
+  return rc;
+}
+
+/* The runner writer as bytes (the test hook's half). */
+PyObject *pymizu_ix_write_runner_stream(PyObject *name, int64_t gen_field,
+                                        PyObject *seed, uint32_t target,
+                                        uint64_t ident) {
+  Py_ssize_t name_n;
+  const char *name_s = PyUnicode_AsUTF8AndSize(name, &name_n);
+  if (name_s == NULL) return NULL;
+  size_t n = ixw_runner(NULL, name_s, name_n, gen_field, seed, target,
+                        ident);
+  uint8_t *buf = malloc(n);
+  if (buf == NULL) return PyErr_NoMemory();
+  ixw_runner(buf, name_s, name_n, gen_field, seed, target, ident);
+  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
+                                            (Py_ssize_t) n);
+  free(buf);
+  return out;
+}
+
+/* The map descriptor read: list[task, x | nil] — the descriptor reader is
+   the one other builder with a task case (DESIGN.md). Returns (kind,
+   code, positional, kwargs, x|None): the spec's components, for the
+   worker's runner context to bind per element. */
+PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
+  mizu_ix cur;
+  mizu_ix_item it, code, pos, named;
+  if (mizu_ix_open(&cur, src, n) != MIZU_OK) return ixt_stop_tls();
+  if (ixt_next(&cur, &it) < 0) return NULL;
+  if (it.kind != MIZU_IX_LIST || it.count != 2) {
+    PyErr_SetString(MizuError, "pymizu: malformed map descriptor: not a "
+                    "two-element list");
+    return NULL;
+  }
+  if (ixt_next(&cur, &it) < 0) return NULL;
+  if (it.kind != MIZU_IX_TASK) {
+    PyErr_SetString(MizuError, "pymizu: malformed map descriptor: no task "
+                    "tag");
+    return NULL;
+  }
+  if (it.task_kind > 1) {
+    PyErr_Format(MizuError, "pymizu: malformed map descriptor: kind 0x%02X "
+                 "is not a call spec", it.task_kind);
+    return NULL;
+  }
+  if (ixt_want_code(&cur, &code) < 0) return NULL;
+  if (ixt_want_list(&cur, &pos) < 0) return NULL;
+  PyObject *positional = NULL, *kwargs = NULL, *keyset = NULL, *x = NULL;
+  PyObject *cs = NULL, *out = NULL;
+  positional = PyList_New((Py_ssize_t) pos.count);
+  if (positional == NULL) goto fail;
+  for (uint64_t i = 0; i < pos.count; i++) {
+    PyObject *v = ixr_value(&cur);
+    if (v == NULL) goto fail;
+    PyList_SET_ITEM(positional, (Py_ssize_t) i, v);
+  }
+  if (ixt_want_dict(&cur, &named) < 0) goto fail;
+  kwargs = PyDict_New();
+  if (kwargs == NULL) goto fail;
+  keyset = PySet_New(NULL);
+  if (keyset == NULL) goto fail;
+  for (uint64_t j = 0; j < named.count; j++) {
+    PyObject *ko = ixt_key(&cur, keyset);
+    if (ko == NULL) goto fail;
+    PyObject *v = ixr_value(&cur);
+    if (v == NULL) {
+      Py_DECREF(ko);
+      goto fail;
+    }
+    int rc = PyDict_SetItem(kwargs, ko, v);
+    Py_DECREF(ko);
+    Py_DECREF(v);
+    if (rc < 0) goto fail;
+  }
+  x = ixr_value(&cur);
+  if (x == NULL) goto fail;
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    ixt_stop_tls();
+    goto fail;
+  }
+  cs = PyUnicode_FromStringAndSize((const char *) code.ptr,
+                                   (Py_ssize_t) code.len);
+  if (cs == NULL) goto fail;
+  out = Py_BuildValue("(i N N N N)", (int) it.task_kind, cs, positional,
+                      kwargs, x);
+  Py_XDECREF(keyset);
+  return out;
+fail:
+  Py_XDECREF(positional);
+  Py_XDECREF(kwargs);
+  Py_XDECREF(keyset);
+  Py_XDECREF(x);
+  Py_XDECREF(cs);
+  return NULL;
+}
+
+/* pymizu._map._runner_ix, resolved lazily (the subpackage is imported by
+   the time a runner task executes). The static owns the reference — the
+   exec_source_fn discipline. */
+static PyObject *runner_ix_fn(void) {
+  static PyObject *fn = NULL;
+  if (fn == NULL) {
+    PyObject *mod = PyImport_ImportModule("pymizu._map");
+    if (mod == NULL) return NULL;
+    fn = PyObject_GetAttrString(mod, "_runner_ix");
+    Py_DECREF(mod);
+  }
+  return fn;
+}
+
+/* The exec-hook kind-2 (runner) decode and run: the region reference off
+   the cursor — the submitter identity stashed ahead of every field read,
+   as the call kinds' — then the binding's own runner loop against the
+   named region (_runner_ix unpacks the ordinal and generation, rebuilds
+   this language's seed spec from the neutral pair, and runs _runner).
+   Returns the runner's (histories, values) result, or NULL with an
+   exception set. */
+PyObject *pymizu_ix_runner_run(const uint8_t *src, size_t n,
+                               uint64_t *ident_out) {
+  mizu_ix cur;
+  mizu_ix_item it, name, gen, seed;
+  if (ixt_open(&cur, src, n, &it, 2) < 0) return NULL;
+  *ident_out = it.u64[0];
+  if (it.task_kind != 2) {
+    PyErr_SetString(MizuError, "pymizu: malformed runner stream: not a "
+                    "runner task");
+    return NULL;
+  }
+  if (ixt_next(&cur, &name) < 0) return NULL;
+  if (name.kind != MIZU_IX_STR1 || name.na) {
+    PyErr_SetString(MizuError, "pymizu: malformed runner stream: the "
+                    "region name is not a string");
+    return NULL;
+  }
+  if (ixt_next(&cur, &gen) < 0) return NULL;
+  if (gen.kind != MIZU_IX_INT) {
+    PyErr_SetString(MizuError, "pymizu: malformed runner stream: the "
+                    "generation is not an integer");
+    return NULL;
+  }
+  if (ixt_next(&cur, &seed) < 0) return NULL;
+  int64_t gv;
+  memcpy(&gv, &gen.u64[0], 8);
+  PyObject *no = NULL, *go = NULL, *so = Py_None, *fn = NULL, *out = NULL;
+  if (seed.kind == MIZU_IX_VEC && seed.type == MIZU_TYPE_INT64 &&
+      seed.count == 2) {
+    int64_t pair[2];
+    memcpy(pair, seed.ptr, 16);
+    so = Py_BuildValue("(L L)", (long long) pair[0], (long long) pair[1]);
+    if (so == NULL) goto out;
+  } else if (seed.kind != MIZU_IX_NIL) {
+    PyErr_SetString(MizuError, "pymizu: malformed runner stream: the seed "
+                    "is not nil or an i64 pair");
+    goto out;
+  }
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    ixt_stop_tls();
+    goto out;
+  }
+  no = PyUnicode_FromStringAndSize((const char *) name.ptr,
+                                   (Py_ssize_t) name.len);
+  go = PyLong_FromLongLong(gv);
+  fn = runner_ix_fn();
+  if (no != NULL && go != NULL && fn != NULL)
+    out = PyObject_CallFunctionObjArgs(fn, no, go, so, NULL);
+out:
+  Py_XDECREF(no);
+  Py_XDECREF(go);
+  if (so != Py_None) Py_XDECREF(so);
+  return out;
 }
 
 static void ixw_raise(ixw *w) {

@@ -81,7 +81,7 @@ _CTX_CACHE_MAX = 8
 
 
 class _Ctx:
-    __slots__ = ("capsule", "fn", "args", "kwargs", "get", "tmpl")
+    __slots__ = ("capsule", "fn", "args", "kwargs", "get", "tmpl", "claim_n")
 
     def __init__(
         self,
@@ -91,6 +91,7 @@ class _Ctx:
         kwargs: dict,
         get: _Callable[[int], _Any],
         tmpl: bool,
+        claim_n: int,
     ) -> None:
         self.capsule = capsule
         self.fn = fn
@@ -98,29 +99,160 @@ class _Ctx:
         self.kwargs = kwargs
         self.get = get
         self.tmpl = tmpl
+        self.claim_n = claim_n
 
 
 _ctx_cache: dict[str, _Ctx] = {}
 
 
-def _map_check_native(pool: _Any, fn: _Any) -> None:
+def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
     """The map guard for a foreign pool: a native fn fails fast at the
     entry point (its runner tasks are same-language private frames that
     would otherwise each fail remotely, one error per runner). A spec fn
-    is the cross-language map, which lands in a later phase."""
-    ident = pool._h._worker_ident()
-    if ident is None or ident[0] == 3:  # 3 = Python
-        return
+    takes the cross-language path on any pool (the 'I' descriptor and
+    kind-2 runner tasks), and needs the pool word already set: the
+    descriptor's target byte stages once, at stage time. Returns
+    (is_spec, worker_language)."""
     import pymizu
 
+    ident = pool._h._worker_ident()
     if isinstance(fn, pymizu.call):
-        raise TypeError(
-            "pymizu: cross-language Pool.map() is not supported yet"
-        )
+        if ident is None:
+            raise pymizu.MizuError("pymizu: no worker has joined this pool")
+        return True, ident[0]
+    if ident is None or ident[0] == 3:  # 3 = Python
+        return False, 3
     raise TypeError(
         "pymizu: this pool's workers are not Python — Pool.map() needs a "
         "pymizu.call() spec as 'fn' on a foreign pool"
     )
+
+
+def _seed_wire(
+    seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
+    lang: int,
+) -> tuple[int, int] | None:
+    """The spec-map seed gate: the kind-2 runner fields carry the
+    language-neutral ``(seed, offset)`` i64 pair, so a spec map takes int
+    seeds only — a bytes seed has no i64 form. On R workers the int must
+    fit R's 32-bit derivation range; the local error beats one per
+    runner."""
+    if seed is None:
+        return None
+    offset = 0
+    if isinstance(seed, tuple):
+        if len(seed) != 2:
+            raise TypeError(
+                "pymizu: seed must be an int, bytes, or a (seed, offset) pair"
+            )
+        seed, offset = seed
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+        ):
+            raise TypeError("pymizu: seed offset must be a non-negative int")
+    if isinstance(seed, bool) or not isinstance(seed, (int, bytes, bytearray)):
+        raise TypeError("pymizu: seed must be an int or bytes")
+    if isinstance(seed, (bytes, bytearray)):
+        raise TypeError(
+            "pymizu: a bytes seed has no i64 form on a spec map — pass an "
+            "int seed"
+        )
+    if not -(2**63) <= seed < 2**63 or offset >= 2**63:
+        raise TypeError("pymizu: seed and offset must fit an int64")
+    if lang == 2 and abs(seed) > 2**31 - 1:  # 2 = R
+        raise TypeError(
+            "pymizu: an int seed on R workers must fit R's 32-bit "
+            "derivation range"
+        )
+    return (seed, offset)
+
+
+def _resolve_name(code: str) -> _Callable[..., _Any]:
+    """Resolve a name-kind spec's qualified name through the worker's own
+    module machinery (there is no name registry): split at the last dot,
+    import the module, take the attribute."""
+    import importlib
+
+    modname, dot, attr = code.rpartition(".")
+    if not dot or not modname or not attr:
+        import pymizu
+
+        raise pymizu.MizuError(
+            "pymizu: malformed map descriptor: the task name is not "
+            "qualified"
+        )
+    return getattr(importlib.import_module(modname), attr)
+
+
+def _source_fn(code: str, positional: list, named: dict) -> _Callable:
+    """A source-kind spec as the per-element function: the ast split once
+    per runner (exec the prefix, eval the trailing expression — the
+    source convention), each element bound as x in a fresh namespace over
+    the constant arguments, matching a task's own fresh namespace."""
+    import ast
+
+    tree = ast.parse(code)
+    body = tree.body
+    prefix = tail = None
+    if body and isinstance(body[-1], ast.Expr):
+        tail = ast.fix_missing_locations(ast.Expression(body[-1].value))
+        if len(body) > 1:
+            prefix = ast.fix_missing_locations(
+                ast.Module(body=body[:-1], type_ignores=[])
+            )
+    else:
+        prefix = tree
+    prefix_code = (
+        compile(prefix, "<map>", "exec") if prefix is not None else None
+    )
+    tail_code = (
+        compile(tail, "<map>", "eval") if tail is not None else None
+    )
+    base_ns: dict[str, _Any] = {"__builtins__": __builtins__}
+    for i, v in enumerate(positional):
+        base_ns[f"_{i + 1}"] = v
+    base_ns.update(named)
+
+    def fn(x: _Any) -> _Any:
+        ns = dict(base_ns)
+        ns["x"] = x
+        if prefix_code is not None:
+            exec(prefix_code, ns)
+        if tail_code is None:
+            return None
+        return eval(tail_code, ns)
+
+    return fn
+
+
+def _runner_ix(
+    region_name: str, gen_field: int, seed_pair: tuple[int, int] | None
+) -> tuple[list, list | None]:
+    """Worker-side kind-2 runner entry (the cross-language map): the exec
+    hook hands the decoded runner stream's fields here — the ordinal and
+    generation packed in one i64 (the ordinal the high 32 bits), the
+    (seed, offset) pair when seeded. The runner is always same-language
+    as the worker: unpack and run the native loop, rebuilding this
+    language's own seed spec from the neutral pair (an int seed's bytes
+    are its ascii form, exactly as _seed_spec builds them)."""
+    import pymizu
+
+    k = gen_field >> 32
+    gen = gen_field % (1 << 32)
+    ctx = _map_ctx(region_name)
+    if k >= ctx.claim_n:
+        raise pymizu.MizuError(
+            "pymizu: malformed runner stream: the runner ordinal is out "
+            "of range"
+        )
+    seed_spec = (
+        None
+        if seed_pair is None
+        else (str(seed_pair[0]).encode("ascii"), seed_pair[1])
+    )
+    return _runner(region_name, k, gen, seed_spec)
 
 
 def _raw_accessor(view: _Any, tag: int) -> _Callable[[int], _Any]:
@@ -139,14 +271,31 @@ def _map_ctx(name: str) -> _Ctx:
             _ctx_cache.clear()
         capsule = _pymizu._map_open(name)
         hdr = _pymizu._map_header(capsule)
-        desc = _pickle.loads(_pymizu._map_desc(capsule))
-        if hdr["x_kind"] == _X_RAWBUF:
-            fn, args, kwargs = desc
+        raw = _pymizu._map_desc(capsule)
+        raw_x = hdr["x_kind"] == _X_RAWBUF
+        if raw[0] == 0x49:  # 'I': the interchange descriptor (a spec map)
+            kind, code, positional, kwargs, x = _pymizu._map_desc_read(raw)
+            if kind == 0:
+                fn = _resolve_name(code)
+                args = tuple(positional)
+            else:
+                fn = _source_fn(code, positional, kwargs)
+                args, kwargs = (), {}
+            get = (
+                _raw_accessor(_pymizu._map_x_view(capsule), hdr["x_tag"])
+                if raw_x
+                else x.__getitem__
+            )
+        elif raw_x:
+            fn, args, kwargs = _pickle.loads(raw)
             get = _raw_accessor(_pymizu._map_x_view(capsule), hdr["x_tag"])
         else:
-            fn, args, kwargs, x = desc
+            fn, args, kwargs, x = _pickle.loads(raw)
             get = x.__getitem__
-        ctx = _Ctx(capsule, fn, args, kwargs, get, hdr["out_tag"] != 0)
+        ctx = _Ctx(
+            capsule, fn, args, kwargs, get, hdr["out_tag"] != 0,
+            hdr["claim_n"],
+        )
         _ctx_cache[name] = ctx
     return ctx
 
@@ -344,12 +493,18 @@ def pool_map(
     only the GC backstop)."""
     import pymizu
 
-    _map_check_native(pool, fn)
-    if not callable(fn):
+    spec, lang = _map_check_native(pool, fn)
+    if not spec and not callable(fn):
         raise TypeError("pymizu: fn must be callable")
     args = tuple(args)
     kwargs = {} if kwargs is None else dict(kwargs)
-    seed_spec = _seed_spec(seed)
+    if spec and (args or kwargs):
+        raise TypeError(
+            "pymizu: constant arguments ride the pymizu.call() spec — "
+            "'args' and 'kwargs' must be empty with a spec 'fn'"
+        )
+    seed_spec = None if spec else _seed_spec(seed)
+    seed_pair = _seed_wire(seed, lang) if spec else None
 
     tprobe = None if template is None else _template_probe(template)
     if tprobe is None:
@@ -394,9 +549,15 @@ def pool_map(
     # the descriptor blob as an ordinary argument — fit the entry inline
     # budget? Skipped when a raw x alone already exceeds the budget, so a
     # huge x is never pickled just to learn it does not fit. The template
-    # path always needs the region (its output area lives there).
+    # path always needs the region (its output area lives there), and a
+    # spec fn always stages one (the inline chunk tasks are same-language
+    # private frames a foreign worker cannot run).
     blob = None
-    if tprobe is None and (probe is None or probe[2] <= inline_entry):
+    if (
+        not spec
+        and tprobe is None
+        and (probe is None or probe[2] <= inline_entry)
+    ):
         cand = _pickle.dumps((fn, args, kwargs, x), 4)
         worst = _pickle.dumps((_chunk, (cand, n, n, seed_spec), {}), 4)
         if len(worst) <= inline_entry:
@@ -429,7 +590,7 @@ def pool_map(
             x,
             probe,
             n,
-            seed_spec,
+            seed_pair if spec else seed_spec,
             chunks,
             live,
             free_rs,
@@ -441,6 +602,8 @@ def pool_map(
             template,
             tprobe,
             collect,
+            spec,
+            lang,
         )
     finally:
         # the interrupt/error/timeout backstop (a clean collect consumed
@@ -521,7 +684,7 @@ def _map_region(
     x: _Any,
     probe: tuple | None,
     n: int,
-    seed_spec: tuple[bytes, int] | None,
+    seed_spec: tuple | None,
     chunks: int | None,
     live: int,
     free_rs: int,
@@ -533,21 +696,41 @@ def _map_region(
     template: _Any,
     tprobe: tuple | None,
     collect: str,
+    spec: bool = False,
+    lang: int = 3,
 ) -> list | _pymizu._Sentinel | _Any:
     """The region path: stage, submit one runner per live worker (clamped
     by the morsel count, the free result slots, and the injection ring),
     collect under the exhausted-runner trim, splice by element position —
     or, on the template path, gather the output area the runners wrote in
-    place (one copy, or none for a view)."""
+    place (one copy, or none for a view). A spec fn stages the 'I'
+    descriptor (the f spec nested as a task tag, the list-x bare or nil)
+    and submits kind-2 runner tasks."""
     runners = min(max(1, live), free_rs, inj_cap)
     if chunks is None:
         morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP))
     else:
         morsel = -(-n // min(n, chunks))
     n_morsels = -(-n // morsel)
-    desc = _pickle.dumps(
-        (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x), 4
-    )
+    if spec:
+        from pymizu import call as _Call
+
+        assert isinstance(fn, _Call)
+        desc = _pymizu._map_desc_write(
+            fn.code,
+            fn.kind,
+            fn.args,
+            fn.kwargs,
+            None if probe is not None else x,
+            lang,
+        )
+    else:
+        desc = _pickle.dumps(
+            (fn, args, kwargs)
+            if probe is not None
+            else (fn, args, kwargs, x),
+            4,
+        )
     name, capsule = _pymizu._map_stage(
         desc, x if probe is not None else None, n, morsel, template
     )
@@ -555,11 +738,12 @@ def _map_region(
     box["capsule"] = capsule
     r = min(n_morsels, runners)
     if _submit_runners(
-        pool, name, r, 0, seed_spec, remaining, expired, handles
+        pool, name, r, 0, seed_spec, remaining, expired, handles, spec
     ):
         return pymizu.TIMEOUT
     out = _collect_region(
-        pymizu, capsule, handles, n, remaining, expired, tprobe is not None
+        pymizu, capsule, handles, n, remaining, expired, tprobe is not None,
+        0, lang, morsel,
     )
     if out is pymizu.TIMEOUT or tprobe is None:
         return out
@@ -578,27 +762,54 @@ def _submit_runners(
     name: str,
     r: int,
     gen: int,
-    seed_spec: tuple[bytes, int] | None,
+    seed_spec: tuple | None,
     remaining: _Callable[[], float | None],
     expired: _Callable[[], bool],
     handles: list,
+    spec: bool = False,
 ) -> bool:
     """Submit the r runner tasks of one run; True when the deadline
     expired mid-submit (the caller's backstop cancels what landed). The
     payload carries the run's generation: a stale straggler from a prior
     run of a prepared map fails its first-call CAS against the re-armed
-    CLAIM word."""
+    CLAIM word. A spec map's runner is the kind-2 task stream — region
+    name, ordinal and generation packed in one i64, the (seed, offset)
+    pair — framed off a _RunnerFrame."""
     for k in range(r):
         # pre-check, not just the verb's: a nested (worker-side) submit
         # never waits on ring space, so an expired deadline must be caught
         # here, before the payload is built
         if expired():
             return True
-        h = pool._h._submit_runner(
-            (_runner, (name, k, gen, seed_spec), {}), remaining()
+        payload = (
+            _pymizu._runner_frame(name, k * 2**32 + gen, seed_spec)
+            if spec
+            else (_runner, (name, k, gen, seed_spec), {})
         )
+        h = pool._h._submit_runner(payload, remaining())
         handles.append(h)
     return False
+
+
+def _runs_to_spans(runs: list, ms: int, n: int) -> list:
+    """Normalize R workers' runner results to this binding's shape: their
+    runners publish (morsel starts, morsel counts, values) triples, this
+    binding's publish (element ranges, values) pairs. The lost-set scan
+    and the splice are written over the element-range shape; a batch's
+    span is [m*ms, min((m+k)*ms, n)). A one-batch history crosses as
+    scalars (the interchange writer's length-1 atomic rule): re-list
+    them."""
+    out = []
+    for run in runs:
+        hm, hk, vals = run
+        if isinstance(hm, (int, float)):
+            hm, hk = [hm], [hk]
+        hist = [
+            (int(m) * ms, min((int(m) + int(k)) * ms, n))
+            for m, k in zip(hm, hk, strict=True)
+        ]
+        out.append((hist, vals))
+    return out
 
 
 def _collect_region(
@@ -610,6 +821,8 @@ def _collect_region(
     expired: _Callable[[], bool],
     tmpl: bool = False,
     gen: int = 0,
+    lang: int = 3,
+    morsel: int = 1,
 ) -> list | _pymizu._Sentinel | None:
     """Collect the runner handles under the exhausted-runner trim, in a
     deferred collection order. A runner carries no work of its own, so
@@ -692,6 +905,8 @@ def _collect_region(
                 t = 0.05
             if consume(pending[0], t):
                 pending.pop(0)
+    if lang == 2:  # R workers publish morsel-pair histories: normalize
+        runs = _runs_to_spans(runs, morsel, n)
     if died is not None:
         # the lost set is arithmetic over the collected histories:
         # issued = [0, cursor), lost = issued minus their union
@@ -740,14 +955,21 @@ class PreparedMap:
     ) -> None:
         import pymizu
 
-        _map_check_native(pool, fn)
-        if not callable(fn):
+        spec, lang = _map_check_native(pool, fn)
+        if not spec and not callable(fn):
             raise TypeError("pymizu: fn must be callable")
-        self._pymizu = pymizu
-        self._pool = pool
         args = tuple(args)
         kwargs = {} if kwargs is None else dict(kwargs)
-        self._seed_spec = _seed_spec(seed)
+        if spec and (args or kwargs):
+            raise TypeError(
+                "pymizu: constant arguments ride the pymizu.call() spec — "
+                "'args' and 'kwargs' must be empty with a spec 'fn'"
+            )
+        self._pymizu = pymizu
+        self._pool = pool
+        self._spec = spec
+        self._lang = lang
+        self._seed_spec = _seed_wire(seed, lang) if spec else _seed_spec(seed)
         self._tprobe = None if template is None else _template_probe(template)
         if self._tprobe is None:
             if collect not in (None, "list"):
@@ -793,12 +1015,26 @@ class PreparedMap:
         self._probe = probe
         self._x = x
         self._n = n
-        self._desc = _pickle.dumps(
-            (self._fn, self._args, self._kwargs)
-            if probe is not None
-            else (self._fn, self._args, self._kwargs, x),
-            4,
-        )
+        if self._spec:
+            from pymizu import call as _Call
+
+            fn = self._fn
+            assert isinstance(fn, _Call)
+            self._desc = _pymizu._map_desc_write(
+                fn.code,
+                fn.kind,
+                fn.args,
+                fn.kwargs,
+                None if probe is not None else x,
+                self._lang,
+            )
+        else:
+            self._desc = _pickle.dumps(
+                (self._fn, self._args, self._kwargs)
+                if probe is not None
+                else (self._fn, self._args, self._kwargs, x),
+                4,
+            )
         live, free_rs, inj_cap, _ = self._pool._h._map_caps()
         runners = max(1, min(max(1, live), free_rs, inj_cap))
         chunks = self._chunks
@@ -892,12 +1128,13 @@ class PreparedMap:
         try:
             if _submit_runners(
                 pool, name, r, self._gen, self._seed_spec,
-                remaining, expired, handles,
+                remaining, expired, handles, self._spec,
             ):
                 return pymizu.TIMEOUT
             out = _collect_region(
                 pymizu, self._capsule, handles, self._n, remaining, expired,
-                self._tprobe is not None, self._gen,
+                self._tprobe is not None, self._gen, self._lang,
+                self._morsel,
             )
             if out is pymizu.TIMEOUT or self._tprobe is None:
                 return out

@@ -452,3 +452,115 @@ def test_map_prepared_context_manager(pool):
     with pool.map_prepare(square, [3]) as pm:
         assert pool.map_run(pm) == [9]
     assert pm.closed
+
+
+def test_map_spec_name_kind(pool):
+    # a spec f always takes the region path: kind-2 runner tasks with the
+    # 'I' descriptor, even on a same-language pool
+    out = pool.map(pymizu.call("math.sqrt"), [1.0, 4.0, 9.0])
+    assert out == [1.0, 2.0, 3.0]
+    assert pool.map(pymizu.call("builtins.len"), [[1, 2], [3]]) == [2, 1]
+
+
+def test_map_spec_source_kind(pool):
+    assert pool.map(pymizu.call(source="x * 2"), [1, 2, 3]) == [2, 4, 6]
+    # the element binds as x, named constants as names, positional as _1
+    assert pool.map(pymizu.call(source="x + k", k=10), [1, 2]) == [11, 12]
+    assert pool.map(pymizu.call(None, 10, source="x * _1"), [1, 2]) == [10, 20]
+    # a statement prefix runs per element; the trailing expression's value
+    src = "import math\nmath.floor(x)"
+    assert pool.map(pymizu.call(source=src), [1.7, 2.3]) == [1, 2]
+
+
+def test_map_spec_held_in_a_variable(pool):
+    fn = pymizu.call("math.floor")
+    assert pool.map(fn, [1.7, 2.3]) == [1, 2]
+
+
+def test_map_spec_constants_only_in_spec(pool):
+    with pytest.raises(TypeError, match="must be empty with a spec"):
+        pool.map(pymizu.call("math.sqrt"), [1.0], args=(2,))
+    with pytest.raises(TypeError, match="must be empty with a spec"):
+        pool.map(pymizu.call("math.sqrt"), [1.0], kwargs={"digits": 1})
+    with pytest.raises(TypeError, match="must be empty with a spec"):
+        pool.map_prepare(pymizu.call("math.sqrt"), [1.0], args=(2,))
+
+
+def test_map_spec_seed_gates(pool):
+    with pytest.raises(TypeError, match="no i64 form"):
+        pool.map(pymizu.call("math.sqrt"), [1.0], seed=b"raw")
+    with pytest.raises(TypeError, match="must fit an int64"):
+        pool.map(pymizu.call("math.sqrt"), [1.0], seed=2**63)
+
+
+def test_map_spec_declines_non_portable(pool):
+    with pytest.raises(pymizu.DeclinedError):
+        pool.map(pymizu.call("builtins.print", object()), [1, 2])
+
+
+def test_map_spec_raw_x_section(pool):
+    import numpy as np
+
+    x = np.arange(8, dtype=np.float64)
+    assert pool.map(pymizu.call("math.log1p"), x) == [
+        np.log1p(v) for v in x
+    ]
+
+
+def test_map_spec_template_and_view(pool):
+    import numpy as np
+
+    x = np.arange(1.0, 6.0)
+    out = pool.map(pymizu.call("math.log"), x, template=np.empty(1))
+    assert out == pytest.approx(np.log(x))
+    v = pool.map(
+        pymizu.call("math.log"), x, template=np.empty(1), collect="view"
+    )
+    assert np.asarray(v) == pytest.approx(np.log(x))
+
+
+def test_map_spec_seed_determinism(pool):
+    fn = pymizu.call(source="import random\nrandom.random()")
+    a = pool.map(fn, list(range(50)), seed=42)
+    b = pool.map(fn, list(range(50)), seed=42, chunks=7)
+    assert a == b
+    # the split-map contract, and parity with the native derivation
+    x = list(range(70))
+    whole = pool.map(fn, x, seed=42)
+    head = pool.map(fn, x[:50], seed=42)
+    rest = pool.map(fn, x[50:], seed=(42, 50))
+    assert head + rest == whole
+    n_whole = pool.map(rand_elt, x, seed=42)
+    assert whole == n_whole
+
+
+def test_map_spec_prepared(pool):
+    # a prepared spec map re-arms per run (a fresh generation and the
+    # prepared seed on the kind-2 runner fields) without restaging
+    pm = pool.map_prepare(
+        pymizu.call(source="import random\nrandom.random()"),
+        list(range(12)),
+        seed=7,
+    )
+    try:
+        name = pm._name
+        r1 = pool.map_run(pm)
+        assert pm._name == name
+        r2 = pool.map_run(pm)
+        assert pm._name == name
+        # the prepared seed re-arms per run: identical streams
+        assert r1 == r2
+    finally:
+        pm.close()
+
+
+def test_map_spec_error_index(pool):
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.map(
+            pymizu.call(
+                source="if x == 5:\n    raise ValueError('boom')\nx"
+            ),
+            list(range(10)),
+        )
+    assert exc_info.value.index == 5
+    assert exc_info.value.remote_type == "ValueError"
