@@ -120,7 +120,7 @@ def test_r_peer_string_view_arrow(r_mizu):
     ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
     try:
         v = ch.recv(30)
-        rc0 = v.refcount
+        rc0 = _settled_refcount(v)   # wait R's producer loan out
         arr = pa.array(v)
         assert v.refcount == rc0 + 1
         assert arr.type == pa.large_string()
