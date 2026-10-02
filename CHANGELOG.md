@@ -10,6 +10,24 @@ Initial pre-release.
 
 ### Added
 
+- Polars string-column REF verification (F3): an unmodified string
+  column round-tripped through polars no longer pays the MIZL layout
+  write. polars exports strings only as `string_view`, re-viewing the
+  export's buffers, so the provenance match now verifies a returned
+  `vu` column read-only against the export record — strings of 12 bytes
+  or fewer by value (they ride inline in the 16-byte views), longer
+  ones by row-byte pointer identity with the recorded leaf's span
+  (polars rebases its single data buffer to the first long row), the
+  null set by tail-masked bitmap equality, and each variadic data
+  buffer gated to start inside the recorded bytes. A pass feeds both
+  REF paths — the whole-frame REF and the per-column remote leaf
+  (directory tag 33) — and every failure mode (a recompute, a reorder,
+  a selection, new nulls, a fresh-buffer equal copy of long strings)
+  degrades to the layout write, never wrong data. On the per-column
+  path a verified column pins its export record only when it carries a
+  data buffer; an all-inline match stands only beside a pinning column
+  of the same frame (the write pass dereferences the record after the
+  registry lock drops). No wire change.
 - Task arguments by reference (F1): the `'I'` task stream gains the ref
   leaf (0x13), so a foreign-pool task's large arguments no longer pay a
   full copy each way. One fresh layout-eligible buffer argument past the
@@ -70,8 +88,8 @@ Initial pre-release.
   columns all match one acquisition's record — an unmodified
   R → polars/pyarrow → R round trip — stages as the region's REF, zero
   payload bytes. Modifications (new nulls, a cast, a rename, a shorter
-  selection, a computed column, re-viewed strings) fail the record and
-  take the layout write.
+  selection, a computed column) fail the record and take the layout
+  write.
 - Region-backed trees, `Frame`s and factors (Phase 3.5): an R list tree
   past the zero-copy floor now crosses as one MIZL region — a plain
   `list` of views (no attributes), a `dict` of views (names only), or a

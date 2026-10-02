@@ -546,21 +546,266 @@ def test_provenance_remote_leaf_dictionary():
     h1.destroy()
 
 
-def test_provenance_polars_string_column_copies():
-    # polars re-views strings (string_view), so a frame holding one never
-    # matches the record: the MIZL write, values exact
+# F3: the polars string-column REF verification
+
+
+def str_vals(n=20003, with_nulls=False):
+    """A string column straddling the 12/13 string_view inline boundary:
+    long, exactly 13, short, and exactly 12 bytes in rotation."""
+    def val(k):
+        if with_nulls and k % 7 == 0:
+            return None           # nulls land on every length kind
+        if k % 4 == 0:
+            return f"long-string-value-{k}" * 2
+        if k % 4 == 1:
+            return f"{k:013d}"    # 13 bytes: a pointer view
+        if k % 4 == 2:
+            return f"{k:012d}"    # 12 bytes: the last inline length
+        return f"s{k}"
+    return [val(k) for k in range(n)]
+
+
+def str_provenance_setup(with_nulls=False, caps=CAPS_R):
+    """provenance_setup with the string column of str_vals."""
     pl = pytest.importorskip("polars")
-    h1, p1 = foreign_pair(caps=CAPS_R)
-    h1.send(big_table(with_nulls=False).select(["i", "s"]))
+    vals = str_vals(with_nulls=with_nulls)
+    h1, p1 = foreign_pair(caps=caps)
+    h1.send(pa.table({"i": pa.array(range(len(vals)), type=pa.int32()),
+                      "s": pa.array(vals)}))
     f = p1.recv(10)
     df = pl.DataFrame(f)
-    rc0 = f.to_dict()["i"].base.refcount   # the export pins a loan
-    h2, p2 = foreign_pair(caps=CAPS_R)
+    h2, p2 = foreign_pair(caps=caps)
+    return h1, p1, f, df, h2, p2, vals
+
+
+def test_provenance_polars_string_column_refs():
+    # polars re-views the exported strings (string_view): verified
+    # read-only against the export record, the unmodified round trip
+    # stages the whole-frame REF
+    h1, p1, f, df, h2, p2, vals = str_provenance_setup()
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    assert src.flags & 1 == 0
     h2.send(df)
     got = p2.recv(10)
     d = got.to_dict()
-    assert d["s"][:2] == ["s0", "s1"]
-    assert f.to_dict()["i"].base.refcount == rc0
+    assert d["s"] == vals
+    assert src.refcount == rc0 + 1     # the REF's add
+    assert src.flags & 1 == 1          # REFHELD
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_string_column_refs_with_nulls():
+    # the bitmap-equivalence path: the null-row skip is exercised on the
+    # pointer half as well as the inline half (n not a multiple of 8, so
+    # the bitmaps' tail byte is masked)
+    h1, p1, f, df, h2, p2, vals = str_provenance_setup(with_nulls=True)
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2.send(df)
+    got = p2.recv(10)
+    d = got.to_dict()
+    assert d["s"] == vals
+    assert d["s"][0] is None and d["s"][7] is None     # long and short
+    assert pa.table(got).column("s").null_count == len(
+        [v for v in vals if v is None])
+    assert src.refcount == rc0 + 1
+    assert src.flags & 1 == 1
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_string_modifications_copy():
+    # every modification fails the verification and takes the layout
+    # write: the modified values arrive, the original region unmoved
+    pl = pytest.importorskip("polars")
+    h1, p1, f, df, h2, p2, vals = str_provenance_setup()
+    n = len(vals)
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    cases = [
+        # a reorder: the re-viewed rows no longer address their own spans
+        (df.sort("s"), lambda d: d["s"] == sorted(vals)),
+        # a selection
+        (df.filter(pl.col("i") % 2 == 0),
+         lambda d: d["s"] == [v for k, v in enumerate(vals) if k % 2 == 0]),
+        # a slice (a nonzero Arrow offset)
+        (df.slice(5, n - 10), lambda d: d["s"] == vals[5:n - 5]),
+        # a recompute
+        (df.with_columns(pl.col("s").str.to_uppercase()),
+         lambda d: d["s"] == [v.upper() for v in vals]),
+        # new nulls over the same values
+        (df.with_columns(pl.when(pl.col("i") < 5)
+                         .then(None).otherwise(pl.col("s")).name.keep()),
+         lambda d: d["s"] == [None if k < 5 else v
+                              for k, v in enumerate(vals)]),
+    ]
+    for mod, check in cases:
+        h2.send(mod)
+        got = p2.recv(10)
+        d = got.to_dict()
+        assert len(got) == len(mod) and check(d)
+        assert src.refcount == rc0       # never the REF
+        assert src.flags & 1 == 0        # no REFHELD
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_string_recomputed_equal_copies():
+    # a value-preserving recompute of long strings arrives with a fresh
+    # data buffer: the provenance gate fails, the column copies. (An
+    # all-short column recomputed to equal values passes instead — the
+    # inline views carry no provenance, and the REF is sound: the values
+    # are identical.)
+    pl = pytest.importorskip("polars")
+    n = 20003
+    vals = [f"long-string-value-{k}" * 2 for k in range(n)]
+    h1, p1 = foreign_pair(caps=CAPS_R)
+    h1.send(pa.table({"i": pa.array(range(n), type=pa.int32()),
+                      "s": pa.array(vals)}))
+    f = p1.recv(10)
+    df = pl.DataFrame(f).with_columns(pl.col("s").str.to_lowercase())
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R)
+    h2.send(df)
+    got = p2.recv(10)
+    assert got.to_dict()["s"] == vals   # equal values, by copy
+    assert src.refcount == rc0
+    assert src.flags & 1 == 0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_string_remote_leaf():
+    # the verifier feeds the per-column path too: the unmodified string
+    # column crosses as a remote leaf (tag 33), the computed one a layout
+    # leaf
+    pl = pytest.importorskip("polars")
+    h1, p1, f, df, h2, p2, vals = str_provenance_setup(caps=CAPS_R33)
+    df = df.with_columns((pl.col("i") * 2).alias("i"))
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2.send(df)
+    got = p2.recv(10)
+    # only the string column is remote: one counted loan, REFHELD set
+    assert src.refcount == rc0 + 1
+    assert src.flags & 1 == 1
+    d = got.to_dict()
+    assert d["s"] == vals                          # off R's own region
+    assert d["i"][1:4].tolist() == [2, 4, 6]       # the computed column
+    del d, got
+    gc.collect()
+    assert src.refcount == rc0   # the remote leaf's loan released
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_pyarrow_string_view_fresh_copies():
+    # a string_view column built fresh (no polars): equal values, but the
+    # data buffer is not the recorded span — the pointer-identity half
+    # fails and the column copies
+    n = 20003
+    vals = [f"long-string-value-{k}" * 2 for k in range(n)]
+    h1, p1 = foreign_pair(caps=CAPS_R)
+    h1.send(pa.table({"i": pa.array(range(n), type=pa.int32()),
+                      "s": pa.array(vals)}))
+    f = p1.recv(10)
+    t = pa.table(f).set_column(1, "s", pa.array(vals, type=pa.string_view()))
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R)
+    h2.send(t)
+    got = p2.recv(10)
+    assert got.to_dict()["s"] == vals
+    assert src.refcount == rc0
+    assert src.flags & 1 == 0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_short_strings_by_value():
+    # an all-inline (<= 12B) string column verifies by value and pins
+    # nothing: its views hold no byte of the record. The whole-frame REF
+    # emits under the registry lock and accepts it; the per-column path
+    # keeps it only beside a pinning column of the same export, and
+    # prunes it otherwise (the write pass dereferences the entry after
+    # the lock drops).
+    pl = pytest.importorskip("polars")
+    n = 20003
+    vals = [f"s{k % 100}" for k in range(n)]
+
+    def short_frame(caps):
+        h1, p1 = foreign_pair(caps=caps)
+        h1.send(pa.table({"i": pa.array(range(n), type=pa.int32()),
+                          "s": pa.array(vals)}))
+        f = p1.recv(10)
+        return h1, p1, f, pl.DataFrame(f)
+
+    # whole-frame: the by-value column REFs with the rest
+    h1, p1, f, df = short_frame(CAPS_R)
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R)
+    h2.send(df)
+    got = p2.recv(10)
+    assert got.to_dict()["s"] == vals
+    assert src.refcount == rc0 + 1
+    assert src.flags & 1 == 1
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+    # per-column, beside the pinning i: the remote leaf stands
+    h1, p1, f, df = short_frame(CAPS_R33)
+    df = df.with_columns((pl.col("i") + 1).alias("j")).select(["i", "s", "j"])
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(df)
+    got = p2.recv(10)
+    assert src.refcount == rc0 + 2     # i and s both remote
+    assert src.flags & 1 == 1
+    d = got.to_dict()
+    assert d["s"] == vals
+    assert d["j"][1:4].tolist() == [2, 3, 4]
+    del d, got
+    gc.collect()
+    assert src.refcount == rc0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+    # per-column, alone on its export: i recomputed, so nothing in the
+    # outgoing frame pins the record (the import stays registered only
+    # because df0 is alive) — the by-value hit prunes to a layout write:
+    # no loan, no REFHELD
+    h1, p1, f, df0 = short_frame(CAPS_R33)
+    df = df0.with_columns((pl.col("i") * 2).alias("i"))
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(df)
+    got = p2.recv(10)
+    assert got.to_dict()["s"] == vals
+    assert got.to_dict()["i"][1:4].tolist() == [2, 4, 6]
+    assert src.refcount == rc0
+    assert src.flags & 1 == 0
     h2.destroy()
     p2.destroy()
     p1.destroy()

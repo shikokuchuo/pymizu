@@ -735,6 +735,39 @@ while (TRUE) {
         note_us("frame 10col relay", "R (one computed col)", n, rep_mod,
                 "us/rt")
 
+        # the same shape with one column swapped to strings (mixed <=12B
+        # and >12B): polars re-views it as string_view — verified
+        # read-only against the export record, the round trip REFs (F3);
+        # before it the string column paid the MIZL write per relay
+        R_FRAME_STR_RELAY_BENCH = r"""
+df <- as.data.frame(matrix(runif(9 * 1000000), nrow = 1000000))
+df$s <- ifelse(seq_len(1000000) %% 3 == 0,
+               sprintf("long-string-value-%d", seq_len(1000000)),
+               sprintf("s%d", seq_len(1000000)))
+mizu::mizu_send(ch, df)
+while (TRUE) {
+  y <- mizu::mizu_recv(ch, timeout = 120)
+  if (mizu::mizu_is_sentinel(y)) break
+  mizu::mizu_send(ch, nrow(y))
+}
+"""
+        ch_str = pymizu.Channel.create(R_FRAME_STR_RELAY_BENCH,
+                                       launcher=frame_launcher)
+        try:
+            f_str = ch_str.recv(120)
+            df_str = pl.DataFrame(f_str)
+
+            def rep_str_unmod():
+                for _ in range(n):
+                    ch_str.send(df_str)
+                    assert ch_str.recv(timeout=120) == nrows
+
+            warmup(rep_str_unmod, n=2)
+            note_us("frame strcol relay", "R (unmodified string REF)", n,
+                    rep_str_unmod, "us/rt")
+        finally:
+            ch_str.close(timeout=10)
+
         # same-language flat check: the MIZL frame write carries no
         # remote leaves on same-language handles. A pickle-rebuilt frame
         # is heap-backed, so the REF fast path cannot fire (ahead of the

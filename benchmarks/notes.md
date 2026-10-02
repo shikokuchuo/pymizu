@@ -60,6 +60,7 @@ probes and A/B isolations stay in the log.
 | stage int64 | 99.7 us/send | 2026-09-11 |
 | frame 10col relay, unmodified REF | 6.5 us/rt | 2026-10-01 |
 | frame 10col relay, one computed col | 434.5 us/rt | 2026-10-01 |
+| frame strcol relay, unmodified string REF | 2,437.1 us/rt | 2026-10-02 |
 | stage widen (foreign pair) | 251.5 us/send | 2026-09-30 |
 | stage masked (foreign pair) | 97.3 us/send | 2026-10-01 |
 | stage masked int64 (foreign pair) | 136.9 us/send | 2026-10-01 |
@@ -453,3 +454,31 @@ remote leaves) 434.5 us/rt against the pre-F2 ten-column layout write
 per-send stream pull included). New rows on the best-known table.
 
 Status: 363 pass, 5 skip; ruff + pyrefly clean.
+
+## 2026-10-02 — the polars string-column REF (F3)
+
+The export-provenance match verifies a re-viewed string column
+read-only instead of demanding buffer identity: polars exports strings
+only as string_view, and an unmodified column comes back with the
+<= 12-byte values inline in the 16-byte views and the longer ones
+pointing into the recorded leaf's packed bytes (the single data buffer
+rebased to the first long row). Short rows verify by value, long rows
+by row-byte pointer identity with the row's own span, the null set by
+tail-masked bitmap equality, with an O(ndata) provenance gate on the
+data buffers ahead of the row scan. Both REF paths take the result: the
+whole-frame REF, and the per-column remote leaf — where a verified
+column pins its record only when it carries a data buffer, an
+all-inline hit standing only beside a pinning column of the frame (the
+write pass dereferences the entry after the registry lock drops; the
+prune is mutation-checked by the all-short provenance test). Failure
+modes all degrade to the layout write.
+
+Results (9 float64 columns + 1 string column, 1e6 rows, strings mixed
+<=12B and >12B, R -> polars -> R, best-of-3): 4,996-5,114 us/rt pre-F3
+(the string column's MIZL write per relay) -> 2,437-2,532 us/rt (the
+verification scan + REF; the balance is the pre-existing 'I' size pass
+ixs_run_frame runs ahead of any REF attempt). Regression guards flat:
+unmodified 10-col REF relay 6.0-6.4 us/rt, one computed column
+402-419 us/rt. New row on the best-known table.
+
+Status: 372 pass, 5 skip; ruff + pyrefly clean.

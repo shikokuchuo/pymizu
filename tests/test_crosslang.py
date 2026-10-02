@@ -1822,3 +1822,66 @@ def test_py_peer_pyarrow_relay_refs_strings(r_mizu):
         assert all(ch.recv(60))
     finally:
         ch.close()
+
+
+R_FRAME_STR_RELAY = r"""
+df <- data.frame(i = 1:300000, s = rep(c("a", "b", NA), 100000),
+                 stringsAsFactors = FALSE)
+mizu::mizu_send(ch, df)
+y <- mizu::mizu_recv(ch, timeout = 60)
+rc <- .Call(mizu:::mizu_zc_refcount, y)
+mizu::mizu_send(ch, c(rc[[1]] >= 2L, rc[[2]] %% 2L == 1L, identical(y, df)))
+"""
+
+
+def test_py_peer_polars_relay_refs_strings(r_mizu):
+    # F3: polars re-views the string column as string_view; verified
+    # read-only against the export record (short strings by value, the
+    # null set by bitmap equality), the unmodified round trip REFs — R
+    # reads its own region back. (R_FRAME_REFS's factor never matches a
+    # polars re-export, so this source keeps i + s only.)
+    pl = pytest.importorskip("polars")
+    ch = pymizu.Channel.create(R_FRAME_STR_RELAY, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        df = pl.DataFrame(f)
+        assert ch.send(df) is True
+        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert all(ch.recv(60))
+    finally:
+        ch.close()
+
+
+R_FRAME_STR_RELAY_ONE_COMPUTED = r"""
+df <- data.frame(i = 1:300000, x = runif(300000),
+                 s = sprintf("long-string-value-%d", 1:300000),
+                 stringsAsFactors = FALSE)
+mizu::mizu_send(ch, df)
+y <- mizu::mizu_recv(ch, timeout = 60)
+base <- function(v) sub("\\[.*$", "", .Call(mizu:::mizu_zc_view_name, v))
+mizu::mizu_send(ch, c(
+  # s a remote leaf over df's own region — the same region as i's (a
+  # layout leaf of the new region carries a different base name)
+  identical(base(y[["s"]]), base(y[["i"]])),
+  identical(y[["i"]], df[["i"]]),
+  identical(y[["s"]], df[["s"]]),
+  identical(y[["x"]], 2 * df[["x"]])
+))
+"""
+
+
+def test_py_peer_polars_relay_string_remote_leaf(r_mizu):
+    # F3 feeding F2, cross-language: the re-viewed long-string column
+    # (the pointer half of the verification) crosses as a remote leaf,
+    # the computed column a layout leaf
+    pl = pytest.importorskip("polars")
+    ch = pymizu.Channel.create(R_FRAME_STR_RELAY_ONE_COMPUTED,
+                               launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        df = pl.DataFrame(f).with_columns((pl.col("x") * 2).alias("x"))
+        assert ch.send(df) is True
+        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert all(ch.recv(60))
+    finally:
+        ch.close()

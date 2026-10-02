@@ -192,10 +192,15 @@ channel it writes the `data.frame` shape again through its own export.
 - An unmodified round trip moves nothing: a frame imported from a region and
   sent back (`pl.from_arrow(f)`, `pa.table(f)`) re-stages as the region's
   name, zero payload bytes.
-  polars re-views string columns, so a frame holding one round-trips as a
-  fresh region instead; pyarrow keeps them.
+  polars re-views string columns (`string_view` rather than the exported
+  `large_utf8`), so the record verifies a returned string column read-only
+  — strings of 12 bytes or fewer by value (they ride inline in the views),
+  longer ones by buffer pointer into the recorded bytes, the null set by
+  bitmap — and an unmodified one REFs with the rest. Any modification still
+  layout-writes.
 - A partially mutated frame moves one column: each column whose buffers
-  still match the import crosses as a remote leaf (MIZL directory tag 33)
+  still match the import — or whose strings verify — crosses as a remote
+  leaf (MIZL directory tag 33)
   — the region's identifier and leaf index, no column bytes — so a relay
   with one computed column pays for one column's write, and R reads the
   untouched columns as views of its own region.
