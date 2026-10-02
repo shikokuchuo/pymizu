@@ -9,6 +9,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
 import warnings
 
 import pytest
@@ -42,6 +43,22 @@ def r_mizu():
 def test_r_launcher_missing_rscript():
     with pytest.raises(pymizu.MizuError):
         pymizu.r_launcher(rscript="/nonexistent/Rscript")
+
+
+def _settled_refcount(view, timeout=10.0):
+    """The region's refcount with R's producer loan waited out.
+
+    R's loan drops at its first parked-recv reap past the consumer's
+    head publish (one interrupt-bound park cycle, <= 2 s), so an exact
+    refcount read taken at a fixed point races that cadence. Waits for
+    the floor of one (the consumer's wrap) and returns the last read.
+    """
+    deadline = time.monotonic() + timeout
+    rc = view.refcount
+    while rc != 1 and time.monotonic() < deadline:
+        time.sleep(0.05)
+        rc = view.refcount
+    return rc
 
 
 R_REF_RELAY = """
@@ -1276,7 +1293,7 @@ mizu::mizu_recv(ch, timeout = 60)
         assert d["a"].dtype == np.float64 and not d["a"].flags.writeable
         assert d["b"][:3].tolist() == [1, 2, 3]
         # one loan for the whole tree: both views name one region
-        assert d["a"].base.refcount == d["b"].base.refcount == 2
+        assert _settled_refcount(d["a"].base) == d["b"].base.refcount == 1
     finally:
         ch.close()
 
@@ -1298,7 +1315,8 @@ mizu::mizu_recv(ch, timeout = 60)
         assert n["p"]["q"].dtype == np.float64
         assert n["r"]["s"][:2].tolist() == [1, 2]
         assert n["r"]["t"].to_list() == ["hi"]
-        assert n["p"]["q"].base.refcount == 2   # one loan for the tree
+        # one loan for the tree
+        assert _settled_refcount(n["p"]["q"].base) == 1
     finally:
         ch.close()
 
@@ -1372,7 +1390,8 @@ def test_r_peer_tree_refcount_balance(r_mizu):
     try:
         f = ch.recv(60)
         v = f.to_dict()["x"].base
-        assert v.refcount == 2          # R's producer loan + the tree's
+        # the tree's wrap, R's producer loan reaped
+        assert _settled_refcount(v) == 1
         assert ch.send(f) is True       # the frame REF
         # R's producer loan is reaped by its own later verbs, so the
         # steady state is the tree anchor + R's own view ...
@@ -1440,9 +1459,9 @@ def test_r_peer_frame_export_survives_frame(r_mizu):
         gc.collect()
         assert set(pymizu._pymizu._debug_export_spans()) == before
         v = f.to_dict()["x"].base
-        assert v.refcount == 2
+        assert _settled_refcount(v) == 1
         pf = pl.from_arrow(f)
-        assert v.refcount == 3          # + the export's acquisition
+        assert v.refcount == 2          # + the export's acquisition
         del f, v
         gc.collect()
         # polars holds the arrays: the region stays mapped, the data valid
@@ -1775,8 +1794,15 @@ def test_py_peer_frame_with_view_column_remote_leaf(r_mizu):
         f = ch.recv(60)
         d = f.to_dict()
         # the remote column's region word is x's own (the aliasing
-        # proof), REFHELD from R's emit hook
-        assert d["b"].base.refcount == x.base.refcount
+        # proof), REFHELD from R's emit hook; the word still moves under
+        # R's producer-loan reap here, so read until it quiesces
+        deadline = time.monotonic() + 10
+        while True:
+            rb, rx = d["b"].base.refcount, x.base.refcount
+            if rb == rx or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        assert rb == rx
         assert x.base.flags & 1 == 1
         assert d["b"].dtype == np.float64
         assert d["b"][0:3].tolist() == x[0:3].tolist()   # the view's values
