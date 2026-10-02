@@ -113,16 +113,23 @@ def test_r_peer_string_vector_view(r_mizu):
 
 def test_r_peer_string_view_arrow(r_mizu):
     # the string block is Arrow large_utf8-shaped: the export hands the
-    # three buffers (validity bitmap, i64 offsets, packed bytes) in place
+    # three buffers (validity bitmap, i64 offsets, packed bytes) in place —
+    # the export's counted loan returns the refcount to baseline when the
+    # consumer releases
     pa = pytest.importorskip("pyarrow")
     ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
     try:
         v = ch.recv(30)
+        rc0 = v.refcount
         arr = pa.array(v)
+        assert v.refcount == rc0 + 1
         assert arr.type == pa.large_string()
         assert arr.null_count == 4000
         want = ["hello", None, "", "héllo ✓", "long " * 2000]
         assert arr.slice(0, 10).to_pylist() == want + want
+        del arr
+        gc.collect()
+        assert v.refcount == rc0
     finally:
         ch.close()
 

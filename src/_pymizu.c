@@ -2503,29 +2503,18 @@ static PyObject *pymizu_debug_export_spans(PyObject *Py_UNUSED(m),
 
 // Arrow export (the view's __arrow_c_array__) ------------------------------------
 
-/* The export holds its own mapping and its own zc loan: mizu_shm_open_view
-   at export (the counted add rides the open, exactly like a view-cache
-   hit), mizu_zc_unref + mizu_shm_close at release. private_data carries no
-   Python reference, so the release callback is pure C — callable from any
-   thread at any time (a foreign consumer may release from a non-Python
-   thread or after interpreter shutdown), with no GIL and no
-   finalization edge. */
-typedef struct {
-  mizu_shm *shm;
-  long pid;             /* the fork guard, mirroring view_dealloc */
-  uint8_t *bits;        /* the LGL bit-pack, built at export (owned) */
-  uint8_t *valid;       /* a lazily built validity bitmap (owned) */
-} arrow_loan;
+/* The loan struct and the release/capsule machinery are shared with the
+   _ShmStrView and _MapOutView exports: pyinterop.h. */
 
-static void arrow_schema_release(ArrowSchema *s) {
+void mizu_py_arrow_schema_release(ArrowSchema *s) {
   s->release = NULL;   /* the format is a string literal; nothing to free */
 }
 
-static void arrow_array_release(ArrowArray *a) {
-  arrow_loan *loan = (arrow_loan *) a->private_data;
+void mizu_py_arrow_array_release(ArrowArray *a) {
+  mizu_py_arrow_loan *loan = (mizu_py_arrow_loan *) a->private_data;
   if (loan != NULL) {
     mizu_py_debug_span_remove(mizu_shm_addr(loan->shm));
-    if (loan->pid == mizu_self_pid()) mizu_zc_unref(loan->shm);
+    if (loan->zc && loan->pid == mizu_self_pid()) mizu_zc_unref(loan->shm);
     mizu_shm_close(loan->shm, 0);
     free(loan->bits);
     free(loan->valid);
@@ -2537,10 +2526,7 @@ static void arrow_array_release(ArrowArray *a) {
   a->release = NULL;
 }
 
-/* The capsules own the struct memory; release (the consumer's call, or
-   the destructor's for an unconsumed export) owns the buffers array and
-   the loan. */
-static void arrow_schema_cap_free(PyObject *cap) {
+void mizu_py_arrow_schema_cap_free(PyObject *cap) {
   ArrowSchema *s = (ArrowSchema *) PyCapsule_GetPointer(cap, "arrow_schema");
   if (s == NULL) {
     PyErr_Clear();
@@ -2550,7 +2536,7 @@ static void arrow_schema_cap_free(PyObject *cap) {
   free(s);
 }
 
-static void arrow_array_cap_free(PyObject *cap) {
+void mizu_py_arrow_array_cap_free(PyObject *cap) {
   ArrowArray *a = (ArrowArray *) PyCapsule_GetPointer(cap, "arrow_array");
   if (a == NULL) {
     PyErr_Clear();
@@ -2558,6 +2544,104 @@ static void arrow_array_cap_free(PyObject *cap) {
   }
   if (a->release != NULL) a->release(a);
   free(a);
+}
+
+int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
+                       int build_valid, mizu_py_arrow_loan *loan,
+                       const char **fmt, const void **values,
+                       int64_t *null_count) {
+  int pack_lgl = 0, want_valid = 0;
+  switch (tag) {
+  case MIZU_TYPE_LGL:
+    *fmt = "b";   /* every Arrow export of LGL is Arrow bool (3.2) */
+    pack_lgl = 1;
+    want_valid = 1;
+    break;
+  case MIZU_TYPE_INT: *fmt = "i"; want_valid = 1; break;
+  case MIZU_TYPE_REAL: *fmt = "g"; break;
+  case MIZU_TYPE_INT64: *fmt = "l"; want_valid = 1; break;
+  case MIZU_TYPE_RAW: *fmt = "C"; break;
+  default:
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: complex vectors have no standard Arrow type");
+    return -1;
+  }
+  const size_t nb = ((size_t) n + 7) / 8;
+  if (pack_lgl) {
+    /* the bit-packed values build at export, nulls or not; the lazy
+       validity build fuses into the same pass */
+    loan->bits = (uint8_t *) calloc(nb != 0 ? nb : 1, 1);
+    if (loan->bits == NULL) goto nomem;
+    const int32_t *d32 = (const int32_t *) data;
+    if (build_valid) {
+      loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
+      if (loan->valid == NULL) goto nomem;
+      memset(loan->valid, 0xFF, nb);
+      if (n % 8 != 0)
+        loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
+      int64_t nulls = 0;
+      for (int64_t i = 0; i < n; i++) {
+        if (d32[i] == MIZU_NA_INT32) {
+          nulls++;
+          loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+        } else if (d32[i] != 0) {
+          loan->bits[i / 8] |= (uint8_t) (1u << (i % 8));
+        }
+      }
+      if (nulls == 0) {
+        free(loan->valid);   /* clean: no bitmap */
+        loan->valid = NULL;
+      } else {
+        *null_count = nulls;
+      }
+    } else {
+      /* the section (or known-NA-free) defines the nulls; the pack is
+         values only (a null lane's bit is don't-care, Arrow masks it) */
+      for (int64_t i = 0; i < n; i++)
+        if (d32[i] != 0) loan->bits[i / 8] |= (uint8_t) (1u << (i % 8));
+    }
+    *values = loan->bits;
+  } else {
+    *values = data;
+    if (want_valid && build_valid) {
+      /* scan-only for INT/INT64: the values stay the region's pages. One
+         fused pass counts and clears into an optimistically allocated
+         bitmap, freed when clean. Typed sentinel constants per branch —
+         an int64 sentinel variable against int32 loads miscompiles here
+         (clang 17/21 -O2 widens the loads). */
+      loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
+      if (loan->valid == NULL) goto nomem;
+      memset(loan->valid, 0xFF, nb);
+      if (n % 8 != 0)
+        loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
+      int64_t nulls = 0;
+      if (tag == MIZU_TYPE_INT) {
+        const int32_t *d32 = (const int32_t *) data;
+        for (int64_t i = 0; i < n; i++)
+          if (d32[i] == MIZU_NA_INT32) {
+            nulls++;
+            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+          }
+      } else {
+        const int64_t *d64 = (const int64_t *) data;
+        for (int64_t i = 0; i < n; i++)
+          if (d64[i] == MIZU_NA_INT64) {
+            nulls++;
+            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+          }
+      }
+      if (nulls == 0) {
+        free(loan->valid);
+        loan->valid = NULL;
+      } else {
+        *null_count = nulls;
+      }
+    }
+  }
+  return 0;
+nomem:
+  PyErr_NoMemory();
+  return -1;
 }
 
 PyDoc_STRVAR(arrow_c_array_doc,
@@ -2582,23 +2666,6 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
      an unsupported-but-compatible request — the default export — is the
      only answer. The capsule is borrowed; never released here. */
   MizuShmView *v = (MizuShmView *) obj;
-  const char *fmt;
-  int pack_lgl = 0, want_valid = 0;
-  switch (v->type) {
-  case MIZU_TYPE_LGL:
-    fmt = "b";   /* every Arrow export of LGL is Arrow bool (3.2) */
-    pack_lgl = 1;
-    want_valid = 1;
-    break;
-  case MIZU_TYPE_INT: fmt = "i"; want_valid = 1; break;
-  case MIZU_TYPE_REAL: fmt = "g"; break;
-  case MIZU_TYPE_INT64: fmt = "l"; want_valid = 1; break;
-  case MIZU_TYPE_RAW: fmt = "C"; break;
-  default:
-    PyErr_SetString(PyExc_TypeError,
-                    "pymizu: complex vectors have no standard Arrow type");
-    return NULL;
-  }
   if (v->owner == NULL) {
     PyErr_SetString(MizuError, "pymizu: the view has no region");
     return NULL;
@@ -2613,17 +2680,21 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
     raise_tls();
     return NULL;
   }
-  /* capsule-wrap each struct immediately (release = NULL until fully
-     initialized): on any error the destructors clean up — structs and
-     the buffers array are never freed by hand once wrapped */
+  /* capsule-wrap each struct immediately, then attach at once: on any
+     error the destructors clean up through release — the structs, the
+     buffers array, the loan, the mapping, and the zc count are never
+     freed by hand once wrapped */
   ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
   ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
   const void **buffers = (const void **) calloc(2, sizeof(void *));
-  arrow_loan *loan = (arrow_loan *) malloc(sizeof(arrow_loan));
+  mizu_py_arrow_loan *loan =
+    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
   PyObject *scap = schema != NULL ?
-    PyCapsule_New(schema, "arrow_schema", arrow_schema_cap_free) : NULL;
+    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
+    NULL;
   PyObject *acap = array != NULL ?
-    PyCapsule_New(array, "arrow_array", arrow_array_cap_free) : NULL;
+    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
+    NULL;
   if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
     if (scap == NULL) free(schema);
     if (acap == NULL) free(array);
@@ -2638,9 +2709,11 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
   }
   loan->shm = shm;
   loan->pid = mizu_self_pid();
+  loan->zc = 1;
   mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
-  loan->bits = NULL;
-  loan->valid = NULL;
+  array->private_data = loan;
+  array->buffers = buffers;
+  array->release = mizu_py_arrow_array_release;
   const uint8_t *base = (const uint8_t *) mizu_shm_addr(shm);
   /* a tree-borrowed view's data lives mid-region: rebase the leaf span
      onto this mapping (a top-level view's is the MIZH body) */
@@ -2650,14 +2723,16 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
                    (const uint8_t *) mizu_shm_addr(v->owner->shm));
   const int64_t n =
     (int64_t) (v->len / (Py_ssize_t) mizu_type_elt_size(v->type));
-  const size_t nb = ((size_t) n + 7) / 8;
   /* the validity source: the region's section when present, the lazy
      sentinel build when absent ({0, 0}), none when known-NA-free
-     ({0, -1}). A tree leaf reads its own verdict, never the root's. */
+     ({0, -1}). A tree leaf reads its own verdict, never the root's. The
+     tag gate is the helper's want_valid set: a REAL region's section,
+     when one exists, stays unexported. */
   const uint8_t *validity = NULL;
   int64_t null_count = 0;
   int build_valid = 0;
-  if (want_valid) {
+  if (v->type == MIZU_TYPE_LGL || v->type == MIZU_TYPE_INT ||
+      v->type == MIZU_TYPE_INT64) {
     if (v->loan != NULL) {
       if (v->valid != NULL) {
         validity = base + (v->valid -
@@ -2678,84 +2753,21 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
       }
     }
   }
-  if (pack_lgl) {
-    /* the bit-packed values build at export, nulls or not; the lazy
-       validity build fuses into the same pass */
-    loan->bits = (uint8_t *) calloc(nb != 0 ? nb : 1, 1);
-    if (loan->bits == NULL) goto nomem;
-    const int32_t *d32 = (const int32_t *) data;
-    if (build_valid) {
-      loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
-      if (loan->valid == NULL) goto nomem;
-      memset(loan->valid, 0xFF, nb);
-      if (n % 8 != 0)
-        loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
-      for (int64_t i = 0; i < n; i++) {
-        if (d32[i] == MIZU_NA_INT32) {
-          null_count++;
-          loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
-        } else if (d32[i] != 0) {
-          loan->bits[i / 8] |= (uint8_t) (1u << (i % 8));
-        }
-      }
-      if (null_count == 0) {
-        free(loan->valid);   /* clean: no bitmap */
-        loan->valid = NULL;
-      } else {
-        validity = loan->valid;
-      }
-    } else {
-      /* the section (or known-NA-free) defines the nulls; the pack is
-         values only (a null lane's bit is don't-care, Arrow masks it) */
-      for (int64_t i = 0; i < n; i++)
-        if (d32[i] != 0) loan->bits[i / 8] |= (uint8_t) (1u << (i % 8));
-    }
-    buffers[1] = loan->bits;
-  } else {
-    buffers[1] = data;
-    if (build_valid) {
-      /* scan-only for INT/INT64: the values stay the region's pages. One
-         fused pass counts and clears into an optimistically allocated
-         bitmap, freed when clean. Typed sentinel constants per branch —
-         an int64 sentinel variable against int32 loads miscompiles here
-         (clang 17/21 -O2 widens the loads). */
-      loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
-      if (loan->valid == NULL) goto nomem;
-      memset(loan->valid, 0xFF, nb);
-      if (n % 8 != 0)
-        loan->valid[nb - 1] &= (uint8_t) ((1u << (n % 8)) - 1);
-      if (v->type == MIZU_TYPE_INT) {
-        const int32_t *d32 = (const int32_t *) data;
-        for (int64_t i = 0; i < n; i++)
-          if (d32[i] == MIZU_NA_INT32) {
-            null_count++;
-            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
-          }
-      } else {
-        const int64_t *d64 = (const int64_t *) data;
-        for (int64_t i = 0; i < n; i++)
-          if (d64[i] == MIZU_NA_INT64) {
-            null_count++;
-            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
-          }
-      }
-      if (null_count == 0) {
-        free(loan->valid);
-        loan->valid = NULL;
-      } else {
-        validity = loan->valid;
-      }
-    }
+  const char *fmt;
+  const void *values;
+  if (mizu_py_arrow_fill(v->type, data, n, build_valid, loan,
+                         &fmt, &values, &null_count) < 0) {
+    Py_DECREF(scap);
+    Py_DECREF(acap);
+    return NULL;
   }
+  buffers[0] = validity != NULL ? validity : loan->valid;
+  buffers[1] = values;
   schema->format = fmt;
-  schema->release = arrow_schema_release;
+  schema->release = mizu_py_arrow_schema_release;
   array->length = n;
   array->null_count = null_count;
   array->n_buffers = 2;
-  array->buffers = buffers;
-  buffers[0] = validity;
-  array->private_data = loan;
-  array->release = arrow_array_release;
   PyObject *out = PyTuple_New(2);
   if (out == NULL) {
     Py_DECREF(scap);
@@ -2765,11 +2777,6 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
   PyTuple_SET_ITEM(out, 0, scap);
   PyTuple_SET_ITEM(out, 1, acap);
   return out;
-nomem:
-  Py_DECREF(scap);
-  Py_DECREF(acap);
-  PyErr_NoMemory();
-  return NULL;
 }
 
 /* The validity section's verdict, no data read: 1 known-NA-free, -1 NAs
@@ -3149,11 +3156,14 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
   ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
   ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
   const void **buffers = (const void **) calloc(3, sizeof(void *));
-  arrow_loan *loan = (arrow_loan *) malloc(sizeof(arrow_loan));
+  mizu_py_arrow_loan *loan =
+    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
   PyObject *scap = schema != NULL ?
-    PyCapsule_New(schema, "arrow_schema", arrow_schema_cap_free) : NULL;
+    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
+    NULL;
   PyObject *acap = array != NULL ?
-    PyCapsule_New(array, "arrow_array", arrow_array_cap_free) : NULL;
+    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
+    NULL;
   if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
     if (scap == NULL) free(schema);
     if (acap == NULL) free(array);
@@ -3168,9 +3178,8 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
   }
   loan->shm = shm;
   loan->pid = mizu_self_pid();
+  loan->zc = 1;
   mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
-  loan->bits = NULL;
-  loan->valid = NULL;
   mizu_mizs_geom g = mizu_mizs_geometry(sv->n);
   const uint8_t *block =
     (const uint8_t *) mizu_shm_addr(shm) + MIZU_HEADER_SIZE;
@@ -3179,7 +3188,7 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
       (sv->validity - g.validity -
        (const uint8_t *) mizu_shm_addr(sv->owner->shm));
   schema->format = "U";   /* large_utf8 */
-  schema->release = arrow_schema_release;
+  schema->release = mizu_py_arrow_schema_release;
   array->length = sv->n;
   array->null_count = null_count;
   array->n_buffers = 3;
@@ -3188,7 +3197,7 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
   buffers[1] = block + g.offsets;
   buffers[2] = block + g.data;
   array->private_data = loan;
-  array->release = arrow_array_release;
+  array->release = mizu_py_arrow_array_release;
   PyObject *out = PyTuple_New(2);
   if (out == NULL) {
     Py_DECREF(scap);
@@ -3223,6 +3232,27 @@ static PyMethodDef strview_methods[] = {
   {NULL}
 };
 
+static PyObject *strview_refcount(PyObject *obj, void *Py_UNUSED(closure)) {
+  MizuShmStrView *sv = (MizuShmStrView *) obj;
+  if (sv->owner == NULL) Py_RETURN_NONE;
+  return PyLong_FromUnsignedLong(mizu_zc_refcount(sv->owner->shm));
+}
+
+static PyObject *strview_flags(PyObject *obj, void *Py_UNUSED(closure)) {
+  MizuShmStrView *sv = (MizuShmStrView *) obj;
+  if (sv->owner == NULL) Py_RETURN_NONE;
+  return PyLong_FromUnsignedLong(mizu_zc_flags(sv->owner->shm));
+}
+
+static PyGetSetDef strview_getset[] = {
+  {"refcount", strview_refcount, NULL,
+   "The region's cross-process view refcount (introspection).", NULL},
+  {"flags", strview_flags, NULL,
+   "The region's zero-copy flags word (bit 0: REFHELD; introspection).",
+   NULL},
+  {NULL}
+};
+
 static PyTypeObject MizuShmStrViewType = {
   PyVarObject_HEAD_INIT(NULL, 0)
   .tp_name = "_pymizu._ShmStrView",
@@ -3232,6 +3262,7 @@ static PyTypeObject MizuShmStrViewType = {
   .tp_dealloc = (destructor) strview_dealloc,
   .tp_as_sequence = &strview_as_sequence,
   .tp_methods = strview_methods,
+  .tp_getset = strview_getset,
 };
 
 /* The string view constructor over a string block (a region's or an

@@ -10,7 +10,17 @@ import gc
 import warnings
 
 import pytest
-from tests.helpers import foreign_pair, ret_arrow_nulls, ret_int64_array
+from tests.helpers import (
+    foreign_pair,
+    na_int,
+    na_int64,
+    pair_up,
+    ret_arrow_nulls,
+    ret_int64_array,
+    scalar_cplx,
+    scalar_double,
+    square,
+)
 
 import pymizu
 
@@ -134,6 +144,16 @@ def r_case(ch, spec, payload):
 def _exporter(arr):
     base = getattr(arr, "base", None)
     while base is not None and not hasattr(base, "refcount"):
+        base = getattr(base, "base", None)
+    return base
+
+
+def _mapview(arr):
+    # the _MapOutView at the end of the .base chain: arr.base for m == 1,
+    # one link deeper past the reshape for m > 1 — it has no .refcount,
+    # so the walk keys on the dunder
+    base = getattr(arr, "base", None)
+    while base is not None and not hasattr(base, "__arrow_c_array__"):
         base = getattr(base, "base", None)
     return base
 
@@ -630,6 +650,129 @@ def test_export_polars_smoke(echo):
     s = pl.Series(view)
     assert s.len() == 100000
     assert s[0] == 0.0 and s[-1] == 99999.0
+
+
+# -- map output view export ---------------------------------------------------
+
+
+def test_mapview_export_roundtrip(pool):
+    out = pool.map(
+        scalar_double, list(range(100)), template=np.empty(1), collect="view"
+    )
+    arr = pa.array(out.base)
+    assert arr.type == pa.float64()
+    assert arr.to_pylist() == (np.arange(100) * 2.0).tolist()
+
+
+def test_mapview_export_types(pool):
+    for dtype, atype in (
+        (np.int32, pa.int32()),
+        (np.int64, pa.int64()),
+        (np.uint8, pa.uint8()),
+    ):
+        out = pool.map(
+            square,
+            list(range(12)),
+            template=np.empty(1, dtype=dtype),
+            collect="view",
+        )
+        arr = pa.array(_mapview(out))
+        assert arr.type == atype
+        assert arr.null_count == 0
+        assert arr.buffers()[0] is None  # no bitmap
+        assert arr.to_pylist() == [x * x for x in range(12)]
+
+
+def test_mapview_export_na(pool):
+    # the in-band discipline: the int32/int64 NA sentinel exports as an
+    # Arrow null
+    for dtype, task in ((np.int32, na_int), (np.int64, na_int64)):
+        out = pool.map(
+            task,
+            list(range(30)),
+            template=np.empty(1, dtype=dtype),
+            collect="view",
+        )
+        arr = pa.array(_mapview(out))
+        assert arr.null_count == 10
+        assert arr.to_pylist() == [
+            None if v % 3 == 0 else v for v in range(30)
+        ]
+
+
+def test_mapview_export_m2_flat(pool):
+    # the ruling: the export is always flat n * m, element-major — the
+    # same bytes the buffer protocol view exposes
+    out = pool.map(pair_up, list(range(50)), template=np.empty(2),
+                   collect="view")
+    view = _mapview(out)
+    assert type(view).__name__ == "_MapOutView"
+    arr = pa.array(view)
+    assert arr.to_pylist() == np.frombuffer(view, dtype=np.float64).tolist()
+    assert arr.to_pylist() == out.reshape(-1).tolist()
+
+
+def test_mapview_export_outlives_view(pool):
+    # the export's own mapping pins the pages after the view (and the map
+    # context it owned) is gone
+    out = pool.map(
+        scalar_double, list(range(100)), template=np.empty(1), collect="view"
+    )
+    view = _mapview(out)
+    caps = view.__arrow_c_array__()
+    del view, out
+    gc.collect()
+    arr = pa.Array._import_from_c_capsule(*caps)
+    assert arr[0].as_py() == 0.0 and arr[-1].as_py() == 198.0
+
+
+def test_mapview_export_unconsumed_gc(pool):
+    # an export never consumed: the capsule destructors call release
+    before = set(pymizu._pymizu._debug_export_spans())
+    out = pool.map(
+        scalar_double, list(range(10)), template=np.empty(1), collect="view"
+    )
+    caps = _mapview(out).__arrow_c_array__()
+    assert len(set(pymizu._pymizu._debug_export_spans()) - before) == 1
+    del caps
+    gc.collect()
+    assert set(pymizu._pymizu._debug_export_spans()) == before
+
+
+def test_mapview_export_complex_rejected(pool):
+    out = pool.map(
+        scalar_cplx,
+        list(range(10)),
+        template=np.empty(1, dtype=np.complex128),
+        collect="view",
+    )
+    with pytest.raises(TypeError, match="complex"):
+        _mapview(out).__arrow_c_array__()
+
+
+def test_mapview_export_requested_schema_ignored(pool):
+    # an unsupported-but-compatible request gets the default export (the
+    # spec's sanctioned fallback); the requested capsule is borrowed
+    out = pool.map(
+        scalar_double, list(range(10)), template=np.empty(1), collect="view"
+    )
+    f32 = pa.array([1.0], type=pa.float32()).__arrow_c_array__()[0]
+    arr = pa.Array._import_from_c_capsule(
+        *_mapview(out).__arrow_c_array__(requested_schema=f32)
+    )
+    assert arr.type == pa.float64()
+
+
+def test_mapview_export_polars_smoke(pool):
+    pl = pytest.importorskip("polars", reason="polars not installed")
+    out = pool.map(
+        scalar_double, list(range(100)), template=np.empty(1), collect="view"
+    )
+    # the Arrow-array entry point for a flat producer (from_arrow builds a
+    # DataFrame and demands a struct)
+    s = pl.Series(_mapview(out))
+    assert s.len() == 100
+    assert s[0] == 0.0 and s[-1] == 198.0
 
 
 def test_view_without_numpy():

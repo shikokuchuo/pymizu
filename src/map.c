@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "pymap.h"
+#include "pyinterop.h"
 #include "mizu.h"
 #include "mizu_ext.h"
 
@@ -571,6 +572,129 @@ static PyBufferProcs mapview_as_buffer = {
   .bf_releasebuffer = NULL,
 };
 
+PyDoc_STRVAR(mapview_arrow_c_array_doc,
+"__arrow_c_array__(requested_schema=None) -> (schema capsule, array capsule)\n\n\
+Export the output area through the Arrow C Data Interface: any Arrow\n\
+consumer (pyarrow, polars, duckdb) wraps the shared pages zero-copy —\n\
+flat, n * m elements in element-major order (reshape on the consumer\n\
+side), matching the buffer protocol view. The export holds its own\n\
+mapping of the region — the map context's pin is untouched — released\n\
+by the consumer's release callback. An int32 or int64 area exports\n\
+with a validity bitmap when the NA sentinel is present; a complex128\n\
+area has no standard Arrow type.");
+
+static PyObject *mapview_arrow_c_array(PyObject *obj, PyObject *args,
+                                       PyObject *kw) {
+  static char *kwlist[] = {"requested_schema", NULL};
+  PyObject *requested = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:__arrow_c_array__",
+                                   kwlist, &requested))
+    return NULL;
+  /* requested_schema is ignored: the area has exactly one Arrow
+     representation per wire type, so the spec's sanctioned fallback for
+     an unsupported-but-compatible request — the default export — is the
+     only answer (the _ShmView export's rule). The capsule is borrowed;
+     never released here. */
+  MizuMapView *v = (MizuMapView *) obj;
+  /* CPLX fails ahead of the open and the allocations — the helper's
+     TypeError would fire after them (the view export's switch order) */
+  if (v->tag == MIZU_TYPE_CPLX) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: complex vectors have no standard Arrow type");
+    return NULL;
+  }
+  mizu_pymap *mh = pymap_get(v->capsule);
+  if (mh == NULL) return NULL;   /* defensive: the view owns the capsule */
+  /* a fresh mapping of the map region (pages shared) without the counted
+     add: a map region carries no zc refcount — the word at the refcount
+     offset is the morsel header's out_elt. The mapping alone keeps the
+     pages alive after the owner's unlink. */
+  mizu_shm *shm;
+  const char *name = mizu_shm_name(mh->shm);
+  if (mizu_shm_open_view_flags(&shm, name, MIZU_OPEN_VIEW_NOCOUNT) !=
+      MIZU_OK) {
+    PyErr_Format(MizuShmErr, "pymizu: cannot open map region '%s' — its "
+                 "submitter died or the map ended", name);
+    return NULL;
+  }
+  /* capsule-wrap each struct immediately, then attach at once: the
+     destructors clean up through release on any error — the structs,
+     the buffers array, the loan, and the mapping are never freed by
+     hand once wrapped (the view export's discipline) */
+  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
+  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
+  const void **buffers = (const void **) calloc(2, sizeof(void *));
+  mizu_py_arrow_loan *loan =
+    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
+  PyObject *scap = schema != NULL ?
+    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
+    NULL;
+  PyObject *acap = array != NULL ?
+    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
+    NULL;
+  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
+    if (scap == NULL) free(schema);
+    if (acap == NULL) free(array);
+    Py_XDECREF(scap);
+    Py_XDECREF(acap);
+    free(buffers);
+    free(loan);
+    mizu_shm_close(shm, 0);
+    if (!PyErr_Occurred()) PyErr_NoMemory();
+    return NULL;
+  }
+  loan->shm = shm;
+  loan->pid = mizu_self_pid();
+  /* zc stays 0: no counted loan on a map region, so the release skips
+     the unref */
+  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
+  array->private_data = loan;
+  array->buffers = buffers;
+  array->release = mizu_py_arrow_array_release;
+  const uint8_t *data =
+    (const uint8_t *) mizu_shm_addr(shm) + mh->h.out_off;
+  const int64_t n =
+    (int64_t) (v->len / (Py_ssize_t) mizu_type_elt_size((int) v->tag));
+  const char *fmt;
+  const void *values;
+  int64_t null_count = 0;
+  if (mizu_py_arrow_fill((int) v->tag, data, n, /*build_valid=*/1, loan,
+                         &fmt, &values, &null_count) < 0) {
+    Py_DECREF(scap);
+    Py_DECREF(acap);
+    return NULL;
+  }
+  buffers[0] = loan->valid;   /* the built bitmap, or NULL when clean */
+  buffers[1] = values;
+  schema->format = fmt;
+  schema->release = mizu_py_arrow_schema_release;
+  array->length = n;
+  array->null_count = null_count;
+  array->n_buffers = 2;
+  PyObject *out = PyTuple_New(2);
+  if (out == NULL) {
+    Py_DECREF(scap);
+    Py_DECREF(acap);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, scap);
+  PyTuple_SET_ITEM(out, 1, acap);
+  return out;
+}
+
+PyDoc_STRVAR(mapview_to_arrow_doc,
+"to_arrow() -> (schema capsule, array capsule)\n\n\
+The Arrow C Data Interface export, re-exposed as a named method —\n\
+identical to __arrow_c_array__().");
+
+static PyMethodDef mapview_methods[] = {
+  {"__arrow_c_array__", (PyCFunction)(void (*)(void)) mapview_arrow_c_array,
+   METH_VARARGS | METH_KEYWORDS, mapview_arrow_c_array_doc},
+  {"to_arrow", (PyCFunction)(void (*)(void)) mapview_arrow_c_array,
+   METH_VARARGS | METH_KEYWORDS, mapview_to_arrow_doc},
+  {NULL}
+};
+
 static PyTypeObject MizuMapViewType = {
   PyVarObject_HEAD_INIT(NULL, 0)
   .tp_name = "_pymizu._MapOutView",
@@ -579,6 +703,7 @@ static PyTypeObject MizuMapViewType = {
   .tp_doc = "A zero-copy view over a map region's output area.",
   .tp_dealloc = (destructor) mapview_dealloc,
   .tp_as_buffer = &mapview_as_buffer,
+  .tp_methods = mapview_methods,
 };
 
 PyDoc_STRVAR(map_gather_view_doc,

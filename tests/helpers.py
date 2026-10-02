@@ -251,6 +251,21 @@ def scalar_double(v):
     return float(v) * 2
 
 
+def scalar_cplx(v):
+    """A plain complex scalar per element (template maps, m = 1)."""
+    return complex(v, v)
+
+
+def na_int(v):
+    """The int32 NA sentinel for multiples of 3 (template maps)."""
+    return -(2**31) if v % 3 == 0 else v
+
+
+def na_int64(v):
+    """The int64 NA sentinel for multiples of 3 (template maps)."""
+    return -(2**63) if v % 3 == 0 else v
+
+
 def bad_template(v):
     """A result that violates the template (wrong length)."""
     return [1.0, 2.0, 3.0]

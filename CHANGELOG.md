@@ -10,6 +10,18 @@ Initial pre-release.
 
 ### Added
 
+- Arrow export of `Pool.map(template=..., collect="view")` results: the
+  `_MapOutView` now carries `__arrow_c_array__` (and the `to_arrow`
+  alias), so any Arrow consumer — pyarrow, polars, duckdb — wraps a
+  map's output area zero-copy without numpy: flat n * m elements in
+  element-major order, matching the buffer protocol view. The export
+  holds its own mapping of the map region, opened without the zc
+  refcount add (the word at that offset is the morsel header's
+  `out_elt`), so it survives the map context's teardown and releases in
+  pure C from any thread. int32/int64 areas scan the NA sentinel into a
+  validity bitmap; complex128 raises `TypeError`. The `_ShmView`
+  export's wire-tag switch and pack/scan build are now one shared
+  helper both exporters call.
 - Attributed-MIZH dim-array writer (F5): a Fortran-contiguous numpy
   matrix or n-D array of a wire-exact dtype past the zero-copy floor
   sent on a foreign (R) channel now stages one flat MIZH layout write

@@ -58,6 +58,49 @@ typedef struct ArrowArrayStream {
 #define PYMIZU_ARROW_FLAG_NULLABLE 2
 #define PYMIZU_ARROW_FLAG_DICTIONARY_ORDERED 1
 
+// The Arrow export (shared by _pymizu.c's views and map.c's _MapOutView) -------
+
+/* The export holds its own mapping and its own zc loan: mizu_shm_open_view
+   at export (the counted add rides the open, exactly like a view-cache
+   hit), mizu_zc_unref + mizu_shm_close at release. private_data carries no
+   Python reference, so the release callback is pure C — callable from any
+   thread at any time (a foreign consumer may release from a non-Python
+   thread or after interpreter shutdown), with no GIL and no
+   finalization edge. zc flags a counted loan: a map region carries no zc
+   refcount (the word at the refcount offset is the morsel header's
+   out_elt), so its export opens NOCOUNT, leaves zc = 0, and the release
+   skips the unref. */
+typedef struct {
+  mizu_shm *shm;
+  long pid;             /* the fork guard, mirroring view_dealloc */
+  uint8_t *bits;        /* the LGL bit-pack, built at export (owned) */
+  uint8_t *valid;       /* a lazily built validity bitmap (owned) */
+  int zc;               /* a counted zc loan rides the mapping */
+} mizu_py_arrow_loan;
+
+/* The capsules own the struct memory; release (the consumer's call, or
+   the destructor's for an unconsumed export) owns the buffers array and
+   the loan. */
+void mizu_py_arrow_schema_release(ArrowSchema *s);
+void mizu_py_arrow_array_release(ArrowArray *a);
+void mizu_py_arrow_schema_cap_free(PyObject *cap);
+void mizu_py_arrow_array_cap_free(PyObject *cap);
+
+/* The wire-tag switch + value/validity buffer build shared by the
+   _ShmView and _MapOutView exports. build_valid: no validity section
+   exists — scan sentinels into an owned bitmap (loan->valid, freed when
+   clean). The scan stays gated on the tag's want_valid, so build_valid=1
+   on a REAL/RAW export builds nothing. null_count is in/out: a caller
+   with a borrowed validity section pre-seeds it (the helper then leaves
+   it alone); either way the caller wires buffers[0] itself — the
+   borrowed section, or loan->valid when the scan found nulls. Fills
+   fmt/values/null_count. 0 ok, -1 with TypeError (CPLX) or
+   MemoryError set. */
+int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
+                       int build_valid, mizu_py_arrow_loan *loan,
+                       const char **fmt, const void **values,
+                       int64_t *null_count);
+
 /* R's verbatim NA_real_ bits (the corpus pins them; the core's
    MIZU_NA_REAL_BITS is the quiet-bit-set twin — ISNA reads either, but an
    R->Python->R relay compares NaN payloads bitwise). */
