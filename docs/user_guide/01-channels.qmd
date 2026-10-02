@@ -1,5 +1,6 @@
 ---
 title: "Channels"
+guide-section: "Guide"
 ---
 
 A channel is a two-way message link between a Python process and a helper

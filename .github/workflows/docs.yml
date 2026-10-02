@@ -20,15 +20,15 @@ jobs:
       - uses: quarto-dev/quarto-actions/setup@v2
 
       - name: Install pymizu and the docs toolchain
-        # griffe<2: quartodoc 0.11.x passes parser options griffe 2.0 removed
-        run: pip install . numpy cloudpickle jupyter quartodoc "griffe<2"
+        # Editable install: the render imports pymizu from the source tree
+        # (great-docs puts python/ on PYTHONPATH), so the extension must be
+        # built in place. great-docs is unreleased; pinned to a main commit.
+        run: |
+          pip install -e . numpy cloudpickle jupyter
+          pip install "git+https://github.com/posit-dev/great-docs.git@2db0737eed16d4fcdb5d1a6a28a9ca1532a00fa1"
 
-      - name: Build the API reference
-        working-directory: docs
-        run: quartodoc build
-
-      - name: Render the site
-        run: quarto render docs
+      - name: Build the site
+        run: great-docs build
 
       - name: Publish to GitHub Pages
         uses: quarto-dev/quarto-actions/publish@v2

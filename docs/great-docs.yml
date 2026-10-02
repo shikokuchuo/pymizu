@@ -1,44 +1,20 @@
-project:
-  type: website
-  output-dir: _site
+# Great Docs configuration
+# See https://posit-dev.github.io/great-docs/user-guide/configuration.html
 
-website:
-  title: "pymizu 水"
-  site-url: "https://shikokuchuo.net/pymizu/"
-  repo-url: "https://github.com/shikokuchuo/pymizu"
-  page-navigation: true
-  navbar:
-    right:
-      - icon: github
-        href: "https://github.com/shikokuchuo/pymizu"
-        aria-label: "pymizu on GitHub"
-  sidebar:
-    style: docked
-    contents:
-      - index.qmd
-      - installation.qmd
-      - section: "Guide"
-        contents:
-          - channels.qmd
-          - pools.qmd
-          - map.qmd
-          - interop.qmd
-      - benchmarks.qmd
-      - section: "API reference"
-        href: reference/index.qmd
-        contents:
-          - auto: reference/*
+display_name: pymizu 水
 
-format:
-  html:
-    theme: cosmo
-    toc: true
-    toc-depth: 3
+site_url: "https://shikokuchuo.net/pymizu/"
+repo: https://github.com/shikokuchuo/pymizu
+github_style: icon
 
-quartodoc:
-  package: pymizu
-  dir: reference
-  title: API reference
+# Canonical URLs and sitemap (the site is served from a custom domain)
+seo:
+  canonical:
+    base_url: "https://shikokuchuo.net/pymizu/"
+
+dark_mode_toggle: true
+
+reference:
   sections:
     - title: Channels
       desc: >-
