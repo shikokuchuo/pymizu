@@ -352,17 +352,26 @@ def test_py_peer_dim_array_zero_copy(r_mizu):
 
 
 R_MIZH_DTYPES = r"""
+# rm/gc ahead of each reply: the next send must not stage while this
+# view's loan is outstanding, or a spill miss trips the Linux-only churn
+# fallback and the payload copy-tiers (values exact, view check fails)
 x <- mizu::mizu_recv(ch, timeout = 60)
-mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
-                      identical(x, matrix((1:60000) * 1.0 - 1, 200, 300))))
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, matrix((1:60000) * 1.0 - 1, 200, 300)))
+rm(x); gc()
+mizu::mizu_send(ch, out)
 x <- mizu::mizu_recv(ch, timeout = 60)
-mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
-                      identical(x, matrix(0:59999, 200, 300))))
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, matrix(0:59999, 200, 300)))
+rm(x); gc()
+mizu::mizu_send(ch, out)
 x <- mizu::mizu_recv(ch, timeout = 60)
-mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
-                      identical(x, { m <- bit64::as.integer64(0:19999)
-                                     dim(m) <- c(100L, 200L); m }),
-                      class(x) == "integer64"))
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, { m <- bit64::as.integer64(0:19999)
+                        dim(m) <- c(100L, 200L); m }),
+         class(x) == "integer64")
+rm(x); gc()
+mizu::mizu_send(ch, out)
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
                       identical(x, matrix(complex(real = 0:19999,
