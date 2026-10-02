@@ -1,0 +1,11 @@
+{
+  "skills": [
+    {
+      "name": "pymizu",
+      "description": "Lock-free shared-memory parallelism for Python. Use when writing Python code that uses the pymizu package.",
+      "files": [
+        "SKILL.md"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+# pymizu
+
+> Lock-free shared-memory parallelism for Python
+
+## Docs
+
+### API Reference
+
+#### Channels
+> A two-way message link between a Python process and a helper process that it spawns.
+
+- [Channel](https://shikokuchuo.net/pymizu/reference/Channel.html): A shared-memory SPSC channel handle (process-private)
+
+#### Channel Methods
+> Methods for the Channel class
+
+- [Channel.create](https://shikokuchuo.net/pymizu/reference/Channel.create.html)
+- [Channel.attach](https://shikokuchuo.net/pymizu/reference/Channel.attach.html)
+- [Channel.token](https://shikokuchuo.net/pymizu/reference/Channel.token.html)
+- [Channel.send](https://shikokuchuo.net/pymizu/reference/Channel.send.html)
+- [Channel.send_batch](https://shikokuchuo.net/pymizu/reference/Channel.send_batch.html)
+- [Channel.recv](https://shikokuchuo.net/pymizu/reference/Channel.recv.html)
+- [Channel.recv_batch](https://shikokuchuo.net/pymizu/reference/Channel.recv_batch.html)
+- [Channel.close](https://shikokuchuo.net/pymizu/reference/Channel.close.html)
+- [Channel.close_signal](https://shikokuchuo.net/pymizu/reference/Channel.close_signal.html)
+- [Channel.destroy](https://shikokuchuo.net/pymizu/reference/Channel.destroy.html)
+- [Channel.alive](https://shikokuchuo.net/pymizu/reference/Channel.alive.html)
+- [Channel.info](https://shikokuchuo.net/pymizu/reference/Channel.info.html)
+- [Channel.__enter__](https://shikokuchuo.net/pymizu/reference/Channel.__enter__.html)
+- [Channel.__exit__](https://shikokuchuo.net/pymizu/reference/Channel.__exit__.html)
+
+#### Task pools
+> A set of worker processes that divide submitted tasks among themselves.
+
+- [Pool](https://shikokuchuo.net/pymizu/reference/Pool.html): A shared-memory work-stealing task pool handle (process-private)
+- [Task](https://shikokuchuo.net/pymizu/reference/Task.html): A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
+
+#### Pool Methods
+> Methods for the Pool class
+
+- [Pool.create](https://shikokuchuo.net/pymizu/reference/Pool.create.html)
+- [Pool.attach](https://shikokuchuo.net/pymizu/reference/Pool.attach.html)
+- [Pool.token](https://shikokuchuo.net/pymizu/reference/Pool.token.html)
+- [Pool.submit](https://shikokuchuo.net/pymizu/reference/Pool.submit.html)
+- [Pool.submit_batch](https://shikokuchuo.net/pymizu/reference/Pool.submit_batch.html)
+- [Pool.collect_any](https://shikokuchuo.net/pymizu/reference/Pool.collect_any.html)
+- [Pool.collect_all](https://shikokuchuo.net/pymizu/reference/Pool.collect_all.html)
+- [Pool.map](https://shikokuchuo.net/pymizu/reference/Pool.map.html)
+- [Pool.map_prepare](https://shikokuchuo.net/pymizu/reference/Pool.map_prepare.html)
+- [Pool.map_run](https://shikokuchuo.net/pymizu/reference/Pool.map_run.html)
+- [Pool.retire](https://shikokuchuo.net/pymizu/reference/Pool.retire.html)
+- [Pool.spawn_workers](https://shikokuchuo.net/pymizu/reference/Pool.spawn_workers.html)
+- [Pool.stop](https://shikokuchuo.net/pymizu/reference/Pool.stop.html)
+- [Pool.destroy](https://shikokuchuo.net/pymizu/reference/Pool.destroy.html)
+- [Pool.status](https://shikokuchuo.net/pymizu/reference/Pool.status.html)
+- [Pool.dump](https://shikokuchuo.net/pymizu/reference/Pool.dump.html)
+- [Pool.stats](https://shikokuchuo.net/pymizu/reference/Pool.stats.html)
+- [Pool.trace](https://shikokuchuo.net/pymizu/reference/Pool.trace.html)
+- [Pool.__enter__](https://shikokuchuo.net/pymizu/reference/Pool.__enter__.html)
+- [Pool.__exit__](https://shikokuchuo.net/pymizu/reference/Pool.__exit__.html)
+
+#### Cross-language interop
+> R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
+
+- [call](https://shikokuchuo.net/pymizu/reference/call.html): A task specification for a pool of another language's workers
+- [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a ``Channel.create`` launcher spawning an R peer
+- [r_pool_launcher](https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html): Return a ``Pool.create`` launcher spawning R workers
+- [Frame](https://shikokuchuo.net/pymizu/reference/Frame.html): A data.frame's Python home: named columns with a row count
+
+#### Frame Methods
+> Methods for the Frame class
+
+- [Frame.names](https://shikokuchuo.net/pymizu/reference/Frame.names.html)
+- [Frame.row_names](https://shikokuchuo.net/pymizu/reference/Frame.row_names.html)
+- [Frame.to_dict](https://shikokuchuo.net/pymizu/reference/Frame.to_dict.html)
+- [Frame.__arrow_c_stream__](https://shikokuchuo.net/pymizu/reference/Frame.__arrow_c_stream__.html)
+- [Frame.__len__](https://shikokuchuo.net/pymizu/reference/Frame.__len__.html)
+- [Frame.__reduce__](https://shikokuchuo.net/pymizu/reference/Frame.__reduce__.html)
+
+#### Outcomes and errors
+> Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
+
+- [is_sentinel](https://shikokuchuo.net/pymizu/reference/is_sentinel.html): is_sentinel(x) -> bool
+- [is_remote_error](https://shikokuchuo.net/pymizu/reference/is_remote_error.html): Test whether a received channel value is a remote error
+- [MizuError](https://shikokuchuo.net/pymizu/reference/MizuError.html): Base class for all pymizu errors
+- [ShmError](https://shikokuchuo.net/pymizu/reference/ShmError.html): A shared-memory region operation failed
+- [StartupError](https://shikokuchuo.net/pymizu/reference/StartupError.html): A channel peer or pool worker failed to attach within the startup timeout
+- [SubmitTimeoutError](https://shikokuchuo.net/pymizu/reference/SubmitTimeoutError.html): Pool.submit() timed out waiting for injection-ring space
+- [SlotsExhaustedError](https://shikokuchuo.net/pymizu/reference/SlotsExhaustedError.html): Pool.submit() found no free result slot: too many outstanding (uncollected) tasks
+- [StoppedError](https://shikokuchuo.net/pymizu/reference/StoppedError.html): The pool is stopped; no further submission is possible
+- [CancelledError](https://shikokuchuo.net/pymizu/reference/CancelledError.html): The task was cancelled before it ran
+- [TaskError](https://shikokuchuo.net/pymizu/reference/TaskError.html): The task callable raised. Carries 'remote_type' and 'remote_traceback' attributes describing the worker-side exception
+- [WorkerDiedError](https://shikokuchuo.net/pymizu/reference/WorkerDiedError.html): The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker
+- [DeclinedError](https://shikokuchuo.net/pymizu/reference/DeclinedError.html): A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes
+
+#### Housekeeping
+> Pool context from inside a task, and orphan reaping.
+
+- [current_pool](https://shikokuchuo.net/pymizu/reference/current_pool.html): The evaluating worker's own pool handle, inside a task
+- [prune](https://shikokuchuo.net/pymizu/reference/prune.html): Remove orphaned shared memory regions
