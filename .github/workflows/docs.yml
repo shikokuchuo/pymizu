@@ -31,9 +31,10 @@ jobs:
         run: great-docs build
 
       - name: Publish to GitHub Pages
-        uses: quarto-dev/quarto-actions/publish@v2
+        # Static deploy: docs/ is no longer a Quarto project, so
+        # quarto-actions/publish refuses docs/_site.
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          target: gh-pages
-          path: docs/_site
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: docs/_site
