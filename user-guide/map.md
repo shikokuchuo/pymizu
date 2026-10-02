@@ -87,7 +87,7 @@ result
     array([0.69314718, 1.09861229, 1.38629436])
 
 
-With a template, `collect="copy"` (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape `(n, m)` -- `(n,)` for `m == 1`. `collect="view"` returns it zero-copy and read-only, with the map region's teardown deferred to the view's.
+With a template, `collect="copy"` (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape `(n, m)` -- `(n,)` for `m == 1`. `collect="view"` returns it zero-copy and read-only, with the map region's teardown deferred to the view's. The view exports `__arrow_c_array__`, so any Arrow consumer wraps the area zero-copy without numpy; reach it via the `.base` chain when numpy wrapped the result (`arr.base` for `m == 1`, one link deeper for `m > 1`), or as `mv.obj` on the memoryview form.
 
 
 # Prepared maps
