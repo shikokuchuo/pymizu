@@ -155,6 +155,10 @@ across languages.
 - Strings cross both ways (`str` rides the shared STR1 tier);
   `NA_character_` arrives as `None`; a string vector arrives as
   `list[str | None]`.
+  A large `list[str | None]` sent to R crosses zero-copy — one MIZS
+  layout write, R receiving a character-vector view over the shared
+  pages (`None` as `NA_character_`); below the zero-copy floor it still
+  crosses by value.
 - A large R atomic vector arrives as a zero-copy, read-only numpy view over
   the shared pages — no copy, no parse.
   Without numpy it arrives as a buffer exporter, and any Arrow consumer wraps

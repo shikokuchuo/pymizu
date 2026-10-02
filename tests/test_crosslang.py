@@ -13,6 +13,7 @@ import time
 import warnings
 
 import pytest
+from tests.helpers import foreign_pair
 
 import pymizu
 
@@ -194,6 +195,134 @@ def test_py_peer_string_view_echo(r_mizu):
     finally:
         py_ch.close()
         r_ch.close()
+
+
+R_MIZS_ECHO = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))
+mizu::mizu_send(ch, x)
+"""
+
+
+def test_py_peer_str_list_zero_copy(r_mizu):
+    # a list[str] past the floor crosses as one MIZS layout write: R wraps
+    # a character-vector view of the region (no copy), and the echo hops
+    # back by reference (REF) to a second _ShmStrView
+    ch = pymizu.Channel.create(R_MIZS_ECHO, launcher=r_mizu)
+    try:
+        n = 200_000
+        xs = [f"héllo ✓ {i}" if i % 3 else "" for i in range(n)]
+        assert ch.send(xs) is True
+        assert ch.recv(60)                     # R's read was a MIZS view
+        back = ch.recv(60)
+        assert type(back).__name__ == "_ShmStrView"
+        assert back.to_list() == xs
+    finally:
+        ch.close()
+
+
+R_MIZS_NA = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, is.na(x))
+mizu::mizu_send(ch, x)
+"""
+
+
+def test_py_peer_str_list_na_mapping(r_mizu):
+    # None maps to NA_character_ (a cleared validity bit); "" is a
+    # zero-length span with the bit set — is.na proves the distinction,
+    # and the echo restores None exactly
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZS_NA, launcher=r_mizu)
+    try:
+        n = 50_000
+        xs = [None if i % 7 == 0 else "" if i % 5 == 0 else f"s{i}"
+              for i in range(n)]
+        assert ch.send(xs) is True
+        na = np.asarray(ch.recv(60))
+        assert na.tolist() == [x is None for x in xs]
+        back = ch.recv(60)
+        assert type(back).__name__ == "_ShmStrView"
+        assert back.to_list() == xs
+    finally:
+        ch.close()
+
+
+R_MIZS_COPY = r"""
+x <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, list("a", "b", NULL, ""))))
+"""
+
+
+def test_py_peer_str_list_below_floor_copies(r_mizu):
+    # below the zc floor the 0x0b value copy still serves: R receives a
+    # plain list (no view, None as NULL — today's copy form), values intact
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZS_COPY, launcher=r_mizu)
+    try:
+        assert ch.send(["a", "b", None, ""]) is True
+        assert np.asarray(ch.recv(30)).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+def test_py_peer_str_list_same_language():
+    # the MIZS tier is foreign-only: a same-language list[str] keeps its
+    # pickle identity round-trip, arriving as an exact list
+    ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
+    try:
+        xs = [f"s{i}" for i in range(100_000)]
+        assert ch.send(xs) is True
+        got = ch.recv(30)
+        assert type(got) is list and got == xs
+    finally:
+        ch.close()
+
+
+def test_str_list_no_cap_peer_copies():
+    # a peer short of MIZU_CAP_MIZS gets the 0x0b value copy
+    h, p = foreign_pair(caps=30)   # every current cap minus MIZS
+    try:
+        xs = [f"s{i}" for i in range(20_000)]
+        assert h.send(xs) is True
+        got = p.recv(10)
+        assert type(got) is list and got == xs
+    finally:
+        p.close(10)
+        h.close(10)
+
+
+R_MIZS_BALANCE = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))
+mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_refcount, x)[[1L]])
+rm(x)
+gc()
+mizu::mizu_send(ch, "released")
+mizu::mizu_recv(ch, timeout = 30)
+"""
+
+
+def test_py_peer_str_list_retain_balance(r_mizu):
+    # producer-side balance: the loan drops at the first reap past the
+    # consumer-done, leaving the wrap's floor of one; the consumer's
+    # release then recycles the region — the next past-floor send pops
+    # the free list (a miss there sweeps the lent ledger)
+    ch = pymizu.Channel.create(R_MIZS_BALANCE, launcher=r_mizu)
+    try:
+        xs = [f"s{i}" for i in range(50_000)]
+        assert ch.send(xs) is True
+        assert ch.recv(60)               # R's read was a MIZS view
+        assert ch.send("ping") is True   # its reap drops the loan
+        assert ch.recv(60) == 1          # the settled floor: the wrap
+        assert ch.info()["ledger_entries"] == 1   # lent to R's view
+        assert ch.recv(60) == "released"
+        assert ch.send(xs) is True       # recycles the released region
+        assert ch.info()["fl_hits"] >= 1
+    finally:
+        ch.close()
 
 
 def test_r_peer_copied_read_na_rules(r_mizu):

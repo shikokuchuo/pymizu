@@ -680,6 +680,43 @@ else:
         warmup(rep_ref, n=2)
         note_us("arg 8 MB", "R pool (REF)", n, rep_ref, "us/task")
 
+# 7b. string list staging (F4) ------------------------------------------------
+
+print("\n== 7b. string list staging: 1M list[str] to a foreign peer ==")
+
+
+# one builder, two rows: the in-process foreign pair (convert_foreign's
+# pattern), the acking read keeping the measured cost on the send-side stage
+def strlist_foreign():
+    from pymizu import _pymizu
+
+    size = 1000000  # ~20 MB string block
+    n = 10
+    xs = [f"str-{i:08d}" for i in range(size)]
+    for label, ident in [
+        ("stage str list 0x0b", (2, 0)),   # no caps: the value-copy tree
+        ("stage str list MIZS", (2, 1)),   # MIZU_CAP_MIZS: one layout write
+    ]:
+        h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+        p, _ = _pymizu._channel_attach(h.token, _ident=ident)
+        p.ready_set()
+        assert h.ready_wait(10)
+        try:
+
+            def rep(h=h, p=p):
+                for _ in range(n):
+                    h.send(xs)
+                    p.recv(timeout=60)
+
+            warmup(rep, n=1)
+            note_us(label, "pymizu channel (foreign)", n, rep, "us/send")
+        finally:
+            p.destroy()
+            h.destroy()
+
+
+strlist_foreign()
+
 # 8. frame relay: the per-column REF (F2) -------------------------------------
 
 print("\n== 8. frame relay: 10-col 1e6-row frame, R -> polars -> R ==")

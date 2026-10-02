@@ -55,6 +55,9 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max);
 static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max);
+static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
+                           uint8_t *payload, uint32_t inline_max,
+                           mizu_handle *h);
 static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
 static PyObject *view_to_object(PyObject *view, int type);
 static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -1567,6 +1570,15 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
                                            inline_max, h, peer_caps);
     if (src >= 0) return src;
+    /* a list[str | None] past the zc floor: one MIZS layout write, the
+       peer wrapping a string-vector view — ahead of the 'I' writer, whose
+       0x0b value copy stays the decline form (a no-cap peer, a small
+       list, churn, a non-str element, a region failure) */
+    if ((peer_caps & MIZU_CAP_MIZS) && PyList_CheckExact(obj)) {
+      int mrc = stage_mizs_list(obj, hdr, payload, inline_max, h);
+      if (mrc == 0) return 0;
+      if (mrc > 0) return 1;   /* the defensive raise, never a decline */
+    }
     return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
   }
   if (Py_TYPE(obj) == &MizuCallFrameType) {
@@ -2200,6 +2212,89 @@ static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   if (sv->loan != NULL) return -1;   /* a tree leaf goes by value */
   return ref_emit(sv->owner != NULL ? sv->owner->shm : NULL, hdr, payload,
                   inline_max);
+}
+
+/* A top-level list[str | None] staged as SHM_VEC: one MIZS layout write
+   into a spill region (the mirror of mizu's mizs_write), the region name
+   as the payload. Two walks of the list — the first validates (exact
+   strs or None only; a subclass keeps the 'I' writer's semantics) and
+   sums the UTF-8 bytes with no writes, the second fills the block's four
+   sections. The gate runs on the whole block, not str_bytes alone: 1M
+   empty strings are a ~9 MB block of offsets. -1 declines to the 'I'
+   writer's 0x0b copy; 0 staged. */
+static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
+                           uint8_t *payload, uint32_t inline_max,
+                           mizu_handle *h) {
+  const Py_ssize_t n = PyList_GET_SIZE(obj);
+  int64_t str_bytes = 0;
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *elt = PyList_GET_ITEM(obj, i);
+    if (elt == Py_None) continue;
+    if (!PyUnicode_CheckExact(elt)) return -1;
+    Py_ssize_t len;
+    if (PyUnicode_AsUTF8AndSize(elt, &len) == NULL) {
+      PyErr_Clear();   /* lone surrogates take the 0x0b path */
+      return -1;
+    }
+    str_bytes += (int64_t) len;
+  }
+  const mizu_mizs_geom g = mizu_mizs_geometry((int64_t) n);
+  const uint64_t block = (uint64_t) (g.data + str_bytes);
+  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
+    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
+  /* the churn read behind the size gate (the single-read discipline) */
+  if (block < zc_gate || mizu_handle_churn(h)) return -1;
+  mizu_shm *shm;
+  if (mizu_stage_spill_get(h, (size_t) (MIZU_HEADER_SIZE + block),
+                           &shm) != MIZU_OK)
+    return -1;   /* the copy tier is the fallback (the BUFREF precedent) */
+  uint8_t *base = (uint8_t *) shm->addr;
+  uint8_t *blk = base + MIZU_HEADER_SIZE;
+  uint8_t *validity = blk + g.validity;
+  int64_t *offs = (int64_t *) (blk + g.offsets);
+  uint8_t *enc = blk + g.encoding;
+  uint8_t *data = blk + g.data;
+  memset(validity, 0xFF, (size_t) (n + 7) / 8);
+  memset(enc, MIZU_CE_UTF8, (size_t) n);
+  offs[0] = 0;
+  int64_t run = 0;
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *elt = PyList_GET_ITEM(obj, i);
+    if (elt == Py_None) {
+      validity[i >> 3] &= (uint8_t) ~(1u << (i & 7));
+      enc[i] = 0;
+    } else {
+      Py_ssize_t len;
+      /* pass 1 cached the UTF-8 form, so this cannot fail — check anyway:
+         a failed stage is transactional (the checkout rolls back at the
+         next verb entry), a write past NULL is not */
+      const char *s = PyUnicode_AsUTF8AndSize(elt, &len);
+      if (s == NULL) {
+        PyErr_SetString(MizuError, "pymizu: string staging failed");
+        return 1;
+      }
+      memcpy(data + run, s, (size_t) len);
+      run += (int64_t) len;
+    }
+    offs[i + 1] = run;
+  }
+  /* the header last, mizs_write's discipline: the full 64 bytes zeroed
+     first (a recycled region carries stale bytes), the fields over it —
+     attrs_size / flags / reserved stay zero — then retain_zc stores the
+     producer loan over the zeroed refcount word */
+  memset(base, 0, MIZU_HEADER_SIZE);
+  const uint32_t magic = MIZU_MAGIC_STR;
+  const int64_t n64 = (int64_t) n;
+  const int64_t sd = (int64_t) block;
+  memcpy(base, &magic, 4);
+  memcpy(base + 8, &n64, 8);
+  memcpy(base + 16, &sd, 8);
+  hdr->kind = MIZU_KIND_SHM_VEC;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_STR, MIZU_HEADER_SIZE + block);
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain_zc(h, shm);
+  return 0;
 }
 
 // The live export acquisitions' mapping spans (test-only) -------------------------

@@ -10,6 +10,19 @@ Initial pre-release.
 
 ### Added
 
+- Top-level MIZS string writer (F4): a `list[str | None]` past the
+  zero-copy floor sent on a foreign (R) channel now stages one MIZS
+  layout write into a spill region — R receives a zero-copy
+  character-vector view — where the interop writer paid a full value
+  copy of the tree at every size (17.8x on a 1M-element list). The tier
+  is exact-type only (list/str subclasses keep their interop/pickle
+  semantics), gated on the peer's `MIZU_CAP_MIZS`, the whole block
+  passing the floor, and no churn; `None` crosses as the
+  validity-bitmap `NA_character_`, an empty string as a zero span with
+  the bit set, and UTF-8 is the only encoding written. Every decline —
+  a no-cap peer, a below-floor list, a non-str element, a lone
+  surrogate, a region failure — keeps the 0x0b copy. No wire change
+  (both bindings read MIZS since 3.1).
 - Polars string-column REF verification (F3): an unmodified string
   column round-tripped through polars no longer pays the MIZL layout
   write. polars exports strings only as `string_view`, re-viewing the

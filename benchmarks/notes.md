@@ -65,6 +65,7 @@ probes and A/B isolations stay in the log.
 | stage masked (foreign pair) | 97.3 us/send | 2026-10-01 |
 | stage masked int64 (foreign pair) | 136.9 us/send | 2026-10-01 |
 | stage masked+scan (foreign pair) | 136.8 us/send | 2026-10-01 |
+| stage str list MIZS (foreign pair) | 5,455.5 us/send | 2026-10-02 |
 | crosslang map trivial fn, spec | 0.1 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec template | ~0 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
@@ -482,3 +483,20 @@ unmodified 10-col REF relay 6.0-6.4 us/rt, one computed column
 402-419 us/rt. New row on the best-known table.
 
 Status: 372 pass, 5 skip; ruff + pyrefly clean.
+
+## 2026-10-02 — the top-level MIZS string writer (F4)
+
+A large `list[str | None]` sent to an R peer now stages as one MIZS
+layout write into a spill region (the peer wraps a zero-copy
+string-vector view), where the 'I' writer paid a full value copy of the
+tree. The tier is foreign-only and gated on MIZU_CAP_MIZS, the zc floor
+(on the whole block, not the string bytes alone), and no churn; every
+decline form — a no-cap peer, a below-floor list, a non-str element, a
+region failure — keeps the 0x0b copy. None is the validity-bitmap NA,
+"" a zero span with the bit set; CE_UTF8 is the only encoding written.
+
+Results (1e6-element list[str], ~20 MB block, in-process foreign pair,
+best of 3 x 10 sends): stage str list 0x0b 96,976.3 us/send -> stage
+str list MIZS 5,455.5 us/send (17.8x). New row on the best-known table.
+
+Status: full suite + the new crosslang rows pass; ruff + pyrefly clean.
