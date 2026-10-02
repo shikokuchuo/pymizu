@@ -717,6 +717,92 @@ def strlist_foreign():
 
 strlist_foreign()
 
+# 7c. f64 matrix staging (F5) -------------------------------------------------
+
+print("\n== 7c. f64 matrix staging: 8 MB F-order matrix to a foreign peer ==")
+
+
+# one builder, two rows: the in-process foreign pair (strlist_foreign's
+# pattern). The pair is the calibration: both paths are one bulk memcpy +
+# one region, so expect ~parity — a materially slower MIZH row means the
+# tier is doing per-element work
+def mizh_foreign():
+    from pymizu import _pymizu
+
+    a = np.arange(1024 * 1024, dtype=np.float64).reshape(
+        (1024, 1024), order="F"
+    )
+    n = 10
+    for label, ident in [
+        ("stage f64 matrix 0x0f", (2, 0)),   # no caps: the attr-tag copy
+        ("stage f64 matrix MIZH", (2, 2)),   # MIZU_CAP_ATTRS: layout + blob
+    ]:
+        h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+        p, _ = _pymizu._channel_attach(h.token, _ident=ident)
+        p.ready_set()
+        assert h.ready_wait(10)
+        try:
+
+            def rep(h=h, p=p):
+                for _ in range(n):
+                    h.send(a)
+                    p.recv(timeout=60)
+
+            warmup(rep, n=1)
+            note_us(label, "pymizu channel (foreign)", n, rep, "us/send")
+        finally:
+            p.destroy()
+            h.destroy()
+
+
+mizh_foreign()
+
+# the round trip through an R echo peer — the relation of record: the
+# MIZH row carries R's view wrap at receive and the REF return, the 0x0f
+# row the attr-tag copy parsed and copied again at R's receive. A real R
+# peer always advertises ATTRS, so the 0x0f row sends the C-order twin:
+# the wire shape is the pre-F5 attr-tag copy either way, its per-element
+# gather standing in for the pre-F5 bulk convert (the before row reads
+# slightly slow)
+R_MAT_ECHO_BENCH = r"""
+repeat {
+  x <- mizu::mizu_recv(ch, timeout = 120)
+  if (mizu::mizu_is_sentinel(x)) break
+  mizu::mizu_send(ch, x)
+}
+"""
+
+try:
+    mat_launcher = pymizu.r_launcher()
+except pymizu.MizuError:
+    print("  Rscript with mizu not available: skipped")
+else:
+    a = np.arange(1024 * 1024, dtype=np.float64).reshape(
+        (1024, 1024), order="F"
+    )
+    a_c = np.ascontiguousarray(a)
+    n = 10
+    ch = pymizu.Channel.create(R_MAT_ECHO_BENCH, launcher=mat_launcher)
+    try:
+
+        def rep_ix():
+            for _ in range(n):
+                ch.send(a_c)
+                ch.recv(timeout=120)
+
+        warmup(rep_ix, n=1)
+        note_us("echo f64 matrix 0x0f", "R echo", n, rep_ix, "us/rt")
+
+        def rep_mizh():
+            for _ in range(n):
+                ch.send(a)
+                ch.recv(timeout=120)
+
+        warmup(rep_mizh, n=1)
+        note_us("echo f64 matrix MIZH", "R echo", n, rep_mizh, "us/rt")
+    finally:
+        ch.close(timeout=10)
+
 # 8. frame relay: the per-column REF (F2) -------------------------------------
 
 print("\n== 8. frame relay: 10-col 1e6-row frame, R -> polars -> R ==")

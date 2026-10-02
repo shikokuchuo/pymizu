@@ -325,6 +325,218 @@ def test_py_peer_str_list_retain_balance(r_mizu):
         ch.close()
 
 
+R_MIZH_ECHO = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))
+mizu::mizu_send(ch, x)
+"""
+
+
+def test_py_peer_dim_array_zero_copy(r_mizu):
+    # an F-order float64 matrix past the floor crosses as one MIZH layout
+    # write plus the {dim} blob: R wraps a matrix view (no copy), and the
+    # echo hops back by reference (REF) to a read-only F-order view
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_ECHO, launcher=r_mizu)
+    try:
+        a = np.arange(1024 * 1024, dtype=np.float64).reshape(
+            (1024, 1024), order="F")
+        assert ch.send(a) is True
+        assert ch.recv(60)                     # R's read was a MIZH view
+        back = ch.recv(60)
+        assert back.shape == (1024, 1024)
+        assert back.flags.f_contiguous and not back.flags.writeable
+        assert np.array_equal(back, a)
+    finally:
+        ch.close()
+
+
+R_MIZH_DTYPES = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, matrix((1:60000) * 1.0 - 1, 200, 300))))
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, matrix(0:59999, 200, 300))))
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, { m <- bit64::as.integer64(0:19999)
+                                     dim(m) <- c(100L, 200L); m }),
+                      class(x) == "integer64"))
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, matrix(complex(real = 0:19999,
+                                                  imaginary = 1), 100, 200))))
+"""
+
+
+def test_py_peer_dim_array_dtypes(r_mizu):
+    # value exactness per dtype, each past the floor and view-wrapped at
+    # R: the Fortran-order identity (a[i, j] lands m[i, j]); the int64
+    # row's blob is {dim} alone (the i64-mat form), the wire type carries
+    # the integer64 class
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_DTYPES, launcher=r_mizu)
+    try:
+        assert ch.send(np.arange(60000, dtype=np.float64).reshape(
+            (200, 300), order="F")) is True
+        assert ch.recv(60).tolist() == [1, 1]
+        assert ch.send(np.arange(60000, dtype=np.int32).reshape(
+            (200, 300), order="F")) is True
+        assert ch.recv(60).tolist() == [1, 1]
+        assert ch.send(np.arange(20000, dtype=np.int64).reshape(
+            (100, 200), order="F")) is True
+        assert ch.recv(60).tolist() == [1, 1, 1]
+        assert ch.send((np.arange(20000) + 1j).astype(np.complex128)
+                       .reshape((100, 200), order="F")) is True
+        assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZH_DECLINE = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, t(matrix((1:(600*800)) * 1.0 - 1,
+                                            800, 600)))))
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, matrix((1:(600*800)) * 1.0 - 1,
+                                          800, 600))))
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, t(matrix((1:(1200*1600)) * 1.0 - 1,
+                                            1600, 1200))[
+                                        seq(1, 1200, 2), seq(1, 1600, 2)])))
+"""
+
+
+def test_py_peer_dim_array_c_order_copies(r_mizu):
+    # a C-contiguous array past the floor keeps the 'I' copy: the region
+    # would hold the source's byte order, arriving the transpose — the
+    # gate declines, R receives the value-exact matrix, no view
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_DECLINE, launcher=r_mizu)
+    try:
+        assert ch.send(np.arange(600 * 800, dtype=np.float64)
+                       .reshape(600, 800)) is True   # C-order
+        assert ch.recv(60).tolist() == [1, 1]
+        assert ch.send(np.asfortranarray(
+            np.arange(600 * 800, dtype=np.float64).reshape(600, 800)).T
+        ) is True                      # C-order by construction (a.T)
+        assert ch.recv(60).tolist() == [1, 1]
+        assert ch.send(np.asfortranarray(
+            np.arange(1200 * 1600, dtype=np.float64)
+            .reshape(1200, 1600))[::2, ::2]) is True   # strided slice
+        assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZH_3D = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, array(0:23999, c(20L, 30L, 40L)))))
+"""
+
+
+def test_py_peer_dim_array_3d(r_mizu):
+    # a 3-D F-order array past the floor: R wraps a dim c(20, 30, 40)
+    # view, values exact (the array-3d corpus form)
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_3D, launcher=r_mizu)
+    try:
+        assert ch.send(np.arange(24000, dtype=np.int32).reshape(
+            (20, 30, 40), order="F")) is True
+        assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZH_SMALL = r"""
+x <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, matrix((1:64) * 1.0 - 1, 8, 8))))
+"""
+
+
+def test_py_peer_dim_array_below_floor_copies(r_mizu):
+    # below the zc floor the 'I' copy still serves: no view, values exact
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_SMALL, launcher=r_mizu)
+    try:
+        assert ch.send(np.arange(64, dtype=np.float64).reshape(
+            (8, 8), order="F")) is True
+        assert ch.recv(30).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+def test_py_peer_dim_array_same_language():
+    # the MIZH dim tier is foreign-only: a same-language F-order array
+    # keeps its pickle identity round-trip, arriving an owned ndarray
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
+    try:
+        a = np.arange(1024 * 1024, dtype=np.float64).reshape(
+            (1024, 1024), order="F")
+        assert ch.send(a) is True
+        got = ch.recv(30)
+        assert type(got) is np.ndarray
+        assert got.shape == a.shape and np.array_equal(got, a)
+    finally:
+        ch.close()
+
+
+def test_dim_array_no_cap_peer_copies():
+    # a peer short of MIZU_CAP_ATTRS gets the 'I' value copy
+    np = pytest.importorskip("numpy")
+    h, p = foreign_pair(caps=29)   # every current cap minus ATTRS
+    try:
+        a = np.arange(1024 * 1024, dtype=np.float64).reshape(
+            (1024, 1024), order="F")
+        assert h.send(a) is True
+        got = p.recv(10)
+        assert type(got) is np.ndarray
+        assert got.shape == a.shape and np.array_equal(got, a)
+    finally:
+        p.close(10)
+        h.close(10)
+
+
+R_MIZH_BALANCE = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))
+mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, .Call(mizu:::mizu_zc_refcount, x)[[1L]])
+rm(x)
+gc()
+mizu::mizu_send(ch, "released")
+mizu::mizu_recv(ch, timeout = 30)
+"""
+
+
+def test_py_peer_dim_array_retain_balance(r_mizu):
+    # producer-side balance (the MIZS pattern): the loan drops at the
+    # first reap past the consumer-done, leaving the wrap's floor of one;
+    # the consumer's release then recycles the region
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_BALANCE, launcher=r_mizu)
+    try:
+        a = np.arange(200 * 300, dtype=np.float64).reshape(
+            (200, 300), order="F")
+        assert ch.send(a) is True
+        assert ch.recv(60)               # R's read was a MIZH view
+        assert ch.send("ping") is True   # its reap drops the loan
+        assert ch.recv(60) == 1          # the settled floor: the wrap
+        assert ch.info()["ledger_entries"] == 1   # lent to R's view
+        assert ch.recv(60) == "released"
+        assert ch.send(a) is True        # recycles the released region
+        assert ch.info()["fl_hits"] >= 1
+    finally:
+        ch.close()
+
+
 def test_r_peer_copied_read_na_rules(r_mizu):
     # the copied-read rule (3.2): a foreign INT with NAs reads float64
     # with NA_real_-payload NaNs on the raw tiers; LGL reads bool_ when

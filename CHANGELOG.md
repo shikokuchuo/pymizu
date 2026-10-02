@@ -10,6 +10,21 @@ Initial pre-release.
 
 ### Added
 
+- Attributed-MIZH dim-array writer (F5): a Fortran-contiguous numpy
+  matrix or n-D array of a wire-exact dtype past the zero-copy floor
+  sent on a foreign (R) channel now stages one flat MIZH layout write
+  plus the `{dim}` attribute blob — R receives a zero-copy matrix view,
+  and its re-send crosses by reference — where the interop writer paid
+  an attr-tag value copy at every size (11.8x on an 8 MB matrix round
+  trip). The tier is buffer-protocol only (no numpy needed writer-side),
+  gated on the peer's `MIZU_CAP_ATTRS`, the floor, no churn, and a
+  strict F-contiguity walk over the exported strides: C-order, strided,
+  and below-floor arrays keep the interop writer's value-exact
+  reordering copy, since a zero-copy tier memcpys the buffer and a
+  C-order flat stamped `dim` would arrive the transpose. Every decline —
+  a no-cap peer, a non-exact dtype, an extent past `INT32_MAX`, a region
+  failure — keeps the copy. No wire change (both bindings read
+  attributed MIZH roots since 3.5).
 - Top-level MIZS string writer (F4): a `list[str | None]` past the
   zero-copy floor sent on a foreign (R) channel now stages one MIZS
   layout write into a spill region — R receives a zero-copy

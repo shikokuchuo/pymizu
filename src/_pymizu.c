@@ -58,6 +58,9 @@ static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
                            uint8_t *payload, uint32_t inline_max,
                            mizu_handle *h);
+static int stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
+                          uint8_t *payload, uint32_t inline_max,
+                          mizu_handle *h);
 static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
 static PyObject *view_to_object(PyObject *view, int type);
 static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -324,31 +327,36 @@ int mizu_py_stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
   return stage_bytes(src, n, hdr, payload, inline_max, h);
 }
 
-/* The O(1) raw-tier gate (the mirror of R's attribute-free/non-ALTREP gate):
-   C-contiguous, native byte order, at most 1-D, and a dtype that maps
-   width-exactly onto a wire type. No bool: numpy bool is 1 byte/elt where
-   R logical is 4 — the mapping would misread at 4x stride. Everything else
-   falls to pickle. */
-static int wire_type_of(const Py_buffer *v) {
-  if (v->ndim > 1) return 0;
-  const char *f = v->format;
-  if (f == NULL) return v->itemsize == 1 ? MIZU_TYPE_RAW : 0;
+/* The dtype map behind the raw-tier gate: native byte order and a dtype
+   that maps width-exactly onto a wire type. No bool: numpy bool is 1
+   byte/elt where R logical is 4 — the mapping would misread at 4x
+   stride. */
+static int wire_type_of_fmt(const char *f, Py_ssize_t itemsize) {
+  if (f == NULL) return itemsize == 1 ? MIZU_TYPE_RAW : 0;
   if (f[1] == '\0') {
     switch (f[0]) {
-    case 'B': return v->itemsize == 1 ? MIZU_TYPE_RAW : 0;
-    case 'd': return v->itemsize == 8 ? MIZU_TYPE_REAL : 0;
-    case 'i': return v->itemsize == 4 ? MIZU_TYPE_INT : 0;
+    case 'B': return itemsize == 1 ? MIZU_TYPE_RAW : 0;
+    case 'd': return itemsize == 8 ? MIZU_TYPE_REAL : 0;
+    case 'i': return itemsize == 4 ? MIZU_TYPE_INT : 0;
     /* numpy exports int64 as 8-byte 'l' (C long) on LP64, 'q' on
        Windows; int32 as 4-byte 'l' on Windows */
-    case 'l': return v->itemsize == 4 ? MIZU_TYPE_INT :
-      v->itemsize == 8 ? MIZU_TYPE_INT64 : 0;
-    case 'q': return v->itemsize == 8 ? MIZU_TYPE_INT64 : 0;
+    case 'l': return itemsize == 4 ? MIZU_TYPE_INT :
+      itemsize == 8 ? MIZU_TYPE_INT64 : 0;
+    case 'q': return itemsize == 8 ? MIZU_TYPE_INT64 : 0;
     }
     return 0;
   }
   if (f[0] == 'Z' && f[1] == 'd' && f[2] == '\0')
-    return v->itemsize == 16 ? MIZU_TYPE_CPLX : 0;
+    return itemsize == 16 ? MIZU_TYPE_CPLX : 0;
   return 0;
+}
+
+/* The O(1) raw-tier gate (the mirror of R's attribute-free/non-ALTREP gate):
+   C-contiguous, at most 1-D, and the width-exact dtype map. Everything else
+   falls to pickle. */
+static int wire_type_of(const Py_buffer *v) {
+  if (v->ndim > 1) return 0;
+  return wire_type_of_fmt(v->format, v->itemsize);
 }
 
 /* map.c's raw-x gate rides the same dtype map. */
@@ -1579,6 +1587,17 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       if (mrc == 0) return 0;
       if (mrc > 0) return 1;   /* the defensive raise, never a decline */
     }
+    /* an F-contiguous dim array past the zc floor: one flat MIZH layout
+       write plus the {dim} blob — the peer wraps a matrix view, no copy,
+       no transpose. A decline falls into the 'I' writer's value-exact
+       copy: a no-cap peer, a C-order or strided array, a below-floor
+       array, churn, a non-exact dtype, or a region failure. The subclass
+       guard mirrors the buffer gate: a masked array's maskless buffer
+       export never reaches the tier */
+    if ((peer_caps & MIZU_CAP_ATTRS) && PyObject_CheckBuffer(obj) &&
+        !buffer_subclass_reject(obj) &&
+        stage_mizh_dim(obj, hdr, payload, inline_max, h) == 0)
+      return 0;
     return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
   }
   if (Py_TYPE(obj) == &MizuCallFrameType) {
@@ -2295,6 +2314,112 @@ static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
   memcpy(payload, shm->name, shm->name_len);
   mizu_stage_retain_zc(h, shm);
   return 0;
+}
+
+/* The {dim} attribute blob of an attributed MIZH root (§3.5): a complete
+   'I' stream whose value is the one-key dict, byte-identical to the 'I'
+   writer's dict portion (the corpus's mat-2x3 form) by construction —
+   sized and written through the same put helpers, the INTV body one
+   mizu_ix_put_vec call (the impl's INT -> INTV map: tag + u64 count +
+   int32 memcpy). */
+static size_t mizh_dim_blob_size(int nd) {
+  return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 1) +
+    mizu_ix_put_key(NULL, "dim", 3) +
+    mizu_ix_put_vec(NULL, MIZU_TYPE_INT, NULL, (uint64_t) nd);
+}
+
+static void mizh_dim_blob_write(uint8_t *dst, const int32_t *dims, int nd) {
+  dst += mizu_ix_put_header(dst);
+  dst += mizu_ix_put_dict_begin(dst, 1);
+  dst += mizu_ix_put_key(dst, "dim", 3);
+  mizu_ix_put_vec(dst, MIZU_TYPE_INT, dims, (uint64_t) nd);
+}
+
+/* A top-level F-contiguous dim array staged as SHM_VEC: one flat MIZH
+   layout write plus the {dim} blob tail — the peer wraps a matrix view,
+   no copy, no transpose. The F-contiguity walk is the value-exactness
+   gate: the tier memcpys the buffer, so the region must hold the F-order
+   flat the 'I' writer emits (a C-order matrix's bytes stamped dim would
+   arrive the transpose — a silent semantics change chosen by size). The
+   explicit walk is deliberate over PyBUF_F_CONTIGUOUS: a wire gate must
+   not trust a third-party exporter to honour contiguity flags. -1
+   declines to the 'I' writer's value-exact reordering copy; 0 staged
+   (no raise path — nothing past the acquisition calls Python API). */
+static int stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
+                          uint8_t *payload, uint32_t inline_max,
+                          mizu_handle *h) {
+  Py_buffer v;
+  /* FULL_RO fills strides always (the ixw_buffer precedent); the
+     strides == NULL clause is defence against a non-conforming exporter */
+  if (PyObject_GetBuffer(obj, &v, PyBUF_FULL_RO) < 0) {
+    PyErr_Clear();
+    return -1;
+  }
+  int rc = -1;
+  const int nd = v.ndim;
+  const int type = wire_type_of_fmt(v.format, v.itemsize);
+  if (v.suboffsets != NULL || nd < 2 || nd > 32 || type == 0 || v.len < 0)
+    goto out;
+  const uint64_t elt = (uint64_t) mizu_type_elt_size(type);
+  if ((uint64_t) v.len % elt != 0) goto out;   /* exotic exporter padding */
+  int32_t dims[32];
+  uint64_t total = 1;
+  for (int i = 0; i < nd; i++) {
+    if (v.shape[i] < 0 || v.shape[i] > INT32_MAX) goto out;   /* intv width */
+    const uint64_t d = (uint64_t) v.shape[i];
+    if (d != 0 && total > UINT64_MAX / d) goto out;
+    total *= d;
+    dims[i] = (int32_t) v.shape[i];
+  }
+  if (total != (uint64_t) v.len / elt) goto out;
+  int f_contig = 1;
+  if (v.strides != NULL) {
+    uint64_t prefix = 1;
+    for (int i = 0; i < nd && f_contig; i++) {
+      /* axis i's F stride is itemsize * prod(shape[0..i-1]); axes of
+         length <= 1 exempt their stride (numpy's own rule) */
+      if (v.shape[i] > 1 &&
+          (prefix > (uint64_t) PY_SSIZE_T_MAX / (uint64_t) v.itemsize ||
+           v.strides[i] != (Py_ssize_t) (prefix * (uint64_t) v.itemsize)))
+        f_contig = 0;
+      prefix *= (uint64_t) v.shape[i];
+    }
+  } else {
+    /* C-contiguous per the protocol: the C and F flats coincide only
+       with at most one axis longer than 1 (e.g. shape (n, 1)) */
+    int long_axes = 0;
+    for (int i = 0; i < nd; i++)
+      if (v.shape[i] > 1) long_axes++;
+    f_contig = long_axes <= 1;
+  }
+  if (!f_contig) goto out;
+  const uint64_t n_bytes = (uint64_t) v.len;   /* == total * elt */
+  const uint64_t blob = (uint64_t) mizh_dim_blob_size(nd);
+  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
+    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
+  /* the churn read behind the size gate (the single-read discipline) */
+  if (n_bytes + blob < zc_gate || mizu_handle_churn(h)) goto out;
+  mizu_shm *shm;
+  if (mizu_stage_spill_get(h, (size_t) (MIZU_HEADER_SIZE + n_bytes + blob),
+                           &shm) != MIZU_OK)
+    goto out;   /* the copy tier is the fallback (the BUFREF precedent) */
+  uint8_t *base = (uint8_t *) shm->addr;
+  mizu_mizh_write(base, type, (int64_t) total);
+  /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp) */
+  mizu_mizh_validity_set(base, 0, -1);
+  memcpy(base + MIZU_HEADER_SIZE, v.buf, (size_t) n_bytes);
+  mizh_dim_blob_write(base + MIZU_HEADER_SIZE + n_bytes, dims, nd);
+  const int64_t asz = (int64_t) blob;   /* attrs_size, over the zeroed word */
+  memcpy(base + 16, &asz, 8);
+  hdr->kind = MIZU_KIND_SHM_VEC;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = mizu_aux_shm_vec(type, MIZU_HEADER_SIZE + n_bytes + blob);
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain_zc(h, shm);
+  rc = 0;
+out:
+  PyBuffer_Release(&v);
+  return rc;
 }
 
 // The live export acquisitions' mapping spans (test-only) -------------------------

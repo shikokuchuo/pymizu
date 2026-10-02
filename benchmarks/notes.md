@@ -66,6 +66,8 @@ probes and A/B isolations stay in the log.
 | stage masked int64 (foreign pair) | 136.9 us/send | 2026-10-01 |
 | stage masked+scan (foreign pair) | 136.8 us/send | 2026-10-01 |
 | stage str list MIZS (foreign pair) | 5,455.5 us/send | 2026-10-02 |
+| stage f64 matrix MIZH (foreign pair) | 111.5 us/send | 2026-10-02 |
+| echo f64 matrix MIZH (R echo) | 482.5 us/rt | 2026-10-02 |
 | crosslang map trivial fn, spec | 0.1 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec template | ~0 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
@@ -498,5 +500,30 @@ region failure — keeps the 0x0b copy. None is the validity-bitmap NA,
 Results (1e6-element list[str], ~20 MB block, in-process foreign pair,
 best of 3 x 10 sends): stage str list 0x0b 96,976.3 us/send -> stage
 str list MIZS 5,455.5 us/send (17.8x). New row on the best-known table.
+
+Status: full suite + the new crosslang rows pass; ruff + pyrefly clean.
+
+## 2026-10-02 — the attributed-MIZH dim-array writer (F5)
+
+An F-contiguous dim array past the zc floor sent to an R peer now stages
+as one flat MIZH layout write plus the {dim} attribute blob (the peer
+wraps a zero-copy matrix view; R's re-send is a REF), where the 'I'
+writer paid an attr-tag value copy at every size. The tier is
+foreign-only and gated on MIZU_CAP_ATTRS, the floor, no churn, and a
+strict F-contiguity walk — C-order and strided arrays keep the 'I'
+writer's value-exact reordering copy (a zero-copy tier memcpys the
+buffer, and a C-order flat stamped dim would arrive the transpose).
+
+Results (8 MB float64 1024x1024, best of 3 x 10): stage f64 matrix 0x0f
+324.1 us/send -> stage f64 matrix MIZH 111.5 us/send — at parity with
+the 103 us plain-memcpy anchor, so no per-element work (the send-side
+pair is not ~parity because the 0x0f row's acking read materializes the
+copy while the MIZH row's wraps a view). The echo pair through an R
+peer, the relation of record (the 0x0f row sends the C-order twin — a
+real R peer always advertises ATTRS; the wire shape is the pre-F5
+attr-tag copy either way, its gather standing in for the pre-F5 bulk
+convert): echo f64 matrix 0x0f 5,675.2 us/rt -> echo f64 matrix MIZH
+482.5 us/rt (11.8x — R's receive wraps a view, the return a REF). Two
+new rows on the best-known table.
 
 Status: full suite + the new crosslang rows pass; ruff + pyrefly clean.

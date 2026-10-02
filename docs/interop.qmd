@@ -137,6 +137,10 @@ across languages.
 - A multi-dimensional numpy array of a mapped dtype arrives as an R `dim`
   array (a matrix is the 2-D case) — C order, F order, strided, it crosses
   value-exact (F order at the far side).
+  A Fortran-order array past the zero-copy floor crosses as one layout
+  write plus the `dim` attribute blob, R receiving a matrix view over the
+  shared pages; C-order and strided arrays still cross value-exact by
+  copy.
   `datetime64` arrays of the day/week units arrive as `Date`, of the sub-day
   units as `POSIXct`; stdlib `datetime.date` and `datetime.datetime` scalars
   write the length-1 forms.
@@ -229,7 +233,9 @@ channel it writes the `data.frame` shape again through its own export.
   epoch-plus-units dict.
 - An R `names` vector declines on a foreign channel (numpy has no per-element
   names); a matrix crosses value-exact — F order at the far side, the data
-  never transposed; `dimnames` and character matrices decline.
+  never transposed (a Fortran-order array past the zero-copy floor as one
+  layout write, R wrapping a matrix view; C order and strided by copy);
+  `dimnames` and character matrices decline.
 - Cross-language sends copy ALTREP values by value (a zero-copy region past
   the floor, an interchange copy below it): value-exact, representation not
   preserved, the sender's compact vector untouched.
