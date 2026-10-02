@@ -47,7 +47,7 @@ pip install .
 ```
 
 Requires Python 3.10 or later on a 64-bit platform.
-See [Installation](installation.qmd) for platform notes, optional extras, and
+See [Installation](user-guide/installation.qmd) for platform notes, optional extras, and
 deployment on Linux.
 
 ## Channels
@@ -79,7 +79,7 @@ ch.close()
 Terminal states come back as sentinel singletons — `pymizu.FULL`,
 `pymizu.TIMEOUT`, `pymizu.CLOSED`, `pymizu.PEER_GONE` — tested by identity,
 never raised.
-See [Channels](channels.qmd).
+See [Channels](user-guide/channels.qmd).
 
 ## Task pools
 
@@ -96,7 +96,7 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-See [Task pools](pools.qmd).
+See [Task pools](user-guide/pools.qmd).
 
 ## Parallel map
 
@@ -112,18 +112,19 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-See [Parallel map](map.qmd).
+See [Parallel map](user-guide/map.qmd).
 
 ## Where next
 
-- [Channels](channels.qmd) — send/receive semantics, batch operations, and
-  the payload tiers.
-- [Task pools](pools.qmd) — outcomes, nested tasks, growing and observing a
-  pool.
-- [Parallel map](map.qmd) — scheduling, reproducible randomness, templates,
-  prepared maps.
-- [R interop](interop.qmd) — R peers and workers, what crosses the language
-  boundary, and the dtype matrix.
-- [Benchmarks](benchmarks.qmd) — overhead against the stdlib pools.
+- [Channels](user-guide/channels.qmd) — send/receive semantics, batch
+  operations, and the payload tiers.
+- [Task pools](user-guide/pools.qmd) — outcomes, nested tasks, growing and
+  observing a pool.
+- [Parallel map](user-guide/map.qmd) — scheduling, reproducible randomness,
+  templates, prepared maps.
+- [R interop](user-guide/interop.qmd) — R peers and workers, what crosses
+  the language boundary, and the dtype matrix.
+- [Benchmarks](user-guide/benchmarks.qmd) — overhead against the stdlib
+  pools.
 - [API reference](reference/index.qmd) — the generated function and class
   reference.

@@ -1,5 +1,6 @@
 ---
 title: "R interop"
+guide-section: "Guide"
 ---
 
 The channel speaks a language-agnostic wire protocol, so the process at the

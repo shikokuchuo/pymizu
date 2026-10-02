@@ -1,5 +1,6 @@
 ---
 title: "Parallel map"
+guide-section: "Guide"
 ---
 
 `Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the results as a

@@ -1,5 +1,6 @@
 ---
 title: "Task pools"
+guide-section: "Guide"
 ---
 
 A pool is a set of worker processes that divide submitted tasks among

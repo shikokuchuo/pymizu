@@ -163,8 +163,10 @@ The [documentation site](https://shikokuchuo.net/pymizu/) covers the full surfac
   `child.py` and `worker.py` are the entry points for spawned processes (`python -m pymizu.child <token>`, `python -m pymizu.worker <suffix> <slot>`).
 - `tests/`: the pytest suite.
   `tests/helpers.py` holds the task callables (pickle sends them by reference, so the workers must import them).
-- `docs/`: the Quarto documentation site.
-  `quartodoc build` then `quarto render` in this directory builds it.
+- `docs/`: the documentation site, built with
+  [Great Docs](https://posit-dev.github.io/great-docs/).
+  `great-docs build` from the repo root builds it (config in
+  `docs/great-docs.yml`, guides in `docs/user_guide/`).
 
 ## License
 
