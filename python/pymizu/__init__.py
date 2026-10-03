@@ -228,6 +228,24 @@ def _default_worker_launcher() -> _Callable[[str, int], _subprocess.Popen]:
     return launch
 
 
+def _launch_workers(
+    h: _pymizu._Pool,
+    launcher: _Callable[[str, int], _Any],
+    slots: list[int],
+    startup_timeout: float,
+) -> None:
+    """Spawn one worker per registry slot and wait for their joins;
+    StartupError on timeout (the caller decides the pool's fate)."""
+    token = h.token
+    for slot in slots:
+        launcher(token, slot)
+    if not h.ready_wait(slots, startup_timeout):
+        raise StartupError(
+            "pymizu: workers failed to attach within "
+            f"{startup_timeout} seconds"
+        )
+
+
 _LANG_R = 2
 _LANG_PYTHON = 3
 
@@ -412,17 +430,15 @@ class Pool:
             result_slots,
             slot_size,
         )
-        token = h.token
-        launch = launcher or _default_worker_launcher()
         slots = list(range(workers))
-        for slot in slots:
-            launch(token, slot)
-        if not h.ready_wait(slots, startup_timeout):
-            h.destroy()
-            raise StartupError(
-                "pymizu: workers failed to attach within "
-                f"{startup_timeout} seconds"
+        try:
+            _launch_workers(
+                h, launcher or _default_worker_launcher(), slots,
+                startup_timeout,
             )
+        except StartupError:
+            h.destroy()
+            raise
         return cls._wrap(h)
 
     @classmethod
@@ -675,15 +691,10 @@ class Pool:
                 f"pymizu: not enough free worker slots ({len(free)} free)"
             )
         slots = free[:n]
-        token = self._h.token
-        launch = launcher or _default_worker_launcher()
-        for slot in slots:
-            launch(token, slot)
-        if not self._h.ready_wait(slots, startup_timeout):
-            raise StartupError(
-                "pymizu: workers failed to attach within "
-                f"{startup_timeout} seconds"
-            )
+        _launch_workers(
+            self._h, launcher or _default_worker_launcher(), slots,
+            startup_timeout,
+        )
         return slots
 
     def stop(self, timeout: float = 5.0) -> bool:

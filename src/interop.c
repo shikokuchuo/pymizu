@@ -2118,6 +2118,11 @@ static int tree_ref_path(const uint8_t *base, size_t size, const char *path,
 static int tree_column_remote(const uint8_t *base, const mizu_mizl_entry *e,
                               fcol *c) {
   char id[256];
+  /* the directory read caps a remote leaf's span at 255, but that cap is
+     the ext tier's (it may change without deprecation): keep the local
+     bound explicit ahead of the stack copy */
+  if (e->data_size < 1 || e->data_size >= (int64_t) sizeof id)
+    goto corrupt;
   memcpy(id, base + e->data_offset, (size_t) e->data_size);
   id[e->data_size] = '\0';
   const char *brack = strchr(id, '[');
@@ -2514,6 +2519,10 @@ static PyObject *tree_element(PyObject *owner, PyObject *loan,
        standalone view (its own owner — one loan per remote leaf; no
        handle ctx here, so the open rides no cache) */
     char id[256];
+    /* as in tree_column_remote: the 255 cap is the ext tier's — keep the
+       local bound explicit ahead of the stack copy */
+    if (e.data_size < 1 || e.data_size >= (int64_t) sizeof id)
+      goto newer;
     memcpy(id, data, (size_t) e.data_size);
     id[e.data_size] = '\0';
     return mizu_py_view_resolve_checked(

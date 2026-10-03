@@ -37,42 +37,42 @@ probes and A/B isolations stay in the log.
 
 | row | best | measured |
 |---|---|---|
-| sequential rt, channel | 0.4 us/rt | 2026-09-13 |
+| sequential rt, channel | 0.3 us/rt | 2026-10-03 |
 | sequential rt, pool | 0.7 us/task | 2026-09-28 |
-| pipelined, channel | 4.53M rt/s | 2026-10-01 |
+| pipelined, channel | 4.68M rt/s | 2026-10-03 |
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
 | pipelined, pool batch | 1.25M tasks/s | 2026-10-01 |
 | payload 8,000 B | 2.4 us/task | 2026-09-30 |
 | payload 800,000 B | 58.7 us/task | 2026-09-13 |
-| payload 8,000,000 B | 108.3 us/task | 2026-09-30 |
-| fan-out x 2000, 4 workers | 275.4k tasks/s | 2026-09-28 |
-| streaming, channel batch | 21.1M msg/s | 2026-09-13 |
+| payload 8,000,000 B | 107.2 us/task | 2026-10-03 |
+| fan-out x 2000, 4 workers | 295.3k tasks/s | 2026-10-03 |
+| streaming, channel batch | 21.6M msg/s | 2026-10-03 |
 | map trivial f | 0.4 us/elt | 2026-09-13 |
-| map trivial f, template copy / view | 695k / 716k tasks/s | 2026-10-01 |
+| map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
 | map trivial f, seed | 1.9 us/elt | 2026-10-01 |
 | map trivial f, prepared | 0.4 us/elt | 2026-10-01 |
 | map winsum x 2000 | 480.7k tasks/s | 2026-09-11 |
-| map winsum x 20000 | 481.2k tasks/s | 2026-10-01 |
+| map winsum x 20000 | 506.6k tasks/s | 2026-10-03 |
 | map skewed f x 4000 | 6.8 ms wall | 2026-10-01 |
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
-| frame 10col relay, unmodified REF | 6.5 us/rt | 2026-10-01 |
-| frame 10col relay, one computed col | 434.5 us/rt | 2026-10-01 |
-| frame strcol relay, unmodified string REF | 2,437.1 us/rt | 2026-10-02 |
-| stage widen (foreign pair) | 251.5 us/send | 2026-09-30 |
+| frame 10col relay, unmodified REF | 6.2 us/rt | 2026-10-03 |
+| frame 10col relay, one computed col | 422.3 us/rt | 2026-10-03 |
+| frame strcol relay, unmodified string REF | 2,410.8 us/rt | 2026-10-03 |
+| stage widen (foreign pair) | 241.5 us/send | 2026-10-03 |
 | stage masked (foreign pair) | 97.3 us/send | 2026-10-01 |
-| stage masked int64 (foreign pair) | 136.9 us/send | 2026-10-01 |
-| stage masked+scan (foreign pair) | 136.8 us/send | 2026-10-01 |
-| stage str list MIZS (foreign pair) | 5,455.5 us/send | 2026-10-02 |
-| stage f64 matrix MIZH (foreign pair) | 111.5 us/send | 2026-10-02 |
-| echo f64 matrix MIZH (R echo) | 482.5 us/rt | 2026-10-02 |
+| stage masked int64 (foreign pair) | 97.6 us/send | 2026-10-03 |
+| stage masked+scan (foreign pair) | 136.0 us/send | 2026-10-03 |
+| stage str list MIZS (foreign pair) | 5,350.6 us/send | 2026-10-03 |
+| stage f64 matrix MIZH (foreign pair) | 104.1 us/send | 2026-10-03 |
+| echo f64 matrix MIZH (R echo) | 432.6 us/rt | 2026-10-03 |
 | crosslang map trivial fn, spec | 0.1 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec template | ~0 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec prepared | 0.1 us/elt | 2026-10-01 |
-| crosslang map compute, spec | 325k tasks/s | 2026-10-01 |
+| crosslang map compute, spec | 335k tasks/s | 2026-10-03 |
 
 ## Run log
 
@@ -527,3 +527,28 @@ convert): echo f64 matrix 0x0f 5,675.2 us/rt -> echo f64 matrix MIZH
 new rows on the best-known table.
 
 Status: full suite + the new crosslang rows pass; ruff + pyrefly clean.
+
+## 2026-10-03 — the map-orchestration refactor (no-regression run)
+
+The one-shot and prepared map entries unified behind shared helpers
+(`_Plan` validation, `_probe_x`, `_write_desc`, `_morsel_geometry`,
+`_gather_out`, the `_seed_pair` shape gate), the C handle constructors
+behind shared alloc/token/ident helpers, and explicit bounds guards
+ahead of both remote-leaf stack copies — no hot-loop change (the
+element loop, stage_impl, the verbs), so the expectation was flat, and
+it is; several rows landed new bests on a quiet machine. Full
+mizu-bench.py (R rows included) plus crosslang-map-bench.py.
+
+Results: sequential rt 0.3 channel / 0.7 pool us; pipelined 4.68M rt/s
+channel (batch 9.44M) / 2.08M tasks/s pool (batch 1.23M); payloads
+3.2/60.3/107.2 us — the 8 KB best-of-3 caught a slow set (a best-of-7
+probe: 2.6 best, 2.8 median, inside the 2.4-3.1 spread); streaming
+21.6M msg/s; fan-out 295.3k; map trivial 0.4 us/elt, seed 2.0,
+prepared 0.4, template copy/view 752k/742k tasks/s, winsum 478.9k,
+20k row 506.6k, skew 6.9 ms wall; stage rows within their spread
+(memcpy 108.8, identity 107.4, int64 100.3; foreign widen 241.5,
+masked 99.9, masked int64 97.6, masked+scan 136.0); spec map rows flat
+to better (trivial 0.1 us/elt, template ~0, seed 0.2, prepared 0.1,
+compute 335k tasks/s).
+
+Status: 395 pass, 5 skip (pandas absent); ruff + pyrefly clean.

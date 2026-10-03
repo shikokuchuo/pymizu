@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial pre-release.
 
+### Changed
+
+- `Pool.map(..., chunks=0)` (or a negative count) on an empty input now
+  raises `ValueError` instead of returning an empty result, matching
+  `Pool.map_prepare`. The one-shot and prepared map entries now share
+  the one validation path.
+
 ### Added
 
 - Arrow export of `Pool.map(template=..., collect="view")` results: the

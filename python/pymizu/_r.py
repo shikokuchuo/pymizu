@@ -57,6 +57,27 @@ def _find_mizu(rscript: str) -> tuple[str, str] | None:
     return found
 
 
+def _resolve(rscript: str | None, verb: str) -> tuple[str, str, str]:
+    """Resolve Rscript and probe it for an installed mizu with the
+    source-drop path; MizuError before any channel region exists
+    otherwise. Returns (rscript, child script, libpaths)."""
+    if rscript is None:
+        rscript = _shutil.which("Rscript")
+        if rscript is None:
+            raise MizuError(
+                f"pymizu: {verb}() needs Rscript on the PATH "
+                "(or pass rscript=)"
+            )
+    found = _find_mizu(rscript)
+    if found is None:
+        raise MizuError(
+            f"pymizu: {verb}() needs the R package 'mizu' (with source "
+            f"string support) installed for {rscript}"
+        )
+    script, libs = found
+    return rscript, script, libs
+
+
 def r_launcher(
     *,
     rscript: str | None = None,
@@ -75,20 +96,7 @@ def r_launcher(
     the default inherits the console, where the peer's error epilogue
     lands.
     """
-    if rscript is None:
-        rscript = _shutil.which("Rscript")
-        if rscript is None:
-            raise MizuError(
-                "pymizu: r_launcher() needs Rscript on the PATH "
-                "(or pass rscript=)"
-            )
-    found = _find_mizu(rscript)
-    if found is None:
-        raise MizuError(
-            "pymizu: r_launcher() needs the R package 'mizu' (with source "
-            f"string support) installed for {rscript}"
-        )
-    script, libs = found
+    rscript, script, libs = _resolve(rscript, "r_launcher")
 
     def launch(token: str) -> _subprocess.Popen:
         expr = f'mizu:::peer_main("{token}")'
@@ -130,20 +138,7 @@ def r_pool_launcher(
     and a plain callable errors locally naming the spec verb. A launcher
     that spawns the wrong language fails at join, not at the first task.
     """
-    if rscript is None:
-        rscript = _shutil.which("Rscript")
-        if rscript is None:
-            raise MizuError(
-                "pymizu: r_pool_launcher() needs Rscript on the PATH "
-                "(or pass rscript=)"
-            )
-    found = _find_mizu(rscript)
-    if found is None:
-        raise MizuError(
-            "pymizu: r_pool_launcher() needs the R package 'mizu' (with "
-            f"source string support) installed for {rscript}"
-        )
-    script, libs = found
+    rscript, script, libs = _resolve(rscript, "r_pool_launcher")
 
     def launch(token: str, slot: int) -> _subprocess.Popen:
         expr = f'mizu:::worker_main("{token}",{slot}L)'

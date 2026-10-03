@@ -6811,6 +6811,45 @@ static int mizu_pow2(uint64_t v) {
   return v != 0 && (v & (v - 1)) == 0;
 }
 
+/* The join-token shape: "<pid hex>_<counter hex>". */
+static int token_valid(const char *token) {
+  const char *us = strchr(token, '_');
+  int ok = us != NULL && us != token && us[1] != '\0' &&
+           strchr(us + 1, '_') == NULL;
+  for (const char *p = token; ok && *p != '\0'; p++)
+    ok = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || *p == '_';
+  return ok;
+}
+
+/* The test-only identity-word override: a (lang, caps) pair standing in
+   for this build's word. Sets *lang (*caps valid only when *lang >= 0);
+   lang -1 when ident is Py_None. Returns -1 with the error set. */
+static int parse_ident(PyObject *ident, long *lang, long *caps) {
+  *lang = -1;
+  *caps = 0;
+  if (ident == Py_None) return 0;
+  if (PyTuple_Check(ident) && PyTuple_GET_SIZE(ident) == 2) {
+    long la = PyLong_AsLong(PyTuple_GET_ITEM(ident, 0));
+    long ca = PyLong_AsLong(PyTuple_GET_ITEM(ident, 1));
+    if ((la == -1 || ca == -1) && PyErr_Occurred()) return -1;
+    if (la >= 0 && la <= 255 && ca >= 0) {
+      *lang = la;
+      *caps = ca;
+      return 0;
+    }
+  }
+  PyErr_SetString(PyExc_ValueError,
+                  "pymizu: _ident must be a (lang, caps) pair of ints");
+  return -1;
+}
+
+/* The per-handle context: the view cache is its first member, so the
+   binding ctx (a MizuViewCache *) casts back to the MizuHandleCtx *. */
+static MizuViewCache *handle_ctx_alloc(void) {
+  MizuHandleCtx *hc = PyMem_Calloc(1, sizeof(MizuHandleCtx));
+  return hc == NULL ? NULL : &hc->vc;
+}
+
 PyDoc_STRVAR(channel_new_doc,
 "_channel_new(capacity, slot_size, arena_size, spin, drop) -> _Channel\n\n\
 Host side: write the preamble and return the handle. The caller spawns\n\
@@ -6853,7 +6892,7 @@ static PyObject *pymizu_channel_new(PyObject *Py_UNUSED(module),
   opts.flags = spin ? MIZU_FLAG_SPIN : 0;
   opts.drop = drop.len > 0 ? (const uint8_t *) drop.buf : NULL;
   opts.drop_size = (uint64_t) drop.len;
-  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
+  MizuViewCache *vc = handle_ctx_alloc();
   if (vc == NULL) {
     PyBuffer_Release(&drop);
     return PyErr_NoMemory();
@@ -6895,25 +6934,13 @@ static PyObject *pymizu_channel_attach(PyObject *Py_UNUSED(module),
   if (!PyArg_ParseTupleAndKeywords(args, kw, "s|O:_channel_attach", kwlist,
                                    &token, &ident))
     return NULL;
-  const char *us = strchr(token, '_');
-  int ok = us != NULL && us != token && us[1] != '\0' &&
-           strchr(us + 1, '_') == NULL;
-  for (const char *p = token; ok && *p != '\0'; p++)
-    ok = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || *p == '_';
-  if (!ok) {
+  if (!token_valid(token)) {
     PyErr_SetString(PyExc_ValueError, "pymizu: malformed join token");
     return NULL;
   }
-  long lang = -1, caps = 0;
-  if (ident != Py_None) {
-    if (!PyTuple_Check(ident) || PyTuple_GET_SIZE(ident) != 2)
-      goto bad_ident;
-    lang = PyLong_AsLong(PyTuple_GET_ITEM(ident, 0));
-    caps = PyLong_AsLong(PyTuple_GET_ITEM(ident, 1));
-    if ((lang == -1 || caps == -1) && PyErr_Occurred()) return NULL;
-    if (lang < 0 || lang > 255 || caps < 0) goto bad_ident;
-  }
-  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
+  long lang, caps;
+  if (parse_ident(ident, &lang, &caps) != 0) return NULL;
+  MizuViewCache *vc = handle_ctx_alloc();
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   chan_binding(&b);
@@ -6943,12 +6970,6 @@ static PyObject *pymizu_channel_attach(PyObject *Py_UNUSED(module),
     hc->peer_lang = (uint32_t) (word & 0xff);
     hc->peer_caps = (uint32_t) (word >> 32);
   }
-  goto attached;
-bad_ident:
-  PyErr_SetString(PyExc_ValueError,
-                  "pymizu: _ident must be a (lang, caps) pair of ints");
-  return NULL;
-attached:;
   /* borrowed drop bytes, valid until destroy — copy out for the caller */
   const uint8_t *bytes;
   uint64_t n;
@@ -6967,16 +6988,6 @@ attached:;
 
 
 // Pool create / attach / join -----------------------------------------------------
-
-/* The join-token shape: "<pid hex>_<counter hex>". */
-static int token_valid(const char *token) {
-  const char *us = strchr(token, '_');
-  int ok = us != NULL && us != token && us[1] != '\0' &&
-           strchr(us + 1, '_') == NULL;
-  for (const char *p = token; ok && *p != '\0'; p++)
-    ok = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || *p == '_';
-  return ok;
-}
 
 PyDoc_STRVAR(pool_new_doc,
 "_pool_new(max_workers, max_submitters, injection_cap, per_worker_cap, "
@@ -7036,7 +7047,7 @@ static PyObject *pymizu_pool_new(PyObject *Py_UNUSED(module),
   opts.per_worker_cap = (uint32_t) deq;
   opts.result_slots = (uint32_t) rslots;
   opts.slot_size = (uint32_t) slot;
-  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
+  MizuViewCache *vc = handle_ctx_alloc();
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   pool_binding(&b, 0);
@@ -7072,7 +7083,7 @@ static PyObject *pymizu_pool_attach(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pymizu: malformed join token");
     return NULL;
   }
-  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
+  MizuViewCache *vc = handle_ctx_alloc();
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   pool_binding(&b, 0);
@@ -7114,23 +7125,9 @@ static PyObject *pymizu_pool_worker_join(PyObject *Py_UNUSED(module),
     PyErr_SetString(PyExc_ValueError, "pymizu: malformed join token");
     return NULL;
   }
-  long lang = -1, caps = 0;
-  if (ident != Py_None) {
-    if (!PyTuple_Check(ident) || PyTuple_GET_SIZE(ident) != 2) {
-      PyErr_SetString(PyExc_ValueError,
-                      "pymizu: _ident must be a (lang, caps) pair of ints");
-      return NULL;
-    }
-    lang = PyLong_AsLong(PyTuple_GET_ITEM(ident, 0));
-    caps = PyLong_AsLong(PyTuple_GET_ITEM(ident, 1));
-    if ((lang == -1 || caps == -1) && PyErr_Occurred()) return NULL;
-    if (lang < 0 || lang > 255 || caps < 0) {
-      PyErr_SetString(PyExc_ValueError,
-                      "pymizu: _ident must be a (lang, caps) pair of ints");
-      return NULL;
-    }
-  }
-  MizuViewCache *vc = &((MizuHandleCtx *) PyMem_Calloc(1, sizeof(MizuHandleCtx)))->vc;
+  long lang, caps;
+  if (parse_ident(ident, &lang, &caps) != 0) return NULL;
+  MizuViewCache *vc = handle_ctx_alloc();
   if (vc == NULL) return PyErr_NoMemory();
   mizu_binding b;
   pool_binding(&b, 1);

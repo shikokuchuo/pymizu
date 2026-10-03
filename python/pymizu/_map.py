@@ -128,15 +128,12 @@ def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
     )
 
 
-def _seed_wire(
+def _seed_pair(
     seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
-    lang: int,
-) -> tuple[int, int] | None:
-    """The spec-map seed gate: the kind-2 runner fields carry the
-    language-neutral ``(seed, offset)`` i64 pair, so a spec map takes int
-    seeds only — a bytes seed has no i64 form. On R workers the int must
-    fit R's 32-bit derivation range; the local error beats one per
-    runner."""
+) -> tuple[int | bytes | bytearray, int] | None:
+    """The seed shape gate shared by both carried forms: a ``(seed,
+    offset)`` pair unpacks, a bare seed takes offset 0; a bool is neither
+    an int seed nor bytes."""
     if seed is None:
         return None
     offset = 0
@@ -154,6 +151,22 @@ def _seed_wire(
             raise TypeError("pymizu: seed offset must be a non-negative int")
     if isinstance(seed, bool) or not isinstance(seed, (int, bytes, bytearray)):
         raise TypeError("pymizu: seed must be an int or bytes")
+    return seed, offset
+
+
+def _seed_wire(
+    seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
+    lang: int,
+) -> tuple[int, int] | None:
+    """The spec-map seed gate: the kind-2 runner fields carry the
+    language-neutral ``(seed, offset)`` i64 pair, so a spec map takes int
+    seeds only — a bytes seed has no i64 form. On R workers the int must
+    fit R's 32-bit derivation range; the local error beats one per
+    runner."""
+    pair = _seed_pair(seed)
+    if pair is None:
+        return None
+    seed, offset = pair
     if isinstance(seed, (bytes, bytearray)):
         raise TypeError(
             "pymizu: a bytes seed has no i64 form on a spec map — pass an "
@@ -421,23 +434,10 @@ def _seed_spec(
     """Normalize the public ``seed`` argument to the carried spec: a
     ``(seed_bytes, offset)`` tuple, element ``i`` drawing stream
     ``i + offset`` (the ``.seed = c(seed, offset)`` mirror)."""
-    if seed is None:
+    pair = _seed_pair(seed)
+    if pair is None:
         return None
-    offset = 0
-    if isinstance(seed, tuple):
-        if len(seed) != 2:
-            raise TypeError(
-                "pymizu: seed must be an int, bytes, or a (seed, offset) pair"
-            )
-        seed, offset = seed
-        if (
-            isinstance(offset, bool)
-            or not isinstance(offset, int)
-            or offset < 0
-        ):
-            raise TypeError("pymizu: seed offset must be a non-negative int")
-    if isinstance(seed, bool) or not isinstance(seed, (int, bytes, bytearray)):
-        raise TypeError("pymizu: seed must be an int or bytes")
+    seed, offset = pair
     if isinstance(seed, int):
         return str(seed).encode("ascii"), offset
     return bytes(seed), offset
@@ -486,6 +486,119 @@ def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
     return mv.cast(fmt, [n, m]) if m > 1 else mv
 
 
+def _probe_x(spec: bool, x: _Any) -> tuple[tuple | None, _Any, int]:
+    """The raw-x gate, shared by the one-shot entry and the prepared
+    handle: a received view x on a spec map crosses as one ref leaf (F1's
+    D6 — the workers read the resolved view off the shared pages);
+    otherwise a C-contiguous buffer of a supported dtype rides the region
+    as bare bytes (complex needs numpy's frombuffer); anything else
+    pickles into the descriptor as a list. Returns (probe, x, n)."""
+    view_x = spec and _pymizu._view_check(x)
+    probe = None if view_x else _pymizu._map_probe_x(x)
+    if probe is not None and probe[0] == 15 and _np is None:
+        probe = None
+    if probe is None:
+        if not view_x:
+            x = list(x)
+        n = len(x)
+    else:
+        n = probe[1]
+    return probe, x, n
+
+
+def _write_desc(
+    spec: bool,
+    fn: _Any,
+    args: tuple,
+    kwargs: dict,
+    x: _Any,
+    probe: tuple | None,
+    lang: int,
+) -> bytes:
+    """The staged descriptor bytes: a spec map's 'I' interchange form
+    (the fn spec nested as a task tag, the list-x bare or nil — its target
+    byte stages once, here), else the pickled (fn, args, kwargs[, x])
+    tuple, x omitted when it rides the region's raw section."""
+    if spec:
+        from pymizu import call as _Call
+
+        assert isinstance(fn, _Call)
+        return _pymizu._map_desc_write(
+            fn.code,
+            fn.kind,
+            fn.args,
+            fn.kwargs,
+            None if probe is not None else x,
+            lang,
+        )
+    return _pickle.dumps(
+        (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x),
+        4,
+    )
+
+
+class _Plan:
+    """The validated map entry, shared by ``pool_map`` and
+    ``PreparedMap``: the spec/language verdict, normalized args/kwargs,
+    the carried seed form (the wire pair on a spec map, ``(seed_bytes,
+    offset)`` otherwise), the template probe, the resolved collect mode,
+    and chunks."""
+
+    __slots__ = (
+        "spec",
+        "lang",
+        "args",
+        "kwargs",
+        "seed",
+        "tprobe",
+        "collect",
+        "chunks",
+    )
+
+    def __init__(
+        self,
+        pool: _Any,
+        fn: _Any,
+        args: _Any,
+        kwargs: dict | None,
+        chunks: int | None,
+        seed: _Any,
+        template: _Any,
+        collect: str | None,
+    ) -> None:
+        spec, lang = _map_check_native(pool, fn)
+        if not spec and not callable(fn):
+            raise TypeError("pymizu: fn must be callable")
+        args = tuple(args)
+        kwargs = {} if kwargs is None else dict(kwargs)
+        if spec and (args or kwargs):
+            raise TypeError(
+                "pymizu: constant arguments ride the pymizu.call() spec — "
+                "'args' and 'kwargs' must be empty with a spec 'fn'"
+            )
+        self.spec = spec
+        self.lang = lang
+        self.args = args
+        self.kwargs = kwargs
+        self.seed = _seed_wire(seed, lang) if spec else _seed_spec(seed)
+        self.tprobe = None if template is None else _template_probe(template)
+        if self.tprobe is None:
+            if collect not in (None, "list"):
+                raise ValueError(
+                    "pymizu: collect must be 'list' without template"
+                )
+            collect = "list"
+        else:
+            if collect is None:
+                collect = "copy"
+            if collect not in ("copy", "view"):
+                raise ValueError("pymizu: collect must be 'copy' or 'view'")
+        self.collect = collect
+        if chunks is not None and chunks < 1:
+            raise ValueError("pymizu: chunks must be a positive number")
+        self.chunks = chunks
+
+
 def pool_map(
     pool: pymizu.Pool,
     fn: _Callable[..., _Any],
@@ -505,52 +618,12 @@ def pool_map(
     only the GC backstop)."""
     import pymizu
 
-    spec, lang = _map_check_native(pool, fn)
-    if not spec and not callable(fn):
-        raise TypeError("pymizu: fn must be callable")
-    args = tuple(args)
-    kwargs = {} if kwargs is None else dict(kwargs)
-    if spec and (args or kwargs):
-        raise TypeError(
-            "pymizu: constant arguments ride the pymizu.call() spec — "
-            "'args' and 'kwargs' must be empty with a spec 'fn'"
-        )
-    seed_spec = None if spec else _seed_spec(seed)
-    seed_pair = _seed_wire(seed, lang) if spec else None
-
-    tprobe = None if template is None else _template_probe(template)
-    if tprobe is None:
-        if collect not in (None, "list"):
-            raise ValueError("pymizu: collect must be 'list' without template")
-        collect = "list"
-    else:
-        if collect is None:
-            collect = "copy"
-        if collect not in ("copy", "view"):
-            raise ValueError("pymizu: collect must be 'copy' or 'view'")
-
-    # the raw-x gate: a C-contiguous buffer of a supported dtype rides the
-    # region as bare bytes (complex needs numpy's frombuffer); anything
-    # else pickles into the descriptor. A received view x on a spec map
-    # crosses as one ref leaf instead (F1's D6): the workers read the
-    # resolved view off the shared pages
-    view_x = spec and _pymizu._view_check(x)
-    probe = None if view_x else _pymizu._map_probe_x(x)
-    if probe is not None and probe[0] == 15 and _np is None:
-        probe = None
-    if probe is None:
-        if not view_x:
-            x = list(x)
-        n = len(x)
-    else:
-        n = probe[1]
+    plan = _Plan(pool, fn, args, kwargs, chunks, seed, template, collect)
+    probe, x, n = _probe_x(plan.spec, x)
     if n == 0:
-        if tprobe is None:
+        if plan.tprobe is None:
             return []
-        return _wrap_out(b"", tprobe[0], 0, tprobe[1])
-    if chunks is not None:
-        if chunks < 1:
-            raise ValueError("pymizu: chunks must be a positive number")
+        return _wrap_out(b"", plan.tprobe[0], 0, plan.tprobe[1])
 
     live, free_rs, inj_cap, inline_entry = pool._h._map_caps()
     if free_rs == 0:
@@ -570,12 +643,12 @@ def pool_map(
     # private frames a foreign worker cannot run).
     blob = None
     if (
-        not spec
-        and tprobe is None
+        not plan.spec
+        and plan.tprobe is None
         and (probe is None or probe[2] <= inline_entry)
     ):
-        cand = _pickle.dumps((fn, args, kwargs, x), 4)
-        worst = _pickle.dumps((_chunk, (cand, n, n, seed_spec), {}), 4)
+        cand = _pickle.dumps((fn, plan.args, plan.kwargs, x), 4)
+        worst = _pickle.dumps((_chunk, (cand, n, n, plan.seed), {}), 4)
         if len(worst) <= inline_entry:
             blob = cand
 
@@ -588,8 +661,9 @@ def pool_map(
                 pymizu,
                 blob,
                 n,
-                seed_spec,
-                chunks,
+                # never a spec map here: the (seed_bytes, offset) form
+                plan.seed,  # pyrefly: ignore [bad-argument-type]
+                plan.chunks,
                 live,
                 free_rs,
                 inj_cap,
@@ -601,13 +675,10 @@ def pool_map(
             pool,
             pymizu,
             fn,
-            args,
-            kwargs,
+            plan,
             x,
             probe,
             n,
-            seed_pair if spec else seed_spec,
-            chunks,
             live,
             free_rs,
             inj_cap,
@@ -616,10 +687,6 @@ def pool_map(
             handles,
             box,
             template,
-            tprobe,
-            collect,
-            spec,
-            lang,
         )
     finally:
         # the interrupt/error/timeout backstop (a clean collect consumed
@@ -691,17 +758,47 @@ def _map_blob(
     return out
 
 
+def _morsel_geometry(
+    n: int, chunks: int | None, live: int, free_rs: int, inj_cap: int
+) -> tuple[int, int, int]:
+    """(runners, morsel, n_morsels) for n elements: ~256 morsels per
+    runner, clamped to the grain constants, runners clamped by the free
+    result slots and the injection ring; ``chunks`` overrides the morsel
+    count directly. n == 0 takes the unit geometry (a prepared handle
+    stages before it knows a run's n)."""
+    runners = max(1, min(max(1, live), free_rs, inj_cap))
+    if n == 0:
+        return runners, 1, 0
+    if chunks is None:
+        morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP))
+    else:
+        morsel = -(-n // min(n, chunks))
+    return runners, morsel, -(-n // morsel)
+
+
+def _gather_out(
+    capsule: _Any, tprobe: tuple, n: int, collect: str
+) -> tuple[_Any, bool]:
+    """The template-path gather: the output area assembled as one copy,
+    or zero-copy as a view — which takes over the region's ownership
+    (True), so the caller must drop its own reference without unlinking."""
+    if collect == "view":
+        view = _wrap_out(
+            _pymizu._map_gather_view(capsule), tprobe[0], n, tprobe[1]
+        )
+        return view, True
+    copy = _wrap_out(_pymizu._map_gather(capsule), tprobe[0], n, tprobe[1])
+    return copy, False
+
+
 def _map_region(
     pool: pymizu.Pool,
     pymizu,
     fn: _Callable[..., _Any],
-    args: tuple,
-    kwargs: dict,
+    plan: _Plan,
     x: _Any,
     probe: tuple | None,
     n: int,
-    seed_spec: tuple | None,
-    chunks: int | None,
     live: int,
     free_rs: int,
     inj_cap: int,
@@ -710,10 +807,6 @@ def _map_region(
     handles: list,
     box: dict,
     template: _Any,
-    tprobe: tuple | None,
-    collect: str,
-    spec: bool = False,
-    lang: int = 3,
 ) -> list | _pymizu._Sentinel | _Any:
     """The region path: stage, submit one runner per live worker (clamped
     by the morsel count, the free result slots, and the injection ring),
@@ -722,31 +815,11 @@ def _map_region(
     place (one copy, or none for a view). A spec fn stages the 'I'
     descriptor (the f spec nested as a task tag, the list-x bare or nil)
     and submits kind-2 runner tasks."""
-    runners = min(max(1, live), free_rs, inj_cap)
-    if chunks is None:
-        morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP))
-    else:
-        morsel = -(-n // min(n, chunks))
-    n_morsels = -(-n // morsel)
-    if spec:
-        from pymizu import call as _Call
-
-        assert isinstance(fn, _Call)
-        desc = _pymizu._map_desc_write(
-            fn.code,
-            fn.kind,
-            fn.args,
-            fn.kwargs,
-            None if probe is not None else x,
-            lang,
-        )
-    else:
-        desc = _pickle.dumps(
-            (fn, args, kwargs)
-            if probe is not None
-            else (fn, args, kwargs, x),
-            4,
-        )
+    runners, morsel, n_morsels = _morsel_geometry(
+        n, plan.chunks, live, free_rs, inj_cap
+    )
+    desc = _write_desc(plan.spec, fn, plan.args, plan.kwargs, x, probe,
+                       plan.lang)
     name, capsule = _pymizu._map_stage(
         desc, x if probe is not None else None, n, morsel, template
     )
@@ -754,23 +827,22 @@ def _map_region(
     box["capsule"] = capsule
     r = min(n_morsels, runners)
     if _submit_runners(
-        pool, name, r, 0, seed_spec, remaining, expired, handles, spec
+        pool, name, r, 0, plan.seed, remaining, expired, handles, plan.spec
     ):
         return pymizu.TIMEOUT
+    tprobe = plan.tprobe
     out = _collect_region(
         pymizu, capsule, handles, n, remaining, expired, tprobe is not None,
-        0, lang, morsel,
+        0, plan.lang, morsel,
     )
     if out is pymizu.TIMEOUT or tprobe is None:
         return out
-    if collect == "view":
+    out, transferred = _gather_out(capsule, tprobe, n, plan.collect)
+    if transferred:
         # ownership of the region transfers to the view: the finally
         # backstop must not unlink it
-        view = _wrap_out(_pymizu._map_gather_view(capsule), tprobe[0], n,
-                         tprobe[1])
         box["capsule"] = None
-        return view
-    return _wrap_out(_pymizu._map_gather(capsule), tprobe[0], n, tprobe[1])
+    return out
 
 
 def _submit_runners(
@@ -971,41 +1043,18 @@ class PreparedMap:
     ) -> None:
         import pymizu
 
-        spec, lang = _map_check_native(pool, fn)
-        if not spec and not callable(fn):
-            raise TypeError("pymizu: fn must be callable")
-        args = tuple(args)
-        kwargs = {} if kwargs is None else dict(kwargs)
-        if spec and (args or kwargs):
-            raise TypeError(
-                "pymizu: constant arguments ride the pymizu.call() spec — "
-                "'args' and 'kwargs' must be empty with a spec 'fn'"
-            )
+        plan = _Plan(pool, fn, args, kwargs, chunks, seed, template, collect)
         self._pymizu = pymizu
         self._pool = pool
-        self._spec = spec
-        self._lang = lang
-        self._seed_spec = _seed_wire(seed, lang) if spec else _seed_spec(seed)
-        self._tprobe = None if template is None else _template_probe(template)
-        if self._tprobe is None:
-            if collect not in (None, "list"):
-                raise ValueError(
-                    "pymizu: collect must be 'list' without template"
-                )
-            self._collect_mode = "list"
-        else:
-            if collect is None:
-                collect = "copy"
-            if collect not in ("copy", "view"):
-                raise ValueError("pymizu: collect must be 'copy' or 'view'")
-            self._collect_mode = collect
-        if chunks is not None:
-            if chunks < 1:
-                raise ValueError("pymizu: chunks must be a positive number")
+        self._spec = plan.spec
+        self._lang = plan.lang
+        self._seed_spec = plan.seed
+        self._tprobe = plan.tprobe
+        self._collect_mode = plan.collect
         self._fn = fn
-        self._args = args
-        self._kwargs = kwargs
-        self._chunks = chunks
+        self._args = plan.args
+        self._kwargs = plan.kwargs
+        self._chunks = plan.chunks
         self._template = template
         self._set_x(x)
         self._capsule = None
@@ -1020,52 +1069,18 @@ class PreparedMap:
         """(Re)target the map at x: probe for the raw section, rebuild the
         descriptor, and recompute the morsel geometry from the pool's
         current caps."""
-        view_x = self._spec and _pymizu._view_check(x)
-        probe = None if view_x else _pymizu._map_probe_x(x)
-        if probe is not None and probe[0] == 15 and _np is None:
-            probe = None
-        if probe is None:
-            if not view_x:
-                x = list(x)
-            n = len(x)
-        else:
-            n = probe[1]
+        probe, x, n = _probe_x(self._spec, x)
         self._probe = probe
         self._x = x
         self._n = n
-        if self._spec:
-            from pymizu import call as _Call
-
-            fn = self._fn
-            assert isinstance(fn, _Call)
-            self._desc = _pymizu._map_desc_write(
-                fn.code,
-                fn.kind,
-                fn.args,
-                fn.kwargs,
-                None if probe is not None else x,
-                self._lang,
-            )
-        else:
-            self._desc = _pickle.dumps(
-                (self._fn, self._args, self._kwargs)
-                if probe is not None
-                else (self._fn, self._args, self._kwargs, x),
-                4,
-            )
+        self._desc = _write_desc(
+            self._spec, self._fn, self._args, self._kwargs, x, probe,
+            self._lang,
+        )
         live, free_rs, inj_cap, _ = self._pool._h._map_caps()
-        runners = max(1, min(max(1, live), free_rs, inj_cap))
-        chunks = self._chunks
-        if n == 0:
-            morsel = 1
-        elif chunks is None:
-            morsel = max(
-                1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP)
-            )
-        else:
-            morsel = -(-n // min(n, chunks))
-        self._morsel = morsel
-        self._n_morsels = -(-n // morsel) if n else 0
+        _, self._morsel, self._n_morsels = _morsel_geometry(
+            n, self._chunks, live, free_rs, inj_cap
+        )
 
     def _swap_x(self, x: _Any) -> None:
         """Replace the staged x: an in-place memcpy over the region's x
@@ -1156,18 +1171,13 @@ class PreparedMap:
             )
             if out is pymizu.TIMEOUT or self._tprobe is None:
                 return out
-            if self._collect_mode == "view":
-                view = _wrap_out(
-                    _pymizu._map_gather_view(self._capsule),
-                    self._tprobe[0], self._n, self._tprobe[1],
-                )
+            out, transferred = _gather_out(
+                self._capsule, self._tprobe, self._n, self._collect_mode
+            )
+            if transferred:
                 # ownership transferred to the view; the next run restages
                 self._capsule = None
-                return view
-            return _wrap_out(
-                _pymizu._map_gather(self._capsule),
-                self._tprobe[0], self._n, self._tprobe[1],
-            )
+            return out
         finally:
             # the interrupt/error/timeout backstop (a clean collect
             # consumed every handle: a no-op then); the region survives —

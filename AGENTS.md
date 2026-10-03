@@ -26,7 +26,9 @@ package). The governing design document is the ipc plan in the libmizu repo
   `_Pool` / `_Task` handles, stage/read/check callbacks, verb wrappers,
   sentinel singletons, the exception hierarchy (`TaskError` with
   remote_type/remote_traceback, `WorkerDiedError` with slot/pid), the
-  `_Caught` outcome box the collect veneer unwraps and raises.
+  `_Caught` outcome box the collect veneer unwraps and raises. The
+  create/attach/join verbs share `token_valid`, `parse_ident` (the
+  test-only `_ident` override), and `handle_ctx_alloc`.
 - `src/map.c` / `src/pymap.h` — the `Pool.map` region layer (see
   Conventions); `pymap.h` is its interface to `_pymizu.c` (capsule names,
   the wire-type gate, registration).
@@ -187,7 +189,11 @@ tools/vendor-libmizu.sh` for a local checkout).
   (`tree_column_remote` in interop.c) resolves a remote column onto a
   per-column hold — a fresh mapping plus counted loan, released pure-C
   in `fcol_free` (the GIL-free export discipline); the generic tree
-  walk resolves through `mizu_py_view_resolve_checked`.
+  walk resolves through `mizu_py_view_resolve_checked`. Both
+  remote-leaf decode sites (`tree_column_remote` and `tree_walk`'s REF
+  branch) bound the identifier span explicitly ahead of the stack copy:
+  the 255 cap in the vendored directory read is the ext tier's and may
+  change without deprecation.
 - Arrow interop: `Channel.send` accepts any `__arrow_c_array__` producer
   (pyarrow, polars, duckdb; the `cvt_for_arrow` pass). Arrow nulls become
   R missing values. A received zero-copy view exports to an Arrow consumer
@@ -206,7 +212,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   `.libPaths()` hex-encoded in argv; never `Rscript -e` (it writes a
   per-spawn command file). The probe (Rscript + an installed mizu with
   the source-drop path) runs at factory call, cached per Rscript, and
-  fails fast with `MizuError` before any channel region exists.
+  fails fast with `MizuError` before any channel region exists
+  (`_resolve`).
   `pymizu.r_pool_launcher()` is the pool-side mirror
   (`mizu:::worker_main(<token>, <slot>)`).
 - Tier-A mixed-language pools (Phase 4): `pymizu.call()` builds a task
@@ -252,6 +259,15 @@ tools/vendor-libmizu.sh` for a local checkout).
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
 - Map conventions (`src/map.c`, `python/pymizu/_map.py`):
+  - The one-shot (`pool_map`) and prepared (`PreparedMap`) entries
+    share the one path: `_Plan` (the fn/spec, args, seed, template,
+    collect, and chunks gates — a bad `chunks` raises even on an empty
+    x, identically from both entries), `_probe_x` (the raw-x gate),
+    `_write_desc` (the descriptor), `_morsel_geometry`, and
+    `_gather_out` (the template gather; its ownership-transfer flag
+    tells the caller to skip the unlink). The seed shape checks live in
+    `_seed_pair`; `_seed_spec` (the bytes form) and `_seed_wire` (the
+    spec map's i64 pair) build on it.
   - One fresh region per map (the core-owned `MIZU_MORSEL_MAGIC`,
     `MIZU_ABI_VERSION`-keyed).
     The protocol half — header layout, CLAIM-word claim CAS, AIMD sizing,
