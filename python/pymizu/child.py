@@ -7,12 +7,11 @@ the drop references alive exactly until ready), execs a source-tagged drop
 peer half of the close protocol as its epilogue.
 """
 
-import re
 import sys
 import traceback
 
 import pymizu
-from pymizu import _pymizu
+from pymizu import _TOKEN_RE, _pymizu
 
 _DROP_SOURCE = 0x53  # 'S'
 
@@ -22,9 +21,7 @@ def main() -> int:
     source raised, 2 on bad arguments, attach failure, compile failure,
     or interrupt."""
     _pymizu._tune_malloc()
-    if len(sys.argv) != 2 or not re.fullmatch(
-        r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]
-    ):
+    if len(sys.argv) != 2 or not _TOKEN_RE.match(sys.argv[1]):
         sys.stderr.write("pymizu.child: expected a single join token\n")
         return 2
     try:

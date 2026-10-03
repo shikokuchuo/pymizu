@@ -78,6 +78,28 @@ def _resolve(rscript: str | None, verb: str) -> tuple[str, str, str]:
     return rscript, script, libs
 
 
+def _spawn(
+    rscript: str,
+    script: str,
+    expr: str,
+    libs: str,
+    stdout: _Any,
+    stderr: _Any,
+) -> _subprocess.Popen:
+    """Spawn the static runner with the entry expression and library
+    paths hex-encoded in argv."""
+    return _subprocess.Popen(
+        [
+            rscript,
+            script,
+            expr.encode("utf-8").hex(),
+            libs.encode("utf-8").hex(),
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def r_launcher(
     *,
     rscript: str | None = None,
@@ -99,16 +121,13 @@ def r_launcher(
     rscript, script, libs = _resolve(rscript, "r_launcher")
 
     def launch(token: str) -> _subprocess.Popen:
-        expr = f'mizu:::peer_main("{token}")'
-        return _subprocess.Popen(
-            [
-                rscript,
-                script,
-                expr.encode("utf-8").hex(),
-                libs.encode("utf-8").hex(),
-            ],
-            stdout=stdout,
-            stderr=stderr,
+        return _spawn(
+            rscript,
+            script,
+            f'mizu:::peer_main("{token}")',
+            libs,
+            stdout,
+            stderr,
         )
 
     return launch
@@ -141,16 +160,13 @@ def r_pool_launcher(
     rscript, script, libs = _resolve(rscript, "r_pool_launcher")
 
     def launch(token: str, slot: int) -> _subprocess.Popen:
-        expr = f'mizu:::worker_main("{token}",{slot}L)'
-        return _subprocess.Popen(
-            [
-                rscript,
-                script,
-                expr.encode("utf-8").hex(),
-                libs.encode("utf-8").hex(),
-            ],
-            stdout=stdout,
-            stderr=stderr,
+        return _spawn(
+            rscript,
+            script,
+            f'mizu:::worker_main("{token}",{slot}L)',
+            libs,
+            stdout,
+            stderr,
         )
 
     return launch

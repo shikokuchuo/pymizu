@@ -7,13 +7,12 @@ as the lifetime anchor for its uncollected results until shutdown or owner
 death ends the linger.
 """
 
-import re
 import sys
 import time
 import traceback
 
 import pymizu
-from pymizu import _pymizu
+from pymizu import _TOKEN_RE, _pymizu
 
 _EXIT_RETIRED = 2
 
@@ -23,9 +22,7 @@ def main() -> int:
     infrastructure failure or a task's BaseException (hard crash), 2 on
     bad arguments, join failure, or interrupt."""
     _pymizu._tune_malloc()
-    if len(sys.argv) != 3 or not re.fullmatch(
-        r"[0-9a-f]+_[0-9a-f]+", sys.argv[1]
-    ):
+    if len(sys.argv) != 3 or not _TOKEN_RE.match(sys.argv[1]):
         sys.stderr.write("pymizu.worker: expected a join token and a slot\n")
         return 2
     try:

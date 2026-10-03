@@ -341,13 +341,17 @@ def _run_batch(
     stream before its call; the worker's own RNG state is restored around
     the batch either way."""
     out = []
+
+    def call_one(i: int) -> None:
+        try:
+            out.append(fn(get(i), *args, **kwargs))
+        except Exception as e:
+            e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
+            raise
+
     if seed_spec is None:
         for i in range(lo, hi):
-            try:
-                out.append(fn(get(i), *args, **kwargs))
-            except Exception as e:
-                e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
-                raise
+            call_one(i)
         return out
     seed_bytes, offset = seed_spec
     state = _random.getstate()
@@ -358,11 +362,7 @@ def _run_batch(
                     seed_bytes + (i + offset).to_bytes(8, "little")
                 ).digest()
             )
-            try:
-                out.append(fn(get(i), *args, **kwargs))
-            except Exception as e:
-                e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
-                raise
+            call_one(i)
     finally:
         _random.setstate(state)
     return out
