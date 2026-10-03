@@ -32,8 +32,10 @@ The API is not stable and may change at any time before a release.
 
 ## Installation
 
+Install the development version from GitHub:
+
 ```sh
-pip install .
+pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
 Requires Python 3.10 or later on a 64-bit platform (Linux: kernel 5.3 or later; Windows: clang-cl to build).
@@ -43,6 +45,8 @@ Optional extras:
 
 - `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
 - `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
+
+To request an extra with the GitHub install, use `pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"`.
 
 ## Channels
 
