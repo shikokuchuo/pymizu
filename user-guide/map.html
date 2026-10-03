@@ -273,7 +273,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the results as a list in input order. It is not a loop over <code>pool.submit()</code>. One call stages <code>fn</code>, the constant <code>args=</code>/<code>kwargs=</code>, and <code>x</code> exactly once — a shared region, or inline in chunk tasks when small — then submits one <em>runner</em> task per live worker:</p>
-<div id="9e506c2f" class="cell" data-execution_count="1">
+<div id="3288bdfa" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -288,7 +288,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>Scheduling</h1>
 <p>Runners self-schedule element batches off a shared cursor, sized adaptively: a trivial <code>fn</code> runs in large batches at near-zero scheduling overhead; an expensive or skewed one self-limits to fine claims that keep the workers balanced. <code>chunks=</code> overrides the scheduling granularity outright.</p>
 <p>A 1-D C-contiguous buffer of float64, int32, int64, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing <code>x</code>:</p>
-<div id="707fa138" class="cell" data-execution_count="2">
+<div id="2eea3fcc" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -312,7 +312,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="reproducible-randomness" class="level1">
 <h1>Reproducible randomness</h1>
 <p><code>seed=</code> (an int or bytes) derives deterministic per-element streams of the stdlib <code>random</code> module: element <code>i</code> runs under <code>random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))</code>. Results are identical for any chunking, worker count, or steal order:</p>
-<div id="f38e9303" class="cell" data-execution_count="3">
+<div id="32b85100" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> random</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw(i):</span>
@@ -331,7 +331,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="templates" class="level1">
 <h1>Templates</h1>
 <p>A <code>template=</code> exemplar buffer (e.g.&nbsp;<code>np.empty(m, dtype=...)</code>) declares that every <code>fn</code> result is <code>m</code> values of that dtype. Workers write results straight into a shared <code>n x m</code> output area — each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer — or, for <code>m == 1</code>, a plain Python scalar:</p>
-<div id="912ffefe" class="cell" data-execution_count="4">
+<div id="8b3ec9bd" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -347,7 +347,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="prepared-maps" class="level1">
 <h1>Prepared maps</h1>
 <p><code>pool.map_prepare()</code> stages a map once for repeated runs — the descriptor pickle, the region create, and the worker-side attach are paid once. Each <code>pool.map_run()</code> re-arms in O(1) and reuses the workers’ cached contexts:</p>
-<div id="a150263a" class="cell" data-execution_count="5">
+<div id="6d0ede29" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> pool.map_prepare(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pool.map_run(m))</span>

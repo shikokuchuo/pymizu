@@ -275,7 +275,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them (<code>python -m pymizu.worker &lt;token&gt; &lt;slot&gt;</code>); workers claim tasks from per-submitter injection rings and steal work from each other. A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.</p>
-<div id="4796c816" class="cell" data-execution_count="1">
+<div id="eb823d48" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -327,7 +327,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="waiting-on-several-tasks" class="level1">
 <h1>Waiting on several tasks</h1>
 <p><code>pool.collect_any()</code> waits on a list of task handles and returns <code>(index, value)</code> for the first to reach a terminal state — the other handles stay collectible. <code>pool.collect_all()</code> returns every value in input order once all are terminal. Both take one overall <code>timeout</code> and return the <code>TIMEOUT</code> sentinel on expiry, consuming nothing:</p>
-<div id="c1c4b036" class="cell" data-execution_count="2">
+<div id="38957d78" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> time</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
@@ -339,7 +339,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>(1, 6)</code></pre>
 </div>
 </div>
-<div id="0132996a" class="cell" data-execution_count="3">
+<div id="4b6d8a54" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> pool.collect_all(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -354,7 +354,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="nested-tasks" class="level1">
 <h1>Nested tasks</h1>
 <p>Inside a task, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a> returns the evaluating worker’s own handle. A nested submit pushes straight onto the worker’s own work-stealing deque — no ring, no wake. A worker waiting on a nested result executes other work instead of sleeping, so divide-and-conquer runs at fork/join cost and never deadlocks the pool:</p>
-<div id="b7ea6084" class="cell" data-execution_count="4">
+<div id="ec736201" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fan_out(parts):</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pymizu.current_pool()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    subs <span class="op">=</span> [pool.submit(<span class="bu">sum</span>, part) <span class="cf">for</span> part <span class="kw">in</span> parts]</span>
