@@ -25,8 +25,8 @@ A channel is a two-way message link between a Python process and a helper
 process that it spawns.
 A pool is a set of worker processes that divide submitted tasks among
 themselves.
-In both, one process writes data and the other reads it in place — never
-copied through a socket, pipe, or file.
+In both, one process writes data and the other reads it in place, without
+copying through a socket, pipe, or file.
 
 The hot path stays in user space: single-producer single-consumer rings with
 batched publication, spin-then-park waiting, and event-driven peer-death
@@ -43,7 +43,7 @@ The API is not stable and may change at any time before a release.
 ## Installation
 
 ```sh
-pip install .
+pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
 Requires Python 3.10 or later on a 64-bit platform.
