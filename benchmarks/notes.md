@@ -552,3 +552,36 @@ to better (trivial 0.1 us/elt, template ~0, seed 0.2, prepared 0.1,
 compute 335k tasks/s).
 
 Status: 395 pass, 5 skip (pandas absent); ruff + pyrefly clean.
+
+## 2026-10-03 — the core dedup + channel fork guard (no-regression A/B)
+
+The libmizu core's duplicated blocks moved into internal.h static
+inlines (mizu_binding_check, mizu_wait_ms, mizu_shm_set_name; the
+submit_many double clock read hoisted) and the channel gained the fork
+guard — one cached-pid compare per verb entry — vendored at libmizu
+909563b. The binding side added the _TOKEN_RE share, the _r.py spawn
+helper, and _run_batch's call_one closure (the only per-element
+change: one Python call per map element). 2x2 A/B on one host: two
+runs per build, baseline HEAD (core 1efb883) against the working tree
+(core 909563b), means compared against each row's within-build spread.
+The pure-Python in-process anchors swung up to 18% run-to-run (the
+host drift floor); every A -> B delta landed smaller than its row's
+spread, and the trivial-f map rows (the call_one site) read
+bit-identical.
+
+Results (A -> B, means of 2; spread = max within-build pairwise):
+sequential rt 0.4 -> 0.4 us channel (spread 0%) / 0.9 -> 0.8 pool
+(71.4% jitter); pipelined 4.47M -> 4.45M rt/s channel (batch 9.13M ->
+9.20M), 2.158M -> 2.164M tasks/s pool (batch 1.218M -> 1.212M);
+payloads 2.7 / 63.0 / 111.4 -> 2.7 / 60.6 / 109.4 us (spreads
+3.8-6.0%); streaming 20.46M -> 20.84M msg/s; fan-out 289.0k -> 279.0k
+(spread 10.4%; in-process anchor -0.4%); map trivial 0.4 -> 0.4 us/elt
+(spread 0%), seed 1.9 -> 1.9, prepared 0.4 -> 0.4, template copy/view
+739.9k/737.6k -> 721.1k/723.0k (spreads 2.9-4.7%), winsum 463.8k ->
+463.5k, 20k row 486.3k -> 483.8k, skew 7.05 -> 7.25 ms wall (spread
+5.7%); stage rows within spread (memcpy 105.8 -> 102.7, identity 103.7
+-> 101.3, int64 106.1 -> 106.5; foreign widen 249.3 -> 258.9 vs 5.6%
+spread, masked 106.0 -> 105.3, masked int64 112.4 -> 103.7, masked+scan
+145.8 -> 155.6 vs 11.9% spread); arg/frame R rows flat (<=1.6%).
+
+Status: 395 pass, 5 skip (pandas absent); ruff + pyrefly clean.
