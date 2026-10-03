@@ -122,15 +122,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
   <link rel="alternate" type="text/markdown" href="installation.md">
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/user-guide/installation.html">
-  <meta name="description" content="The extension compiles the vendored C core, so no system library is necessary.">
+  <meta name="description" content="Install the development version from GitHub:">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Installation | pymizu 水">
-  <meta property="og:description" content="The extension compiles the vendored C core, so no system library is necessary.">
+  <meta property="og:description" content="Install the development version from GitHub:">
   <meta property="og:url" content="https://shikokuchuo.net/pymizu/user-guide/installation.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Installation | pymizu 水">
-  <meta name="twitter:description" content="The extension compiles the vendored C core, so no system library is necessary.">
+  <meta name="twitter:description" content="Install the development version from GitHub:">
 </head>
 
 <body class="nav-sidebar floating nav-fixed quarto-light">
@@ -281,13 +281,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="install" class="level1">
 <h1>Install</h1>
-<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install .</span></code></pre></div>
+<p>Install the development version from GitHub:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install git+https://github.com/shikokuchuo/pymizu</span></code></pre></div>
 <p>The extension compiles the vendored C core, so no system library is necessary.</p>
 <p>Optional extras:</p>
 <ul>
 <li><code>pymizu[numpy]</code>: zero-copy array views and raw-tier array staging.</li>
 <li><code>pymizu[cloudpickle]</code>: lambdas, closures, and local functions as pool tasks.</li>
 </ul>
+<p>To request an extra with the GitHub install:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install <span class="st">"pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"</span></span></code></pre></div>
 </section>
 <section id="deploying-on-linux" class="level1">
 <h1>Deploying on Linux</h1>
@@ -298,7 +301,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>This section applies only to Linux with glibc.</p>
 <p>When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator. It raises the mmap threshold to 32 MB and the trim threshold to 128 MB. This keeps large payloads in fast memory. Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.</p>
 <p>Your own Python process does not change. If you want the same settings there, set them before Python starts:</p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GLIBC_TUNABLES</span><span class="op">=</span>glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728</span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GLIBC_TUNABLES</span><span class="op">=</span>glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728</span></code></pre></div>
 <p>If you have set <code>GLIBC_TUNABLES</code>, pymizu respects your values.</p>
 
 

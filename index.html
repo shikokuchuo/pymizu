@@ -256,19 +256,19 @@ section.level2:first-of-type > h2:first-child,
 <p>pymizu makes communication between Python processes cheap enough to divide work at granularities usually reserved for threads.</p>
 <p>In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes. Processes also isolate failures: a worker that crashes does not take the host down with it.</p>
 <p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).</p>
-<p>A channel is a two-way message link between a Python process and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves. In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.</p>
+<p>A channel is a two-way message link between a Python process and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves. In both, one process writes data and the other reads it in place, without copying through a socket, pipe, or file.</p>
 <p>The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.</p>
 <p>pymizu is built on <a href="https://github.com/shikokuchuo/libmizu">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/mizu">mizu</a> binds the same core for R, so Python and R processes can share a channel.</p>
 <p>Pre-release. The API is not stable and may change at any time before a release.</p>
 <section id="installation" class="level2">
 <h2 class="anchored" data-anchor-id="installation">Installation</h2>
-<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install .</span></code></pre></div>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install git+https://github.com/shikokuchuo/pymizu</span></code></pre></div>
 <p>Requires Python 3.10 or later on a 64-bit platform. See <a href="./user-guide/installation.html">Installation</a> for platform notes, optional extras, and deployment on Linux.</p>
 </section>
 <section id="channels" class="level2">
 <h2 class="anchored" data-anchor-id="channels">Channels</h2>
 <p><a href="./reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with <code>ch</code> bound to the peer-side handle:</p>
-<div id="03e73cf5" class="cell" data-execution_count="1">
+<div id="2dfd2d85" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -285,7 +285,7 @@ section.level2:first-of-type > h2:first-child,
 <pre><code>[1, 'a', None]</code></pre>
 </div>
 </div>
-<div id="b995bba8" class="cell" data-execution_count="2">
+<div id="61b80fa3" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
 <pre><code>True</code></pre>
@@ -296,7 +296,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="task-pools" class="level2">
 <h2 class="anchored" data-anchor-id="task-pools">Task pools</h2>
 <p><a href="./reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop. <code>pool.submit()</code> returns a task handle immediately; <code>task.collect()</code> waits for its result:</p>
-<div id="c761df9d" class="cell" data-execution_count="3">
+<div id="6f2c44f8" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -311,7 +311,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="parallel-map" class="level2">
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:</p>
-<div id="e6016029" class="cell" data-execution_count="4">
+<div id="23a17f03" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>

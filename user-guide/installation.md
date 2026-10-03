@@ -10,8 +10,10 @@
 
 # Install
 
+Install the development version from GitHub:
+
 ``` sh
-pip install .
+pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
 The extension compiles the vendored C core, so no system library is necessary.
@@ -20,6 +22,12 @@ Optional extras:
 
 - `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
 - `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
+
+To request an extra with the GitHub install:
+
+``` sh
+pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
+```
 
 
 # Deploying on Linux
