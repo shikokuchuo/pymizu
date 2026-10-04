@@ -585,3 +585,38 @@ spread, masked 106.0 -> 105.3, masked int64 112.4 -> 103.7, masked+scan
 145.8 -> 155.6 vs 11.9% spread); arg/frame R rows flat (<=1.6%).
 
 Status: 395 pass, 5 skip (pandas absent); ruff + pyrefly clean.
+
+## 2026-10-04 — cross-language channel bench harness + difftime interchange
+
+First run of benchmarks/crosslang-channel-bench.py (new: Python host
+against an R echo peer — the mirror driver of mizu's dev/bench/
+crosslang-channel-bench.R, which ran the same day) and the first
+measurement of the difftime <-> timedelta64[us] interchange that landed
+with it. Rows stay log-only as the suite's first record.
+
+Results (median us/rt): None / scalars 0.3; 8 KB float64 0.8 (copy echo
+1.0); 800 KB float64 13.6 (copy 59.9); 8 MB float64 108.3 (copy 281.8);
+10k strings 24.4; 100k bool+None list 4195.0 (the object walk — numpy
+bool_ arrays cross at memcpy cost); 10k datetime64[D] 22.2; 100k
+timedelta64[us] 64.9; pipelined 8 KB float64 356.3k rt/s. Host-direction
+asymmetries against the R-driven mirror (same host): R->Python string
+layout writes run ~6x the Python->R ones (188 vs 24 us/10k — the
+CHARSXP walk against PyUnicode's ready UTF-8) and R->Python vector
+layout writes pay the NA validity scan a numpy buffer stamps free
+(8 MB: 391 vs 108 us/rt).
+
+Status: full suite 396 pass, 0 fail (5 skips); ruff + pyrefly clean.
+
+## 2026-10-04 — difftime frame columns (FCOL_TD / Arrow duration[us])
+
+The frame half of the difftime interchange: a difftime column is an
+owned i64-us column (Arrow duration[us] on the Frame's export,
+timedelta64[us] from to_dict()); Arrow duration[unit] columns read as
+difftime. A pre-existing latent bug surfaced and is fixed:
+fcol_ensure_export double-counted nulls for a lazy-scanned column with
+NAs on the Arrow export. Numbers ride the R-driven mirror's log (mizu
+bench notes, same date).
+
+Status: full suite 396+3 pass (3 signal-timing flakes under a
+concurrent benchmark load, green in isolation), 0 fail; ruff + pyrefly
+clean.
