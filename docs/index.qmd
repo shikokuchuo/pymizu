@@ -116,8 +116,8 @@ See [Parallel map](user-guide/map.qmd).
 
 ## Where next
 
-- [Channels](user-guide/channels.qmd) — send/receive semantics, batch
-  operations, and the payload tiers.
+- [Channels](user-guide/channels.qmd) — sending and receiving, batch
+  operations, and what crosses a channel.
 - [Task pools](user-guide/pools.qmd) — outcomes, nested tasks, growing and
   observing a pool.
 - [Parallel map](user-guide/map.qmd) — scheduling, reproducible randomness,

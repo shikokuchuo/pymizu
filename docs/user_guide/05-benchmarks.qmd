@@ -29,9 +29,8 @@ CPU-bound work at a single core):
 
 These rows measure communication overhead — the cost pymizu is built to
 remove.
-The stdlib pools remain the general solution: they ask nothing of the
-platform, and their per-task cost buys features a shared-memory transport
-does not need.
+The stdlib pools remain the general solution: they run anywhere Python runs,
+with no platform requirements.
 
 `benchmarks/mizu-bench.py` runs the pymizu rows standalone,
 `benchmarks/mizu-stdlib-bench.py` the comparison, and
