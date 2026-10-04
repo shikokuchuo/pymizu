@@ -361,7 +361,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <ul>
 <li>A factor crosses as <code>list[str | None]</code> on its own, or as a dictionary-encoded column inside a frame.</li>
 <li>A <code>Date</code> crosses as <code>datetime64[D]</code> or Arrow <code>date32</code>. A <code>POSIXct</code> crosses as a naive <code>datetime64[us]</code> or <code>timestamp[us, tz]</code>: microsecond precision, <code>NaT</code> read as <code>NA</code>. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with <code>tzone = "UTC"</code>.</li>
-<li>A <code>difftime</code>, <code>POSIXlt</code>, <code>timedelta64</code>, Arrow <code>date64</code>/<code>time</code>/<code>duration</code>/<code>interval</code>, and ordered dictionaries (polars Enums) are declined at send time. Send a <code>difftime</code> as a number plus a units string instead.</li>
+<li>A <code>difftime</code> crosses as <code>timedelta64[us]</code>: microsecond precision, <code>NA</code> read as <code>NaT</code>. R’s five units cross by value; a round trip normalizes them to seconds. <code>timedelta64</code> arrays of any non-calendar unit cross likewise (numpy scalars and <code>datetime.timedelta</code> included). Inside a frame, a difftime column exports to Arrow as <code>duration[us]</code>, and an Arrow <code>duration</code> column arrives as a difftime.</li>
+<li>A <code>POSIXlt</code>, Arrow <code>date64</code>/<code>time</code>/<code>interval</code>, and ordered dictionaries (polars Enums) are declined at send time.</li>
 <li>An R vector with <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> is declined (numpy has no per-element names). A matrix crosses with values exact — the data is never transposed. <code>dimnames</code> and character matrices are declined.</li>
 <li>Cross-language sends copy R’s ALTREP vectors by value: exact values, the compact representation is not preserved.</li>
 </ul>
@@ -439,6 +440,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>the zone name rides a frame column’s metadata</td>
 </tr>
 <tr class="odd">
+<td>Arrow <code>duration[u]</code></td>
+<td><code>difftime</code> (secs)</td>
+<td>the unit converts to seconds; the frame column exports back as <code>duration[us]</code></td>
+</tr>
+<tr class="even">
+<td>timedelta64 (any non-calendar unit)</td>
+<td><code>difftime</code> (secs)</td>
+<td><code>NaT</code> reads as <code>NA</code>; the unit converts to seconds</td>
+</tr>
+<tr class="odd">
 <td>Arrow dictionary-encoded</td>
 <td>factor</td>
 <td>an ordered dictionary declines (<code>polars Enum</code>: cast to <code>pl.Categorical</code>)</td>
@@ -449,7 +460,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>chunks are concatenated</td>
 </tr>
 <tr class="odd">
-<td>Arrow nested, decimal, time32/64, duration, interval</td>
+<td>Arrow nested, decimal, time32/64, interval</td>
 <td>—</td>
 <td><a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> at send time</td>
 </tr>
@@ -545,6 +556,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>complex128</td>
 <td>exact</td>
 </tr>
+<tr class="even">
+<td>timedelta64</td>
+<td><code>difftime</code></td>
+<td>timedelta64[us]</td>
+<td>unit normalizes to us, values exact</td>
+</tr>
 </tbody>
 </table>
 <table class="caption-top table">
@@ -592,6 +609,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td><code>bool_</code> (int32 with NAs)</td>
 <td><strong>integer</strong></td>
 <td>the logical tag is lost on a Python round trip (the values are not); a whole view sent back crosses by reference and stays logical</td>
+</tr>
+<tr class="odd">
+<td>difftime</td>
+<td>timedelta64[us]</td>
+<td>difftime (secs)</td>
+<td>units normalize to seconds, values exact; <code>NA</code> crosses as <code>NaT</code></td>
 </tr>
 </tbody>
 </table>

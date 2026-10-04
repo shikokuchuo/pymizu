@@ -1248,10 +1248,16 @@ Sent to R, it becomes a `data.frame` again.
   A named timezone is kept as frame column metadata but dropped from a
   standalone vector.
   Naive Python datetimes arrive in R with `tzone = "UTC"`.
-- A `difftime`, `POSIXlt`, `timedelta64`, Arrow
-  `date64`/`time`/`duration`/`interval`, and ordered dictionaries (polars
+- A `difftime` crosses as `timedelta64[us]`: microsecond precision, `NA`
+  read as `NaT`.
+  R's five units cross by value; a round trip normalizes them to seconds.
+  `timedelta64` arrays of any non-calendar unit cross likewise (numpy
+  scalars and `datetime.timedelta` included).
+  Inside a frame, a difftime column exports to Arrow as `duration[us]`,
+  and an Arrow `duration` column arrives as a difftime.
+- A `POSIXlt`, Arrow
+  `date64`/`time`/`interval`, and ordered dictionaries (polars
   Enums) are declined at send time.
-  Send a `difftime` as a number plus a units string instead.
 - An R vector with `names` is declined (numpy has no per-element names).
   A matrix crosses with values exact — the data is never transposed.
   `dimnames` and character matrices are declined.
@@ -1279,9 +1285,11 @@ memcpy.
 | Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
 | Arrow strings (utf8 / large_utf8 / string_view) | character | a Series arrives as `list[str \| None]`; a column as a frame column |
 | Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
+| Arrow `duration[u]` | `difftime` (secs) | the unit converts to seconds; the frame column exports back as `duration[us]` |
+| timedelta64 (any non-calendar unit) | `difftime` (secs) | `NaT` reads as `NA`; the unit converts to seconds |
 | Arrow dictionary-encoded | factor | an ordered dictionary declines (`polars Enum`: cast to `pl.Categorical`) |
 | Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks are concatenated |
-| Arrow nested, decimal, time32/64, duration, interval | — | `DeclinedError` at send time |
+| Arrow nested, decimal, time32/64, interval | — | `DeclinedError` at send time |
 
 Missing values:
 
@@ -1331,6 +1339,7 @@ A slice or a dtype view of a received view crosses by value.
 | float64 | double | float64 | exact |
 | bool | logical | `bool_` (int32 with NAs) | dtype lost |
 | complex64 / complex128 | complex | complex128 | exact |
+| timedelta64 | `difftime` | timedelta64[us] | unit normalizes to us, values exact |
 
 | R sends | Python sees | Back in R | Notes |
 |----|----|----|----|
@@ -1340,6 +1349,7 @@ A slice or a dtype view of a received view crosses by value.
 | raw | uint8 | raw | exact |
 | complex | complex128 | complex | exact |
 | logical | `bool_` (int32 with NAs) | **integer** | the logical tag is lost on a Python round trip (the values are not); a whole view sent back crosses by reference and stays logical |
+| difftime | timedelta64[us] | difftime (secs) | units normalize to seconds, values exact; `NA` crosses as `NaT` |
 
 Between two Python processes — a channel or a pool — the conversions on this
 page never run: the identity dtypes cross unchanged and everything else

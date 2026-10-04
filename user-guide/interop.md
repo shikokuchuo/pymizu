@@ -105,7 +105,8 @@ A [pymizu.Frame](../reference/Frame.md#pymizu.Frame) is Python's home for an R `
 
 - A factor crosses as `list[str | None]` on its own, or as a dictionary-encoded column inside a frame.
 - A `Date` crosses as `datetime64[D]` or Arrow `date32`. A `POSIXct` crosses as a naive `datetime64[us]` or `timestamp[us, tz]`: microsecond precision, `NaT` read as `NA`. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with `tzone = "UTC"`.
-- A `difftime`, `POSIXlt`, `timedelta64`, Arrow `date64`/`time`/`duration`/`interval`, and ordered dictionaries (polars Enums) are declined at send time. Send a `difftime` as a number plus a units string instead.
+- A `difftime` crosses as `timedelta64[us]`: microsecond precision, `NA` read as `NaT`. R's five units cross by value; a round trip normalizes them to seconds. `timedelta64` arrays of any non-calendar unit cross likewise (numpy scalars and `datetime.timedelta` included). Inside a frame, a difftime column exports to Arrow as `duration[us]`, and an Arrow `duration` column arrives as a difftime.
+- A `POSIXlt`, Arrow `date64`/`time`/`interval`, and ordered dictionaries (polars Enums) are declined at send time.
 - An R vector with [names](../reference/Frame.names.md#pymizu.Frame.names) is declined (numpy has no per-element names). A matrix crosses with values exact -- the data is never transposed. `dimnames` and character matrices are declined.
 - Cross-language sends copy R's ALTREP vectors by value: exact values, the compact representation is not preserved.
 
@@ -128,9 +129,11 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
 | Arrow strings (utf8 / large_utf8 / string_view) | character | a Series arrives as `list[str \| None]`; a column as a frame column |
 | Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
+| Arrow `duration[u]` | `difftime` (secs) | the unit converts to seconds; the frame column exports back as `duration[us]` |
+| timedelta64 (any non-calendar unit) | `difftime` (secs) | `NaT` reads as `NA`; the unit converts to seconds |
 | Arrow dictionary-encoded | factor | an ordered dictionary declines (`polars Enum`: cast to `pl.Categorical`) |
 | Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks are concatenated |
-| Arrow nested, decimal, time32/64, duration, interval | -- | [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at send time |
+| Arrow nested, decimal, time32/64, interval | -- | [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at send time |
 
 Missing values:
 
@@ -158,6 +161,7 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | float64 | double | float64 | exact |
 | bool | logical | `bool_` (int32 with NAs) | dtype lost |
 | complex64 / complex128 | complex | complex128 | exact |
+| timedelta64 | `difftime` | timedelta64\[us\] | unit normalizes to us, values exact |
 
 | R sends | Python sees | Back in R | Notes |
 |----|----|----|----|
@@ -167,5 +171,6 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | raw | uint8 | raw | exact |
 | complex | complex128 | complex | exact |
 | logical | `bool_` (int32 with NAs) | **integer** | the logical tag is lost on a Python round trip (the values are not); a whole view sent back crosses by reference and stays logical |
+| difftime | timedelta64\[us\] | difftime (secs) | units normalize to seconds, values exact; `NA` crosses as `NaT` |
 
 Between two Python processes -- a channel or a pool -- the conversions on this page never run: the identity dtypes cross unchanged and everything else pickles, so an exact Python-to-Python send of a non-identity dtype needs no work. They apply only when the other end runs R.
