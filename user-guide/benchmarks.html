@@ -302,7 +302,7 @@ ul.task-list li input[type="checkbox"] {
 </tbody>
 </table>
 <p>* elt = element; microseconds of wall time per map element.</p>
-<p>These rows measure communication overhead — the cost pymizu is built to remove. The stdlib pools remain the general solution: they ask nothing of the platform, and their per-task cost buys features a shared-memory transport does not need.</p>
+<p>These rows measure communication overhead — the cost pymizu is built to remove. The stdlib pools remain the general solution: they run anywhere Python runs, with no platform requirements.</p>
 <p><code>benchmarks/mizu-bench.py</code> runs the pymizu rows standalone, <code>benchmarks/mizu-stdlib-bench.py</code> the comparison, and <code>benchmarks/crosslang-map-bench.py</code> the cross-language map comparison. The scripts are report-only and assert nothing about the numbers (CI runner timing is too variable); dated records live in <code>benchmarks/notes.md</code>.</p>
 
 

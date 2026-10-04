@@ -274,8 +274,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>A channel is a two-way message link between a Python process and a helper process that it spawns: one lock-free ring per direction, over shared memory. One process writes data and the other reads it in place — never copied through a socket, pipe, or file.</p>
 <section id="creating-a-channel" class="level1">
 <h1>Creating a channel</h1>
-<p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns the peer process (<code>python -m pymizu.child &lt;token&gt;</code>) and connects both ends. The peer program is a Python source string, evaluated in the peer with <code>ch</code> bound to its side of the channel:</p>
-<div id="29e1a4b4" class="cell" data-execution_count="1">
+<p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns the peer process and connects both ends. The peer program is a Python source string, evaluated in the peer with <code>ch</code> bound to its side of the channel:</p>
+<div id="4c7ea304" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -287,13 +287,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="st">    ch.send(x)</span></span>
 <span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>)</span></code></pre></div>
 </div>
-<p>The peer is a full Python process: it imports anything importable in the spawning interpreter’s environment. <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> returns once the peer has attached (up to <code>startup_timeout</code> seconds, raising <a href="../reference/StartupError.html#pymizu.StartupError" class="gdls-link gdls-code">StartupError</a> otherwise).</p>
-<p>A <code>launcher</code> changes how the peer is spawned — it is one callable that takes the join token and arranges for a Python process to run <code>python -m pymizu.child &lt;token&gt;</code>. <a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">pymizu.r_launcher()</a> is the built-in example: it spawns an R peer instead (see <a href="../user-guide/interop.html">R interop</a>). <code>Channel.attach(token)</code> is the low-level peer-side entry; user code spawns peers through a launcher.</p>
+<p>The peer is a full Python process: it imports anything importable in the spawning interpreter’s environment. <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> returns once the peer has connected (up to <code>startup_timeout</code> seconds, raising <a href="../reference/StartupError.html#pymizu.StartupError" class="gdls-link gdls-code">StartupError</a> otherwise).</p>
+<p>A <code>launcher</code> changes how the peer is spawned. It is one callable that takes the channel’s token and arranges for the peer process to start. <a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">pymizu.r_launcher()</a> is the built-in example: it spawns an R peer instead (see <a href="../user-guide/interop.html">R interop</a>). User code spawns peers through a launcher. <code>Channel.attach(token)</code> is the low-level entry for a peer that attaches itself.</p>
 </section>
 <section id="sending-and-receiving" class="level1">
 <h1>Sending and receiving</h1>
-<p><code>ch.send()</code> publishes a payload, visible to the peer the moment the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next payload, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
-<div id="96735c65" class="cell" data-execution_count="2">
+<p><code>ch.send()</code> publishes a value, visible to the peer the moment the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next value, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
+<div id="fdee2e34" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
@@ -327,44 +327,44 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 </tbody>
 </table>
-<p>Test them by identity — <code>x is pymizu.TIMEOUT</code> — or with <code>pymizu.is_sentinel(x)</code>. No call needs an error handler. If the peer dies, receives first drain what it already published, then report <code>PEER_GONE</code>.</p>
-<p><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="gdls-link gdls-code">send_batch()</a> and <a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="gdls-link gdls-code">recv_batch()</a> move several payloads in one crossing — use them at rates where per-call overhead starts to matter:</p>
-<div id="496fe539" class="cell" data-execution_count="3">
+<p>Test them by identity — <code>x is pymizu.TIMEOUT</code> — or with <code>pymizu.is_sentinel(x)</code>. No call needs an error handler. If the peer dies, receives first drain what it already sent, then report <code>PEER_GONE</code>.</p>
+<p><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="gdls-link gdls-code">send_batch()</a> and <a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="gdls-link gdls-code">recv_batch()</a> move several values in one call. Use them at rates where the per-call overhead starts to matter:</p>
+<div id="01b5671e" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch(<span class="bu">range</span>(<span class="dv">4</span>))</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>ch.recv_batch(<span class="dv">4</span>, timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="3">
 <pre><code>[0, 1, 2, 3]</code></pre>
 </div>
 </div>
-<p><code>ch.alive()</code> reports whether the peer still runs, without touching the rings. <code>ch.info()</code> returns a read-only wire-state snapshot.</p>
+<p><code>ch.alive()</code> reports whether the peer still runs, without touching the rings. <code>ch.info()</code> returns a read-only snapshot of the channel’s state.</p>
 </section>
 <section id="closing" class="level1">
 <h1>Closing</h1>
 <p><code>ch.close()</code> is the orderly shutdown: it signals the peer and waits for it to finish draining before releasing the shared resources:</p>
-<div id="f86750ed" class="cell" data-execution_count="4">
+<div id="8282791d" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="4">
 <pre><code>True</code></pre>
 </div>
 </div>
-<p>A channel is also a context manager — the <code>with</code> block closes it on exit. <a href="../reference/Channel.close_signal.html#pymizu.Channel.close_signal" class="gdls-link gdls-code">close_signal()</a> signals without waiting; <code>destroy()</code> tears the handle down immediately and the peer sees <code>PEER_GONE</code>.</p>
+<p>A channel is also a context manager — the <code>with</code> block closes it on exit. <a href="../reference/Channel.close_signal.html#pymizu.Channel.close_signal" class="gdls-link gdls-code">close_signal()</a> signals without waiting. <code>destroy()</code> tears the handle down immediately, and the peer sees <code>PEER_GONE</code>.</p>
 </section>
 <section id="what-crosses-a-channel" class="level1">
 <h1>What crosses a channel</h1>
-<p>The staging path picks the first tier that matches:</p>
+<p>pymizu moves each value the cheapest way it can:</p>
 <ol type="1">
-<li><code>None</code> crosses as an immediate — no bytes move.</li>
-<li>Buffer-protocol objects (<code>bytes</code>, 1-D contiguous numpy arrays) ride a serialization-free raw tier: float64, int32, int64, complex128, and uint8 cross unchanged, arriving as arrays (<code>bytes</code> arrives as uint8). A large buffer crosses as a zero-copy read-only view over the shared pages — no copy, no parse.</li>
+<li><code>None</code> crosses as a marker — no data moves.</li>
+<li>Buffer-protocol objects (<code>bytes</code>, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (<code>bytes</code> arrives as a uint8 array). A large buffer arrives as a read-only zero-copy view over the shared pages — no copy, no parse.</li>
 <li>A <code>str</code> within the inline budget crosses as raw UTF-8.</li>
-<li>Booleans, numbers, and flat containers of them ride a compact binary codec.</li>
-<li>Everything else crosses as a pickle protocol 4 stream.</li>
+<li>Booleans, numbers, and flat lists or dicts of them cross in a compact binary form.</li>
+<li>Everything else crosses as a pickle (protocol 4).</li>
 </ol>
-<p>Every handle knows its peer’s language (a per-region identity exchange at handshake). On a Python-to-Python channel that is the whole story: identity dtypes ride the raw tier, everything else pickles unchanged. On a foreign-language channel (an R peer), staging switches to the <code>'I'</code> interchange stream: a portable subset crosses, and a value outside it raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">pymizu.DeclinedError</a> at send time, naming the value’s path and the reason — the channel is unharmed. See <a href="../user-guide/interop.html">R interop</a>.</p>
-<p>An uncaught error in the peer crosses as a value, not a raised exception: a <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> carrying the original exception’s class name and traceback text. <code>pymizu.is_remote_error(x)</code> tests a received value; raise it to propagate.</p>
+<p>Each end of a channel knows the peer’s language. Between two Python processes that is the whole story: arrays of the dtypes above cross unchanged, and everything else pickles. With an R peer, values must fit a portable subset that both languages share. A value outside it raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">pymizu.DeclinedError</a> at send time, naming the value and the reason — the channel is unharmed. See <a href="../user-guide/interop.html">R interop</a>.</p>
+<p>An uncaught error in the peer crosses as a value, not a raised exception: a <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> carrying the original exception’s class name and traceback text. <code>pymizu.is_remote_error(x)</code> tests a received value. Raise it to propagate the error.</p>
 </section>
 <section id="sizing" class="level1">
 <h1>Sizing</h1>
-<p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> takes <code>capacity</code> (ring slots, a power of two), <code>slot_size</code> (bytes per slot — the inline payload budget is <code>slot_size - 16</code>), and <code>arena_size</code> (the channel’s spill arena). A payload past the inline budget spills to the arena or a fresh shared-memory region. <code>spin=True</code> selects pure-spin waiting: receivers never park to the OS — the lowest-latency mode, at full CPU use while waiting.</p>
+<p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> takes <code>capacity</code> (ring slots, a power of two), <code>slot_size</code> (bytes per slot — the inline payload budget is <code>slot_size - 16</code>), and <code>arena_size</code> (the channel’s spill arena). A value past the inline budget spills to the arena or a fresh shared-memory region. <code>spin=True</code> selects pure-spin waiting: receivers never park to the OS — the lowest latency, at full CPU use while waiting.</p>
 
 
 </section>

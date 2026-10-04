@@ -122,15 +122,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
   <link rel="alternate" type="text/markdown" href="pools.md">
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/user-guide/pools.html">
-  <meta name="description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them (python -m pymizu.worker &amp;lt;token&amp;gt;...">
+  <meta name="description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers claim tasks from per-submitter...">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Task pools | pymizu 水">
-  <meta property="og:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them (python -m pymizu.worker &amp;amp;lt;token&amp;amp;gt;...">
+  <meta property="og:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers claim tasks from per-submitter...">
   <meta property="og:url" content="https://shikokuchuo.net/pymizu/user-guide/pools.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Task pools | pymizu 水">
-  <meta name="twitter:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them (python -m pymizu.worker &amp;amp;lt;token&amp;amp;gt;...">
+  <meta name="twitter:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers claim tasks from per-submitter...">
 </head>
 
 <body class="nav-sidebar floating nav-fixed quarto-light">
@@ -274,8 +274,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them (<code>python -m pymizu.worker &lt;token&gt; &lt;slot&gt;</code>); workers claim tasks from per-submitter injection rings and steal work from each other. A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.</p>
-<div id="8e7d4e75" class="cell" data-execution_count="1">
+<p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them. Workers claim tasks from per-submitter injection rings and steal work from each other, so the load balances itself. A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.</p>
+<div id="0878b671" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -287,10 +287,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>65536</code></pre>
 </div>
 </div>
-<p><code>pool.submit()</code> returns a <a href="../reference/Task.html#pymizu.Task" class="gdls-link gdls-code">Task</a> handle immediately; <code>task.collect()</code> waits for the result. The pool is a context manager: leaving the block stops it. <code>pool.stop()</code> cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared region. The pool’s lifetime is bound to the creating process — dropping the handle shuts the pool down without the wait.</p>
+<p><code>pool.submit()</code> returns a <a href="../reference/Task.html#pymizu.Task" class="gdls-link gdls-code">Task</a> handle immediately; <code>task.collect()</code> waits for the result. The pool is a context manager: leaving the block stops it. <code>pool.stop()</code> cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared memory. The pool’s lifetime is bound to the creating process — dropping the handle shuts the pool down without the wait.</p>
 <section id="task-callables" class="level1">
 <h1>Task callables</h1>
-<p>A task callable rides pickle: under stock pickle it must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently. Task arguments cross by the same rules as <a href="../user-guide/channels.html#what-crosses-a-channel">channel payloads</a>: a buffer-protocol argument past the zero-copy floor arrives as a read-only view over shared pages, not a writable copy.</p>
+<p>A task callable travels by pickle. With the standard pickle it must be an importable reference, as with <code>multiprocessing</code>. Installing cloudpickle lifts that restriction. Task arguments follow the same rules as <a href="../user-guide/channels.html#what-crosses-a-channel">channel values</a>. A buffer-protocol argument past the zero-copy floor (a fixed size threshold) arrives as a read-only view over the shared pages, not a writable copy.</p>
 </section>
 <section id="outcomes" class="level1">
 <h1>Outcomes</h1>
@@ -320,14 +320,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 </tbody>
 </table>
-<p>A task error crosses as a constructed, bounded envelope — never a pickled exception instance. A worker’s death is detected at OS notification latency, with no heartbeats or polling; it fails exactly the tasks the worker had claimed, and the surviving workers consume the rest of its queue.</p>
-<p><code>task.cancel()</code> withdraws a task: still queued, it is skipped; already running, it completes and its result is discarded. Cancellation never interrupts executing code.</p>
-<p>Submission itself can fail: <a href="../reference/SubmitTimeoutError.html#pymizu.SubmitTimeoutError" class="gdls-link gdls-code">SubmitTimeoutError</a> when the injection ring stays full past <code>timeout</code>, <a href="../reference/SlotsExhaustedError.html#pymizu.SlotsExhaustedError" class="gdls-link gdls-code">SlotsExhaustedError</a> when the submitter’s result slots are all outstanding, <a href="../reference/StoppedError.html#pymizu.StoppedError" class="gdls-link gdls-code">StoppedError</a> on a stopped pool.</p>
+<p>A task error crosses as a plain description of type, message, and traceback — never a pickled exception object. A worker’s death is detected at OS notification latency, with no heartbeats or polling. A dead worker fails exactly the tasks it had claimed. The surviving workers take over the rest of its queue.</p>
+<p><code>task.cancel()</code> withdraws a task. A task still queued is skipped. A task already running completes, and its result is discarded. Cancellation never interrupts executing code.</p>
+<p>Submission itself can fail: <a href="../reference/SubmitTimeoutError.html#pymizu.SubmitTimeoutError" class="gdls-link gdls-code">SubmitTimeoutError</a> when the submit queue stays full past <code>timeout</code>, <a href="../reference/SlotsExhaustedError.html#pymizu.SlotsExhaustedError" class="gdls-link gdls-code">SlotsExhaustedError</a> when too many tasks are outstanding and uncollected, <a href="../reference/StoppedError.html#pymizu.StoppedError" class="gdls-link gdls-code">StoppedError</a> on a stopped pool.</p>
 </section>
 <section id="waiting-on-several-tasks" class="level1">
 <h1>Waiting on several tasks</h1>
 <p><code>pool.collect_any()</code> waits on a list of task handles and returns <code>(index, value)</code> for the first to reach a terminal state — the other handles stay collectible. <code>pool.collect_all()</code> returns every value in input order once all are terminal. Both take one overall <code>timeout</code> and return the <code>TIMEOUT</code> sentinel on expiry, consuming nothing:</p>
-<div id="4cebbfef" class="cell" data-execution_count="2">
+<div id="d7a985c5" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> time</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
@@ -339,7 +339,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>(1, 6)</code></pre>
 </div>
 </div>
-<div id="fb10c858" class="cell" data-execution_count="3">
+<div id="2a817db1" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> pool.collect_all(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -349,12 +349,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>[1, 2, 4, 8]</code></pre>
 </div>
 </div>
-<p><code>pool.submit_batch()</code> submits one task per zero-arg callable in a single crossing — bind arguments with <code>functools.partial</code>.</p>
+<p><code>pool.submit_batch()</code> submits one task per zero-argument callable in a single call — bind arguments with <code>functools.partial</code>.</p>
 </section>
 <section id="nested-tasks" class="level1">
 <h1>Nested tasks</h1>
 <p>Inside a task, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a> returns the evaluating worker’s own handle. A nested submit pushes straight onto the worker’s own work-stealing deque — no ring, no wake. A worker waiting on a nested result executes other work instead of sleeping, so divide-and-conquer runs at fork/join cost and never deadlocks the pool:</p>
-<div id="8875f370" class="cell" data-execution_count="4">
+<div id="53dcab23" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fan_out(parts):</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pymizu.current_pool()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    subs <span class="op">=</span> [pool.submit(<span class="bu">sum</span>, part) <span class="cf">for</span> part <span class="kw">in</span> parts]</span>
@@ -370,11 +370,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>499500</code></pre>
 </div>
 </div>
-<p>(This example rides cloudpickle — <code>fan_out</code> is not an importable reference.)</p>
+<p>(This example needs cloudpickle: <code>fan_out</code> is not an importable reference.)</p>
 </section>
 <section id="growing-shrinking-and-joining-a-pool" class="level1">
 <h1>Growing, shrinking, and joining a pool</h1>
-<p>A pool can grow and shrink while it runs. <code>pool.spawn_workers(n)</code> adds workers into free registry slots (size the ceiling with <code>max_workers</code> at create). <code>pool.retire(slot)</code> asks a worker to exit cleanly: it finishes its current task, and the remaining workers consume anything still queued to it.</p>
+<p>A pool can grow and shrink while it runs. <code>pool.spawn_workers(n)</code> adds workers, up to the <code>max_workers</code> limit set at create. <code>pool.retire(slot)</code> asks a worker to exit cleanly: it finishes its current task, and the remaining workers take over anything still queued to it.</p>
 <p>Other processes join a running pool as submitters with <code>Pool.attach(token)</code> — the token is <code>pool.token</code> on the creator — and submit and collect exactly as the creator does.</p>
 </section>
 <section id="observing-a-pool" class="level1">
@@ -387,7 +387,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="sizing-a-pool" class="level1">
 <h1>Sizing a pool</h1>
-<p><a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> knobs: <code>max_workers</code> (the registry ceiling), <code>max_submitters</code>, <code>injection_cap</code> (each submitter’s ring), <code>per_worker_cap</code> (each worker’s deque), <code>result_slots</code> (outstanding uncollected tasks per submitter), and <code>slot_size</code> (bytes per queue entry and result slot — a payload past the inline budget travels in a fresh region).</p>
+<p><a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> sizing options: <code>max_workers</code> (the worker limit), <code>max_submitters</code>, <code>injection_cap</code> (each submitter’s injection ring), <code>per_worker_cap</code> (each worker’s deque), <code>result_slots</code> (outstanding uncollected tasks per submitter), and <code>slot_size</code> (bytes per queue entry and result slot — a payload past the inline budget travels in a fresh shared-memory region).</p>
 
 
 </section>

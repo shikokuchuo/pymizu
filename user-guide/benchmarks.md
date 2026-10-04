@@ -22,6 +22,6 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 
 \* elt = element; microseconds of wall time per map element.
 
-These rows measure communication overhead -- the cost pymizu is built to remove. The stdlib pools remain the general solution: they ask nothing of the platform, and their per-task cost buys features a shared-memory transport does not need.
+These rows measure communication overhead -- the cost pymizu is built to remove. The stdlib pools remain the general solution: they run anywhere Python runs, with no platform requirements.
 
 `benchmarks/mizu-bench.py` runs the pymizu rows standalone, `benchmarks/mizu-stdlib-bench.py` the comparison, and `benchmarks/crosslang-map-bench.py` the cross-language map comparison. The scripts are report-only and assert nothing about the numbers (CI runner timing is too variable); dated records live in `benchmarks/notes.md`.

@@ -122,15 +122,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
   <link rel="alternate" type="text/markdown" href="map.md">
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/user-guide/map.html">
-  <meta name="description" content="Runners self-schedule element batches off a shared cursor, sized adaptively: a trivial fn runs in large batches at near-zero scheduling overhead; an...">
+  <meta name="description" content="Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap fn runs in large batches at near-zero scheduling cost. An...">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Parallel map | pymizu 水">
-  <meta property="og:description" content="Runners self-schedule element batches off a shared cursor, sized adaptively: a trivial fn runs in large batches at near-zero scheduling overhead; an...">
+  <meta property="og:description" content="Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap fn runs in large batches at near-zero scheduling cost. An...">
   <meta property="og:url" content="https://shikokuchuo.net/pymizu/user-guide/map.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Parallel map | pymizu 水">
-  <meta name="twitter:description" content="Runners self-schedule element batches off a shared cursor, sized adaptively: a trivial fn runs in large batches at near-zero scheduling overhead; an...">
+  <meta name="twitter:description" content="Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap fn runs in large batches at near-zero scheduling cost. An...">
 </head>
 
 <body class="nav-sidebar floating nav-fixed quarto-light">
@@ -272,8 +272,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the results as a list in input order. It is not a loop over <code>pool.submit()</code>. One call stages <code>fn</code>, the constant <code>args=</code>/<code>kwargs=</code>, and <code>x</code> exactly once — a shared region, or inline in chunk tasks when small — then submits one <em>runner</em> task per live worker:</p>
-<div id="73e14f6c" class="cell" data-execution_count="1">
+<p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the results as a list in input order. It is not a loop over <code>pool.submit()</code>. The function, its constant <code>args=</code>/<code>kwargs=</code>, and the data are written to shared memory once, and one <em>runner</em> task per worker divides up the elements:</p>
+<div id="b6b02c60" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -286,9 +286,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <section id="scheduling" class="level1">
 <h1>Scheduling</h1>
-<p>Runners self-schedule element batches off a shared cursor, sized adaptively: a trivial <code>fn</code> runs in large batches at near-zero scheduling overhead; an expensive or skewed one self-limits to fine claims that keep the workers balanced. <code>chunks=</code> overrides the scheduling granularity outright.</p>
-<p>A 1-D C-contiguous buffer of float64, int32, int64, complex128, or uint8 travels as bare bytes — workers wrap it once and index per element, never deserializing <code>x</code>:</p>
-<div id="53b0e7ae" class="cell" data-execution_count="2">
+<p>Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap <code>fn</code> runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. <code>chunks=</code> sets the batch size directly.</p>
+<p>A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes. Each worker views the same array in shared memory and reads its elements directly — <code>x</code> is never serialized:</p>
+<div id="5b40ceec" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -311,8 +311,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="reproducible-randomness" class="level1">
 <h1>Reproducible randomness</h1>
-<p><code>seed=</code> (an int or bytes) derives deterministic per-element streams of the stdlib <code>random</code> module: element <code>i</code> runs under <code>random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))</code>. Results are identical for any chunking, worker count, or steal order:</p>
-<div id="f182ca1d" class="cell" data-execution_count="3">
+<p><code>seed=</code> (an int or bytes) gives every element its own deterministic stream of the stdlib <code>random</code> module — element <code>i</code> is seeded from SHA-256 of the seed and <code>i</code>. Results are identical for any chunking, worker count, or steal order:</p>
+<div id="f397324f" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> random</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw(i):</span>
@@ -330,8 +330,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="templates" class="level1">
 <h1>Templates</h1>
-<p>A <code>template=</code> exemplar buffer (e.g.&nbsp;<code>np.empty(m, dtype=...)</code>) declares that every <code>fn</code> result is <code>m</code> values of that dtype. Workers write results straight into a shared <code>n x m</code> output area — each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer — or, for <code>m == 1</code>, a plain Python scalar:</p>
-<div id="815405e5" class="cell" data-execution_count="4">
+<p>A <code>template=</code> exemplar buffer (for example <code>np.empty(m, dtype=...)</code>) declares that every <code>fn</code> result is <code>m</code> values of that dtype. Workers write their results straight into a shared <code>n x m</code> output area, so each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer — or, when <code>m == 1</code>, a plain Python scalar:</p>
+<div id="fecf1c99" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -342,12 +342,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>array([0.69314718, 1.09861229, 1.38629436])</code></pre>
 </div>
 </div>
-<p>With a template, <code>collect="copy"</code> (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape <code>(n, m)</code> — <code>(n,)</code> for <code>m == 1</code>. <code>collect="view"</code> returns it zero-copy and read-only, with the map region’s teardown deferred to the view’s. The view exports <code>__arrow_c_array__</code>, so any Arrow consumer wraps the area zero-copy without numpy; reach it via the <code>.base</code> chain when numpy wrapped the result (<code>arr.base</code> for <code>m == 1</code>, one link deeper for <code>m &gt; 1</code>), or as <code>mv.obj</code> on the memoryview form.</p>
+<p>With a template, <code>collect="copy"</code> (the default) returns the output as one numpy array of shape <code>(n, m)</code> — <code>(n,)</code> when <code>m == 1</code> — or a memoryview when numpy is not installed. <code>collect="view"</code> returns the shared output area itself as a read-only zero-copy view, and the shared memory is released when the view is garbage-collected. The view exports <code>__arrow_c_array__</code>, so an Arrow consumer such as pyarrow or polars wraps it without numpy. With numpy, reach the view through the result’s <code>.base</code> (<code>arr.base</code> when <code>m == 1</code>, one link deeper when <code>m &gt; 1</code>). Without numpy, it is <code>mv.obj</code> on the memoryview.</p>
 </section>
 <section id="prepared-maps" class="level1">
 <h1>Prepared maps</h1>
-<p><code>pool.map_prepare()</code> stages a map once for repeated runs — the descriptor pickle, the region create, and the worker-side attach are paid once. Each <code>pool.map_run()</code> re-arms in O(1) and reuses the workers’ cached contexts:</p>
-<div id="0000b9aa" class="cell" data-execution_count="5">
+<p><code>pool.map_prepare()</code> prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each <code>pool.map_run()</code> then costs only the task submissions and the collection, and reuses each worker’s cached map context:</p>
+<div id="3a3588d4" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> pool.map_prepare(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pool.map_run(m))</span>
@@ -358,17 +358,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]</code></pre>
 </div>
 </div>
-<p><code>map_run(m, x=...)</code> replaces the staged data for that and later runs: a raw-buffer replacement of the same dtype and length swaps in place (a memcpy over the region, no restage); anything else restages transparently. A run collected with <code>collect="view"</code> hands its region to the view, so the next run restages into a fresh one.</p>
+<p><code>map_run(m, x=...)</code> replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. After a run collected with <code>collect="view"</code>, the next run uses fresh shared memory, because the previous output area belongs to the returned view.</p>
 </section>
 <section id="outcomes" class="level1">
 <h1>Outcomes</h1>
 <ul>
-<li>An error raised by <code>fn</code> re-raises as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> carrying the failing element’s 0-based <code>index</code>; failure is fail-fast — peers stop within about one batch.</li>
+<li>An error raised by <code>fn</code> re-raises as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> carrying the failing element’s 0-based <code>index</code>. The map fails fast — the workers stop within about one batch.</li>
 <li>Worker death raises <a href="../reference/WorkerDiedError.html#pymizu.WorkerDiedError" class="gdls-link gdls-code">pymizu.WorkerDiedError</a> carrying the lost element ranges as <code>lost</code> (0-based half-open <code>(lo, hi)</code> pairs, conservative).</li>
 <li>On <code>timeout=</code> expiry the outstanding work is cancelled and the <code>pymizu.TIMEOUT</code> sentinel is returned, never raised.</li>
 <li>Ctrl-C during a map cancels its outstanding tasks.</li>
 </ul>
-<p>A map inside a task runs on the worker’s own handle via <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a>, at fork/join cost. A <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec as <code>fn</code> is the cross-language map — see <a href="../user-guide/interop.html#mapping-over-a-foreign-pool">R interop</a>.</p>
+<p>A map started inside a task runs on the worker’s own pool handle, via <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a>. A <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec as <code>fn</code> is the cross-language map — see <a href="../user-guide/interop.html#mapping-over-a-foreign-pool">R interop</a>.</p>
 
 
 </section>
