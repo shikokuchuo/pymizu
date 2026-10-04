@@ -12,7 +12,10 @@
 #                           the received view by reference)
 #   2. typed payloads       strings, logicals with NA, timedelta64 (the
 #                           difftime interchange), datetime64
-#   3. pipelined throughput small arrays in flight, no per-send wait
+#   3. send-only staging    one-way sends against an acking sink: the ack
+#                           is the None row's cost, the remainder the
+#                           send-side stage
+#   4. pipelined throughput small arrays in flight, no per-send wait
 #
 # Median of 5 runs of loops sized past the timer's floor. Run:
 #
@@ -46,6 +49,17 @@ repeat {
   x <- mizu::mizu_recv(ch, timeout = 30)
   if (inherits(x, "mizu_sentinel")) break
   mizu::mizu_send(ch, if (is.numeric(x)) x + 0 else x)
+}
+"""
+
+# the acking sink: acks each payload with NULL, so a send + ack wait
+# measures the Python-side stage alone (the sink's read of a view-tier
+# payload is a cheap wrap)
+R_SINK = """
+repeat {
+  x <- mizu::mizu_recv(ch, timeout = 30)
+  if (inherits(x, "mizu_sentinel")) break
+  mizu::mizu_send(ch, NULL)
 }
 """
 
@@ -130,7 +144,16 @@ for name, x in typed:
     finally:
         ch.close()
 
-print("\n== 3. pipelined throughput (10k x 8 KB float64 in flight) ==\n")
+print("\n== 3. send-only staging (acking sink) ==\n")
+
+for name, x in [("10k strings", [f"value-{i:05d}" for i in range(10_000)])]:
+    ch = pymizu.Channel.create(R_SINK, launcher=launcher)
+    try:
+        note(name, "sink", rt_us(ch, x), "us/send")
+    finally:
+        ch.close()
+
+print("\n== 4. pipelined throughput (10k x 8 KB float64 in flight) ==\n")
 
 k = 10_000
 x = np.random.default_rng(3).random(1000)

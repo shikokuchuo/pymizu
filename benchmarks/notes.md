@@ -620,3 +620,38 @@ bench notes, same date).
 Status: full suite 396+3 pass (3 signal-timing flakes under a
 concurrent benchmark load, green in isolation), 0 fail; ruff + pyrefly
 clean.
+
+## 2026-10-04 — MIZS write-asymmetry instrument rows + baseline (75f09c7)
+
+The Python half of the send-only instrument (see the mizu bench notes,
+same date): an acking R sink peer and the 10k-string send-only row in
+benchmarks/crosslang-channel-bench.py. The R side's instrument rows
+(sink, UTF-8-marked variant, same-language rows) and the full context
+are in mizu's dev/bench/notes.md entry of the same date.
+
+Baseline (the committed pre-fix build): Python-hosted 10k strings
+21.7 us/send against the R sink (22.7 us/rt echo in the same run) —
+the reference the R-side send-only cost (165.3 us/send, ~7.6x) is
+measured against; the fixes' acceptance target is the R row within
+~1.5x of this number.
+
+Status: rows report-only; no suite run (no code change).
+
+## 2026-10-04 — R-side MIZS write fixes land; the Python host is flat
+
+The R side of the string-write asymmetry is fixed in mizu (the gate
+flag read, the fused probe/gate walk, the bulk section fills, the
+STRING_PTR_RO walks — the full account is mizu's dev/bench/notes.md
+entry of the same date). R-sent MIZS regions now arrive with the
+encoding section bulk-filled CE_UTF8 (NA bytes zero), so pymizu's
+readers skip the CE_NATIVE validation defense; frame string columns
+gate R-side now, so a latin1 column reaches Python translated via the
+'I' copy instead of failing at the reader.
+
+Results (this driver re-run against the fixed mizu): every row in band
+— 10k strings 23.6 us/rt echo (22.7 baseline), 20.9 us/send sink
+(21.7); the Python stage is unchanged code. The R-hosted mirror moved:
+188 -> 87 us/rt echo, 165 -> 65 us/send sink.
+
+Status: full suite 398 pass, 5 skip; crosslang 96 pass against the
+fixed mizu; ruff + pyrefly not re-run (no code change).
