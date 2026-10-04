@@ -237,3 +237,64 @@ def test_view_x_crosses_to_map_workers_as_a_ref(r_pool):
     # the workers' map-context views release at eviction / teardown; the
     # count never drops below the pre-map value while they hold them
     assert big.base.refcount >= rc0
+
+
+def _run_probe(pool, paths, args, kwargs):
+    # worker-side probe: a view flag per candidate path (a selected
+    # candidate arrives as a view), plus a checksum
+    if not paths:
+        src = "list(logical(0), 0)"
+    else:
+        checks = ", ".join(
+            f".Call(mizu:::mizu_zc_view_check, {q})" for q in paths
+        )
+        sums = ", ".join(f"sum(as.numeric({q}))" for q in paths)
+        src = f"list(c({checks}), sum(c({sums})))"
+    flags, s = pool.submit(
+        pymizu.call(None, *args, source=src, **kwargs)
+    ).collect()
+    if isinstance(flags, bool):
+        flags = [flags]
+    return [bool(f) for f in flags], s
+
+
+def test_zc_selection_fold_candidate_matrix(r_pool):
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    cand = rng.random(5120)  # 40960 bytes — past the floor
+
+    def run(paths, *args, **kwargs):
+        return _run_probe(r_pool, paths, args, kwargs)
+
+    # the selection flip of a lone candidate bisects the inline budget
+    lo, hi = 0, 40000
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        flags, _ = run(["..1"], cand, "a" * mid)
+        if flags == [True]:
+            lo = mid
+        else:
+            hi = mid - 1
+    # k = 1, the boundary exact: adjusted == inline_max selects (the fit
+    # is inclusive); adjusted == inline_max + 1 stays by value
+    flags, s = run(["..1"], cand, "a" * lo)
+    assert flags == [True]
+    assert s == pytest.approx(float(cand.sum()))
+    flags, _ = run(["..1"], cand, "a" * (lo + 1))
+    assert flags == [False]
+
+    # k = 1 at the middle and tail positions, and nested in a list
+    assert run(["..2"], 1.5, cand, "x")[0] == [True]
+    assert run(["n1"], 1.5, n1=cand)[0] == [True]
+    assert run(["..1[[2]]"], [1.5, cand])[0] == [True]
+
+    # k >= 2 never selects (each adjusted total carries the other
+    # candidates by value); 17 candidates exercise the record cap
+    assert run(["..1", "..2"], cand, rng.random(25000))[0] == [False, False]
+    c17 = [rng.random(5120 + i) for i in range(17)]
+    assert run([f"..{j}" for j in range(1, 18)], *c17)[0] == [False] * 17
+
+    # k = 0, inline and spilled by-value totals
+    assert run([], 1.5, "abc")[0] == []
+    assert run([], "y" * 30000)[0] == []

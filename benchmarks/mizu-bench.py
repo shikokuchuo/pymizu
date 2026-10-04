@@ -680,6 +680,25 @@ else:
         warmup(rep_ref, n=2)
         note_us("arg 8 MB", "R pool (REF)", n, rep_ref, "us/task")
 
+    # the W2 fold: the submit plan walks once where the pre-fold loop ran
+    # a size pass per candidate (k+3 walks). The by-value filler keeps the
+    # whole argument tree on the walk, so the plan's walk count is the
+    # measured term (k = 0 is the no-candidate baseline)
+    with pymizu.Pool.create(2, launcher=launcher) as rp:
+        cands = [np.random.random(5120) for _ in range(16)]  # 40 KB each
+        filler = [float(i) for i in range(3000)]
+        for k in (0, 1, 4, 16):
+            spec_args = (filler, *cands[:k])
+
+            def rep_k(spec_args=spec_args):
+                for _ in range(n):
+                    rp.submit(
+                        pymizu.call(None, *spec_args, source="0L")
+                    ).collect(timeout=60)
+
+            warmup(rep_k, n=1)
+            note_us(f"plan k = {k:2d}", "R pool", n, rep_k, "us/task")
+
 # 7b. string list staging (F4) ------------------------------------------------
 
 print("\n== 7b. string list staging: 1M list[str] to a foreign peer ==")

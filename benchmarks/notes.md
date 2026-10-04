@@ -73,6 +73,10 @@ probes and A/B isolations stay in the log.
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec prepared | 0.1 us/elt | 2026-10-01 |
 | crosslang map compute, spec | 335k tasks/s | 2026-10-03 |
+| submit plan k = 0 (W2 row) | 292.3 us/task | 2026-10-04 |
+| submit plan k = 1 (W2 row) | 280.7 us/task | 2026-10-04 |
+| submit plan k = 4 (W2 row) | 301.9 us/task | 2026-10-04 |
+| submit plan k = 16 (W2 row) | 351.8 us/task | 2026-10-04 |
 
 ## Run log
 
@@ -691,3 +695,38 @@ shows the builds identical there — host drift, not a regression.
 Status: full suite 402 pass, 5 skip (4 new rows: the carriers,
 decline-mid-write, warnings-as-errors, arena-pressure spill); ruff +
 pyrefly clean.
+
+## 2026-10-04 — W2: the zc-selection fold (the task plan walks once)
+
+The 'I' task submit's per-candidate size-pass loop folded into the one
+record walk: the walk itself records the first 16 SHM_VEC candidates
+with their by-value subtree sizes and flips to count-only at the
+first, so selection is arithmetic (total - s_i + the conservative
+ref-leaf reservation vs inline_max) and a candidate-free inline spec
+stages in one walk, a by-reference one in two — was k+3 (the probe,
+the per-candidate size passes, the retry-block count, the write).
+ixp_probe and the retry: block are gone; the spill path writes
+straight into mizu_py_stage_reserve's reservation (no malloc, no
+second memcpy). The wire is unchanged; selection A/B-verified
+identical to the pre-fold implementation over 60 randomized spec
+trees plus the 9-row candidate matrix (R-worker view probes, the
+adjusted == inline_max boundary inclusive both sides).
+
+Results (plan-cost A/B on the filler+candidates row — a 3000-float
+by-value list plus k 40 KB buffers, submit+collect):
+
+| k | before | after |
+|----|----|----|
+| 0 | 307.3 | 301.4 |
+| 1 | 433.6 | 296.3 |
+| 4 | 778.3 | 312.0 |
+| 16 | 2225.3 | 431.1 |
+
+Flat in k (was linear — the per-candidate passes re-walked the whole
+argument tree); the residual growth is the spill bytes themselves.
+The F1 guard rows held (SHM_VEC 1,144.1 -> 1,149.6 us/task, REF
+1,037.8 -> 1,052.0 us/task, inside host drift); the full bench's
+other rows unmoved.
+
+Status: full suite 403 pass, 5 skip (new candidate-matrix test in
+test_crosslang_pool.py); ruff + pyrefly clean.

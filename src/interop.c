@@ -137,6 +137,18 @@ static int64_t attr_as_long(PyObject *obj, const char *name, int *ok) {
 
 // The writer ------------------------------------------------------------------------
 
+/* The W2 plan record: the task walk's record mode captures the first 16
+   SHM_VEC candidates in document order, each with its by-value subtree
+   size (a recorded candidate's subtree walks with detection suppressed —
+   the never-nest rule). The selection is arithmetic: the first candidate
+   with total - size[i] + the conservative ref-leaf reservation <=
+   inline_max is the zc node. */
+typedef struct {
+  PyObject *cand[16];
+  size_t size[16];
+  int ncand;
+} ixp_plan;
+
 /* The walk state: dst NULL sizes (and validates — every decline is found
    in count mode); a real dst writes behind limit, counting past it — the
    first walk may write into the slot payload while sizing, a decline or
@@ -172,6 +184,11 @@ typedef struct {
   int zc_spent;
   int abandon;
   int ref_emitted;
+  /* non-NULL runs the walk in record mode (W2): the optimistic write
+     flips to count-only at the first SHM_VEC candidate, the candidates
+     recorded for the caller's arithmetic selection */
+  ixp_plan *plan;
+  int plan_suppress;
 } ixw;
 
 // The corpus's ref marker ---------------------------------------------------------
@@ -3735,6 +3752,8 @@ static void ixw_zc_leaf(ixw *w, PyObject *obj) {
                              (uint32_t) shm->name_len));
 }
 
+static void ixw_value(ixw *w, PyObject *obj);
+
 /* The F1 ref gate (inline in ixw_node ahead of the dispatch): a
    re-sendable view emits the 0x13 leaf (the region identifier, zero
    value bytes) — REFHELD OR'd into the region's flags (the holder set
@@ -3787,7 +3806,46 @@ static void ixw_node(ixw *w, PyObject *obj) {
       return;
     }
     Py_XDECREF(save);
+    /* the W2 fold: the plan's candidate record lives in the walk itself
+       (the pre-scan's predicates are the gate's own, a re-sendable view
+       never a candidate — the branch above returned). A layout-eligible
+       buffer records and walks by value for its subtree size, nested
+       detection suppressed; the optimistic write's tail past the first
+       candidate is abandoned (selection follows the walk). */
+    if (w->plan != NULL && !w->plan_suppress && !w->churn &&
+        w->plan->ncand < 16 && PyObject_CheckBuffer(obj)) {
+      Py_buffer v;
+      if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
+        const size_t zc_gate = (size_t) w->inline_max > MIZU_ZC_FLOOR ?
+          (size_t) w->inline_max : MIZU_ZC_FLOOR;
+        const int ok = v.strides == NULL && mizu_py_wire_type_of(&v) != 0 &&
+          (size_t) v.len >= zc_gate;
+        PyBuffer_Release(&v);
+        if (ok) {
+          w->dst = NULL;
+          const size_t start = w->total;
+          w->plan_suppress = 1;
+          ixw_value(w, obj);
+          w->plan_suppress = 0;
+          if (!w->decline) {
+            w->plan->cand[w->plan->ncand] = obj;
+            w->plan->size[w->plan->ncand] = w->total - start;
+            w->plan->ncand++;
+          }
+          return;
+        }
+      } else {
+        PyErr_Clear();
+      }
+    }
   }
+  ixw_value(w, obj);
+}
+
+/* The value dispatch (the ref gate's fall-through): every position the
+   gate covers reaches here — the gate itself, or a recorded candidate's
+   by-value subtree walk. */
+static void ixw_value(ixw *w, PyObject *obj) {
   if (obj == Py_None) {
     IXW_PUT(w, mizu_ix_put_nil(IXW_DST(w)));
     return;
@@ -6458,68 +6516,6 @@ static void ixw_task(ixw *w, const char *code, Py_ssize_t code_n, int kind,
   ixw_task_fields(w, code, code_n, args, kwargs);
 }
 
-/* The pre-scan's node probe (the document-order walk shares ixw_node's
-   shape): a re-sendable view sets *out_has_ref; a layout-eligible buffer
-   arg past the floor (the frame_buf_write gate) is a zc candidate. */
-static int ixp_probe(PyObject *obj, const ixw *w, int *out_has_ref,
-                     PyObject **cand, int max_cand) {
-  if (obj == Py_None) return 0;
-  mizu_shm *shm = NULL;
-  PyObject *view = NULL;
-  uint32_t need = 0;
-  if (mizu_py_view_ref_probe(obj, &shm, &view, &need)) {
-    const int ok = w->h == NULL || (w->caps & need) == need;
-    Py_DECREF(view);
-    if (ok) {
-      *out_has_ref = 1;
-      return 0;                    /* refs for free — never the zc node */
-    }
-  }
-  if (!w->churn && PyObject_CheckBuffer(obj)) {
-    Py_buffer v;
-    if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
-      const size_t zc_gate = (size_t) w->inline_max > MIZU_ZC_FLOOR ?
-        (size_t) w->inline_max : MIZU_ZC_FLOOR;
-      const int ok = v.strides == NULL && mizu_py_wire_type_of(&v) != 0 &&
-        (size_t) v.len >= zc_gate;
-      PyBuffer_Release(&v);
-      if (ok) {
-        if (max_cand > 0) cand[0] = obj;
-        return 1;
-      }
-    } else {
-      PyErr_Clear();
-    }
-  }
-  if (PyList_CheckExact(obj) || PyTuple_CheckExact(obj)) {
-    const int is_list = PyList_CheckExact(obj) != 0;
-    const Py_ssize_t n = is_list ? PyList_GET_SIZE(obj) :
-      PyTuple_GET_SIZE(obj);
-    int ncand = 0;
-    for (Py_ssize_t i = 0; i < n && ncand >= 0; i++) {
-      int got = ixp_probe(is_list ? PyList_GET_ITEM(obj, i) :
-                          PyTuple_GET_ITEM(obj, i), w, out_has_ref,
-                          cand + ncand, max_cand - ncand);
-      ncand += got;
-      if (ncand >= max_cand) ncand = -1;
-    }
-    return ncand < 0 ? max_cand : ncand;
-  }
-  if (PyDict_CheckExact(obj)) {
-    int ncand = 0;
-    PyObject *k, *v;
-    Py_ssize_t pos = 0;
-    while (ncand >= 0 && PyDict_Next(obj, &pos, &k, &v)) {
-      int got = ixp_probe(v, w, out_has_ref, cand + ncand,
-                          max_cand - ncand);
-      ncand += got;
-      if (ncand >= max_cand) ncand = -1;
-    }
-    return ncand < 0 ? max_cand : ncand;
-  }
-  return 0;
-}
-
 int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
                          uint8_t *payload, uint32_t inline_max,
                          mizu_handle *h, uint64_t ident) {
@@ -6554,120 +6550,138 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     goto out;
   }
   {
-    ixw base;
-    memset(&base, 0, sizeof(base));
-    memcpy(base.path, "args", 5);
-    base.path_len = 4;
-    base.h = h;
-    base.caps = (uint32_t) (word >> 32);
-    base.inline_max = inline_max;
-    base.churn = mizu_handle_churn(h);
-    base.refs = 1;
-    /* D3's size-pass-first: the pre-scan finds the ref/zc candidates
-       (and doubles as the D2 detector); with a zc candidate the write
-       stages the single checkout, inline-fitting by construction */
-    PyObject *cand[16];
-    int ncand = 0, has_ref = 0;
-    for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(args) && ncand >= 0; i++) {
-      int got = ixp_probe(PyTuple_GET_ITEM(args, i), &base, &has_ref,
-                          cand + ncand, 16 - ncand);
-      ncand += got;
-      if (ncand >= 16) ncand = -1;
-    }
-    PyObject *k, *v;
-    Py_ssize_t pos = 0;
-    while (ncand >= 0 && PyDict_Next(kwargs, &pos, &k, &v)) {
-      int got = ixp_probe(v, &base, &has_ref, cand + ncand, 16 - ncand);
-      ncand += got;
-      if (ncand >= 16) ncand = -1;
-    }
-    if (ncand < 0) ncand = 16;
-    PyObject *zc_node = NULL;
-    for (int i = 0; i < ncand && zc_node == NULL; i++) {
-      ixw w;
-      memcpy(&w, &base, sizeof(w));
-      w.zc_node = cand[i];
-      ixw_task(&w, code_s, code_n, (int) kind, args, kwargs,
-               (uint32_t) (word & 0xff), ident);
-      if (w.decline) {
-        ixw_raise(&w);
-        goto out;
-      }
-      if (w.total <= (size_t) inline_max) zc_node = cand[i];
-    }
-    if ((has_ref || zc_node != NULL) && !(base.caps & MIZU_CAP_TASKREF)) {
-      /* D2: fail locally rather than remotely — a remote failure loses
-         the work to a task error stream */
-      ixw w;
-      memcpy(&w, &base, sizeof(w));
-      ixw_decline(&w, "the pool's workers cannot read by-reference task "
-                      "arguments (upgrade the workers' binding)");
-      ixw_raise(&w);
-      goto out;
-    }
-    int no_zc = zc_node == NULL;
-  retry:;
+    /* the W2 fold: one record walk — the optimistic write into payload
+       flips to count-only at the first SHM_VEC candidate, so a
+       candidate-free inline spec completes in a single walk. Selection
+       is arithmetic over the recorded subtree sizes (F1's D3, the first
+       candidate whose remainder fits), never a size pass per candidate */
+    ixp_plan plan;
+    plan.ncand = 0;
     ixw w;
-    memcpy(&w, &base, sizeof(w));
-    w.zc_node = zc_node;
-    w.no_zc = no_zc;
+    memset(&w, 0, sizeof(w));
+    memcpy(w.path, "args", 5);
+    w.path_len = 4;
+    w.h = h;
+    w.caps = (uint32_t) (word >> 32);
+    w.inline_max = inline_max;
+    w.churn = mizu_handle_churn(h);
+    w.refs = 1;
+    w.dst = payload;
+    w.limit = inline_max;
+    w.plan = &plan;
     ixw_task(&w, code_s, code_n, (int) kind, args, kwargs,
              (uint32_t) (word & 0xff), ident);
     if (w.decline) {
       ixw_raise(&w);
       goto out;
     }
-    size_t n = w.total;
-    ixw w2;
-    memcpy(&w2, &w, sizeof(w2));
-    w2.total = 0;
-    w2.decline = 0;
-    w2.zc_spent = 0;
-    w2.ref_emitted = 0;
-    w2.limit = n;   /* exact: the deterministic write re-counts to n */
-    memset(&w2.warn, 0, sizeof(w2.warn));
-    if (n <= (size_t) inline_max) {
-      w2.dst = payload;
+    const size_t total = w.total;
+    const int has_ref = w.ref_emitted;
+    PyObject *zc_node = NULL;
+    for (int i = 0; i < plan.ncand; i++) {
+      if (total - plan.size[i] + (2 + (MIZU_NAME_MAX - 1)) <=
+          (size_t) inline_max) {
+        zc_node = plan.cand[i];
+        break;
+      }
+    }
+    if ((has_ref || zc_node != NULL) && !(w.caps & MIZU_CAP_TASKREF)) {
+      /* D2: fail locally rather than remotely — a remote failure loses
+         the work to a task error stream */
+      ixw dw;
+      memcpy(&dw, &w, sizeof(dw));
+      ixw_decline(&dw, "the pool's workers cannot read by-reference task "
+                       "arguments (upgrade the workers' binding)");
+      ixw_raise(&dw);
+      goto out;
+    }
+    if (zc_node != NULL) {
+      /* the selected candidate: one write walk, the single checkout
+         inline-fitting by construction */
+      ixw w2;
+      memcpy(&w2, &w, sizeof(w2));
+      w2.total = 0;
+      w2.decline = 0;
+      w2.zc_spent = 0;
+      w2.ref_emitted = 0;
+      memset(&w2.warn, 0, sizeof(w2.warn));
+      w2.plan = NULL;
+      w2.dst = payload;   /* the record walk flipped it to count-only */
+      w2.zc_node = zc_node;
       ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
                (uint32_t) (word & 0xff), ident);
-      if (w2.abandon) {
-        /* a mid-write checkout failure (a churn race): by value, never
-           a partial stream */
-        zc_node = NULL;
-        no_zc = 1;
-        goto retry;
+      if (!w2.abandon) {
+        if (w2.decline) {
+          ixw_raise(&w2);
+          goto out;
+        }
+        if (mizu_py_cvt_warn(&w2.warn) != 0) goto out;
+        hdr->kind = MIZU_KIND_INLINE;
+        hdr->len = (uint32_t) w2.total;
+        hdr->aux = 0;      /* no keeperless claim: inert on task entries */
+        if (w2.ref_emitted) {
+          /* D4: the submit-side handoff pins the spec (every view the
+             argument trees carry) until the claim-side release */
+          Py_INCREF(spec);
+          mizu_stage_pin(h, (void *) spec);
+        }
+        rc = 0;
+        goto out;
       }
-      if (mizu_py_cvt_warn(&w2.warn) != 0) goto out;
+      /* a mid-write checkout failure (a churn race): by value, never a
+         partial stream */
+      zc_node = NULL;
+    }
+    /* the by-value paths: the record walk's warn record is the write's
+       own (the deterministic walk warns identically) */
+    if (mizu_py_cvt_warn(&w.warn) != 0) goto out;
+    if (plan.ncand == 0 && total <= (size_t) inline_max) {
+      /* one walk: the record walk's write is the stream */
       hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) w2.total;
-      hdr->aux = 0;          /* no keeperless claim: inert on task entries */
-      if (w2.ref_emitted) {
-        /* D4: the submit-side handoff pins the spec (every view the
-           argument trees carry) until the claim-side release */
+      hdr->len = (uint32_t) total;
+      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
+      if (has_ref) {
         Py_INCREF(spec);
         mizu_stage_pin(h, (void *) spec);
       }
       rc = 0;
-    } else {
-      /* a zc-carrying stream fits inline by construction, so this branch
-         is checkout-free — never an abandon */
-      uint8_t *buf = malloc(n);
-      if (buf == NULL) {
-        PyErr_NoMemory();
-        goto out;
-      }
-      w2.dst = buf;
-      ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
-               (uint32_t) (word & 0xff), ident);
-      int wrc = mizu_py_cvt_warn(&w2.warn);
-      if (wrc == 0)
-        rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
-      if (rc == 0 && w2.ref_emitted) {
-        Py_INCREF(spec);
-        mizu_stage_pin(h, (void *) spec);
-      }
-      free(buf);
+      goto out;
     }
+    /* candidates recorded, none fitting (or the zc write abandoned): the
+       record walk counted the by-value stream — rewrite it inline, or
+       stage it into the reservation at the recorded size */
+    uint8_t *dst = payload;
+    if (total > (size_t) inline_max) {
+      dst = mizu_py_stage_reserve(total, hdr, payload, h);
+      if (dst == NULL) goto out;
+    }
+    ixw w2;
+    memcpy(&w2, &w, sizeof(w2));
+    w2.total = 0;
+    w2.decline = 0;
+    w2.ref_emitted = 0;
+    memset(&w2.warn, 0, sizeof(w2.warn));
+    w2.plan = NULL;
+    w2.dst = dst;
+    w2.limit = total;   /* exact: the deterministic write re-counts to it */
+    w2.no_zc = 1;
+    ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
+             (uint32_t) (word & 0xff), ident);
+    if (w2.decline) {
+      ixw_raise(&w2);
+      goto out;
+    }
+    if (total <= (size_t) inline_max) {
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) w2.total;
+      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
+    }
+    /* past inline the reservation stamped hdr already */
+    if (w2.ref_emitted) {
+      Py_INCREF(spec);
+      mizu_stage_pin(h, (void *) spec);
+    }
+    rc = 0;
   }
 out:
   Py_XDECREF(code);
