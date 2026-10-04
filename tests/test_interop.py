@@ -208,9 +208,37 @@ def test_temporal_shapes():
 def test_temporal_declines():
     for bad in [np.array([1, 2], dtype="datetime64[Y]"),
                 np.array([1, 2], dtype="datetime64[M]"),
-                np.array([1], dtype="m8[s]")]:
+                np.array([1], dtype="m8[Y]"),
+                np.array([1], dtype="m8[M]"),
+                np.array([1], dtype="m8[ps]")]:
         with pytest.raises(pymizu.DeclinedError):
             _pymizu._write_stream(bad)
+
+
+def test_timedelta_shapes():
+    # timedelta64 both directions: any non-calendar unit converts to us
+    # (a double-seconds hop), NaT kept
+    scales = {"W": 604800e6, "D": 86400e6, "h": 3600e6, "m": 60e6,
+              "s": 1e6, "ms": 1e3, "us": 1.0, "ns": 1e-3}
+    for unit, factor in scales.items():
+        a = np.array([1, 20000], dtype=f"m8[{unit}]")
+        got = _read(_pymizu._write_stream(a))
+        expected = np.round(a.view(np.int64) * factor).astype(np.int64)
+        assert got.dtype == np.dtype("m8[us]"), unit
+        assert np.array_equal(got.view(np.int64), expected), unit
+    nat = np.array([1, np.timedelta64("NaT")], dtype="m8[s]")
+    got = _read(_pymizu._write_stream(nat))
+    assert got[0] == np.timedelta64(1, "s") and np.isnat(got[1])
+    # a timedelta64 scalar exports a uint8 byte view — the value crosses
+    got = _read(_pymizu._write_stream(np.timedelta64(250, "ms")))
+    assert got == np.timedelta64(250000, "us")
+    # stdlib timedelta: the normalized (days, seconds, microseconds) form
+    got = _read(
+        _pymizu._write_stream(
+            datetime.timedelta(days=1, seconds=30, microseconds=500)
+        )
+    )
+    assert got == np.timedelta64(86430000500, "us")
 
 
 def test_arrow_temporal_columns():
@@ -221,6 +249,8 @@ def test_arrow_temporal_columns():
                       type=pa.timestamp("us", tz="UTC")),
         "z": pa.array([1700000000000000, 1700000001000000],
                       type=pa.timestamp("us", tz="America/New_York")),
+        "u": pa.array([90, None], type=pa.duration("s")),
+        "n": pa.array([250000, 1000000], type=pa.duration("ns")),
     })
     assert h.send(t) is True
     f = p.recv(5)
@@ -228,8 +258,28 @@ def test_arrow_temporal_columns():
     assert d["d"].dtype == np.dtype("datetime64[D]")
     assert d["t"].dtype == np.dtype("datetime64[us]")
     assert d["z"].dtype == np.dtype("datetime64[us]")
+    assert d["u"].dtype == np.dtype("timedelta64[us]")
+    assert d["u"][0] == np.timedelta64(90, "s") and np.isnat(d["u"][1])
+    assert d["n"][0] == np.timedelta64(250, "us")
+    assert d["n"][1] == np.timedelta64(1, "ms")
+    # the frame's own Arrow export speaks duration[us]
+    schema = pa.table(f).schema
+    assert schema.field("u").type == pa.duration("us")
+    assert schema.field("n").type == pa.duration("us")
     # a named zone rides the column's metadata and the write-back
     assert _pymizu._write_stream(f)  # re-emits without loss
+    p.destroy()
+    h.destroy()
+
+
+def test_arrow_duration_single():
+    h, p = foreign_pair()
+    assert h.send(pa.chunked_array([[250, None], [500]],
+                                   type=pa.duration("ms"))) is True
+    got = p.recv(5)
+    assert got.dtype == np.dtype("timedelta64[us]")
+    assert got[0] == np.timedelta64(250, "ms") and np.isnat(got[1])
+    assert got[2] == np.timedelta64(500, "ms")
     p.destroy()
     h.destroy()
 

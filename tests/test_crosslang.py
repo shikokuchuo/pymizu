@@ -1045,6 +1045,25 @@ def test_py_r_py_documented_shifts(r_mizu):
         assert ch.send(datetime.date(2022, 3, 21)) is True
         got = ch.recv(30)
         assert got == np.array(["2022-03-21"], dtype="datetime64[D]")[0]
+        # timedelta64 arrays return in us, NaT kept
+        assert ch.send(np.array([90, -3600, "NaT"], dtype="m8[s]")) is True
+        got = ch.recv(30)
+        assert got.dtype == np.dtype("m8[us]")
+        assert got[0] == np.timedelta64(90, "s")
+        assert got[1] == np.timedelta64(-1, "h")
+        assert np.isnat(got[2])
+        # numpy temporal scalars cross as values (not their byte view)
+        assert ch.send(np.timedelta64(250, "ms")) is True
+        got = ch.recv(30)
+        assert got == np.array([250], dtype="m8[ms]")[0]
+        assert ch.send(np.datetime64("2026-01-15")) is True
+        got = ch.recv(30)
+        assert got == np.array(["2026-01-15"], dtype="datetime64[D]")[0]
+        # stdlib timedelta scalar: microseconds preserved
+        assert ch.send(datetime.timedelta(days=1, seconds=30,
+                                          microseconds=500)) is True
+        got = ch.recv(30)
+        assert got == np.timedelta64(86430000500, "us")
         # length-1 int32 / float64 / complex128 / bool_ arrays -> scalars
         for a, want in [
             (np.array([5], dtype=np.int32), 5),
@@ -1115,6 +1134,8 @@ report(matrix(as.raw(1:6), 2, 3))
 report(list(b = c(TRUE, FALSE)))
 report(as.Date("2022-03-21") + 0:2)
 report(.POSIXct(c(1700000000, 1700000000.5), tz = "UTC"))
+report(as.difftime(c(1.5, 2), units = "secs"))
+report(as.difftime(c(1, NA), units = "secs"))
 if (requireNamespace("bit64", quietly = TRUE)) {
   report(bit64::as.integer64(c(1, -1, 2^53 + 1)))
   report(bit64::as.integer64(5))          # length 1 stays integer64
@@ -1163,6 +1184,8 @@ report2(.POSIXct(1700000000, tz = ""),
 report2(.POSIXct(1700000000, tz = "Europe/Paris"),
         .POSIXct(1700000000, tz = "UTC"))      # a named zone normalizes
 report2(c(TRUE, NA), c(1L, NA))                # logical with NA -> integer
+report2(as.difftime(c(1.5, 2.25), units = "mins"),
+        as.difftime(c(90, 135), units = "secs"))  # units normalize to secs
 # integer with NA: 3.2's copied-read rule reads the foreign INT as
 # float64 with NA_real_-payload NaNs — the relay returns numeric (3.2)
 report2(c(1L, NA, -3L), c(1, NA, -3))
@@ -1207,8 +1230,10 @@ report_err(bs)
     # Python-side DeclinedErrors over the live foreign channel
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        with pytest.raises(pymizu.DeclinedError):
-            ch.send(np.array([1], dtype="m8[s]"))
+        with pytest.raises(pymizu.DeclinedError, match="calendar"):
+            ch.send(np.array([1], dtype="m8[M]"))
+        with pytest.raises(pymizu.DeclinedError, match="nanosecond"):
+            ch.send(np.array([1], dtype="m8[ps]"))
         pa = pytest.importorskip("pyarrow")
         with pytest.raises(pymizu.DeclinedError, match="no portable home"):
             ch.send(pa.table({"t": pa.array([1], type=pa.time32("s"))}))
@@ -1288,6 +1313,8 @@ relay(data.frame(x = 1:3, row.names = c(10L, 20L, 30L)))
 relay(data.frame(d = as.Date("2020-01-01") + 0:2,
                  t = .POSIXct(c(1700000000, 1700000001, 1700000002),
                               tz = "UTC")))
+relay(data.frame(u = as.difftime(c(90, 135, NA), units = "secs"),
+                 x = 1:3))
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
@@ -1314,6 +1341,9 @@ chk <- function(expected_names, n) {
 chk(c("s", "x", "c"), 3L)
 chk(c("a", "b"), 4L)
 chk(c("s", "o", "i", "c"), 2L)
+df <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, inherits(df$u, "difftime") &&
+  identical(as.double(df$u), c(90, NA, 86400)))
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
@@ -1336,6 +1366,11 @@ chk(c("s", "o", "i", "c"), 2L)
             "o": pd.Series(["x", None], dtype=object),
             "i": pd.array([1, None], dtype="Int64"),
             "c": pd.Series(["u", "v"], dtype=pd.CategoricalDtype(["u", "v"])),
+        }))
+        assert ch.recv(30) is True
+        # an Arrow duration column: the R home is a difftime in seconds
+        ch.send(pa.table({
+            "u": pa.array([90, None, 86400], type=pa.duration("s")),
         }))
         assert ch.recv(30) is True
     finally:
@@ -1530,6 +1565,34 @@ mizu::mizu_recv(ch, timeout = 60)
         assert t.schema.field("d").type == pa.date32()
         assert t.schema.field("p").type == pa.timestamp("us", tz="UTC")
         assert t.column("p").null_count == 0
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_difftime_column(r_mizu):
+    # a difftime column converts (owned): duration[us] on the export,
+    # the NA an int64 NaT; units normalize to seconds
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+df <- data.frame(u = as.difftime(seq_len(300000) / 2, units = "mins"),
+                 x = seq_len(300000) + 0)
+df$u[2] <- NA
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(60)
+        d = f.to_dict()
+        assert d["u"].dtype == np.dtype("timedelta64[us]")
+        assert d["u"][0] == np.timedelta64(30, "s")
+        assert np.isnat(d["u"][1])
+        assert d["u"][2] == np.timedelta64(90, "s")
+        t = pa.table(f)
+        assert t.schema.field("u").type == pa.duration("us")
+        assert t.column("u").null_count == 1
+        assert t.schema.field("x").type == pa.float64()
     finally:
         ch.close()
 
@@ -1878,8 +1941,10 @@ mizu::mizu_recv(ch, timeout = 60)
 
 
 def test_r_peer_region_declines_on_r_side(r_mizu):
-    # past the floor on a foreign handle: a named vector, a difftime and
-    # a closure-leafed tree all raise at send (no portable home)
+    # past the floor on a foreign handle: a named vector and a
+    # closure-leafed tree raise at send (no portable home); a difftime
+    # crosses as the MIZH layout + blob and homes timedelta64[us]
+    np = pytest.importorskip("numpy")
     src = r"""
 e1 <- tryCatch({
   nv <- runif(300000)
@@ -1903,7 +1968,11 @@ mizu::mizu_recv(ch, timeout = 60)
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         assert "not portable" in ch.recv(30)
-        assert "not portable" in ch.recv(30)
+        got = ch.recv(30)   # the difftime: one layout write, an owned copy
+        assert got.dtype == np.dtype("m8[us]")
+        assert got[0] == np.timedelta64(1, "s")
+        assert got[-1] == np.timedelta64(299999 + 1, "s")
+        assert ch.recv(30) == "no error"
         assert "not portable" in ch.recv(30)
     finally:
         ch.close()

@@ -90,7 +90,7 @@ static int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
 /* The datetime module's date/datetime types, probed through sys.modules
    (never imported here: a date object exists only when the user imported
    datetime — the buffer-subclass probe's discipline). */
-static PyTypeObject *mizu_dt_date, *mizu_dt_datetime;
+static PyTypeObject *mizu_dt_date, *mizu_dt_datetime, *mizu_dt_timedelta;
 static int mizu_dt_probed;
 
 static void datetime_probe(void) {
@@ -109,7 +109,13 @@ static void datetime_probe(void) {
     PyObject *t = PyObject_GetAttrString(dt, "datetime");
     if (t != NULL && PyType_Check(t)) mizu_dt_datetime = (PyTypeObject *) t;
     else Py_XDECREF(t);
-    if (mizu_dt_date == NULL || mizu_dt_datetime == NULL) PyErr_Clear();
+    PyObject *td = PyObject_GetAttrString(dt, "timedelta");
+    if (td != NULL && PyType_Check(td))
+      mizu_dt_timedelta = (PyTypeObject *) td;
+    else Py_XDECREF(td);
+    if (mizu_dt_date == NULL || mizu_dt_datetime == NULL ||
+        mizu_dt_timedelta == NULL)
+      PyErr_Clear();
   }
   Py_DECREF(dt);
 }
@@ -398,6 +404,24 @@ static void ixe_posixct(ixw *w, const int64_t *counts, uint64_t n,
   ixe_strv(w, 1, one, len);
 }
 
+/* The difftime shape: attr(realv seconds, {class: "difftime", units:
+   "secs"}) — counts an int64 span of some time unit, scale the unit in
+   seconds. R's five units normalize to seconds on the wire; the R reader
+   stamps the value with units = "secs". */
+static void ixe_difftime(ixw *w, const int64_t *counts, uint64_t n,
+                         double scale) {
+  static const char *cls[1] = { "difftime" };
+  IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
+  ixe_realv_counts(w, counts, n, scale);
+  IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
+  ixe_key(w, "class");
+  ixe_class(w, cls, 1);
+  ixe_key(w, "units");
+  const char *one[1] = { "secs" };
+  int64_t len[1] = { 4 };
+  ixe_strv(w, 1, one, len);
+}
+
 // The layout attribute blobs (pyshmframe.h's; complete 'I' streams) ----------------
 
 /* The frame dict's names value: the corpus's scalar form at length 1. */
@@ -462,6 +486,22 @@ size_t mizu_py_blob_ts(uint8_t *dst, const char *tz) {
   ixe_class(&w, cls, 2);
   ixe_key(&w, "tzone");
   IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), tz, (int32_t) strlen(tz)));
+  return w.total;
+}
+
+/* The difftime dict {class = "difftime", units = "secs"} — the layout
+   column's doubles are seconds, so the blob is unit-fixed. */
+size_t mizu_py_blob_difftime(uint8_t *dst) {
+  static const char *cls[1] = { "difftime" };
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
+  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
+  ixe_key(&w, "class");
+  ixe_class(&w, cls, 1);
+  ixe_key(&w, "units");
+  IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), "secs", 4));
   return w.total;
 }
 
@@ -538,6 +578,7 @@ enum {
   FCOL_DICT,  /* values = i32 codes 0-based (MIZU_NA_INT32 null) + levels */
   FCOL_DATE,  /* i32 days, MIZU_NA_INT32 null — Arrow date32 */
   FCOL_TS,    /* i64 us, MIZU_NA_INT64 null — Arrow timestamp[us] */
+  FCOL_TD,    /* i64 us, MIZU_NA_INT64 null — Arrow duration[us] */
   FCOL_STR64  /* a region MIZS block (the tree wrap): values = the block,
                  validity/i64 offsets/bytes in place — Arrow large_utf8 */
 };
@@ -629,7 +670,7 @@ static frame_cols *frame_cols_new(int ncols, int64_t nrow) {
 
 static int fcol_fixed_size(int kind) {
   switch (kind) {
-  case FCOL_F64: case FCOL_I64: case FCOL_TS: return 8;
+  case FCOL_F64: case FCOL_I64: case FCOL_TS: case FCOL_TD: return 8;
   case FCOL_I32: case FCOL_LGL: case FCOL_DATE: case FCOL_DICT: return 4;
   case FCOL_C128: return 16;
   case FCOL_U8: return 1;
@@ -1381,6 +1422,62 @@ static PyObject *realv_to_datetime(const uint8_t *ptr, uint64_t n, int days) {
   return arr;
 }
 
+/* A realv span to timedelta64[us]: the values are in the dict's declared
+   units, unit_secs the unit in seconds. NA payloads -> NaT. */
+static PyObject *realv_to_timedelta(const uint8_t *ptr, uint64_t n,
+                                    double unit_secs) {
+  PyObject *np = mizu_py_numpy_module();
+  if (np == NULL) {
+    PyErr_SetString(MizuError, "pymizu: a temporal interop read needs "
+                    "numpy (install it)");
+    return NULL;
+  }
+  Py_ssize_t dims[1] = { (Py_ssize_t) n };
+  PyObject *arr = ixr_np_alloc(dims, 1, "timedelta64[us]", 0);
+  if (arr == NULL) return NULL;
+  Py_buffer v;
+  if (PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE) < 0) {
+    Py_DECREF(arr);
+    return NULL;
+  }
+  const double *src = (const double *) ptr;
+  int64_t *dst = (int64_t *) v.buf;
+  int bad = 0;
+  for (uint64_t i = 0; i < n; i++) {
+    uint64_t bits;
+    memcpy(&bits, src + i, 8);
+    if (is_na_r(bits)) {
+      dst[i] = INT64_MIN;
+      continue;
+    }
+    double x = src[i];
+    if (!isfinite(x) || fabs(x) * unit_secs > 9.0e12) {
+      bad = 1;
+      break;
+    }
+    dst[i] = (int64_t) llround(x * unit_secs * 1e6);
+  }
+  PyBuffer_Release(&v);
+  if (bad) {
+    Py_DECREF(arr);
+    PyErr_SetString(MizuError, "pymizu: no portable home for this "
+                    "difftime value");
+    return NULL;
+  }
+  return arr;
+}
+
+/* The declared difftime units to seconds (R's five units), 0 when the
+   string names none of them. */
+static double difftime_unit_secs(const char *u, size_t n) {
+  if (n == 4 && memcmp(u, "secs", 4) == 0) return 1.0;
+  if (n == 4 && memcmp(u, "mins", 4) == 0) return 60.0;
+  if (n == 5 && memcmp(u, "hours", 5) == 0) return 3600.0;
+  if (n == 4 && memcmp(u, "days", 4) == 0) return 86400.0;
+  if (n == 5 && memcmp(u, "weeks", 5) == 0) return 604800.0;
+  return 0.0;
+}
+
 /* The dim shape: the vector read per its tag's rule, reshaped F-order. */
 static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
                                 uint64_t count, const int32_t *dims,
@@ -1517,6 +1614,7 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   attr_ent *lv = attr_find(ents, nent, "levels");
   attr_ent *dm = attr_find(ents, nent, "dim");
   attr_ent *tz = attr_find(ents, nent, "tzone");
+  attr_ent *un = attr_find(ents, nent, "units");
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, "factor", NULL) && vtype == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -1553,6 +1651,14 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
              vtype == MIZU_TYPE_REAL) {
     out = realv_to_datetime(vptr, vn, 0);   /* tzone: display metadata,
                                                dropped standalone */
+  } else if (cls != NULL && nent == 2 && un != NULL &&
+             un->kind == AV_STR && class_is(cls, "difftime", NULL) &&
+             vtype == MIZU_TYPE_REAL &&
+             difftime_unit_secs((const char *) un->val.ptr,
+                                (size_t) un->val.count) != 0.0) {
+    out = realv_to_timedelta(vptr, vn,
+                             difftime_unit_secs((const char *) un->val.ptr,
+                                                (size_t) un->val.count));
   } else {
     ixr_no_home(ents, nent, "an attributed value");
   }
@@ -1619,6 +1725,36 @@ static int fcol_ts_fill(const double *src, uint64_t vn, const char *tz,
   c->values = (uint8_t *) us;
   if (tz_len > 0 && tz_len < sizeof(c->tz))
     snprintf(c->tz, sizeof(c->tz), "%.*s", (int) tz_len, tz);
+  return 0;
+}
+
+/* A difftime column's doubles (in the dict's declared units, unit_secs
+   the unit in seconds) to owned i64 us (MIZU_NA_INT64 null) — Arrow
+   duration[us]. */
+static int fcol_difftime_fill(const double *src, uint64_t vn,
+                              double unit_secs, fcol *c) {
+  int64_t *us = malloc((size_t) (vn != 0 ? vn : 1) * 8);
+  if (us == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  for (uint64_t i = 0; i < vn; i++) {
+    uint64_t bits;
+    memcpy(&bits, src + i, 8);
+    if (is_na_r(bits)) {
+      us[i] = INT64_MIN;
+    } else if (!isfinite(src[i]) || fabs(src[i]) * unit_secs > 9.0e12) {
+      free(us);
+      PyErr_SetString(MizuError, "pymizu: no portable home for this "
+                      "difftime value");
+      return -1;
+    } else {
+      us[i] = (int64_t) llround(src[i] * unit_secs * 1e6);
+    }
+  }
+  c->kind = FCOL_TD;
+  c->n = (int64_t) vn;
+  c->values = (uint8_t *) us;
   return 0;
 }
 
@@ -1775,6 +1911,17 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
                           (const char *) tz->val.ptr : "",
                         tz != NULL && tz->kind == AV_STR ?
                           (size_t) tz->val.count : 0, c);
+    } else if (cls != NULL && nent == 2 &&
+               class_is(cls, "difftime", NULL) &&
+               vtype == MIZU_TYPE_REAL) {
+      attr_ent *un = attr_find(ents, nent, "units");
+      const double us = un != NULL && un->kind == AV_STR ?
+        difftime_unit_secs((const char *) un->val.ptr,
+                           (size_t) un->val.count) : 0.0;
+      if (us != 0.0)
+        rc = fcol_difftime_fill((const double *) vptr, vn, us, c);
+      else
+        ixr_no_home(ents, nent, "an attributed frame column");
     } else {
       ixr_no_home(ents, nent, "an attributed frame column");
     }
@@ -2315,6 +2462,17 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
                         (const char *) tz->val.ptr : "",
                       tz != NULL && tz->kind == AV_STR ?
                         (size_t) tz->val.count : 0, c);
+  } else if (cls != NULL && nent == 2 && class_is(cls, "difftime", NULL) &&
+             tag == MIZU_TYPE_REAL) {
+    attr_ent *un = attr_find(ents, nent, "units");
+    const double us = un != NULL && un->kind == AV_STR ?
+      difftime_unit_secs((const char *) un->val.ptr,
+                         (size_t) un->val.count) : 0.0;
+    if (us != 0.0)
+      rc = fcol_difftime_fill((const double *) data, (uint64_t) e->length,
+                              us, c);
+    else
+      ixr_no_home(ents, nent, "an attributed frame column");
   } else {
     ixr_no_home(ents, nent, "an attributed frame column");
   }
@@ -2474,6 +2632,16 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
              type == MIZU_TYPE_REAL) {
     out = realv_to_datetime(data, (uint64_t) n, 0);   /* tzone: display
                                                          metadata, dropped */
+  } else if (cls != NULL && nent == 2 &&
+             class_is(cls, "difftime", NULL) && type == MIZU_TYPE_REAL) {
+    attr_ent *un = attr_find(ents, nent, "units");
+    const double us = un != NULL && un->kind == AV_STR ?
+      difftime_unit_secs((const char *) un->val.ptr,
+                         (size_t) un->val.count) : 0.0;
+    if (us != 0.0)
+      out = realv_to_timedelta(data, (uint64_t) n, us);
+    else
+      ixr_no_home(ents, nent, "an attributed value");
   } else {
     ixr_no_home(ents, nent, "an attributed value");
   }
@@ -2879,6 +3047,9 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     ixe_posixct(w, (const int64_t *) c->values, (uint64_t) c->n,
                 c->tz[0] != '\0' ? c->tz : "UTC", 1e-6);
     break;
+  case FCOL_TD:
+    ixe_difftime(w, (const int64_t *) c->values, (uint64_t) c->n, 1e-6);
+    break;
   }
 }
 
@@ -3132,12 +3303,64 @@ static double temporal_scale(int unit) {
   return 1.0;
 }
 
-/* A numpy datetime64 array or scalar (datetime64 refuses the buffer
+/* A numpy datetime64/timedelta64 array or scalar (both refuse the buffer
    protocol; the unit was parsed off .dtype.str by the caller). 1-D or
    0-d only. */
 static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
   if (delta) {
-    ixw_decline(w, "a timedelta64 has no portable home");
+    if (unit == TU_CAL) {
+      ixw_decline(w, "a calendar-dependent timedelta64 unit "
+                  "('Y'/'M') has no portable home");
+      return;
+    }
+    if (unit == TU_SUB || unit == TU_NONE) {
+      ixw_decline(w, "a timedelta64 unit below nanosecond resolution "
+                  "has no portable home");
+      return;
+    }
+    /* int64 counts to seconds: a day/week unit first, then the sub-day
+       scales; a double second carries ns resolution to ~104 days */
+    const double scale = unit == TU_DAY ? 86400.0 :
+      unit == TU_WEEK ? 604800.0 : temporal_scale(unit);
+    PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
+    if (view == NULL) {
+      PyErr_Clear();
+      view = PyObject_CallMethod(obj, "astype", "s", "int64");
+      if (view == NULL) {
+        PyErr_Clear();
+        ixw_decline_type(w, obj, "a timedelta64 value that cannot cross");
+        return;
+      }
+    }
+    int64_t one = 0;
+    const int64_t *counts = &one;
+    uint64_t n = 1;
+    Py_buffer bv;
+    int got = PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) == 0;
+    if (got && bv.ndim > 1) {
+      PyBuffer_Release(&bv);
+      Py_DECREF(view);
+      ixw_decline(w, "a timedelta64 array past 1-D has no portable home");
+      return;
+    }
+    if (got) {
+      counts = (const int64_t *) bv.buf;
+      n = (uint64_t) (bv.len / 8);
+    } else {
+      PyErr_Clear();
+      PyObject *i = PyNumber_Index(view);
+      if (i == NULL) {
+        PyErr_Clear();
+        Py_DECREF(view);
+        ixw_decline_type(w, obj, "a timedelta64 value that cannot cross");
+        return;
+      }
+      one = PyLong_AsLongLong(i);
+      Py_DECREF(i);
+    }
+    ixe_difftime(w, counts, n, scale);
+    if (got) PyBuffer_Release(&bv);
+    Py_DECREF(view);
     return;
   }
   if (unit == TU_CAL) {
@@ -3195,6 +3418,32 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
   }
   if (got) PyBuffer_Release(&bv);
   Py_DECREF(view);
+}
+
+/* The stage gate's temporal probe: 1 datetime64, 2 timedelta64, 0 not a
+   temporal numpy object. A temporal numpy scalar exports its bytes as
+   uint8 (the buffer protocol has no datetime), which the raw tier would
+   otherwise claim as a byte vector — the gate skips the raw tier for
+   these so the 'I' writer (or pickle) sees the value. */
+int mizu_py_np_temporal(PyObject *obj) {
+  const int nk = mizu_py_np_kind(obj);
+  if (nk == 0) return 0;
+  PyObject *dt = PyObject_GetAttrString(obj, "dtype");
+  PyObject *ds = dt != NULL ? PyObject_GetAttrString(dt, "str") : NULL;
+  int out = 0;
+  if (ds != NULL && PyUnicode_Check(ds)) {
+    const char *s = PyUnicode_AsUTF8(ds);
+    if (s != NULL) {
+      const char *p = s;
+      if (*p == '=' || *p == '<' || *p == '>' || *p == '|') p++;
+      if (p[0] == 'M' && p[1] == '8' && p[2] == '[') out = 1;
+      else if (p[0] == 'm' && p[1] == '8' && p[2] == '[') out = 2;
+    }
+  }
+  Py_XDECREF(ds);
+  Py_XDECREF(dt);
+  if (PyErr_Occurred()) PyErr_Clear();
+  return out;
 }
 
 /* The buffer-protocol leaf (and numpy scalar) walk. */
@@ -3371,6 +3620,27 @@ static void ixw_stdlib_date(ixw *w, PyObject *obj) {
   }
   int64_t days = days_from_civil(y, mo, d);
   ixe_date(w, &days, 1, 1.0);
+}
+
+/* A datetime.timedelta scalar: the normalized (days, seconds,
+   microseconds) triple to int64 us, emitted as one difftime second. */
+static void ixw_stdlib_timedelta(ixw *w, PyObject *obj) {
+  int ok = 1;
+  int64_t d = attr_as_long(obj, "days", &ok);
+  int64_t s = attr_as_long(obj, "seconds", &ok);
+  int64_t us = attr_as_long(obj, "microseconds", &ok);
+  if (!ok) {
+    PyErr_Clear();
+    ixw_decline_type(w, obj, "a timedelta value that cannot cross");
+    return;
+  }
+  if (d > 106000 || d < -106000) {   /* |us| would overflow int64 */
+    ixw_decline(w, "a timedelta past the int64 microsecond range has no "
+                "portable home");
+    return;
+  }
+  int64_t total = (d * 86400 + s) * 1000000 + us;
+  ixe_difftime(w, &total, 1, 1e-6);
 }
 
 /* The plan's SHM_VEC candidate: the frame_buf_write body (one MIZH
@@ -3575,6 +3845,10 @@ static void ixw_node(ixw *w, PyObject *obj) {
   }
   if (mizu_dt_date != NULL && Py_TYPE(obj) == mizu_dt_date) {
     ixw_stdlib_date(w, obj);
+    return;
+  }
+  if (mizu_dt_timedelta != NULL && Py_TYPE(obj) == mizu_dt_timedelta) {
+    ixw_stdlib_timedelta(w, obj);
     return;
   }
   if (PyObject_CheckBuffer(obj) || mizu_py_np_kind(obj) != 0) {
@@ -3816,6 +4090,15 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
     }
     return ixr_vec_conv("datetime64[us]", c->values, n, 8, NULL, NULL);
   }
+  case FCOL_TD: {
+    PyObject *np = mizu_py_numpy_module();
+    if (np == NULL) {
+      PyErr_SetString(MizuError, "pymizu: a difftime column needs numpy "
+                      "for to_dict() (install it)");
+      return NULL;
+    }
+    return ixr_vec_conv("timedelta64[us]", c->values, n, 8, NULL, NULL);
+  }
   }
   PyErr_SetString(MizuError, "pymizu: unknown frame column kind");
   return NULL;
@@ -3931,7 +4214,7 @@ static int64_t fcol_ensure_export(fcol *c) {
         na = is_na_r(b[0]) && is_na_r(b[1]);
         break;
       }
-      case FCOL_I64: case FCOL_TS: {
+      case FCOL_I64: case FCOL_TS: case FCOL_TD: {
         int64_t v;
         memcpy(&v, c->values + 8 * i, 8);
         na = v == MIZU_NA_INT64;
@@ -3958,9 +4241,11 @@ static int64_t fcol_ensure_export(fcol *c) {
       c->valid = valid;
       c->valid_owned = 1;
     }
-  }
-  if (c->valid != NULL)
+  } else if (c->valid != NULL) {
+    /* a pre-existing bitmap (a region's): counted once here — a bitmap
+       the scan just built already contributed its count above */
     for (int64_t i = 0; i < n; i++) nulls += !bitmap_at(c->valid, i);
+  }
   /* the bit-packed values build at export, nulls or not */
   if (c->kind == FCOL_LGL && c->bits == NULL) {
     c->bits = calloc(((size_t) n + 7) / 8, 1);
@@ -4314,6 +4599,7 @@ static PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     case FCOL_STR64: fmt = "U"; break;
     case FCOL_DICT: fmt = "i"; break;
     case FCOL_DATE: fmt = "tdD"; break;
+    case FCOL_TD: fmt = "tDu"; break;
     case FCOL_TS:
       fmt = ex->fmts[i];
       snprintf(ex->fmts[i], 64, "tsu:%s", c->tz);
@@ -4444,7 +4730,8 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
       c->kind == FCOL_LGL ? "b" :
       c->kind == FCOL_STR || c->kind == FCOL_STR64 ? "s" :
       c->kind == FCOL_DICT ? "d" :
-      c->kind == FCOL_DATE ? "D" : "t";
+      c->kind == FCOL_DATE ? "D" :
+      c->kind == FCOL_TD ? "T" : "t";
     if (payload == NULL) goto fail;
     for (int64_t j = 0; j < c->n; j++) {
       PyObject *v = NULL;
@@ -4467,7 +4754,7 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
         }
         break;
       }
-      case FCOL_I64: case FCOL_TS: {
+      case FCOL_I64: case FCOL_TS: case FCOL_TD: {
         int64_t x;
         memcpy(&x, c->values + 8 * j, 8);
         v = x == MIZU_NA_INT64 ? (Py_INCREF(Py_None), Py_None) :
@@ -4637,7 +4924,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     c->n = n;
     switch (kind[0]) {
     case 'g': case 'Z': case 'C': case 'i': case 'l': case 'b':
-    case 'D': case 't': case 's': case 'd':
+    case 'D': case 't': case 'T': case 's': case 'd':
       break;
     default:
       goto malformed;
@@ -4649,6 +4936,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       kind[0] == 'Z' ? FCOL_C128 :
       kind[0] == 'b' ? FCOL_LGL :
       kind[0] == 'D' ? FCOL_DATE :
+      kind[0] == 'T' ? FCOL_TD :
       kind[0] == 't' ? FCOL_TS :
       kind[0] == 's' ? FCOL_STR : FCOL_DICT;
     int elt = fcol_fixed_size(c->kind);
@@ -4800,7 +5088,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         memcpy(c->values + 4 * j, &x, 4);
         break;
       }
-      case FCOL_I64: case FCOL_TS: {
+      case FCOL_I64: case FCOL_TS: case FCOL_TD: {
         int64_t x;
         if (v == Py_None) {
           x = MIZU_NA_INT64;
@@ -5177,6 +5465,54 @@ static void ixs_emit_ts_col(ixe *e, ixs *x, int col) {
   }
 }
 
+/* A duration column (Arrow duration[unit], the scale in seconds) to the
+   difftime shape: realv seconds + the {class, units} dict. */
+static void ixs_emit_td_col(ixe *e, ixs *x, int col) {
+  ixs_pcol *pc = &x->cols[col];
+  IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
+  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), MIZU_IX_TAG_REALV,
+                           (uint64_t) x->hold.rows));
+  if (e->dst != NULL) {
+    uint8_t *dst = e->dst + e->total;
+    size_t off = 0;
+    for (size_t b = 0; b < x->hold.nb; b++) {
+      ArrowArray *a = x->single ? &x->hold.arrs[b] :
+        x->hold.arrs[b].children[col];
+      const int64_t *counts = (const int64_t *) a->buffers[1];
+      for (int64_t k = 0; k < a->length; k++) {
+        if (!arrow_valid(a, k)) {
+          store_na_r(dst + 8 * (off + (size_t) k));
+        } else {
+          double v = (double) counts[a->offset + k] * pc->ts_scale;
+          memcpy(dst + 8 * (off + (size_t) k), &v, 8);
+        }
+      }
+      off += (size_t) a->length;
+    }
+  }
+  e->total += (size_t) x->hold.rows * 8;
+  IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 2));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "class", 5));
+  {
+    static const char *cls[1] = { "difftime" };
+    ixw w2;
+    memset(&w2, 0, sizeof(w2));
+    w2.dst = IXE_DST(e);
+    ixe_class(&w2, cls, 1);
+    e->total += w2.total;
+  }
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "units", 5));
+  {
+    ixw w2;
+    memset(&w2, 0, sizeof(w2));
+    w2.dst = IXE_DST(e);
+    const char *strs[1] = { "secs" };
+    int64_t lens[1] = { 4 };
+    ixe_strv(&w2, 1, strs, lens);
+    e->total += w2.total;
+  }
+}
+
 static void ixs_emit_dict_col(ixe *e, ixs *x, int col, const int32_t *offs,
                               const uint8_t *bytes, int64_t nlev) {
   ixs_pcol *pc = &x->cols[col];
@@ -5258,6 +5594,7 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
       break;
     case PC_DATE: ixs_emit_date_col(e, x, i); break;
     case PC_TS: ixs_emit_ts_col(e, x, i); break;
+    case PC_TD: ixs_emit_td_col(e, x, i); break;
     }
   }
   IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 3));
@@ -5366,6 +5703,13 @@ static int ixs_classify(ixs *x, int col, const ArrowSchema *sc, int top) {
     const char *tz = f + 4;
     snprintf(pc->tz, sizeof(pc->tz), "%s", tz[0] != '\0' ? tz : "UTC");
     pc->kind = PC_TS;
+    return 0;
+  }
+  if (f[0] == 't' && f[1] == 'D' && f[3] == '\0' &&
+      (f[2] == 's' || f[2] == 'm' || f[2] == 'u' || f[2] == 'n')) {
+    pc->ts_scale = f[2] == 's' ? 1.0 : f[2] == 'm' ? 1e-3 :
+      f[2] == 'u' ? 1e-6 : 1e-9;
+    pc->kind = PC_TD;
     return 0;
   }
   const cvt_row *row = mizu_py_cvt_for_arrow(f);
@@ -5693,6 +6037,10 @@ static void ixs_single_ts_emit(ixe *e, ixs *x) {
   ixs_emit_ts_col(e, x, 0);
 }
 
+static void ixs_single_td_emit(ixe *e, ixs *x) {
+  ixs_emit_td_col(e, x, 0);
+}
+
 static void ixs_single_cvt_emit(ixe *e, ixs *x) {
   ixs_emit_cvt_col(e, x, 0);
 }
@@ -5741,6 +6089,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     pc->kind == PC_STR ? ixs_single_str_emit :
     pc->kind == PC_DICT ? ixs_single_dict_emit :
     pc->kind == PC_DATE ? ixs_single_date_emit :
+    pc->kind == PC_TD ? ixs_single_td_emit :
     pc->kind == PC_TS ? ixs_single_ts_emit : ixs_single_cvt_emit;
   return ixs_stage_emit(x, hdr, payload, inline_max, h, emit);
 }

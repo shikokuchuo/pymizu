@@ -133,6 +133,10 @@ static int sf_size_col(ixs *x, int col, sf_col *c, int same_lang) {
     c->tz = same_lang ? x->schema.children[col]->format + 4 : pc->tz;
     c->blob = (int64_t) mizu_py_blob_ts(NULL, c->tz);
     break;
+  case PC_TD:
+    c->body = x->hold.rows * 8;
+    c->blob = (int64_t) mizu_py_blob_difftime(NULL);
+    break;
   default:
     PyErr_SetString(MizuError, "pymizu: unknown frame column kind");
     return -1;
@@ -306,6 +310,12 @@ static void sf_write_ts(uint8_t *dst, ixs *x, int col) {
     }
     done += a->length;
   }
+}
+
+/* The duration half of sf_write_ts: the same seconds conversion, the
+   difftime blob the only difference (written by the caller). */
+static void sf_write_td(uint8_t *dst, ixs *x, int col) {
+  sf_write_ts(dst, x, col);
 }
 
 /* One leaf's validity bitmap into the section: verbatim for a single
@@ -501,6 +511,11 @@ int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
         entry.sexptype = MIZU_TYPE_REAL;
         sf_write_ts(dst, x, i);
         mizu_py_blob_ts(dst + cols[i].body, cols[i].tz);
+        break;
+      case PC_TD:
+        entry.sexptype = MIZU_TYPE_REAL;
+        sf_write_td(dst, x, i);
+        mizu_py_blob_difftime(dst + cols[i].body);
         break;
       }
       entry.data_size = cols[i].body + cols[i].blob;

@@ -1555,9 +1555,14 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
           rc = stage_ref(obj, &v, hdr, payload, inline_max);
         if (rc < 0) {
           int type = wire_type_of(&v);
-          if (type != 0)
+          /* a temporal numpy scalar exports its bytes as uint8: the byte
+             view is not the value — leave the buffer tiers entirely so
+             the 'I' writer (foreign) or pickle (same-language) sees it */
+          const int temporal = type != 0 && v.format != NULL &&
+            v.format[0] == 'B' && mizu_py_np_temporal(obj) != 0;
+          if (type != 0 && !temporal)
             rc = stage_raw(&v, type, hdr, payload, inline_max, h);
-          else if (foreign)
+          else if (type == 0 && foreign)
             /* the conversion pass is foreign-only: same-language
                handles keep identity dtypes and pickle the rest */
             rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);

@@ -142,6 +142,7 @@ PyObject *mizu_py_numpy_module(void);   /* the module, Py_None, or NULL+err */
 int mizu_py_buffer_subclass_reject(PyObject *obj);
 /* 1 exact ndarray, 2 a numpy scalar, 0 neither. */
 int mizu_py_np_kind(PyObject *obj);
+int mizu_py_np_temporal(PyObject *obj);
 int mizu_py_wire_type_of(const Py_buffer *v);
 const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize);
 const cvt_row *mizu_py_cvt_for_arrow(const char *f);

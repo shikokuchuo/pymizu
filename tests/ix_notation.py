@@ -426,6 +426,17 @@ def attr_home(x, attrs):
         out = us.astype("datetime64[us]")
         out[isnat] = np.datetime64("NaT")
         return out
+    if klass == ["difftime"]:
+        factor = {"secs": 1.0, "mins": 60.0, "hours": 3600.0,
+                  "days": 86400.0, "weeks": 604800.0}[attrs["units"]]
+        us = np.round(
+            np.asarray(x, dtype=np.float64) * factor * 1e6
+        ).astype(np.int64)
+        isnat = np.array(
+            [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x])
+        out = us.astype("timedelta64[us]")
+        out[isnat] = np.timedelta64("NaT")
+        return out
     raise ValueError(f"no Python home for attr class {klass!r}")
 
 
@@ -457,7 +468,7 @@ def _array_same(a, b):
         av = a.view(np.uint64) if a.dtype.kind in "fc" else a
         bv = b.view(np.uint64) if b.dtype.kind in "fc" else b
         return np.array_equal(av, bv)
-    if a.dtype.kind == "M" or b.dtype.kind == "M":
+    if a.dtype.kind in "Mm" or b.dtype.kind in "Mm":
         return np.array_equal(a.view(np.int64), b.view(np.int64))
     return np.array_equal(a, b)
 

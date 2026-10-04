@@ -19,13 +19,13 @@ typedef struct {
   int64_t rows;
 } ixs_hold;
 
-enum { PC_CVT, PC_STR, PC_DICT, PC_DATE, PC_TS };
+enum { PC_CVT, PC_STR, PC_DICT, PC_DATE, PC_TS, PC_TD };
 
 typedef struct {
   int kind;
   const cvt_row *row;   /* PC_CVT */
   int str_form;         /* PC_STR/PC_DICT: 1 utf8, 2 large_utf8, 3 view */
-  double ts_scale;      /* PC_TS */
+  double ts_scale;      /* PC_TS/PC_TD */
   char tz[64];          /* PC_TS */
   char idx_w;           /* PC_DICT: the index width */
   int idx_signed;       /* PC_DICT */
@@ -105,6 +105,7 @@ size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
                            const int32_t *offs, int64_t nlev);
 size_t mizu_py_blob_date(uint8_t *dst);
 size_t mizu_py_blob_ts(uint8_t *dst, const char *tz);
+size_t mizu_py_blob_difftime(uint8_t *dst);
 
 // shmframe.c -------------------------------------------------------------------
 
