@@ -239,19 +239,21 @@ def test_view_x_crosses_to_map_workers_as_a_ref(r_pool):
     assert big.base.refcount >= rc0
 
 
+def _probe_src(paths):
+    if not paths:
+        return "list(logical(0), 0)"
+    checks = ", ".join(
+        f".Call(mizu:::mizu_zc_view_check, {q})" for q in paths
+    )
+    sums = ", ".join(f"sum(as.numeric({q}))" for q in paths)
+    return f"list(c({checks}), sum(c({sums})))"
+
+
 def _run_probe(pool, paths, args, kwargs):
     # worker-side probe: a view flag per candidate path (a selected
     # candidate arrives as a view), plus a checksum
-    if not paths:
-        src = "list(logical(0), 0)"
-    else:
-        checks = ", ".join(
-            f".Call(mizu:::mizu_zc_view_check, {q})" for q in paths
-        )
-        sums = ", ".join(f"sum(as.numeric({q}))" for q in paths)
-        src = f"list(c({checks}), sum(c({sums})))"
     flags, s = pool.submit(
-        pymizu.call(None, *args, source=src, **kwargs)
+        pymizu.call(None, *args, source=_probe_src(paths), **kwargs)
     ).collect()
     if isinstance(flags, bool):
         flags = [flags]
@@ -261,40 +263,74 @@ def _run_probe(pool, paths, args, kwargs):
 def test_zc_selection_fold_candidate_matrix(r_pool):
     import numpy as np
 
+    # fresh pools for the selection rows: a pool's first zc submit always
+    # selects (the lent-region ledger is empty), keeping the rows
+    # deterministic under the Linux churn fallback
+    launcher = pymizu.r_pool_launcher(
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+    def fresh_pool():
+        return pymizu.Pool.create(1, launcher=launcher)
+
     rng = np.random.default_rng(0)
     cand = rng.random(5120)  # 40960 bytes — past the floor
+    src1 = _probe_src(["..1"])
 
-    def run(paths, *args, **kwargs):
-        return _run_probe(r_pool, paths, args, kwargs)
+    def total0(args, code=src1):
+        return len(_pymizu._write_task(code, 1, args, {}, 2, 1))
 
-    # the selection flip of a lone candidate bisects the inline budget
-    lo, hi = 0, 40000
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        flags, _ = run(["..1"], cand, "a" * mid)
-        if flags == [True]:
-            lo = mid
-        else:
-            hi = mid - 1
+    # the by-value spill boundary bisects the inline budget: no
+    # candidates involved, so no zc traffic rides the pool
+    with fresh_pool() as p:
+
+        def spills():
+            return sum(s["spills"] for s in p.stats()["submitters"])
+
+        base = total0(("a",), "..1")
+        lo, hi = 1, 600
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            fill = "a" * (mid - base + 1)
+            s1 = spills()
+            p.submit(pymizu.call(None, fill, source="..1")).collect()
+            if spills() > s1:
+                hi = mid - 1
+            else:
+                lo = mid
+    inline_max = lo
+
     # k = 1, the boundary exact: adjusted == inline_max selects (the fit
     # is inclusive); adjusted == inline_max + 1 stays by value
-    flags, s = run(["..1"], cand, "a" * lo)
-    assert flags == [True]
-    assert s == pytest.approx(float(cand.sum()))
-    flags, _ = run(["..1"], cand, "a" * (lo + 1))
-    assert flags == [False]
+    s_cand = total0((cand,)) - total0(())
+    t_tot = inline_max + s_cand - (2 + 29)  # 2 + (MIZU_NAME_MAX - 1)
+    fill = "a" * (t_tot - total0((cand, "")))
+    assert total0((cand, fill)) == t_tot
+    with fresh_pool() as p:
+        flags, s = _run_probe(p, ["..1"], (cand, fill), {})
+        assert flags == [True]
+        assert s == pytest.approx(float(cand.sum()))
+        flags, _ = _run_probe(p, ["..1"], (cand, fill + "a"), {})
+        assert flags == [False]
 
     # k = 1 at the middle and tail positions, and nested in a list
-    assert run(["..2"], 1.5, cand, "x")[0] == [True]
-    assert run(["n1"], 1.5, n1=cand)[0] == [True]
-    assert run(["..1[[2]]"], [1.5, cand])[0] == [True]
+    with fresh_pool() as p:
+        assert _run_probe(p, ["..2"], (1.5, cand, "x"), {})[0] == [True]
+    with fresh_pool() as p:
+        assert _run_probe(p, ["n1"], (1.5,), {"n1": cand})[0] == [True]
+    with fresh_pool() as p:
+        assert _run_probe(p, ["..1[[2]]"], ([1.5, cand],), {})[0] == [True]
 
     # k >= 2 never selects (each adjusted total carries the other
-    # candidates by value); 17 candidates exercise the record cap
-    assert run(["..1", "..2"], cand, rng.random(25000))[0] == [False, False]
-    c17 = [rng.random(5120 + i) for i in range(17)]
-    assert run([f"..{j}" for j in range(1, 18)], *c17)[0] == [False] * 17
-
+    # candidates by value); 17 candidates exercise the record cap;
     # k = 0, inline and spilled by-value totals
-    assert run([], 1.5, "abc")[0] == []
-    assert run([], "y" * 30000)[0] == []
+    with fresh_pool() as p:
+        flags, _ = _run_probe(
+            p, ["..1", "..2"], (cand, rng.random(25000)), {}
+        )
+        assert flags == [False, False]
+        c17 = [rng.random(5120 + i) for i in range(17)]
+        flags, _ = _run_probe(p, [f"..{j}" for j in range(1, 18)], c17, {})
+        assert flags == [False] * 17
+        assert _run_probe(p, [], (1.5, "abc"), {})[0] == []
+        assert _run_probe(p, [], ("y" * 30000,), {})[0] == []
