@@ -137,11 +137,13 @@ static int64_t attr_as_long(PyObject *obj, const char *name, int *ok) {
 
 // The writer ------------------------------------------------------------------------
 
-/* The two-pass walk state: dst NULL sizes (and validates — every decline
-   is found here); a real dst writes behind the size pass's count and
-   cannot decline. The decline record (path + reason) becomes the
-   DeclinedError; warn accumulates the conversion warnings through the
-   write pass (raised after it completes, never mid-write).
+/* The walk state: dst NULL sizes (and validates — every decline is found
+   in count mode); a real dst writes behind limit, counting past it — the
+   first walk may write into the slot payload while sizing, a decline or
+   the overflow unwinding with nothing committed (transactional staging).
+   The decline record (path + reason) becomes the DeclinedError; warn
+   accumulates the conversion warnings through the write pass (raised
+   after it completes, never mid-write).
 
    The F1 refs state: with refs, a re-sendable view emits a 0x13 leaf
    (the caps filter read off the peer word, skipped when h is NULL) and
@@ -152,6 +154,8 @@ static int64_t attr_as_long(PyObject *obj, const char *name, int *ok) {
 typedef struct {
   uint8_t *dst;
   size_t total;
+  size_t limit;
+  int overflow;          /* the write exceeded limit; the count runs on */
   int depth;
   int decline;
   char path[128];
@@ -226,8 +230,23 @@ static PyObject *ixr_ref_marker(const unsigned char *ptr, uint64_t len) {
 }
 
 #define IXW_DST(w) ((w)->dst != NULL ? (w)->dst + (w)->total : NULL)
+/* One emit: the put helpers count with a NULL dst; past the limit the
+   count runs on but the writes stop (the codec.c overflow discipline).
+   The call evaluates twice with plain-value arguments — the size query
+   first (dst masked to NULL), then the write when it fits. */
 #define IXW_PUT(w, call) do { \
-    if (!(w)->decline) (w)->total += call; \
+    if (!(w)->decline) { \
+      if ((w)->dst == NULL) { (w)->total += (call); break; } \
+      uint8_t *save_ = (w)->dst; (w)->dst = NULL; \
+      size_t n_ = (call); \
+      (w)->dst = save_; \
+      if ((w)->total + n_ <= (w)->limit) { \
+        (void) (call); \
+      } else { \
+        (w)->overflow = 1; (w)->dst = NULL; \
+      } \
+      (w)->total += n_; \
+    } \
   } while (0)
 
 static void ixw_decline(ixw *w, const char *reason) {
@@ -316,12 +335,15 @@ static void ixe_intv(ixw *w, Py_ssize_t n, const int64_t *vals,
   }
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
-  if (w->dst != NULL) {
+  if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
     uint8_t *dst = w->dst + w->total;
     for (Py_ssize_t i = 0; i < n; i++) {
       int32_t v = na != NULL && na[i] ? MIZU_NA_INT32 : (int32_t) vals[i];
       memcpy(dst + 4 * i, &v, 4);
     }
+  } else if (w->dst != NULL) {
+    w->overflow = 1;
+    w->dst = NULL;
   }
   w->total += (size_t) n * 4;
 }
@@ -335,8 +357,12 @@ static void ixe_intv_i32(ixw *w, const int32_t *vals, Py_ssize_t n) {
   }
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
-  if (w->dst != NULL)
+  if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
     memcpy(w->dst + w->total, vals, (size_t) n * 4);
+  } else if (w->dst != NULL) {
+    w->overflow = 1;
+    w->dst = NULL;
+  }
   w->total += (size_t) n * 4;
 }
 
@@ -362,7 +388,7 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts, uint64_t n,
                              double scale) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, n));
   if (w->decline) return;
-  if (w->dst != NULL) {
+  if (w->dst != NULL && w->total + (size_t) n * 8 <= w->limit) {
     uint8_t *dst = w->dst + w->total;
     for (uint64_t i = 0; i < n; i++) {
       if (counts[i] == INT64_MIN) {
@@ -372,6 +398,9 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts, uint64_t n,
         memcpy(dst + 8 * i, &v, 8);
       }
     }
+  } else if (w->dst != NULL) {
+    w->overflow = 1;
+    w->dst = NULL;
   }
   w->total += (size_t) n * 8;
 }
@@ -444,6 +473,7 @@ size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
+  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
   ixe_key(&w, "levels");
@@ -468,6 +498,7 @@ size_t mizu_py_blob_date(uint8_t *dst) {
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
+  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 1));
   ixe_key(&w, "class");
@@ -480,6 +511,7 @@ size_t mizu_py_blob_ts(uint8_t *dst, const char *tz) {
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
+  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
   ixe_key(&w, "class");
@@ -496,6 +528,7 @@ size_t mizu_py_blob_difftime(uint8_t *dst) {
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
+  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
   ixe_key(&w, "class");
@@ -514,6 +547,7 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
+  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 3));
   ixe_key(&w, "names");
@@ -2994,13 +3028,16 @@ static void ixe_fcol(ixw *w, const fcol *c) {
       IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV,
                                (uint64_t) c->n));
       if (w->decline) return;
-      if (w->dst != NULL) {
+      if (w->dst != NULL && w->total + (size_t) c->n * 4 <= w->limit) {
         uint8_t *dst = w->dst + w->total;
         for (int64_t i = 0; i < c->n; i++) {
           int32_t v = codes[i] == MIZU_NA_INT32 ? MIZU_NA_INT32 :
             codes[i] + 1;
           memcpy(dst + 4 * i, &v, 4);
         }
+      } else if (w->dst != NULL) {
+        w->overflow = 1;
+        w->dst = NULL;
       }
       w->total += (size_t) c->n * 4;
     }
@@ -3026,7 +3063,7 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
     IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, (uint64_t) c->n));
     if (w->decline) return;
-    if (w->dst != NULL) {
+    if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
       uint8_t *dst = w->dst + w->total;
       for (int64_t i = 0; i < c->n; i++) {
         if (days[i] == MIZU_NA_INT32) {
@@ -3036,6 +3073,9 @@ static void ixe_fcol(ixw *w, const fcol *c) {
           memcpy(dst + 8 * i, &v, 8);
         }
       }
+    } else if (w->dst != NULL) {
+      w->overflow = 1;
+      w->dst = NULL;
     }
     w->total += (size_t) c->n * 8;
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
@@ -3198,7 +3238,7 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                          const cvt_row *row, int64_t stride) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), ix_tag_of_wire(row->wire), n));
   if (w->decline) return;
-  if (w->dst != NULL) {
+  if (w->dst != NULL && w->total + (size_t) n * row->w_out <= w->limit) {
     uint8_t *dst = w->dst + w->total;
     if (stride == 0) {
       mizu_py_cvt_convert(dst, src, NULL, 0, (size_t) n, row, &w->warn);
@@ -3208,6 +3248,9 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                             src + (uint64_t) i * (uint64_t) stride, NULL,
                             0, 1, row, &w->warn);
     }
+  } else if (w->dst != NULL) {
+    w->overflow = 1;
+    w->dst = NULL;
   }
   w->total += (size_t) n * row->w_out;
 }
@@ -3221,7 +3264,8 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
   for (int i = 0; i < nd; i++) total *= (uint64_t) shape[i];
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), ix_tag_of_wire(row->wire), total));
   if (w->decline) return;
-  if (w->dst != NULL) {
+  if (w->dst != NULL &&
+      w->total + (size_t) total * row->w_out <= w->limit) {
     uint8_t *dst = w->dst + w->total;
     int64_t expect = row->w_in;
     int f_contig = 1;
@@ -3248,6 +3292,9 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
                             row, &w->warn);
       }
     }
+  } else if (w->dst != NULL) {
+    w->overflow = 1;
+    w->dst = NULL;
   }
   w->total += (size_t) total * row->w_out;
 }
@@ -5413,6 +5460,7 @@ static void ixs_emit_date_col(ixe *e, ixs *x, int col) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     ixe_class(&w2, cls, 1);
     e->total += w2.total;
   }
@@ -5449,6 +5497,7 @@ static void ixs_emit_ts_col(ixe *e, ixs *x, int col) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     ixe_class(&w2, cls, 2);
     e->total += w2.total;
   }
@@ -5458,6 +5507,7 @@ static void ixs_emit_ts_col(ixe *e, ixs *x, int col) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     const char *strs[1] = { tz };
     int64_t lens[1] = { (int64_t) strlen(tz) };
     ixe_strv(&w2, 1, strs, lens);
@@ -5498,6 +5548,7 @@ static void ixs_emit_td_col(ixe *e, ixs *x, int col) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     ixe_class(&w2, cls, 1);
     e->total += w2.total;
   }
@@ -5506,6 +5557,7 @@ static void ixs_emit_td_col(ixe *e, ixs *x, int col) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     const char *strs[1] = { "secs" };
     int64_t lens[1] = { 4 };
     ixe_strv(&w2, 1, strs, lens);
@@ -5574,6 +5626,7 @@ static void ixs_emit_dict_col(ixe *e, ixs *x, int col, const int32_t *offs,
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     ixe_class(&w2, cls, 1);
     e->total += w2.total;
   }
@@ -5614,6 +5667,7 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     ixe_class(&w2, cls, 1);
     e->total += w2.total;
   }
@@ -5622,6 +5676,7 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
+    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
     int64_t vals[2] = { 0, -x->hold.rows };
     int na[2] = { 1, 0 };
     ixe_intv(&w2, 2, vals, na);
@@ -6569,6 +6624,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     w2.decline = 0;
     w2.zc_spent = 0;
     w2.ref_emitted = 0;
+    w2.limit = n;   /* exact: the deterministic write re-counts to n */
     memset(&w2.warn, 0, sizeof(w2.warn));
     if (n <= (size_t) inline_max) {
       w2.dst = payload;
@@ -6652,6 +6708,7 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   w2.dst = buf;
   w2.total = 0;
   w2.decline = 0;
+  w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs, target, ident);
   if (mizu_py_cvt_warn(&w2.warn) != 0) {
@@ -7071,6 +7128,7 @@ PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
   w2.dst = buf;
   w2.total = 0;
   w2.decline = 0;
+  w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_map_desc(&w2, code_s, code_n, (int) kind, args, kwargs, x, target,
                MIZU_PY_IDENT);
@@ -7363,44 +7421,53 @@ static void ixw_raise(ixw *w) {
   Py_DECREF(exc);
 }
 
-/* The 'I' writer onto the tiers. */
+/* The 'I' writer onto the tiers: the slot payload is scratch until the
+   hook returns (transactional staging), so the one walk writes into it
+   while sizing — an inline-fitting value stages in one walk. Past the
+   budget the writes stop at the limit (the count runs on), and the
+   ARENA/SHM_RAW reservation takes the second walk directly — no temp
+   buffer, no second memcpy. The warn raise stays behind the final write
+   (the stage_convert discipline: a raise as error leaves no claimed
+   reservation half-written — the core rolls it back). */
 int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                     uint32_t inline_max, mizu_handle *h) {
   ixw w;
   memset(&w, 0, sizeof(w));
   memcpy(w.path, "x", 2);
   w.path_len = 1;
+  w.dst = payload;
+  w.limit = inline_max;
   ixw_stream(&w, obj);
   if (w.decline) {
     ixw_raise(&w);
     return 1;
   }
-  size_t n = w.total;
-  ixw w2;
-  memcpy(&w2, &w, sizeof(w2));
-  w2.total = 0;
-  w2.decline = 0;
-  memset(&w2.warn, 0, sizeof(w2.warn));
-  if (n <= (size_t) inline_max) {
-    w2.dst = payload;
-    ixw_stream(&w2, obj);
-    if (mizu_py_cvt_warn(&w2.warn) != 0) return 1;
+  const size_t n = w.total;
+  if (!w.overflow) {   /* n <= inline_max: the one-walk INLINE frame */
+    if (mizu_py_cvt_warn(&w.warn) != 0) return 1;
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = MIZU_AUX_F_KEEPERLESS;
     return 0;
   }
-  uint8_t *buf = malloc(n);
-  if (buf == NULL) {
-    PyErr_NoMemory();
+  uint8_t *dst = mizu_py_stage_reserve(n, hdr, payload, h);
+  if (dst == NULL) return 1;
+  ixw w2;
+  memcpy(&w2, &w, sizeof(w2));
+  w2.total = 0;
+  w2.overflow = 0;
+  w2.decline = 0;
+  w2.zc_spent = 0;
+  w2.ref_emitted = 0;
+  w2.dst = dst;
+  w2.limit = n;   /* exact: the deterministic write re-counts to n */
+  memset(&w2.warn, 0, sizeof(w2.warn));
+  ixw_stream(&w2, obj);
+  if (w2.overflow) {
+    PyErr_SetString(MizuError, "pymizu: interop write mismatch");
     return 1;
   }
-  w2.dst = buf;
-  ixw_stream(&w2, obj);
-  int rc = mizu_py_cvt_warn(&w2.warn) != 0 ? 1 :
-    mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
-  free(buf);
-  return rc;
+  return mizu_py_cvt_warn(&w2.warn);
 }
 
 /* The 'I' builder. The pool collect-side result reader resolves a 0x13
@@ -7444,6 +7511,7 @@ PyObject *pymizu_ix_write_stream(PyObject *obj) {
   w2.dst = buf;
   w2.total = 0;
   w2.decline = 0;
+  w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_stream(&w2, obj);
   if (mizu_py_cvt_warn(&w2.warn) != 0) {

@@ -655,3 +655,39 @@ Results (this driver re-run against the fixed mizu): every row in band
 
 Status: full suite 398 pass, 5 skip; crosslang 96 pass against the
 fixed mizu; ruff + pyrefly not re-run (no code change).
+
+## 2026-10-04 — W1: the 'I' value writer goes one-walk optimistic
+
+`pymizu_ix_stage` (and the shared `IXW_PUT` walk discipline) ported to
+mizu's count-past-limit pattern: the first walk writes into the slot
+payload while sizing (inline-fitting values stage in one walk); past
+the budget the writes stop at the limit and the ARENA/SHM_RAW
+reservation takes the second walk directly — the `malloc(n)` temp and
+the second full memcpy are gone (`stage_bytes` split: `stage_reserve` +
+one memcpy). No wire change: the golden corpus passes byte-identical.
+
+Results (interleaved A/B on this host, old -> new, best-of runs; the
+in-process foreign pair measures the stage alone, the sink rows add
+the R peer's recv + ack):
+
+| row | old | new |
+|----|----|----|
+| stage-only, small nested (inline) | 911 ns | 528 ns |
+| stage-only, 1 MB string (spill) | 27.7 us | 12.1 us |
+| stage-only, 100 KB nested tree (spill) | 872.6 us | 870.2 us |
+| stage-only, 10k strings 'I' caps=0 (spill) | 721.6 us | 709.8 us |
+| crosslang sink, 100 KB nested tree (3 reps) | 1198.8 us | 1206.8 us |
+
+The one-walk inline path gains ~40%; the memcpy removal gains ~2.3x
+where the payload is memcpy-dominated (the 1 MB string; the suite's
+f64 matrix 0x0f row likewise printed 311.0 -> 219.8 us on the
+before/after full runs). The ~100 KB nested tree is flat: its cost is
+the two remaining tree walks (12.6k nodes x 2, kept by design for
+spilled values), not the removed malloc + memcpy (~2 us at 100 KB).
+The full crosslang bench's before/after runs swung +-9-37% on
+individual rows (an untouched MIZS row included); the interleaved A/B
+shows the builds identical there — host drift, not a regression.
+
+Status: full suite 402 pass, 5 skip (4 new rows: the carriers,
+decline-mid-write, warnings-as-errors, arena-pressure spill); ruff +
+pyrefly clean.

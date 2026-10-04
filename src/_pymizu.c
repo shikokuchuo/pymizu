@@ -273,12 +273,42 @@ static int raise_tls(void) {
 
 // Staging ------------------------------------------------------------------------
 
+/* The past-inline reservation (n > inline_max): one arena chunk, else a
+   reap and a spill region retained SPILL (surrendered to the free list at
+   consumer-done). Sets hdr and payload per the carrier conventions and
+   returns the n-byte destination; NULL with PyErr set on region
+   failure. */
+uint8_t *mizu_py_stage_reserve(size_t n, mizu_slot_hdr *hdr,
+                               uint8_t *payload, mizu_handle *h) {
+  uint64_t off;
+  uint8_t *chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off);
+  if (chunk != NULL) {
+    hdr->kind = MIZU_KIND_ARENA;
+    hdr->len = 0;
+    hdr->aux = off;
+    uint64_t n64 = (uint64_t) n;
+    memcpy(payload, &n64, sizeof(n64));
+    return chunk;
+  }
+  mizu_stage_reap(h);
+  mizu_shm *shm;
+  if (mizu_stage_spill_get(h, n, &shm) != MIZU_OK) {
+    PyErr_Format(MizuShmError, "pymizu: cannot create payload region "
+                 "(%zu bytes): %s", n, mizu_last_error_message());
+    return NULL;
+  }
+  hdr->kind = MIZU_KIND_SHM_RAW;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = (uint64_t) n;   /* exact length: a recycled region carries slack */
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain(h, shm);
+  return (uint8_t *) shm->addr;
+}
+
 /* Frame n bytes over the INLINE / ARENA / SHM_RAW tiers — the reference
-   stager's (bytes.c) discipline: one arena chunk past the inline budget,
-   else a reap and a spill region retained SPILL (surrendered to the free
-   list at consumer-done). The INLINE frame stamps the keeperless claim:
-   the streams this frames (pickle, the spilled codec and task frames)
-   commit no retain-table entry of their own. */
+   stager's (bytes.c) discipline. The INLINE frame stamps the keeperless
+   claim: the streams this frames (pickle, the spilled codec and task
+   frames) commit no retain-table entry of their own. */
 static int stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
                        uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
   if (n == 0) {
@@ -294,30 +324,9 @@ static int stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
     hdr->aux = MIZU_AUX_F_KEEPERLESS;
     return 0;
   }
-  uint64_t off;
-  uint8_t *chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off);
-  if (chunk != NULL) {
-    memcpy(chunk, src, n);
-    hdr->kind = MIZU_KIND_ARENA;
-    hdr->len = 0;
-    hdr->aux = off;
-    uint64_t n64 = (uint64_t) n;
-    memcpy(payload, &n64, sizeof(n64));
-    return 0;
-  }
-  mizu_stage_reap(h);
-  mizu_shm *shm;
-  if (mizu_stage_spill_get(h, n, &shm) != MIZU_OK) {
-    PyErr_Format(MizuShmError, "pymizu: cannot create payload region "
-                 "(%zu bytes): %s", n, mizu_last_error_message());
-    return 1;
-  }
-  memcpy(shm->addr, src, n);
-  hdr->kind = MIZU_KIND_SHM_RAW;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = (uint64_t) n;   /* exact length: a recycled region carries slack */
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain(h, shm);
+  uint8_t *dst = mizu_py_stage_reserve(n, hdr, payload, h);
+  if (dst == NULL) return 1;
+  memcpy(dst, src, n);
   return 0;
 }
 

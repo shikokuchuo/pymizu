@@ -116,6 +116,94 @@ def test_scalar_and_container_roundtrips():
     h.destroy()
 
 
+def _tree(n):
+    return [{"id": i, "name": f"item-{i:04d}", "vals": [i, i * 1.5, True,
+            None]} for i in range(n)]
+
+
+def test_spilled_streams_roundtrip_on_each_carrier():
+    # the one-walk stager's carriers: the corpus pins the stream bytes
+    # (_write_stream is the two-pass oracle); these rows pin each
+    # carrier's delivery — inline (one walk), an arena chunk, an SHM_RAW
+    # region, and the n == inline_max boundary staying INLINE
+    h, p = foreign_pair()   # slot_size 1024 (inline budget 1008), 64 KB arena
+    INLINE_MAX = 1024 - 16
+    boundary = "x" * (INLINE_MAX - len(_pymizu._write_stream("")))
+    assert len(_pymizu._write_stream(boundary)) == INLINE_MAX
+    cases = [
+        ({"a": [1, "x", [True, None]], "b": {"z": 2.5}}, INLINE_MAX),
+        (boundary, INLINE_MAX),
+        (_tree(60), 1 << 16),
+        (_tree(1000), None),
+    ]
+    for x, band in cases:
+        size = len(_pymizu._write_stream(x))
+        if band is None:
+            assert size > (1 << 16)
+        else:
+            assert size <= band
+        assert h.send(x) is True
+        assert p.recv(5) == x
+    p.destroy()
+    h.destroy()
+
+
+def test_arena_pressure_forces_the_region_carrier():
+    # pipelined sends past the 64 KB arena's hold: the overflow messages
+    # take the SHM_RAW reservation and read back intact
+    h, p = foreign_pair()
+    x = {"vals": list(range(3000))}
+    size = len(_pymizu._write_stream(x))
+    assert size < (1 << 16)
+    n = (1 << 16) // size + 4   # cumulatively past the arena
+    for _ in range(n):
+        assert h.send(x) is True
+    for _ in range(n):
+        assert p.recv(5) == x
+    p.destroy()
+    h.destroy()
+
+
+def test_decline_mid_write_leaves_the_slot_unwedged():
+    # a decline found past the inline budget: the payload writes up to it
+    # are scratch — nothing commits and the channel stages on
+    h, p = foreign_pair()
+    bad = [{"id": i} for i in range(100)] + [object()]
+    assert len(_pymizu._write_stream(bad[:-1])) > 1024 - 16
+    with pytest.raises(pymizu.DeclinedError) as ei:
+        h.send(bad)
+    assert ei.value.path == "x[100]"
+    assert h.send({"ok": 1}) is True
+    assert p.recv(5) == {"ok": 1}
+    p.destroy()
+    h.destroy()
+
+
+def test_cvt_warning_raises_after_the_spilled_write():
+    # a strided uint64 array skips the raw tiers (non-contiguous) and
+    # stages through the 'I' writer's conversion body: past the inline
+    # budget the reservation takes the full write before the warning
+    # raises — raised as an error it rolls the reservation back, never a
+    # half-written chunk
+    h, p = foreign_pair()
+    a = (np.arange(4000, dtype=np.uint64) + 2**62)[::2]
+    assert len(_pymizu._write_stream(a)) > 1024 - 16
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="beyond"):
+            h.send(a)
+    assert h.send({"ok": 1}) is True
+    assert p.recv(5) == {"ok": 1}
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        assert h.send(a) is True
+    assert any(w.category is RuntimeWarning for w in seen)
+    got = p.recv(5)
+    assert isinstance(got, np.ndarray) and np.isnan(got).all()
+    p.destroy()
+    h.destroy()
+
+
 def test_top_level_scalars_stay_scalars():
     # a Python scalar crosses as the scalar tag, a length-1 array as the
     # vector tag (the pinned split)

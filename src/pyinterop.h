@@ -138,6 +138,8 @@ typedef struct {
 
 int mizu_py_stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
                         uint8_t *payload, uint32_t inline_max, mizu_handle *h);
+uint8_t *mizu_py_stage_reserve(size_t n, mizu_slot_hdr *hdr,
+                               uint8_t *payload, mizu_handle *h);
 PyObject *mizu_py_numpy_module(void);   /* the module, Py_None, or NULL+err */
 int mizu_py_buffer_subclass_reject(PyObject *obj);
 /* 1 exact ndarray, 2 a numpy scalar, 0 neither. */

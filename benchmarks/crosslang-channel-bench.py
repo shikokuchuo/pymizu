@@ -146,7 +146,17 @@ for name, x in typed:
 
 print("\n== 3. send-only staging (acking sink) ==\n")
 
-for name, x in [("10k strings", [f"value-{i:05d}" for i in range(10_000)])]:
+# the ~100 KB nested tree: no buffers (below the MIZS gate), so the 'I'
+# writer's arena-carrier spill is the whole cost — the one-walk stager's
+# acceptance row (the malloc + second memcpy of the two-pass stager gone)
+tree = [
+    {"id": i, "name": f"item-{i:04d}", "vals": [i, i * 1.5, True, None]}
+    for i in range(1200)
+]
+for name, x in [
+    ("10k strings", [f"value-{i:05d}" for i in range(10_000)]),
+    ("100 KB nested tree", tree),
+]:
     ch = pymizu.Channel.create(R_SINK, launcher=launcher)
     try:
         note(name, "sink", rt_us(ch, x), "us/send")
