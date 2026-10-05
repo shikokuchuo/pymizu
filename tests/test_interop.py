@@ -187,7 +187,8 @@ def test_cvt_warning_raises_after_the_spilled_write():
     # half-written chunk
     h, p = foreign_pair()
     a = (np.arange(4000, dtype=np.uint64) + 2**62)[::2]
-    assert len(_pymizu._write_stream(a)) > 1024 - 16
+    with pytest.warns(RuntimeWarning, match="beyond"):
+        assert len(_pymizu._write_stream(a)) > 1024 - 16
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
@@ -269,7 +270,7 @@ def test_temporal_shapes():
         expected = np.round(a.view(np.int64) * factor).astype(np.int64)
         assert got.dtype == np.dtype("datetime64[us]"), unit
         assert np.array_equal(got.view(np.int64), expected), unit
-    nat = np.array([1, np.datetime64("NaT")], dtype="datetime64[us]")
+    nat = np.array([1, np.datetime64("NaT", "us")], dtype="datetime64[us]")
     got = _read(_pymizu._write_stream(nat))
     assert np.array_equal(got.view(np.int64), nat.view(np.int64))
     # stdlib date / datetime scalars home as length-1 shapes
@@ -314,7 +315,7 @@ def test_timedelta_shapes():
         expected = np.round(a.view(np.int64) * factor).astype(np.int64)
         assert got.dtype == np.dtype("m8[us]"), unit
         assert np.array_equal(got.view(np.int64), expected), unit
-    nat = np.array([1, np.timedelta64("NaT")], dtype="m8[s]")
+    nat = np.array([1, np.timedelta64("NaT", "s")], dtype="m8[s]")
     got = _read(_pymizu._write_stream(nat))
     assert got[0] == np.timedelta64(1, "s") and np.isnat(got[1])
     # a timedelta64 scalar exports a uint8 byte view — the value crosses
