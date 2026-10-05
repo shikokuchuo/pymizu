@@ -1688,7 +1688,8 @@ mizu::mizu_recv(ch, timeout = 60)
         d = ch.recv(60)
         assert d.dtype == np.dtype("datetime64[D]")
         assert str(d[0]) == "2024-01-01"
-        assert d[-1] == np.datetime64("2024-01-01") + 299999
+        expected = np.datetime64("2024-01-01") + np.timedelta64(299999, "D")
+        assert d[-1] == expected
         p = ch.recv(60)
         assert p.dtype == np.dtype("datetime64[us]")
         assert p[0] == np.datetime64("2024-01-01T00:00:00.000000")

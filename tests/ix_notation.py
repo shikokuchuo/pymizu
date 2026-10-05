@@ -420,22 +420,27 @@ def attr_home(x, attrs):
     if klass == ["Date"]:
         return np.asarray(x).astype("datetime64[D]")
     if klass == ["POSIXct", "POSIXt"]:
-        us = np.round(np.asarray(x, dtype=np.float64) * 1e6).astype(np.int64)
+        # NA_REAL multiplies through as NaN; the isnat slots are rewritten
+        with np.errstate(invalid="ignore"):
+            us = np.round(np.asarray(x, dtype=np.float64) * 1e6).astype(
+                np.int64
+            )
         isnat = np.array(
             [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x])
         out = us.astype("datetime64[us]")
-        out[isnat] = np.datetime64("NaT")
+        out[isnat] = np.datetime64("NaT", "us")
         return out
     if klass == ["difftime"]:
         factor = {"secs": 1.0, "mins": 60.0, "hours": 3600.0,
                   "days": 86400.0, "weeks": 604800.0}[attrs["units"]]
-        us = np.round(
-            np.asarray(x, dtype=np.float64) * factor * 1e6
-        ).astype(np.int64)
+        with np.errstate(invalid="ignore"):
+            us = np.round(
+                np.asarray(x, dtype=np.float64) * factor * 1e6
+            ).astype(np.int64)
         isnat = np.array(
             [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x])
         out = us.astype("timedelta64[us]")
-        out[isnat] = np.timedelta64("NaT")
+        out[isnat] = np.timedelta64("NaT", "us")
         return out
     raise ValueError(f"no Python home for attr class {klass!r}")
 
