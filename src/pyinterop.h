@@ -301,8 +301,8 @@ PyObject *pymizu_ix_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx);
    value outside the portable subset). */
 PyObject *pymizu_ix_write_stream(PyObject *obj);
 
-/* Module init: ready the Frame type, stash the shared exceptions, add
-   Frame to the module. */
+/* Module init: stash the shared exceptions, register shmframe.c and
+   interop_frame.c (the Frame type and _frame_rebuild), add _IxRef. */
 int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
                              PyObject *declined_error);
 

@@ -32,6 +32,12 @@ package). The governing design document is the ipc plan in the libmizu repo
 - `src/map.c` / `src/pymap.h` — the `Pool.map` region layer (see
   Conventions); `pymap.h` is its interface to `_pymizu.c` (capsule names,
   the wire-type gate, registration).
+- `src/interop.c` / `src/interop_frame.c` / `src/shmframe.c` — the 'I'
+  interchange codec: the value walk and builder over the core's cursor,
+  the pymizu.Frame object (the type, methods, the Arrow export, the
+  pickle form — `pyframe.h` carries the structs shared with the wire
+  side), and the MIZL frame writer (`pyshmframe.h`). `pyinterop.h` is
+  their interface to `_pymizu.c`.
 - `src/vendor/libmizu/` — vendored libmizu core (generated; see Vendoring).
 - `python/pymizu/` — the Python package. `child.py` / `worker.py` are the
   spawned-process entries (`python -m pymizu.child <token>`,
@@ -193,7 +199,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   short of it gets full layout leaves). The reader's frame path
   (`tree_column_remote` in interop.c) resolves a remote column onto a
   per-column hold — a fresh mapping plus counted loan, released pure-C
-  in `fcol_free` (the GIL-free export discipline); the generic tree
+  in `fcol_free` (interop_frame.c; the GIL-free export discipline); the
+  generic tree
   walk resolves through `mizu_py_view_resolve_checked`. Both
   remote-leaf decode sites (`tree_column_remote` and `tree_walk`'s REF
   branch) bound the identifier span explicitly ahead of the stack copy:
