@@ -13,6 +13,7 @@ import warnings as _warnings
 from collections.abc import Callable as _Callable
 from collections.abc import Iterable as _Iterable
 from collections.abc import Iterator as _Iterator
+from typing import TYPE_CHECKING
 from typing import Any as _Any
 
 from pymizu import _pymizu
@@ -49,6 +50,9 @@ from pymizu._pymizu import (
     prune as _prune,
 )
 from pymizu._r import r_launcher, r_pool_launcher
+
+if TYPE_CHECKING:
+    import numpy as _np
 
 __version__ = "0.1.0.dev0"
 
@@ -577,6 +581,18 @@ class Pool:
         identical for any chunking, worker count, or steal order. Pass
         ``seed=(seed, offset)`` to shift every element's stream by
         ``offset`` positions, for maps split across runs or processes.
+        ``seed`` covers the stdlib ``random`` module only: a task
+        drawing from numpy calls :func:`current_rng` inside the task
+        (the element's own memoized ``numpy.random.Generator``, derived
+        from the same seed material); other RNG universes are out of
+        scope. The legacy ``np.random.*`` module functions draw from the
+        worker's shared global RandomState and stay order-dependent. A
+        seeded map element must not nested-submit and collect: worker
+        helping can run another seeded map's batches mid-element, wiping
+        this element's :func:`current_rng` stash — a later call rebuilds
+        from the digest, restarting the stream instead of continuing it
+        (the stdlib streams survive: the helped batch's save/restore
+        nests inside this batch's own).
 
         ``fn`` may be a :class:`pymizu.call` specification instead of a
         callable — the way to map over a foreign pool (one spawned with
@@ -818,6 +834,29 @@ def current_pool() -> Pool | None:
     return getattr(_worker_local, "pool", None)
 
 
+def current_rng() -> _np.random.Generator | None:
+    """The running element's own numpy Generator, inside a seeded map.
+
+    ``Pool.map(seed=...)`` seeds the stdlib ``random`` module per
+    element; a task drawing from numpy calls this instead: the element's
+    memoized ``numpy.random.Generator``, derived from the same seed
+    material on first call in the element (domain-separated from the
+    stdlib derivation, so those streams are unchanged). Two calls in one
+    element continue one stream; distinct elements get distinct streams —
+    results identical for any chunking, worker count, or steal order.
+
+    None outside a seeded map element (an unseeded map, an ordinary
+    task, the submitter process). Raises TypeError when numpy is not
+    installed. A seeded map element must not nested-submit and collect:
+    worker helping can run another map's batches mid-element, wiping
+    this element's stash — a later call rebuilds from the digest,
+    restarting the stream instead of continuing it.
+    """
+    from pymizu import _map
+
+    return _map._current_rng()
+
+
 def default_pool() -> Pool | None:
     """The process-wide default pool, or None when none is set.
 
@@ -898,6 +937,7 @@ __all__ = [
     "abi_version",
     "call",
     "current_pool",
+    "current_rng",
     "default_pool",
     "is_remote_error",
     "is_sentinel",

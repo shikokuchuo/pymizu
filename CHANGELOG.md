@@ -17,6 +17,17 @@ Initial pre-release.
 
 ### Added
 
+- `pymizu.current_rng()`: inside a `Pool.map(seed=...)` element, the
+  element's memoized `numpy.random.Generator` — derived lazily on first
+  call from the element's seed material (domain-separated from the
+  stdlib derivation, which is unchanged) — so numpy draws gain the
+  seeded-map contract: results identical for any chunking, worker
+  count, or steal order. `None` outside a seeded element. `seed=`
+  covers the stdlib `random` module only; the legacy `np.random.*`
+  module functions draw from the worker's shared global RandomState and
+  stay order-dependent — the map docs now say so, along with the
+  nested-collect caveat (worker helping mid-element wipes the element's
+  stash).
 - Process-wide default pool: `default_pool()`, `set_default_pool(pool)`
   (returns the previous default for save/restore; `None` clears), and
   the `using_pool(pool)` context manager. Package code taking an

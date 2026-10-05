@@ -20,6 +20,18 @@ by ``offset`` positions (maps split across runs or processes). Because the
 streams are per-element, results are identical for any chunking, worker
 count, or steal order. The spec rides the task payloads as a
 ``(seed_bytes, offset)`` tuple.
+
+``seed`` covers the stdlib ``random`` module only: a task drawing from
+numpy calls ``pymizu.current_rng()`` — the running element's memoized
+``numpy.random.Generator``, derived lazily from the same seed material
+(the entropy is domain-separated, so the stdlib streams above are
+unchanged). The legacy ``np.random.*`` module functions draw from the
+worker's shared global RandomState and stay order-dependent; other RNG
+universes are out of scope. A seeded element must not nested-submit and
+collect: the helped batch's stdlib save/restore nests inside this
+batch's, but its stash clear wipes this element's — a later
+``current_rng()`` call here rebuilds from the digest, restarting the
+stream instead of continuing it.
 """
 
 from __future__ import annotations
@@ -325,6 +337,45 @@ def _map_ctx(name: str) -> _Ctx:
     return ctx
 
 
+# The worker-local seeded-element stash and current_rng()'s one-slot
+# memo. _run_batch's seeded loop stashes the running element's
+# (seed_bytes, i + offset) and clears it, with the memo key, around the
+# batch; workers are single-threaded per the GIL policy, so module state
+# is safe. The memo dies with the stash: a key change rebuilds, so a key
+# recurring on the worker (a re-armed prepared run's element) restarts
+# its stream instead of continuing a stale one — a keyed dict would only
+# grow unboundedly.
+_elt_key: tuple[bytes, int] | None = None
+_rng_key: tuple[bytes, int] | None = None
+_rng_gen: _Any = None
+
+
+def _current_rng() -> _Any:
+    """pymizu.current_rng()'s worker side: the stashed element's memoized
+    numpy Generator, built lazily on first call in the element — the
+    digest is computed only on call, so a seeded map that never calls
+    pays the stash's two attribute writes per element, never a SHA-256.
+    The numpy entropy is domain-separated (the "np\\0" prefix) from the
+    stdlib digest, which stays byte-identical."""
+    global _rng_key, _rng_gen
+    key = _elt_key
+    if key is None:
+        return None
+    if _rng_key != key:
+        if _np is None:
+            raise TypeError("pymizu: current_rng() needs numpy (install it)")
+        seed_bytes, elt = key
+        entropy = int.from_bytes(
+            _hashlib.sha256(
+                b"np\x00" + seed_bytes + elt.to_bytes(8, "little")
+            ).digest(),
+            "little",
+        )
+        _rng_gen = _np.random.default_rng(_np.random.SeedSequence(entropy))
+        _rng_key = key
+    return _rng_gen
+
+
 def _run_batch(
     fn: _Callable[..., _Any],
     args: tuple,
@@ -338,8 +389,10 @@ def _run_batch(
     An escaping error is annotated with the in-flight element index (the
     "first by element index" contract — the worker's error envelope
     carries it as the fourth tuple element). Seeded: install element i's
-    stream before its call; the worker's own RNG state is restored around
-    the batch either way."""
+    stream before its call and stash its (seed_bytes, i + offset) key for
+    pymizu.current_rng(); the worker's own RNG state is restored, and the
+    stash and memo cleared, around the batch either way."""
+    global _elt_key, _rng_key
     out = []
 
     def call_one(i: int) -> None:
@@ -357,6 +410,7 @@ def _run_batch(
     state = _random.getstate()
     try:
         for i in range(lo, hi):
+            _elt_key = (seed_bytes, i + offset)
             _random.seed(
                 _hashlib.sha256(
                     seed_bytes + (i + offset).to_bytes(8, "little")
@@ -364,6 +418,7 @@ def _run_batch(
             )
             call_one(i)
     finally:
+        _elt_key = _rng_key = None
         _random.setstate(state)
     return out
 

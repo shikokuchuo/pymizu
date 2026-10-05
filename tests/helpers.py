@@ -109,6 +109,28 @@ def rand_elt(i):
     return random.random()
 
 
+def np_rand_elt(i):
+    """A draw from the element's per-element numpy Generator (seeded
+    maps): pymizu.current_rng() inside the task."""
+    return pymizu.current_rng().random()
+
+
+def np_rand_pair(i):
+    """Two draws plus the memo identity: two calls in one element
+    continue one stream (the same Generator object)."""
+    rng = pymizu.current_rng()
+    return (
+        rng.random(),
+        pymizu.current_rng().random(),
+        rng is pymizu.current_rng(),
+    )
+
+
+def current_rng_or_none(*_):
+    """pymizu.current_rng() outside a seeded map element: None."""
+    return pymizu.current_rng()
+
+
 def fail_at(i, bad):
     if i == bad:
         raise ValueError(f"element {i}")

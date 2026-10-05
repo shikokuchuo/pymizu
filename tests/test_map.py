@@ -12,12 +12,15 @@ import time
 import pytest
 from tests.helpers import (
     bad_template,
+    current_rng_or_none,
     fail_at,
     fail_or_sleep,
     huge_int,
     identity,
     kill_at,
     nested_map,
+    np_rand_elt,
+    np_rand_pair,
     np_scalar_double,
     pair_up,
     pair_up_i64,
@@ -144,6 +147,28 @@ def test_map_seed_restores_worker_rng(pool):
     assert t.collect(timeout=5) is not None
 
 
+def test_map_seed_stdlib_derivation_unchanged(pool):
+    # golden constants pin the stdlib per-element derivation against the
+    # current_rng stash edit: random.seed(SHA-256(seed_bytes +
+    # i.to_bytes(8, "little"))) — random.random() is stable across
+    # CPython versions
+    out = pool.map(rand_elt, list(range(4)), seed=42)
+    assert out == [
+        0.42631878050691485,
+        0.5101559966523063,
+        0.7226535016557073,
+        0.3758578598845185,
+    ]
+
+
+def test_current_rng_outside_seeded_element(pool):
+    # None in the submitter, in an ordinary task, and in an unseeded map
+    assert pymizu.current_rng() is None
+    t = pool.submit(current_rng_or_none)
+    assert t.collect(timeout=5) is None
+    assert pool.map(current_rng_or_none, [1, 2, 3]) == [None, None, None]
+
+
 def test_map_nested(pool):
     assert pool.map(nested_map, [4, 5]) == [
         [0, 1, 4, 9],
@@ -196,6 +221,67 @@ def test_map_numpy_chunking_invariance(pool):
     want = pool.map(identity, a)
     for chunks in (1, 5, 300):
         assert pool.map(identity, a, chunks=chunks) == want
+
+
+# -- seeded numpy streams (pymizu.current_rng) --------------------------------
+
+
+def test_map_seed_numpy_determinism(pool):
+    a = pool.map(np_rand_elt, list(range(50)), seed=42)
+    b = pool.map(np_rand_elt, list(range(50)), seed=42, chunks=7)
+    c = pool.map(np_rand_elt, list(range(50)), seed=42, chunks=1)
+    assert a == b == c
+    d = pool.map(np_rand_elt, list(range(50)), seed=43)
+    assert a != d
+
+
+def test_map_seed_numpy_offset(pool):
+    # the split-map contract holds for numpy draws: element i of the
+    # shifted map draws stream i + n of the base map
+    x = list(range(70))
+    whole = pool.map(np_rand_elt, x, seed=42)
+    head = pool.map(np_rand_elt, x[:50], seed=42)
+    rest = pool.map(np_rand_elt, x[50:], seed=(42, 50))
+    assert head + rest == whole
+    assert rest != whole[:20]
+
+
+def test_map_seed_numpy_memoized_per_element(pool):
+    out = pool.map(np_rand_pair, list(range(20)), seed=42)
+    # two calls in one element continue one stream (the memoized object)
+    assert all(same and a != b for a, b, same in out)
+    # distinct elements get distinct streams
+    assert len({a for a, _, _ in out}) == 20
+
+
+def test_map_seed_numpy_template(pool):
+    a = pool.map(np_rand_elt, list(range(50)), seed=42, template=np.empty(1))
+    b = pool.map(np_rand_elt, list(range(50)), seed=42, template=np.empty(1))
+    np.testing.assert_array_equal(a, b)
+
+
+def test_map_seed_numpy_prepared_rerun(pool):
+    # a re-armed prepared run restarts every element's stream
+    pm = pool.map_prepare(np_rand_elt, list(range(30)), seed=42)
+    try:
+        assert pool.map_run(pm) == pool.map_run(pm)
+    finally:
+        pm.close()
+
+
+def test_map_seed_numpy_batch_resets_memo():
+    # the stash and the one-slot memo die with the batch: the same
+    # element key in a later batch rebuilds its Generator from the
+    # digest (run-to-run determinism of a re-armed prepared map)
+    from pymizu import _map
+
+    def draw(i):
+        return pymizu.current_rng().random()
+
+    get = [0].__getitem__
+    a = _map._run_batch(draw, (), {}, get, 0, 1, (b"s", 0))
+    assert _map._elt_key is None
+    assert _map._run_batch(draw, (), {}, get, 0, 1, (b"s", 0)) == a
 
 
 # -- template output areas ----------------------------------------------------

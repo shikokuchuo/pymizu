@@ -218,6 +218,35 @@ def test_mizl_frame_write_without_numpy(tmp_path):
     )
 
 
+def test_current_rng_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+        from pymizu import _map
+        from tests.helpers import np_rand_elt, rand_elt, square
+
+        assert _map._np is None  # the shim took; else this covers nothing
+        # outside a seeded element the accessor needs no numpy
+        assert pymizu.current_rng() is None
+
+        p = pymizu.Pool.create(1)
+        try:
+            # seeded maps that never call it are untouched
+            assert p.map(square, [1, 2, 3], seed=1) == [1, 4, 9]
+            assert len(p.map(rand_elt, list(range(10)), seed=1)) == 10
+            # inside a seeded element it raises the lazy-numpy error
+            try:
+                p.map(np_rand_elt, [1, 2], seed=1)
+                raise SystemExit("no decline")
+            except pymizu.TaskError as e:
+                assert "numpy" in str(e)
+        finally:
+            p.stop()
+        """,
+    )
+
+
 def test_task_arg_memoryview_shm_vec_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,

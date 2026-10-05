@@ -65,4 +65,5 @@ reference:
         - set_default_pool
         - using_pool
         - current_pool
+        - current_rng
         - prune
