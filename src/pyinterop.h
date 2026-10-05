@@ -284,6 +284,13 @@ PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
 PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
                                        mizu_read_ctx *ctx, int64_t length,
                                        int64_t attrs_size, int na_claim);
+/* The depth-carrying form: the MIZL walk's remote-leaf resolve — chained
+   references count against MIZU_IX_DEPTH_MAX with the nested-list walk. */
+PyObject *mizu_py_view_resolve_checked_depth(const char *id, size_t id_len,
+                                             mizu_read_ctx *ctx,
+                                             int64_t length,
+                                             int64_t attrs_size, int na_claim,
+                                             unsigned depth);
 
 /* The 'I' builder: one stream -> one Python object. A 0x13 ref leaf
    resolves through ctx's view cache on a pool handle (the collect-side
@@ -360,12 +367,19 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
 PyObject *pymizu_tree_wrap(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
                            int64_t attrs_off, int64_t attrs_size);
+PyObject *pymizu_tree_wrap_depth(PyObject *owner, PyObject *loan,
+                                 const uint8_t *base, size_t size, int64_t n,
+                                 int64_t attrs_off, int64_t attrs_size,
+                                 unsigned depth);
 
 /* A path REF's resolution: "[i,j,...]" (1-based hops, the R identifier's
    form) walked to the element's wrap. */
 PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
                                 const uint8_t *base, size_t size,
                                 const char *path);
+PyObject *pymizu_tree_walk_path_depth(PyObject *owner, PyObject *loan,
+                                      const uint8_t *base, size_t size,
+                                      const char *path, unsigned depth);
 
 /* The REF staging helper's Frame half: the region loan anchor of a
    region-backed Frame, NULL for anything else (a copy-backed Frame

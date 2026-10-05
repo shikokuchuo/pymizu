@@ -329,6 +329,29 @@ def test_timedelta_shapes():
     assert got == np.timedelta64(86430000500, "us")
 
 
+def test_frame_scalar_int_column():
+    # an 'I' frame carrying a scalar INT column: the column must adopt its
+    # value buffer (a NULL there crashed every reader of the column)
+    def key(s):
+        return len(s).to_bytes(4, "little") + s.encode()
+
+    def sval(s):
+        return b"\x04" + key(s)
+
+    s = bytearray(b"I\x01")
+    s += b"\x0f"                             # ATTR
+    s += b"\x0c" + (1).to_bytes(8, "little")  # LIST n=1
+    s += b"\x02" + (5).to_bytes(8, "little", signed=True)  # INT 5
+    s += b"\x0d" + (3).to_bytes(8, "little")  # DICT n=3
+    s += key("names") + sval("a")
+    s += key("class") + sval("data.frame")
+    s += key("row.names") + b"\x02" + (1).to_bytes(8, "little", signed=True)
+    f = _pymizu._read_stream(bytes(s))
+    d = f.to_dict()
+    assert d["a"].tolist() == [5]
+    assert _pymizu._write_stream(f)  # re-emits without a NULL memcpy
+
+
 def test_arrow_temporal_columns():
     h, p = foreign_pair()
     t = pa.table({

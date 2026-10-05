@@ -63,29 +63,39 @@ static inline int arrow_valid(const ArrowArray *a, int64_t k) {
 
 /* The string forms' per-batch element access: utf8 (i32 offsets),
    large_utf8 (i64), string_view (16-byte views). 0 on a null (ptr/len
-   unset). */
+   unset), -1 on a malformed record. The Arrow C Data Interface carries no
+   buffer lengths, so the byte extent stays the producer's word; what is
+   checked here are the catastrophic cases — a view's buffer index past
+   the pointer array, negative lengths or offsets, and non-monotonic
+   offset spans (which would size one way and gather another). */
 static inline int arrow_str_at(const ArrowArray *a, int64_t k, int form,
                                const uint8_t **ptr, int32_t *len) {
   if (!arrow_valid(a, k)) return 0;
   int64_t i = a->offset + k;
   if (form == 1) {
     const int32_t *offs = (const int32_t *) a->buffers[1];
+    if (offs[i] < 0 || offs[i + 1] < offs[i]) return -1;
     *ptr = (const uint8_t *) a->buffers[2] + offs[i];
     *len = offs[i + 1] - offs[i];
   } else if (form == 2) {
     const int64_t *offs = (const int64_t *) a->buffers[1];
+    if (offs[i] < 0 || offs[i + 1] < offs[i] ||
+        offs[i + 1] - offs[i] > INT32_MAX)
+      return -1;
     *ptr = (const uint8_t *) a->buffers[2] + offs[i];
     *len = (int32_t) (offs[i + 1] - offs[i]);
   } else {
     const uint8_t *vw = (const uint8_t *) a->buffers[1] + i * 16;
     int32_t l;
     memcpy(&l, vw, 4);
+    if (l < 0) return -1;
     if (l <= 12) {
       *ptr = vw + 4;
     } else {
       int32_t bi, off;
       memcpy(&bi, vw + 8, 4);
       memcpy(&off, vw + 12, 4);
+      if (bi < 0 || 2 + (int64_t) bi >= a->n_buffers || off < 0) return -1;
       *ptr = (const uint8_t *) a->buffers[2 + bi] + off;
     }
     *len = l;

@@ -89,17 +89,23 @@ static int sf_size_str(ixs *x, int col, sf_col *c) {
     if (pc->str_form != 3 && sf_batch_nulls(a) == 0) {
       if (pc->str_form == 1) {
         const int32_t *offs = (const int32_t *) a->buffers[1];
-        bytes += offs[a->offset + a->length] - offs[a->offset];
+        int32_t o0 = offs[a->offset], o1 = offs[a->offset + a->length];
+        if (o0 < 0 || o1 < o0) return -1;
+        bytes += o1 - o0;
       } else {
         const int64_t *offs = (const int64_t *) a->buffers[1];
-        bytes += offs[a->offset + a->length] - offs[a->offset];
+        int64_t o0 = offs[a->offset], o1 = offs[a->offset + a->length];
+        if (o0 < 0 || o1 < o0) return -1;
+        bytes += o1 - o0;
       }
       continue;
     }
     for (int64_t k = 0; k < a->length; k++) {
       const uint8_t *s;
       int32_t len;
-      if (arrow_str_at(a, k, pc->str_form, &s, &len)) bytes += len;
+      int rc = arrow_str_at(a, k, pc->str_form, &s, &len);
+      if (rc < 0) return -1;
+      if (rc > 0) bytes += len;
     }
   }
   c->str_bytes = bytes;
@@ -114,7 +120,11 @@ static int sf_size_col(ixs *x, int col, sf_col *c, int same_lang) {
     c->body = x->hold.rows * pc->row->w_out;
     break;
   case PC_STR:
-    sf_size_str(x, col, c);
+    if (sf_size_str(x, col, c) < 0) {
+      PyErr_SetString(MizuError, "pymizu: invalid Arrow string export "
+                      "(a malformed offset or view record)");
+      return -1;
+    }
     c->body = mizu_mizs_geometry(x->hold.rows).data + c->str_bytes;
     break;
   case PC_DICT:
@@ -223,7 +233,9 @@ static void sf_write_str(uint8_t *block, ixs *x, int col, int64_t rows,
     for (int64_t k = 0; k < a->length; k++) {
       const uint8_t *s;
       int32_t len;
-      if (arrow_str_at(a, k, pc->str_form, &s, &len)) {
+      /* the size pass already validated every element (a malformed
+         record aborts the write), so this is exactly == 1 */
+      if (arrow_str_at(a, k, pc->str_form, &s, &len) == 1) {
         memcpy(data + run, s, (size_t) len);
         run += len;
       } else {

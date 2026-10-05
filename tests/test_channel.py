@@ -190,6 +190,14 @@ def test_closed_sentinel():
         ch.send(1)
 
 
+def test_peer_ident_after_destroy():
+    # destroy frees the handle context; the accessor must not touch it
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    h.destroy()
+    with pytest.raises(pymizu.MizuError, match="closed"):
+        h._peer_ident()
+
+
 def test_peer_gone():
     ch = pymizu.Channel.create("import os; os._exit(0)")
     try:

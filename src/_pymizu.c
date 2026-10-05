@@ -1847,7 +1847,10 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type,
       Py_DECREF(empty);
       return NULL;
     }
-    PyObject *args = PyTuple_Pack(1, PyLong_FromSize_t(nelts));
+    /* PyTuple_Pack borrows: the fresh reference must leave with the int */
+    PyObject *nobj = PyLong_FromSize_t(nelts);
+    PyObject *args = nobj != NULL ? PyTuple_Pack(1, nobj) : NULL;
+    Py_XDECREF(nobj);
     PyObject *kw = Py_BuildValue("{s:s}", "dtype", dt);
     PyObject *arr = (args != NULL && kw != NULL) ?
       PyObject_Call(empty, args, kw) : NULL;
@@ -1890,7 +1893,9 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type,
       PyObject *f64 = NULL;
       PyObject *empty2 = numpy_empty();
       if (empty2 != NULL) {
-        PyObject *a2 = PyTuple_Pack(1, PyLong_FromSize_t(nelts));
+        PyObject *nobj2 = PyLong_FromSize_t(nelts);
+        PyObject *a2 = nobj2 != NULL ? PyTuple_Pack(1, nobj2) : NULL;
+        Py_XDECREF(nobj2);
         PyObject *k2 = Py_BuildValue("{s:s}", "dtype", "float64");
         f64 = (a2 != NULL && k2 != NULL) ?
           PyObject_Call(empty2, a2, k2) : NULL;
@@ -2873,7 +2878,9 @@ static int view_valid_section(const MizuShmView *v, const uint8_t **bitmap) {
 static PyObject *numpy_sink(const char *dt, size_t n, Py_buffer *out) {
   PyObject *empty = numpy_empty();
   if (empty == NULL) return NULL;
-  PyObject *args = PyTuple_Pack(1, PyLong_FromSize_t(n));
+  PyObject *nobj = PyLong_FromSize_t(n);
+  PyObject *args = nobj != NULL ? PyTuple_Pack(1, nobj) : NULL;
+  Py_XDECREF(nobj);
   PyObject *kw = Py_BuildValue("{s:s}", "dtype", dt);
   PyObject *arr = (args != NULL && kw != NULL) ?
     PyObject_Call(empty, args, kw) : NULL;
@@ -3522,18 +3529,26 @@ static PyObject *tree_wrap_region(MizuShmOwner *owner, uint64_t aux) {
   uint32_t flags;
   memcpy(&flags, base + MIZU_HDR_FLAGS_OFF, 4);
   if (flags & MIZU_HDR_FLAG_S4) {
+    mizu_zc_unref(shm);
     PyErr_SetString(MizuError,
                     "pymizu: R S4 list trees do not cross the view tier");
     return NULL;
   }
+  /* the loan takes over the open's counted add either way: its dealloc
+     subs on a wrap failure, the tree's anchor carries it on success —
+     view_wrap_region must not sub again for this branch */
   PyObject *loan = loan_new(owner);
-  if (loan == NULL) return NULL;
+  if (loan == NULL) {
+    mizu_zc_unref(shm);
+    return NULL;
+  }
   PyObject *out =
     pymizu_tree_wrap((PyObject *) owner, loan, base, size, n,
                      attrs_off, attrs_size);
   Py_DECREF(loan);
   return out;
 corrupt:
+  mizu_zc_unref(shm);
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
 }
@@ -3560,9 +3575,9 @@ static PyObject *view_wrap_region(MizuShmOwner *owner, uint64_t aux) {
       return sv;
     }
     if (magic == MIZU_MAGIC_LIST) {
-      PyObject *tw = tree_wrap_region(owner, aux);
-      if (tw == NULL) mizu_zc_unref(shm);
-      return tw;
+      /* tree_wrap_region owns the loan discipline for the list branch
+         (its loan anchor subs on failure) — no unref here */
+      return tree_wrap_region(owner, aux);
     }
     if (magic != MIZU_MAGIC_VEC) {
       err = "pymizu: unsupported shared-payload layout (R list views "
@@ -3625,6 +3640,7 @@ corrupt:
   err = "pymizu: corrupt payload slot";
 fail:
   mizu_zc_unref(shm);
+  if (err == NULL) return PyErr_NoMemory();  /* the tp_alloc failure path */
   PyErr_SetString(MizuError, err);
   return NULL;
 }
@@ -3839,6 +3855,7 @@ PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
   if (owner == NULL) return NULL;
   char path[128];
   if (id_len - name_len >= sizeof path) {
+    mizu_zc_unref(owner->shm);
     Py_DECREF(owner);
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
     return NULL;
@@ -3847,6 +3864,7 @@ PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
   path[id_len - name_len] = '\0';
   PyObject *loan = loan_new(owner);
   if (loan == NULL) {
+    mizu_zc_unref(owner->shm);
     Py_DECREF(owner);
     return NULL;
   }
@@ -3863,9 +3881,11 @@ PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
    terminal leaf's descriptor between them — a mismatch declines as a
    corrupt or newer region, the count released before the error (never a
    transient loan on a decline). */
-PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
-                                       mizu_read_ctx *ctx, int64_t length,
-                                       int64_t attrs_size, int na_claim) {
+PyObject *mizu_py_view_resolve_checked_depth(const char *id, size_t id_len,
+                                             mizu_read_ctx *ctx,
+                                             int64_t length,
+                                             int64_t attrs_size, int na_claim,
+                                             unsigned depth) {
   size_t name_len = 0;
   while (name_len < id_len && id[name_len] != '[') name_len++;
   if (name_len < sizeof(MIZU_PREFIX_LITERAL) - 1 ||
@@ -3911,12 +3931,19 @@ PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
     Py_DECREF(owner);
     return NULL;
   }
-  PyObject *out = pymizu_tree_walk_path(
+  PyObject *out = pymizu_tree_walk_path_depth(
     (PyObject *) owner, loan, (const uint8_t *) mizu_shm_addr(owner->shm),
-    mizu_shm_size(owner->shm), pp);
+    mizu_shm_size(owner->shm), pp, depth);
   Py_DECREF(loan);
   Py_DECREF(owner);
   return out;
+}
+
+PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
+                                       mizu_read_ctx *ctx, int64_t length,
+                                       int64_t attrs_size, int na_claim) {
+  return mizu_py_view_resolve_checked_depth(id, id_len, ctx, length,
+                                            attrs_size, na_claim, 0);
 }
 
 /* Codec read side: strict bounds throughout; anything torn or trailing is
@@ -4413,7 +4440,8 @@ static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
     if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) break;
     return read_shm_vec(payload, hdr->len, hdr->aux, ctx);
   case MIZU_KIND_REF:
-    if (hdr->len == 0 || hdr->len > 1024) break;   /* the identifier cap */
+    /* the identifier cap, but never past the slot's own span */
+    if (hdr->len == 0 || hdr->len > limit || hdr->len > 1024) break;
     return mizu_py_view_resolve((const char *) payload, hdr->len, ctx);
   }
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
@@ -4883,11 +4911,11 @@ static const uint8_t *pool_entry_bytes(const mizu_slot_hdr *hdr,
                                        mizu_read_ctx *ctx, size_t *out_len) {
   switch (hdr->kind) {
   case MIZU_KIND_INLINE:
-    if (hdr->len > limit) return NULL;
-    *out_len = hdr->len;
-    return payload;
   case MIZU_KIND_RAWVEC:
   case MIZU_KIND_STR1:
+    /* every inline tier is bounded to the slot — the dispatch reads
+       stream offsets off this span */
+    if (hdr->len > limit) return NULL;
     *out_len = hdr->len;
     return payload;
   case MIZU_KIND_SHM_RAW: {
@@ -5193,7 +5221,9 @@ closed midway; send the next element singly to learn which.");
 static PyObject *Channel_send_batch(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
-  PyObject *seq = PySequence_Fast(arg, "pymizu: expected a sequence of payloads");
+  /* a tuple snapshot: the GIL drops for the batch, so the borrowed items
+     of a caller-shared list could be freed mid-send by another thread */
+  PyObject *seq = PySequence_Tuple(arg);
   if (seq == NULL) return NULL;
   Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
   void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));
@@ -5420,6 +5450,10 @@ the word is read: the host fills it at ready_wait, the peer at attach).");
 
 static PyObject *Channel_peer_ident(MizuChannel *self,
                                     PyObject *Py_UNUSED(args)) {
+  if (self->vcache == NULL) {
+    PyErr_SetString(MizuError, "pymizu: channel handle is closed");
+    return NULL;
+  }
   const MizuHandleCtx *hc = (const MizuHandleCtx *) self->vcache;
   return Py_BuildValue("(II)", (unsigned int) hc->peer_lang,
                        (unsigned int) hc->peer_caps);
@@ -5834,8 +5868,9 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   if (p == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  PyObject *fast =
-    PySequence_Fast(seq, "pymizu: expected a sequence of task payloads");
+  /* a tuple snapshot: the GIL drops for the batch, so the borrowed items
+     of a caller-shared list could be freed mid-submit by another thread */
+  PyObject *fast = PySequence_Tuple(seq);
   if (fast == NULL) return NULL;
   Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
   void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));

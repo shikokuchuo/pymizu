@@ -322,6 +322,27 @@ def test_map_prepared_rearm_fences_stragglers(pool):
         pm.close()
 
 
+def test_map_write_rejects_a_wrapping_range(pool):
+    # lo near UINT64_MAX: the range check must not wrap past the bound
+    pm = pool.map_prepare(abs, [1, 2, 3, 4], template=np.empty(1))
+    try:
+        with pytest.raises(pymizu.MizuError, match="out of bounds"):
+            pymizu._pymizu._map_write(pm._capsule, 2**64 - 1, [1.0, 2.0])
+    finally:
+        pm.close()
+
+
+def test_map_lost_with_one_shot_histories(pool):
+    # a generator history is materialized once — a second sizing pass
+    # must not desync the allocation from the fill
+    pm = pool.map_prepare(abs, [1, 2, 3, 4])
+    try:
+        out = pymizu._pymizu._map_lost(pm._capsule, [iter([(0, 2)]), [(2, 4)]])
+        assert out == []  # nothing issued yet, so nothing lost
+    finally:
+        pm.close()
+
+
 def test_map_prepared_template(pool):
     pm = pool.map_prepare(
         scalar_double, list(range(100)), template=np.empty(1)

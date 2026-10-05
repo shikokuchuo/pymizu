@@ -1051,9 +1051,17 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
       }
       PyList_SET_ITEM(payload, (Py_ssize_t) j, v);
     }
+    /* PyTuple_Pack borrows its arguments: every fresh reference built for
+       a pack must leave with the tuple */
+    PyObject *kobj = PyUnicode_FromString(kind);
+    if (kobj == NULL) {
+      Py_DECREF(payload);
+      goto fail;
+    }
     if (c->kind == FCOL_DICT) {
       PyObject *levels = PyList_New((Py_ssize_t) c->nlev);
       if (levels == NULL) {
+        Py_DECREF(kobj);
         Py_DECREF(payload);
         goto fail;
       }
@@ -1063,19 +1071,22 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
           c->lev_off[j + 1] - c->lev_off[j], NULL);
         if (s == NULL) {
           Py_DECREF(levels);
+          Py_DECREF(kobj);
           Py_DECREF(payload);
           goto fail;
         }
         PyList_SET_ITEM(levels, (Py_ssize_t) j, s);
       }
-      tuple = PyTuple_Pack(3, PyUnicode_FromString(kind), payload, levels);
+      tuple = PyTuple_Pack(3, kobj, payload, levels);
       Py_DECREF(levels);
     } else if (c->kind == FCOL_TS) {
-      tuple = PyTuple_Pack(3, PyUnicode_FromString(kind), payload,
-                           PyUnicode_FromString(c->tz));
+      PyObject *tzobj = PyUnicode_FromString(c->tz);
+      tuple = tzobj != NULL ? PyTuple_Pack(3, kobj, payload, tzobj) : NULL;
+      Py_XDECREF(tzobj);
     } else {
-      tuple = PyTuple_Pack(2, PyUnicode_FromString(kind), payload);
+      tuple = PyTuple_Pack(2, kobj, payload);
     }
+    Py_DECREF(kobj);
     Py_DECREF(payload);
     if (tuple == NULL) goto fail;
     PyList_SET_ITEM(columns, i, tuple);

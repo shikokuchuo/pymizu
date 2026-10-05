@@ -935,13 +935,13 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
       ents[i].kind = AV_INT;
       memcpy(&ents[i].val.v, &vit.u64[0], 8);
       break;
-    default: {
-      PyObject *v = ixr_value(cur, mode);
-      if (v == NULL) goto fail;
-      ents[i].kind = AV_OBJ;
-      ents[i].val.obj = v;
-      break;
-    }
+    default:
+      /* vit was already consumed by the mizu_ix_next above; anything
+         outside the attribute vocabulary is a decline, never a re-read
+         (pulling the next item here once desynced the whole dict) */
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "an attribute value of an unsupported kind");
+      goto fail;
     }
   }
   *n_out = (int) n;
@@ -1813,6 +1813,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
       }
       v[0] = x == INT64_MIN ? MIZU_NA_INT32 : (int32_t) x;
       c->kind = FCOL_I32;
+      c->values = (uint8_t *) v;
     } else {
       int64_t *v = malloc(8);
       if (v == NULL) {
@@ -1821,6 +1822,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
       }
       v[0] = x;
       c->kind = FCOL_I64;
+      c->values = (uint8_t *) v;
     }
     c->n = 1;
     return 0;
@@ -2071,9 +2073,9 @@ static void tree_valid(fcol *c, const uint8_t *base, const int64_t valid[2]) {
 }
 
 static int tree_column(const uint8_t *base, size_t size, int64_t i,
-                       fcol *c);
+                       fcol *c, unsigned depth);
 static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
-                            fcol *c);
+                            fcol *c, unsigned depth);
 
 /* The path half of a remote leaf's resolve: each intermediate a bare VEC
    leaf, the terminal entry handed out with its tree — pymizu_tree_walk_
@@ -2125,7 +2127,7 @@ static int tree_ref_path(const uint8_t *base, size_t size, const char *path,
    hang off the fcol's hold. Every decline is the corrupt-or-newer shape —
    behind the capability gate, meeting one unadvertised is exactly that. */
 static int tree_column_remote(const uint8_t *base, const mizu_mizl_entry *e,
-                              fcol *c) {
+                              fcol *c, unsigned depth) {
   char id[256];
   /* the directory read caps a remote leaf's span at 255, but that cap is
      the ext tier's (it may change without deprecation): keep the local
@@ -2216,8 +2218,8 @@ static int tree_column_remote(const uint8_t *base, const mizu_mizl_entry *e,
     goto release;
   }
 
-  int rc = brack == NULL ? tree_column_fill(rbase, &ref, c) :
-    tree_column(fbase, fsize, fidx, c);
+  int rc = brack == NULL ? tree_column_fill(rbase, &ref, c, depth + 1) :
+    tree_column(fbase, fsize, fidx, c, depth + 1);
   if (rc != 0) goto release;   /* the fill's own error stands */
   if (c->hold == NULL) {
     c->hold = shm;
@@ -2249,7 +2251,7 @@ release:
    MIZS block, a remote leaf resolves by reference; anything else declines
    informatively. */
 static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
-                            fcol *c) {
+                            fcol *c, unsigned depth) {
   if (e->sexptype & MIZU_MIZL_S4) {
     PyErr_SetString(MizuError, "pymizu: no portable home for a frame "
                     "column with the S4 bit");
@@ -2258,7 +2260,10 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   const int32_t tag = e->sexptype & ~(int32_t) MIZU_MIZL_S4;
   const uint8_t *data = base + e->data_offset;
   const int64_t body = e->data_size - (int64_t) e->attrs_size;
-  if (tag == PYMIZU_MIZL_TAG_REF) return tree_column_remote(base, e, c);
+  if (tag == PYMIZU_MIZL_TAG_REF) {
+    if (depth >= MIZU_IX_DEPTH_MAX) goto deep;
+    return tree_column_remote(base, e, c, depth);
+  }
   if (tag == MIZU_TYPE_STR) {
     if (e->attrs_size != 0) goto newer;
     mizu_mizs_geom g = mizu_mizs_geometry(e->length);
@@ -2340,6 +2345,10 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   }
   attr_vals_free(ents, nent);
   return rc;
+deep:
+  PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a remote "
+                  "leaf chain past the depth cap)");
+  return -1;
 newer:
   PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                   "(a frame column of an unexpected form)");
@@ -2348,14 +2357,14 @@ newer:
 
 /* The directory-entry read, then the fill. */
 static int tree_column(const uint8_t *base, size_t size, int64_t i,
-                       fcol *c) {
+                       fcol *c, unsigned depth) {
   mizu_mizl_entry e;
   if (mizu_mizl_elem(base, size, i, &e) != 0) {
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
     return -1;
   }
   memset(c, 0, sizeof(*c));
-  return tree_column_fill(base, &e, c);
+  return tree_column_fill(base, &e, c, depth);
 }
 
 /* The {dim} blob's home: the borrowed 1-D view reshaped order="F" —
@@ -2512,7 +2521,8 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
 }
 
 static PyObject *tree_walk(PyObject *owner, PyObject *loan,
-                           const uint8_t *base, size_t size);
+                           const uint8_t *base, size_t size,
+                           unsigned depth);
 
 /* One directory entry's wrap (generic mode): a nested list recurses, a
    string leaf borrows its block, an attribute-free atomic borrows a view,
@@ -2520,7 +2530,8 @@ static PyObject *tree_walk(PyObject *owner, PyObject *loan,
    VECSXP/STRSXP entry with a trailing blob, or the S4 bit declines
    informatively. */
 static PyObject *tree_element(PyObject *owner, PyObject *loan,
-                              const uint8_t *base, size_t size, int64_t i) {
+                              const uint8_t *base, size_t size, int64_t i,
+                              unsigned depth) {
   mizu_mizl_entry e;
   if (mizu_mizl_elem(base, size, i, &e) != 0) {
     PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
@@ -2536,7 +2547,10 @@ static PyObject *tree_element(PyObject *owner, PyObject *loan,
   const int64_t body = e.data_size - (int64_t) e.attrs_size;
   if (tag == MIZU_TYPE_VEC) {
     if (e.attrs_size != 0) goto newer;
-    return tree_walk(owner, loan, data, (size_t) e.data_size);
+    /* nested MIZL: capped — a crafted directory can point at its own
+       region, and a deep tree at the C stack */
+    if (depth >= MIZU_IX_DEPTH_MAX) goto deep;
+    return tree_walk(owner, loan, data, (size_t) e.data_size, depth + 1);
   }
   if (tag == MIZU_TYPE_STR) {
     if (e.attrs_size != 0) goto newer;
@@ -2547,17 +2561,19 @@ static PyObject *tree_element(PyObject *owner, PyObject *loan,
   if (tag == PYMIZU_MIZL_TAG_REF) {
     /* a remote leaf: resolve + the claim validation, the wrap a
        standalone view (its own owner — one loan per remote leaf; no
-       handle ctx here, so the open rides no cache) */
+       handle ctx here, so the open rides no cache). The chain counts
+       against the same depth cap — regions can reference in a cycle */
     char id[256];
     /* as in tree_column_remote: the 255 cap is the ext tier's — keep the
        local bound explicit ahead of the stack copy */
     if (e.data_size < 1 || e.data_size >= (int64_t) sizeof id)
       goto newer;
+    if (depth >= MIZU_IX_DEPTH_MAX) goto deep;
     memcpy(id, data, (size_t) e.data_size);
     id[e.data_size] = '\0';
-    return mizu_py_view_resolve_checked(
+    return mizu_py_view_resolve_checked_depth(
       id, (size_t) e.data_size, NULL, e.length, (int64_t) e.attrs_size,
-      e.valid[0] == 0 && e.valid[1] == -1);
+      e.valid[0] == 0 && e.valid[1] == -1, depth + 1);
   }
   const size_t elt = mizu_type_elt_size(tag);
   if (elt == 0) {
@@ -2573,6 +2589,10 @@ static PyObject *tree_element(PyObject *owner, PyObject *loan,
   return mizu_py_atomic_home(owner, loan, tag, (uint8_t *) data, e.length,
                              valid, e.valid[1], data + body,
                              (size_t) e.attrs_size);
+deep:
+  PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a list "
+                  "tree past the depth cap)");
+  return NULL;
 newer:
   PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                   "(a leaf of an unexpected form)");
@@ -2580,11 +2600,12 @@ newer:
 }
 
 static PyObject *tree_list(PyObject *owner, PyObject *loan,
-                           const uint8_t *base, size_t size, int64_t n) {
+                           const uint8_t *base, size_t size, int64_t n,
+                           unsigned depth) {
   PyObject *out = PyList_New((Py_ssize_t) n);
   if (out == NULL) return NULL;
   for (int64_t i = 0; i < n; i++) {
-    PyObject *v = tree_element(owner, loan, base, size, i);
+    PyObject *v = tree_element(owner, loan, base, size, i, depth);
     if (v == NULL) {
       Py_DECREF(out);
       return NULL;
@@ -2598,7 +2619,7 @@ static PyObject *tree_list(PyObject *owner, PyObject *loan,
    element, non-NA, unique — the sender's gate, re-checked here). */
 static PyObject *tree_dict(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
-                           const attr_ent *nm) {
+                           const attr_ent *nm, unsigned depth) {
   Py_ssize_t nn = nm->kind == AV_STR ? 1 :
     nm->kind == AV_STRLIST ? PyList_GET_SIZE(nm->val.obj) : -1;
   if (nn != n) {
@@ -2631,7 +2652,7 @@ static PyObject *tree_dict(PyObject *owner, PyObject *loan,
                         "(duplicate names)");
       goto fail;
     }
-    PyObject *v = tree_element(owner, loan, base, size, i);
+    PyObject *v = tree_element(owner, loan, base, size, i, depth);
     if (v == NULL || PyDict_SetItem(out, k, v) < 0) {
       Py_DECREF(k);
       Py_XDECREF(v);
@@ -2651,7 +2672,8 @@ fail:
    loan anchor on the shell. */
 static PyObject *tree_frame(PyObject *owner, PyObject *loan,
                             const uint8_t *base, size_t size, int64_t n,
-                            const attr_ent *nm, const attr_ent *rn) {
+                            const attr_ent *nm, const attr_ent *rn,
+                            unsigned depth) {
   if (n == 0 || n > (int64_t) (1u << 20)) {
     PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                     "(a frame without columns)");
@@ -2662,7 +2684,7 @@ static PyObject *tree_frame(PyObject *owner, PyObject *loan,
   if (cols == NULL) return PyErr_NoMemory();
   int64_t nrow = -1;
   for (int i = 0; i < ncols; i++) {
-    if (tree_column(base, size, i, &cols[i]) < 0) goto fail;
+    if (tree_column(base, size, i, &cols[i], depth) < 0) goto fail;
     if (nrow < 0) nrow = cols[i].n;
     else if (cols[i].n != nrow) {
       PyErr_SetString(MizuError, "pymizu: corrupt or newer region (the "
@@ -2704,25 +2726,27 @@ fail:
    other attribute set the no-home error. */
 static PyObject *tree_home(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
-                           attr_ent *ents, int nent) {
+                           attr_ent *ents, int nent, unsigned depth) {
   attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
   attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
   attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
   if (nent == 0)
-    return tree_list(owner, loan, base, size, n);
+    return tree_list(owner, loan, base, size, n, depth);
   if (nent == 1 && nm != NULL)
-    return tree_dict(owner, loan, base, size, n, nm);
+    return tree_dict(owner, loan, base, size, n, nm, depth);
   if (nent == 3 && cls != NULL && nm != NULL && rn != NULL &&
       class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL))
-    return tree_frame(owner, loan, base, size, n, nm, rn);
+    return tree_frame(owner, loan, base, size, n, nm, rn, depth);
   ixr_no_home(ents, nent, "an attributed list");
   return NULL;
 }
 
 /* A nested MIZL: validate through the core's check, read the blob first,
-   then the shape decision. */
+   then the shape decision. depth caps the recursion — crafted directories
+   can nest without bound (a leaf can point at its own region) */
 static PyObject *tree_walk(PyObject *owner, PyObject *loan,
-                           const uint8_t *base, size_t size) {
+                           const uint8_t *base, size_t size,
+                           unsigned depth) {
   int64_t n = 0, attrs_off = 0, attrs_size = 0, valid[2];
   if (mizu_mizl_check(base, size, &n, &attrs_off, &attrs_size,
                       valid) != 0) {
@@ -2735,7 +2759,22 @@ static PyObject *tree_walk(PyObject *owner, PyObject *loan,
     ents = blob_attrs(base + attrs_off, (size_t) attrs_size, &nent);
     if (ents == NULL) return NULL;
   }
-  PyObject *out = tree_home(owner, loan, base, size, n, ents, nent);
+  PyObject *out = tree_home(owner, loan, base, size, n, ents, nent, depth);
+  attr_vals_free(ents, nent);
+  return out;
+}
+
+PyObject *pymizu_tree_wrap_depth(PyObject *owner, PyObject *loan,
+                                 const uint8_t *base, size_t size, int64_t n,
+                                 int64_t attrs_off, int64_t attrs_size,
+                                 unsigned depth) {
+  int nent = 0;
+  attr_ent *ents = NULL;
+  if (attrs_size > 0) {
+    ents = blob_attrs(base + attrs_off, (size_t) attrs_size, &nent);
+    if (ents == NULL) return NULL;
+  }
+  PyObject *out = tree_home(owner, loan, base, size, n, ents, nent, depth);
   attr_vals_free(ents, nent);
   return out;
 }
@@ -2743,20 +2782,13 @@ static PyObject *tree_walk(PyObject *owner, PyObject *loan,
 PyObject *pymizu_tree_wrap(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
                            int64_t attrs_off, int64_t attrs_size) {
-  int nent = 0;
-  attr_ent *ents = NULL;
-  if (attrs_size > 0) {
-    ents = blob_attrs(base + attrs_off, (size_t) attrs_size, &nent);
-    if (ents == NULL) return NULL;
-  }
-  PyObject *out = tree_home(owner, loan, base, size, n, ents, nent);
-  attr_vals_free(ents, nent);
-  return out;
+  return pymizu_tree_wrap_depth(owner, loan, base, size, n, attrs_off,
+                                attrs_size, 0);
 }
 
-PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
-                                const uint8_t *base, size_t size,
-                                const char *path) {
+PyObject *pymizu_tree_walk_path_depth(PyObject *owner, PyObject *loan,
+                                      const uint8_t *base, size_t size,
+                                      const char *path, unsigned depth) {
   const char *p = path;
   if (*p++ != '[') goto corrupt;
   const uint8_t *cur = base;
@@ -2776,7 +2808,7 @@ PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
     const int64_t idx = (int64_t) v - 1;
     if (*p == ']') {
       if (p[1] != '\0') goto corrupt;
-      return tree_element(owner, loan, cur, cursz, idx);
+      return tree_element(owner, loan, cur, cursz, idx, depth);
     }
     if (*p != ',') goto corrupt;
     p++;
@@ -2791,6 +2823,12 @@ PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
 corrupt:
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
+}
+
+PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
+                                const uint8_t *base, size_t size,
+                                const char *path) {
+  return pymizu_tree_walk_path_depth(owner, loan, base, size, path, 0);
 }
 
 // The Frame's wire form (writer) ----------------------------------------------------
@@ -3342,9 +3380,12 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
           const char *close = strchr(p + 3, ']');
           if (close != NULL) {
             int unit = temporal_unit(p + 3, (size_t) (close - (p + 3)));
+            /* p points into ds's UTF-8 buffer — read the kind out before
+               the decrefs free it */
+            int delta = p[0] == 'm';
             Py_DECREF(ds);
             Py_DECREF(dt);
-            ixw_numpy_temporal(w, obj, unit, p[0] == 'm');
+            ixw_numpy_temporal(w, obj, unit, delta);
             return;
           }
         }
@@ -3845,7 +3886,7 @@ static int ixs_levels_read(ixs *x, int col, int32_t **off_out,
                       "null level has no portable home");
       return -1;
     }
-    if (!arrow_str_at(dict, i, form, &s, &len)) {
+    if (arrow_str_at(dict, i, form, &s, &len) != 1) {
       free(offs);
       free(bytes);
       PyErr_SetString(MizuError, "pymizu: invalid Arrow dictionary export");
@@ -3886,7 +3927,7 @@ static int ixs_levels_match(ixs *x, int col, const ArrowArray *dict,
   for (int64_t i = 0; i < nlev; i++) {
     const uint8_t *s;
     int32_t len;
-    if (!arrow_str_at(dict, i, form, &s, &len)) return 0;
+    if (arrow_str_at(dict, i, form, &s, &len) != 1) return 0;
     if (offs[i + 1] - offs[i] != len ||
         memcmp(bytes + offs[i], s, (size_t) len) != 0)
       return 0;
@@ -3943,7 +3984,10 @@ static void ixs_emit_str_col(ixe *e, ixs *x, int col) {
     for (int64_t k = 0; k < a->length; k++) {
       const uint8_t *s;
       int32_t len;
-      if (!arrow_str_at(a, k, pc->str_form, &s, &len)) {
+      /* a malformed record (a broken producer) degrades to NA like a
+         null — both passes see the same verdict, so the stream stays
+         consistent; it must never reach the put with a garbage span */
+      if (arrow_str_at(a, k, pc->str_form, &s, &len) != 1) {
         IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), NULL, -1));
       } else {
         IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), s, len));
@@ -4731,9 +4775,10 @@ static int ixs_stage_arrow_pair(PyObject *obj, mizu_slot_hdr *hdr,
   x.hold.rows = one.length;
   int rc = ixs_run_single(&x, hdr, payload, inline_max, h);
   x.hold.arrs = NULL;
+  /* ixs_free drops the pair, whose capsules release and free the Arrow
+     structs — reading schema->/array->release here would touch freed
+     memory, and the producer's capsule destructors own the release */
   ixs_free(&x);
-  if (schema->release != NULL) schema->release(schema);
-  if (array->release != NULL) array->release(array);
   return rc;
 }
 

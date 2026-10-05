@@ -486,7 +486,8 @@ static PyObject *py_map_write(PyObject *Py_UNUSED(module), PyObject *args) {
   PyObject *seq = PySequence_Fast(vals, "pymizu: values must be a sequence");
   if (seq == NULL) return NULL;
   Py_ssize_t len = PySequence_Fast_GET_SIZE(seq);
-  if (lo_ll + (uint64_t) len > mh->h.n) {
+  /* subtraction form: lo_ll + len could wrap past the bound */
+  if (lo_ll >= mh->h.n || (uint64_t) len > mh->h.n - lo_ll) {
     Py_DECREF(seq);
     PyErr_SetString(MizuErr, "pymizu: map write range out of bounds");
     return NULL;
@@ -906,38 +907,41 @@ static PyObject *py_map_lost(PyObject *Py_UNUSED(module), PyObject *args) {
     runs, "pymizu: histories must be a list of range lists");
   if (seq == NULL) return NULL;
   Py_ssize_t nh = PySequence_Fast_GET_SIZE(seq);
+  /* materialize every history up front: a second PySequence_Fast on the
+     same object could yield a different length (a one-shot iterable) and
+     desync the allocation from the fill */
+  PyObject **hists =
+    PyMem_Calloc((size_t) (nh != 0 ? nh : 1), sizeof(*hists));
+  if (hists == NULL) {
+    PyErr_NoMemory();
+    goto fail_seq;
+  }
   Py_ssize_t total = 0;
   for (Py_ssize_t i = 0; i < nh; i++) {
-    PyObject *hist = PySequence_Fast(PySequence_Fast_GET_ITEM(seq, i),
-                                     "pymizu: invalid map batch history");
-    if (hist == NULL) goto fail_seq;
-    total += PySequence_Fast_GET_SIZE(hist);
-    Py_DECREF(hist);
+    hists[i] = PySequence_Fast(PySequence_Fast_GET_ITEM(seq, i),
+                               "pymizu: invalid map batch history");
+    if (hists[i] == NULL) goto fail_hists;
+    total += PySequence_Fast_GET_SIZE(hists[i]);
   }
   mizu_pyrange *b = PyMem_Malloc((size_t) (total > 0 ? total : 1) *
                                 sizeof(*b));
   if (b == NULL) {
     PyErr_NoMemory();
-    goto fail_seq;
+    goto fail_hists;
   }
   Py_ssize_t at = 0;
   for (Py_ssize_t i = 0; i < nh; i++) {
-    PyObject *hist = PySequence_Fast(PySequence_Fast_GET_ITEM(seq, i),
-                                     "pymizu: invalid map batch history");
-    if (hist == NULL) goto fail_b;
-    Py_ssize_t nb = PySequence_Fast_GET_SIZE(hist);
+    Py_ssize_t nb = PySequence_Fast_GET_SIZE(hists[i]);
     for (Py_ssize_t j = 0; j < nb; j++, at++) {
       unsigned long long lo, hi;
-      if (!PyArg_ParseTuple(PySequence_Fast_GET_ITEM(hist, j), "KK",
+      if (!PyArg_ParseTuple(PySequence_Fast_GET_ITEM(hists[i], j), "KK",
                             &lo, &hi) || hi < lo || hi > mh->h.n) {
         PyErr_SetString(MizuErr, "pymizu: invalid map batch history");
-        Py_DECREF(hist);
         goto fail_b;
       }
       b[at].lo = (uint64_t) lo;
       b[at].hi = (uint64_t) hi;
     }
-    Py_DECREF(hist);
   }
   uint64_t issued = mizu_morsel_cursor(mh->shm->addr, &mh->h) *
     mh->h.morsel_size;
@@ -968,11 +972,16 @@ static PyObject *py_map_lost(PyObject *Py_UNUSED(module), PyObject *args) {
   }
   PyMem_Free(gaps);
   PyMem_Free(b);
+  for (Py_ssize_t i = 0; i < nh; i++) Py_XDECREF(hists[i]);
+  PyMem_Free(hists);
   Py_DECREF(seq);
   return out;
 
 fail_b:
   PyMem_Free(b);
+fail_hists:
+  for (Py_ssize_t i = 0; i < nh; i++) Py_XDECREF(hists[i]);
+  PyMem_Free(hists);
 fail_seq:
   Py_DECREF(seq);
   return NULL;
