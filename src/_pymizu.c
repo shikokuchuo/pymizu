@@ -1158,6 +1158,51 @@ static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   return rc;
 }
 
+/* Same-language exact-type scalars: the codec's bool/int/float rows
+   written directly, ahead of the buffer probe and the container-capable
+   walk. Only types without the buffer protocol dispatch here — bytes and
+   numpy keep the raw tiers (the wire keeps RAWVEC); a str past the STR1
+   budget still reaches the codec's spill. 0 staged, -1 the general path
+   decides (a non-scalar, an int past int64, an inline budget under 10 —
+   the codec's malloc spill covers it). Never sets an error. */
+static int stage_scalar_fast(PyObject *obj, mizu_slot_hdr *hdr,
+                             uint8_t *payload, uint32_t inline_max) {
+  if (PyBool_Check(obj)) {
+    if (inline_max < 3) return -1;
+    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
+    payload[1] = PYMIZU_TAG_BOOL;
+    payload[2] = (uint8_t) (obj == Py_True);
+    hdr->len = 3;
+  } else if (PyLong_CheckExact(obj)) {
+    long long v = PyLong_AsLongLong(obj);
+    if (v == -1 && PyErr_Occurred()) {
+      PyErr_Clear();   /* OverflowError: an exotic int rides pickle */
+      return -1;
+    }
+    if (inline_max < 10) return -1;
+    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
+    payload[1] = PYMIZU_TAG_INT;
+    uint8_t *p = payload + 2;
+    codec_put64(&p, (uint64_t) v);
+    hdr->len = 10;
+  } else if (PyFloat_CheckExact(obj)) {
+    if (inline_max < 10) return -1;
+    double d = PyFloat_AS_DOUBLE(obj);
+    uint64_t u;
+    memcpy(&u, &d, 8);
+    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
+    payload[1] = PYMIZU_TAG_FLOAT;
+    uint8_t *p = payload + 2;
+    codec_put64(&p, u);
+    hdr->len = 10;
+  } else {
+    return -1;
+  }
+  hdr->kind = MIZU_KIND_INLINE;
+  hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a flat codec stream references nothing */
+  return 0;
+}
+
 // Task frames ------------------------------------------------------------------
 
 /* The facade marks pool task payloads as _TaskFrame (a tuple subclass:
@@ -1522,6 +1567,11 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       return 0;
     }
   }
+  /* same-language exact-type scalars skip the buffer probe, the frame
+     checks, and the codec's container walk; a foreign peer's scalars
+     route to the 'I' writer below */
+  if (!foreign && stage_scalar_fast(obj, hdr, payload, inline_max) == 0)
+    return 0;
   if (Py_TYPE(obj) == &MizuShmStrViewType) {
     /* a region-backed string view re-sent whole: its region name (REF,
        zero payload bytes — the string view admits no buffer, so whole is

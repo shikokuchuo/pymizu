@@ -112,7 +112,14 @@ tools/vendor-libmizu.sh` for a local checkout).
 
 - Staging tier order (`stage_impl` in `src/_pymizu.c`), first match wins:
   1. `None` -> NIL.
-  2. Buffer-protocol objects -> the core's raw-tier reservation
+  2. Exact-type `str` within the inline budget -> STR1 (UTF-8 payload,
+     `MIZU_CE_UTF8` aux; lone surrogates fall through).
+  3. Same-language exact-type bool/int/float -> the codec's scalar rows
+     written directly (`stage_scalar_fast`, ahead of the buffer probe
+     and the codec's container walk; an int past int64 falls through to
+     pickle). Foreign scalars route to the 'I' writer below the buffer
+     tier.
+  4. Buffer-protocol objects -> the core's raw-tier reservation
      (`mizu_stage_raw`, vendored `stage_raw.c`): RAWVEC inline, then past
      max(inline budget, `MIZU_ZC_FLOOR`) SHM_VEC (one MIZH layout write
      into a spill region, `mizu_stage_retain_zc` storing the producer-loan
@@ -126,9 +133,7 @@ tools/vendor-libmizu.sh` for a local checkout).
      zero payload bytes) after `MIZU_ZC_FLAG_REFHELD` is OR'd into the
      region's flags word. A slice, reshape or dtype view goes by value;
      writable buffers never pay the `.base` walk.
-  3. Exact-type `str` within the inline budget -> STR1 (UTF-8 payload,
-     `MIZU_CE_UTF8` aux; lone surrogates fall through).
-  4. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
+  5. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
      built only through the `_task_frame` factory) -> the structured
      frame codec (`PYMIZU_TAG_TASK`): fn by module+qualname reference
      (exact function/builtin, no `<` in the qualname, module not
@@ -138,14 +143,14 @@ tools/vendor-libmizu.sh` for a local checkout).
      (at most one per frame, the stream then inline-only: the core's
      staging seam holds a single spill checkout). A BUFREF argument
      arrives as a read-only view.
-  5. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
+  6. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
      defined in the vendored `mizu_ext.h` next to mizu's own
      `MIZU_CODEC_MAGIC` 0x52 'R' — one registry for both bindings): bool,
      int64-bounded int, float, str, bytes, None, and one flat
      list/tuple/dict level of those, capped at 64 elements. Exact-type
      checks throughout, so subclasses keep their pickle semantics;
      anything else falls back.
-  6. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
+  7. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
 
   `stage_bytes` frames the pickle/codec/task-frame streams over the
   INLINE/ARENA/SHM_RAW tiers; the INLINE frame stamps the keeperless

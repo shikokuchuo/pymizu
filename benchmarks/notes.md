@@ -730,3 +730,33 @@ other rows unmoved.
 
 Status: full suite 403 pass, 5 skip (new candidate-matrix test in
 test_crosslang_pool.py); ruff + pyrefly clean.
+
+## 2026-10-05 — exact-type scalar pre-dispatch in stage_impl
+
+Same-language exact-type bool/int/float now stage straight out of
+stage_impl (stage_scalar_fast): the codec's scalar rows written
+directly, ahead of the buffer probe, the frame-type checks, and the
+codec's container-capable walk. bytes/numpy keep the raw tiers (the
+wire keeps RAWVEC), a str past the STR1 budget still spills through
+the codec, an int past int64 falls through to pickle, and foreign
+scalars still route to the 'I' writer (the gate sits below the
+foreign branch). The wire is unchanged — byte-identical to
+stage_codec's rows.
+
+Results (focused big-ring channel A/B/A on this host, 7 reps,
+medians; the send-side rows isolate the staging share the
+synchronous rt hides):
+
+| row | before | after |
+|----|----|----|
+| sequential rt, channel | 0.371 us/rt | 0.371 / 0.386 us/rt |
+| pipelined, channel | 4.26M rt/s | 4.70M / 4.62M rt/s |
+| send-only (probe row) | ~10.0M msg/s | ~10.6-10.8M msg/s |
+
++8-10% pipelined, ~6-8% on the isolated send loop, nothing on the
+synchronous rt (staging is a small share of the crossing). The full
+suite's before/after runs swung the same rows inside suite noise
+(pipelined 4.62M -> 4.46M on the pair, batch 9.36M -> 10.15M,
+streaming 21.2M -> 21.4M); no best-known swap.
+
+Status: full suite 403 pass, 5 skip; ruff + pyrefly clean.
