@@ -246,6 +246,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <li><a href="#outcomes" id="toc-outcomes" class="nav-link" data-scroll-target="#outcomes">Outcomes</a></li>
   <li><a href="#waiting-on-several-tasks" id="toc-waiting-on-several-tasks" class="nav-link" data-scroll-target="#waiting-on-several-tasks">Waiting on several tasks</a></li>
   <li><a href="#nested-tasks" id="toc-nested-tasks" class="nav-link" data-scroll-target="#nested-tasks">Nested tasks</a></li>
+  <li><a href="#a-default-pool-for-package-code" id="toc-a-default-pool-for-package-code" class="nav-link" data-scroll-target="#a-default-pool-for-package-code">A default pool for package code</a></li>
   <li><a href="#growing-shrinking-and-joining-a-pool" id="toc-growing-shrinking-and-joining-a-pool" class="nav-link" data-scroll-target="#growing-shrinking-and-joining-a-pool">Growing, shrinking, and joining a pool</a></li>
   <li><a href="#observing-a-pool" id="toc-observing-a-pool" class="nav-link" data-scroll-target="#observing-a-pool">Observing a pool</a></li>
   <li><a href="#sizing-a-pool" id="toc-sizing-a-pool" class="nav-link" data-scroll-target="#sizing-a-pool">Sizing a pool</a></li>
@@ -275,7 +276,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them. Workers claim tasks from per-submitter injection rings and steal work from each other, so the load balances itself. A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.</p>
-<div id="f8ad9a7a" class="cell" data-execution_count="1">
+<div id="17075460" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -327,7 +328,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="waiting-on-several-tasks" class="level1">
 <h1>Waiting on several tasks</h1>
 <p><code>pool.collect_any()</code> waits on a list of task handles and returns <code>(index, value)</code> for the first to reach a terminal state — the other handles stay collectible. <code>pool.collect_all()</code> returns every value in input order once all are terminal. Both take one overall <code>timeout</code> and return the <code>TIMEOUT</code> sentinel on expiry, consuming nothing:</p>
-<div id="e2058d11" class="cell" data-execution_count="2">
+<div id="ae0f351f" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> time</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
@@ -339,7 +340,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>(1, 6)</code></pre>
 </div>
 </div>
-<div id="984c6516" class="cell" data-execution_count="3">
+<div id="a23fcc81" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> pool.collect_all(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -354,7 +355,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="nested-tasks" class="level1">
 <h1>Nested tasks</h1>
 <p>Inside a task, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a> returns the evaluating worker’s own handle. A nested submit pushes straight onto the worker’s own work-stealing deque — no ring, no wake. A worker waiting on a nested result executes other work instead of sleeping, so divide-and-conquer runs at fork/join cost and never deadlocks the pool:</p>
-<div id="448eaae5" class="cell" data-execution_count="4">
+<div id="63b76470" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fan_out(parts):</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pymizu.current_pool()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    subs <span class="op">=</span> [pool.submit(<span class="bu">sum</span>, part) <span class="cf">for</span> part <span class="kw">in</span> parts]</span>
@@ -372,6 +373,28 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <p>(This example needs cloudpickle: <code>fan_out</code> is not an importable reference.)</p>
 </section>
+<section id="a-default-pool-for-package-code" class="level1">
+<h1>A default pool for package code</h1>
+<p>Package code can read a process-wide default pool with <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">pymizu.default_pool()</a>. <code>pymizu.set_default_pool(pool)</code> sets it — <code>None</code> clears it — and returns the previous default, so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted. <code>pymizu.using_pool(pool)</code> scopes the default to a with block, restoring the previous default on exit, including on exception.</p>
+<p>Resolve an optional pool in this order: an explicit <code>pool</code> argument, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a> inside a task, <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then your own fallback — sequential execution or an error. The default never overrides <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a>: inside a task the worker’s own handle wins, so nested submission is never shadowed. Setting a default checks the type only — a stopped pool is accepted and fails at use time — and handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link gdls-code">Pool.attach()</a> are valid defaults.</p>
+<div id="dee4ce26" class="cell" data-execution_count="5">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> run(x, pool<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pool <span class="kw">or</span> pymizu.current_pool() <span class="kw">or</span> pymizu.default_pool()</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> pool <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">"no pool: pass one, or set a default"</span>)</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> pool.submit(<span class="bu">pow</span>, x, <span class="dv">2</span>).collect(timeout<span class="op">=</span><span class="dv">30</span>)</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    old <span class="op">=</span> pymizu.set_default_pool(pool)</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>    squared <span class="op">=</span> run(<span class="dv">21</span>)</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>    pymizu.set_default_pool(old)</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>squared</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="5">
+<pre><code>441</code></pre>
+</div>
+</div>
+</section>
 <section id="growing-shrinking-and-joining-a-pool" class="level1">
 <h1>Growing, shrinking, and joining a pool</h1>
 <p>A pool can grow and shrink while it runs. <code>pool.spawn_workers(n)</code> adds workers, up to the <code>max_workers</code> limit set at create. <code>pool.retire(slot)</code> asks a worker to exit cleanly: it finishes its current task, and the remaining workers take over anything still queued to it.</p>
@@ -380,10 +403,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="observing-a-pool" class="level1">
 <h1>Observing a pool</h1>
 <p>Four read-only tools watch a running pool without disturbing it:</p>
-<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>pool.status()   <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>pool.stats()    <span class="co"># cumulative counters since each participant joined</span></span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>pool.dump()     <span class="co"># every slot in full detail — the first tool when a pool hangs</span></span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>pool.trace(fn)  <span class="co"># fn(event, id) at each task lifecycle event; None removes it</span></span></code></pre></div>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>pool.status()   <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>pool.stats()    <span class="co"># cumulative counters since each participant joined</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>pool.dump()     <span class="co"># every slot in full detail — the first tool when a pool hangs</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>pool.trace(fn)  <span class="co"># fn(event, id) at each task lifecycle event; None removes it</span></span></code></pre></div>
 </section>
 <section id="sizing-a-pool" class="level1">
 <h1>Sizing a pool</h1>

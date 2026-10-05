@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>API Reference | pymizu 水</title>
+<title>set_default_pool() | pymizu 水</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -25,6 +25,41 @@ ul.task-list li input[type="checkbox"] {
   width: 0.8em;
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
 }
 </style>
 
@@ -83,35 +118,47 @@ ul.task-list li input[type="checkbox"] {
 <script src="../theme-init.js"></script>
 
 
-  <link rel="alternate" type="text/markdown" href="index.md">
-  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/">
-  <meta name="description" content="A two-way message link between a Python process and a helper process that it spawns.">
+  <link rel="alternate" type="text/markdown" href="set_default_pool.md">
+  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/set_default_pool.html">
+  <meta name="description" content="Set the process-wide default pool; None clears it.">
   <script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareSourceCode",
-  "name": "pymizu 水",
-  "description": "Lock-free shared-memory parallelism for Python",
-  "license": "https://opensource.org/licenses/MIT",
-  "url": "https://shikokuchuo.net/pymizu",
-  "documentation": "https://shikokuchuo.net/pymizu",
-  "programmingLanguage": {
-    "@type": "ComputerLanguage",
-    "name": "Python"
+[
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "pymizu 水",
+    "description": "Lock-free shared-memory parallelism for Python",
+    "license": "https://opensource.org/licenses/MIT",
+    "url": "https://shikokuchuo.net/pymizu",
+    "documentation": "https://shikokuchuo.net/pymizu",
+    "programmingLanguage": {
+      "@type": "ComputerLanguage",
+      "name": "Python"
+    }
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "set_default_pool - pymizu 水",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "pymizu 水"
+    },
+    "url": "https://shikokuchuo.net/pymizu/reference/set_default_pool.html"
   }
-}
+]
 </script>
   <meta property="og:type" content="website">
-  <meta property="og:title" content="API Reference | pymizu 水">
-  <meta property="og:description" content="A two-way message link between a Python process and a helper process that it spawns.">
-  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/">
+  <meta property="og:title" content="set_default_pool() | pymizu 水">
+  <meta property="og:description" content="Set the process-wide default pool; None clears it.">
+  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/set_default_pool.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="API Reference | pymizu 水">
-  <meta name="twitter:description" content="A two-way message link between a Python process and a helper process that it spawns.">
+  <meta name="twitter:title" content="set_default_pool() | pymizu 水">
+  <meta name="twitter:description" content="Set the process-wide default pool; None clears it.">
 </head>
 
-<body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-reference doc-py-reference quarto-light">
+<body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
 
 <div id="quarto-search-results"></div>
   <header id="quarto-header" class="headroom fixed-top">
@@ -154,7 +201,7 @@ ul.task-list li input[type="checkbox"] {
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">Index</span></h5>
+        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">set_default_pool()</span></h5>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
     </div>
@@ -168,7 +215,7 @@ ul.task-list li input[type="checkbox"] {
     <ul class="list-unstyled mt-1">
         <li class="sidebar-item">
   <div class="sidebar-item-container" style="padding-bottom: 0.5rem; padding-top: 0.25rem;"> 
-  <a href="../reference/index.html" style="font-family: &quot;Open Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif;" class="sidebar-item-text sidebar-link active">
+  <a href="../reference/index.html" style="font-family: &quot;Open Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif;" class="sidebar-item-text sidebar-link">
  <span class="menu-text">API Index</span></a>
   </div>
 </li>
@@ -596,7 +643,7 @@ ul.task-list li input[type="checkbox"] {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/set_default_pool.html" class="sidebar-item-text sidebar-link">
+  <a href="../reference/set_default_pool.html" class="sidebar-item-text sidebar-link active">
  <span class="menu-text">set_default_pool</span></a>
   </div>
 </li>
@@ -625,28 +672,15 @@ ul.task-list li input[type="checkbox"] {
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
-        <nav id="TOC" role="doc-toc" class="toc-active">
-    <h2 id="toc-title">On this page</h2>
-   
-  <ul>
-  <li><a href="#channels" id="toc-channels" class="nav-link active" data-scroll-target="#channels">Channels</a></li>
-  <li><a href="#channel-methods" id="toc-channel-methods" class="nav-link" data-scroll-target="#channel-methods">Channel Methods</a></li>
-  <li><a href="#task-pools" id="toc-task-pools" class="nav-link" data-scroll-target="#task-pools">Task pools</a></li>
-  <li><a href="#pool-methods" id="toc-pool-methods" class="nav-link" data-scroll-target="#pool-methods">Pool Methods</a></li>
-  <li><a href="#cross-language-interop" id="toc-cross-language-interop" class="nav-link" data-scroll-target="#cross-language-interop">Cross-language interop</a></li>
-  <li><a href="#frame-methods" id="toc-frame-methods" class="nav-link" data-scroll-target="#frame-methods">Frame Methods</a></li>
-  <li><a href="#outcomes-and-errors" id="toc-outcomes-and-errors" class="nav-link" data-scroll-target="#outcomes-and-errors">Outcomes and errors</a></li>
-  <li><a href="#housekeeping" id="toc-housekeeping" class="nav-link" data-scroll-target="#housekeeping">Housekeeping</a></li>
-  </ul>
-</nav>
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
+        
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title">API Reference</h1>
+<h1 class="title"><span class="doc-object-name doc-function doc-label doc-label-function">set_default_pool()</span></h1>
 </div>
 
 
@@ -663,330 +697,25 @@ ul.task-list li input[type="checkbox"] {
 </header>
 
 
-<section id="channels" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="channels">Channels</h2>
-<div class="doc-description">
-<p>A two-way message link between a Python process and a helper process that it spawns.</p>
-</div>
-<dl>
-<dt><a href="../reference/Channel.html#pymizu.Channel" class="doc-class doc-label doc-label-class">Channel</a></dt>
-<dd>
-<p>A shared-memory SPSC channel handle (process-private).</p>
-</dd>
-</dl>
-</section>
-<section id="channel-methods" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="channel-methods">Channel Methods</h2>
-<div class="doc-description">
-<p>Methods for the Channel class</p>
-</div>
-<dl>
-<dt><a href="../reference/Channel.create.html#pymizu.Channel.create" class="doc-function doc-label doc-label-method">Channel.create()</a></dt>
-<dd>
-<p>Create a channel and spawn its peer.</p>
-</dd>
-<dt><a href="../reference/Channel.attach.html#pymizu.Channel.attach" class="doc-function doc-label doc-label-method">Channel.attach()</a></dt>
-<dd>
-<p>Attach to the channel named by a join token (the peer side).</p>
-</dd>
-<dt><a href="../reference/Channel.token.html#pymizu.Channel.token" class="doc-attribute doc-label doc-label-property">Channel.token</a></dt>
-<dd>
-<p>The join token for the peer’s attach.</p>
-</dd>
-<dt><a href="../reference/Channel.send.html#pymizu.Channel.send" class="doc-function doc-label doc-label-method">Channel.send()</a></dt>
-<dd>
-<p>Send one payload; return None, or the FULL / CLOSED /</p>
-</dd>
-<dt><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="doc-function doc-label doc-label-method">Channel.send_batch()</a></dt>
-<dd>
-<p>Send several payloads in one crossing; return the number</p>
-</dd>
-<dt><a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="doc-function doc-label doc-label-method">Channel.recv()</a></dt>
-<dd>
-<p>Receive one payload, waiting up to <code>timeout</code> seconds</p>
-</dd>
-<dt><a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="doc-function doc-label doc-label-method">Channel.recv_batch()</a></dt>
-<dd>
-<p>Receive up to <code>n</code> payloads in one crossing; a list</p>
-</dd>
-<dt><a href="../reference/Channel.close.html#pymizu.Channel.close" class="doc-function doc-label doc-label-method">Channel.close()</a></dt>
-<dd>
-<p>Orderly close: signal the peer and wait up to <code>timeout</code></p>
-</dd>
-<dt><a href="../reference/Channel.close_signal.html#pymizu.Channel.close_signal" class="doc-function doc-label doc-label-method">Channel.close_signal()</a></dt>
-<dd>
-<p>Signal close without waiting (the peer’s recv side sees</p>
-</dd>
-<dt><a href="../reference/Channel.destroy.html#pymizu.Channel.destroy" class="doc-function doc-label doc-label-method">Channel.destroy()</a></dt>
-<dd>
-<p>Tear down the handle immediately, without the close</p>
-</dd>
-<dt><a href="../reference/Channel.alive.html#pymizu.Channel.alive" class="doc-function doc-label doc-label-method">Channel.alive()</a></dt>
-<dd>
-<p>True while the peer process is alive.</p>
-</dd>
-<dt><a href="../reference/Channel.info.html#pymizu.Channel.info" class="doc-function doc-label doc-label-method">Channel.info()</a></dt>
-<dd>
-<p>A read-only wire-state snapshot of the channel (dict).</p>
-</dd>
-<dt><a href="../reference/Channel.__enter__.html#pymizu.Channel.__enter__" class="doc-function doc-label doc-label-method">Channel.__enter__()</a></dt>
-<dd>
-
-</dd>
-<dt><a href="../reference/Channel.__exit__.html#pymizu.Channel.__exit__" class="doc-function doc-label doc-label-method">Channel.__exit__()</a></dt>
-<dd>
-
-</dd>
-</dl>
-</section>
-<section id="task-pools" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="task-pools">Task pools</h2>
-<div class="doc-description">
-<p>A set of worker processes that divide submitted tasks among themselves.</p>
-</div>
-<dl>
-<dt><a href="../reference/Pool.html#pymizu.Pool" class="doc-class doc-label doc-label-class">Pool</a></dt>
-<dd>
-<p>A shared-memory work-stealing task pool handle (process-private).</p>
-</dd>
-<dt><a href="../reference/Task.html#pymizu.Task" class="doc-class doc-label doc-label-class">Task</a></dt>
-<dd>
-<p>A task handle from _Pool.submit(). Collected exactly once; an uncollected handle’s finalizer releases its slot.</p>
-</dd>
-</dl>
-</section>
-<section id="pool-methods" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="pool-methods">Pool Methods</h2>
-<div class="doc-description">
-<p>Methods for the Pool class</p>
-</div>
-<dl>
-<dt><a href="../reference/Pool.create.html#pymizu.Pool.create" class="doc-function doc-label doc-label-method">Pool.create()</a></dt>
-<dd>
-<p>Create a pool and spawn its worker processes.</p>
-</dd>
-<dt><a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="doc-function doc-label doc-label-method">Pool.attach()</a></dt>
-<dd>
-<p>Attach to a live pool as a submitter, by its join token.</p>
-</dd>
-<dt><a href="../reference/Pool.token.html#pymizu.Pool.token" class="doc-attribute doc-label doc-label-property">Pool.token</a></dt>
-<dd>
-<p>The join token for worker/submitter attach.</p>
-</dd>
-<dt><a href="../reference/Pool.submit.html#pymizu.Pool.submit" class="doc-function doc-label doc-label-method">Pool.submit()</a></dt>
-<dd>
-<p>Submit <code>fn(*args, **kwargs)</code> as a task; return a Task handle.</p>
-</dd>
-<dt><a href="../reference/Pool.submit_batch.html#pymizu.Pool.submit_batch" class="doc-function doc-label doc-label-method">Pool.submit_batch()</a></dt>
-<dd>
-<p>Submit one task per zero-arg callable in <code>fns</code> in one crossing.</p>
-</dd>
-<dt><a href="../reference/Pool.collect_any.html#pymizu.Pool.collect_any" class="doc-function doc-label doc-label-method">Pool.collect_any()</a></dt>
-<dd>
-<p>Wait on several tasks; return <code>(index, value)</code> of the first</p>
-</dd>
-<dt><a href="../reference/Pool.collect_all.html#pymizu.Pool.collect_all" class="doc-function doc-label doc-label-method">Pool.collect_all()</a></dt>
-<dd>
-<p>Wait until every task is terminal; return all values in input</p>
-</dd>
-<dt><a href="../reference/Pool.map.html#pymizu.Pool.map" class="doc-function doc-label doc-label-method">Pool.map()</a></dt>
-<dd>
-<p>Map <code>fn</code> over the elements of <code>x</code> on the pool; return the</p>
-</dd>
-<dt><a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="doc-function doc-label doc-label-method">Pool.map_prepare()</a></dt>
-<dd>
-<p>Stage a map once for repeated runs; return a map handle.</p>
-</dd>
-<dt><a href="../reference/Pool.map_run.html#pymizu.Pool.map_run" class="doc-function doc-label doc-label-method">Pool.map_run()</a></dt>
-<dd>
-<p>Run a map handle from <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">map_prepare</a> once; return its results</p>
-</dd>
-<dt><a href="../reference/Pool.retire.html#pymizu.Pool.retire" class="doc-function doc-label doc-label-method">Pool.retire()</a></dt>
-<dd>
-<p>Ask the worker in <code>slot</code> to exit cleanly (non-blocking).</p>
-</dd>
-<dt><a href="../reference/Pool.spawn_workers.html#pymizu.Pool.spawn_workers" class="doc-function doc-label doc-label-method">Pool.spawn_workers()</a></dt>
-<dd>
-<p>Spawn <code>n</code> additional workers into free registry slots and wait</p>
-</dd>
-<dt><a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="doc-function doc-label doc-label-method">Pool.stop()</a></dt>
-<dd>
-<p>Orderly shutdown (controller only): broadcast shutdown, cancel</p>
-</dd>
-<dt><a href="../reference/Pool.destroy.html#pymizu.Pool.destroy" class="doc-function doc-label doc-label-method">Pool.destroy()</a></dt>
-<dd>
-<p>Tear down the pool handle immediately, without the shutdown</p>
-</dd>
-<dt><a href="../reference/Pool.status.html#pymizu.Pool.status" class="doc-function doc-label doc-label-method">Pool.status()</a></dt>
-<dd>
-<p>A read-only wire-state snapshot of the pool (dict).</p>
-</dd>
-<dt><a href="../reference/Pool.dump.html#pymizu.Pool.dump" class="doc-function doc-label doc-label-method">Pool.dump()</a></dt>
-<dd>
-<p>A read-only debugging snapshot of the whole pool region (dict).</p>
-</dd>
-<dt><a href="../reference/Pool.stats.html#pymizu.Pool.stats" class="doc-function doc-label doc-label-method">Pool.stats()</a></dt>
-<dd>
-<p>Cumulative per-worker and per-submitter counters since each</p>
-</dd>
-<dt><a href="../reference/Pool.trace.html#pymizu.Pool.trace" class="doc-function doc-label doc-label-method">Pool.trace()</a></dt>
-<dd>
-<p>Register a hook called as <code>fn(event, id)</code> at each task</p>
-</dd>
-<dt><a href="../reference/Pool.__enter__.html#pymizu.Pool.__enter__" class="doc-function doc-label doc-label-method">Pool.__enter__()</a></dt>
-<dd>
-
-</dd>
-<dt><a href="../reference/Pool.__exit__.html#pymizu.Pool.__exit__" class="doc-function doc-label doc-label-method">Pool.__exit__()</a></dt>
-<dd>
-
-</dd>
-</dl>
-</section>
-<section id="cross-language-interop" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="cross-language-interop">Cross-language interop</h2>
-<div class="doc-description">
-<p>R peers and workers (the mizu R package), neutral task specifications, and the data.frame’s Python home.</p>
-</div>
-<dl>
-<dt><a href="../reference/call.html#pymizu.call" class="doc-class doc-label doc-label-class">call</a></dt>
-<dd>
-<p>A task specification for a pool of another language’s workers.</p>
-</dd>
-<dt><a href="../reference/r_launcher.html#pymizu.r_launcher" class="doc-function doc-label doc-label-function">r_launcher()</a></dt>
-<dd>
-<p>Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create</a> launcher spawning an R peer.</p>
-</dd>
-<dt><a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="doc-function doc-label doc-label-function">r_pool_launcher()</a></dt>
-<dd>
-<p>Return a <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create</a> launcher spawning R workers.</p>
-</dd>
-<dt><a href="../reference/Frame.html#pymizu.Frame" class="doc-class doc-label doc-label-class">Frame</a></dt>
-<dd>
-<p>A data.frame’s Python home: named columns with a row count.</p>
-</dd>
-</dl>
-</section>
-<section id="frame-methods" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="frame-methods">Frame Methods</h2>
-<div class="doc-description">
-<p>Methods for the Frame class</p>
-</div>
-<dl>
-<dt><a href="../reference/Frame.names.html#pymizu.Frame.names" class="doc-attribute doc-label doc-label-property">Frame.names</a></dt>
-<dd>
-
-</dd>
-<dt><a href="../reference/Frame.row_names.html#pymizu.Frame.row_names" class="doc-attribute doc-label doc-label-property">Frame.row_names</a></dt>
-<dd>
-
-</dd>
-<dt><a href="../reference/Frame.to_dict.html#pymizu.Frame.to_dict" class="doc-function doc-label doc-label-method">Frame.to_dict()</a></dt>
-<dd>
-<p>to_dict() -&gt; dict</p>
-</dd>
-<dt><a href="../reference/Frame.__arrow_c_stream__.html#pymizu.Frame.__arrow_c_stream__" class="doc-function doc-label doc-label-method">Frame.__arrow_c_stream__()</a></dt>
-<dd>
-<p><strong>arrow_c_stream</strong>(requested_schema=None) -&gt; capsule</p>
-</dd>
-<dt><a href="../reference/Frame.__len__.html#pymizu.Frame.__len__" class="doc-function doc-label doc-label-method">Frame.__len__()</a></dt>
-<dd>
-<p>Return len(self).</p>
-</dd>
-<dt><a href="../reference/Frame.__reduce__.html#pymizu.Frame.__reduce__" class="doc-function doc-label doc-label-method">Frame.__reduce__()</a></dt>
-<dd>
-
-</dd>
-</dl>
-</section>
-<section id="outcomes-and-errors" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="outcomes-and-errors">Outcomes and errors</h2>
-<div class="doc-description">
-<p>Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.</p>
-</div>
-<dl>
-<dt><a href="../reference/is_sentinel.html#pymizu.is_sentinel" class="doc-function doc-label doc-label-function">is_sentinel()</a></dt>
-<dd>
-<p>is_sentinel(x) -&gt; bool</p>
-</dd>
-<dt><a href="../reference/is_remote_error.html#pymizu.is_remote_error" class="doc-function doc-label doc-label-function">is_remote_error()</a></dt>
-<dd>
-<p>Test whether a received channel value is a remote error.</p>
-</dd>
-<dt><a href="../reference/MizuError.html#pymizu.MizuError" class="doc-class doc-label doc-label-exception">MizuError</a></dt>
-<dd>
-<p>Base class for all pymizu errors.</p>
-</dd>
-<dt><a href="../reference/ShmError.html#pymizu.ShmError" class="doc-class doc-label doc-label-class">ShmError</a></dt>
-<dd>
-<p>A shared-memory region operation failed.</p>
-</dd>
-<dt><a href="../reference/StartupError.html#pymizu.StartupError" class="doc-class doc-label doc-label-class">StartupError</a></dt>
-<dd>
-<p>A channel peer or pool worker failed to attach within the startup timeout.</p>
-</dd>
-<dt><a href="../reference/SubmitTimeoutError.html#pymizu.SubmitTimeoutError" class="doc-class doc-label doc-label-class">SubmitTimeoutError</a></dt>
-<dd>
-<p>Pool.submit() timed out waiting for injection-ring space.</p>
-</dd>
-<dt><a href="../reference/SlotsExhaustedError.html#pymizu.SlotsExhaustedError" class="doc-class doc-label doc-label-class">SlotsExhaustedError</a></dt>
-<dd>
-<p>Pool.submit() found no free result slot: too many outstanding (uncollected) tasks.</p>
-</dd>
-<dt><a href="../reference/StoppedError.html#pymizu.StoppedError" class="doc-class doc-label doc-label-class">StoppedError</a></dt>
-<dd>
-<p>The pool is stopped; no further submission is possible.</p>
-</dd>
-<dt><a href="../reference/CancelledError.html#pymizu.CancelledError" class="doc-class doc-label doc-label-class">CancelledError</a></dt>
-<dd>
-<p>The task was cancelled before it ran.</p>
-</dd>
-<dt><a href="../reference/TaskError.html#pymizu.TaskError" class="doc-class doc-label doc-label-class">TaskError</a></dt>
-<dd>
-<p>The task callable raised. Carries ‘remote_type’ and ‘remote_traceback’ attributes describing the worker-side exception.</p>
-</dd>
-<dt><a href="../reference/WorkerDiedError.html#pymizu.WorkerDiedError" class="doc-class doc-label doc-label-class">WorkerDiedError</a></dt>
-<dd>
-<p>The executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.</p>
-</dd>
-<dt><a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="doc-class doc-label doc-label-exception">DeclinedError</a></dt>
-<dd>
-<p>A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes.</p>
-</dd>
-</dl>
-</section>
-<section id="housekeeping" class="level2 doc-group">
-<h2 class="doc-group anchored" data-anchor-id="housekeeping">Housekeeping</h2>
-<div class="doc-description">
-<p>The process-wide default pool, the evaluating worker’s own pool handle, and orphan reaping.</p>
-</div>
-<dl>
-<dt><a href="../reference/default_pool.html#pymizu.default_pool" class="doc-function doc-label doc-label-function">default_pool()</a></dt>
-<dd>
-<p>The process-wide default pool, or None when none is set.</p>
-</dd>
-<dt><a href="../reference/set_default_pool.html#pymizu.set_default_pool" class="doc-function doc-label doc-label-function">set_default_pool()</a></dt>
-<dd>
+<div class="doc-subject">
 <p>Set the process-wide default pool; None clears it.</p>
-</dd>
-<dt><a href="../reference/using_pool.html#pymizu.using_pool" class="doc-function doc-label doc-label-function">using_pool()</a></dt>
-<dd>
-<p>Use <code>pool</code> as the default for the with block, then restore.</p>
-</dd>
-<dt><a href="../reference/current_pool.html#pymizu.current_pool" class="doc-function doc-label doc-label-function">current_pool()</a></dt>
-<dd>
-<p>The evaluating worker’s own pool handle, inside a task.</p>
-</dd>
-<dt><a href="../reference/prune.html#pymizu.prune" class="doc-function doc-label doc-label-function">prune()</a></dt>
-<dd>
-<p>Remove orphaned shared memory regions.</p>
-</dd>
-</dl>
+</div>
+<div class="doc-usage-source">
+<p>Usage</p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L846-L860" target="_blank" rel="noopener">Source</a></p>
+</div>
+<div class="doc-signature doc-Kind.FUNCTION">
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">set_default_pool</span>(<span class="va">pool</span>)</span></code></pre></div>
+</div>
+<div class="doc-text">
+<p>Returns the previous default (a Pool or None), so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted, until the default is cleared or replaced. See :func:<a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool</a> for the full semantics.</p>
+</div>
 
 
-</section>
 
-</main> <!-- /main -->
+</main>
+<hr style="padding: 0; margin: 0;">
+ <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
     const icon = "";
@@ -1333,6 +1062,7 @@ ul.task-list li input[type="checkbox"] {
 </div>
 </div>
 </footer>
+<script src="../copy-page.js"></script>
 <script src="../sidebar-wrap.js"></script>
 <script>(function(){var s=document.createElement('script');var m=document.querySelector('meta[name="quarto:offset"]');s.src=(m?m.content:'')+'sidebar-float.js';document.body.appendChild(s);})();</script>
 <script src="../sidebar-filter.js"></script>

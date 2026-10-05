@@ -223,8 +223,17 @@ A send on a foreign-language channel of a value outside the portable interchange
 ## Housekeeping
 
 
-Pool context from inside a task, and orphan reaping.
+The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
 
+
+[default_pool()](default_pool.md#pymizu.default_pool)  
+The process-wide default pool, or None when none is set.
+
+[set_default_pool()](set_default_pool.md#pymizu.set_default_pool)  
+Set the process-wide default pool; None clears it.
+
+[using_pool()](using_pool.md#pymizu.using_pool)  
+Use `pool` as the default for the with block, then restore.
 
 [current_pool()](current_pool.md#pymizu.current_pool)  
 The evaluating worker's own pool handle, inside a task.

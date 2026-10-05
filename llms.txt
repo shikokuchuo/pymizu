@@ -94,7 +94,10 @@
 - [DeclinedError](https://shikokuchuo.net/pymizu/reference/DeclinedError.html): A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes
 
 #### Housekeeping
-> Pool context from inside a task, and orphan reaping.
+> The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
 
+- [default_pool](https://shikokuchuo.net/pymizu/reference/default_pool.html): The process-wide default pool, or None when none is set
+- [set_default_pool](https://shikokuchuo.net/pymizu/reference/set_default_pool.html): Set the process-wide default pool; None clears it
+- [using_pool](https://shikokuchuo.net/pymizu/reference/using_pool.html): Use ``pool`` as the default for the with block, then restore
 - [current_pool](https://shikokuchuo.net/pymizu/reference/current_pool.html): The evaluating worker's own pool handle, inside a task
 - [prune](https://shikokuchuo.net/pymizu/reference/prune.html): Remove orphaned shared memory regions

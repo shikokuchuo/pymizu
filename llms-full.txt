@@ -507,8 +507,47 @@ A send on a foreign-language channel of a value outside the portable interchange
 
 ## Housekeeping
 
-Pool context from inside a task, and orphan reaping.
+The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
 
+
+default_pool() -> 'Pool | None'
+
+The process-wide default pool, or None when none is set.
+
+Set with :func:`set_default_pool`; scoped use with
+:func:`using_pool`. Package code taking an optional pool resolves it
+in this order: an explicit ``pool`` argument, then
+:func:`current_pool` inside a task (the evaluating worker's own
+pool, for nested submission), then ``default_pool()``, then the
+caller's own fallback — sequential execution or an error.
+
+Setting a default checks the type only: a stopped pool is accepted
+(liveness is transient; a probe would prove nothing about use time)
+and fails at use time with the usual stopped-pool errors. Handles
+from :meth:`Pool.attach` are valid defaults; ownership and teardown
+stay with the pool's creator.
+
+The default is process-global — every thread sees the same pool, and
+:func:`current_pool` remains the thread-local mechanism. After a
+``fork()``, a child process reads it as unset: handles are
+process-private.
+
+set_default_pool(pool: 'Pool | None') -> 'Pool | None'
+
+Set the process-wide default pool; None clears it.
+
+Returns the previous default (a Pool or None), so callers can save
+and restore. The registry anchors the handle: a pool set as the
+default stays alive even after its variable is deleted, until the
+default is cleared or replaced. See :func:`default_pool` for the
+full semantics.
+
+using_pool(pool: 'Pool | None') -> '_Iterator[Pool | None]'
+
+Use ``pool`` as the default for the with block, then restore.
+
+Yields ``pool``. The previous default returns on exit, including on
+exception; ``None`` scopes a cleared default.
 
 current_pool() -> 'Pool | None'
 
@@ -518,7 +557,8 @@ A task uses it for nested submission: a nested submit pushes onto the
 worker's own work-stealing deque (no ring, no wait), and a nested
 collect helps — executes work — instead of parking, so nested fan-outs
 run at fork/join cost and never deadlock the pool. None outside a
-task.
+task; the user-set process-wide default is :func:`default_pool`,
+which never overrides this runtime-owned binding.
 
 prune() -> 'list[str]'
 
@@ -868,6 +908,40 @@ total
 ```
 
 (This example needs cloudpickle: `fan_out` is not an importable reference.)
+
+## A default pool for package code
+
+Package code can read a process-wide default pool with
+`pymizu.default_pool()`.
+`pymizu.set_default_pool(pool)` sets it — `None` clears it — and returns
+the previous default, so callers can save and restore.
+The registry anchors the handle: a pool set as the default stays alive even
+after its variable is deleted.
+`pymizu.using_pool(pool)` scopes the default to a with block, restoring the
+previous default on exit, including on exception.
+
+Resolve an optional pool in this order: an explicit `pool` argument,
+`current_pool()` inside a task, `default_pool()`, then your own fallback —
+sequential execution or an error.
+The default never overrides `current_pool()`: inside a task the worker's
+own handle wins, so nested submission is never shadowed.
+Setting a default checks the type only — a stopped pool is accepted and
+fails at use time — and handles from `Pool.attach()` are valid defaults.
+
+```{python}
+def run(x, pool=None):
+    pool = pool or pymizu.current_pool() or pymizu.default_pool()
+    if pool is None:
+        raise RuntimeError("no pool: pass one, or set a default")
+    return pool.submit(pow, x, 2).collect(timeout=30)
+
+with pymizu.Pool.create(2) as pool:
+    old = pymizu.set_default_pool(pool)
+    squared = run(21)
+    pymizu.set_default_pool(old)
+
+squared
+```
 
 ## Growing, shrinking, and joining a pool
 

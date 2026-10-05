@@ -114,8 +114,11 @@ Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLO
 
 ### Housekeeping
 
-Pool context from inside a task, and orphan reaping.
+The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
 
+- `default_pool`: The process-wide default pool, or None when none is set
+- `set_default_pool`: Set the process-wide default pool; None clears it
+- `using_pool`: Use ``pool`` as the default for the with block, then restore
 - `current_pool`: The evaluating worker's own pool handle, inside a task
 - `prune`: Remove orphaned shared memory regions
 
