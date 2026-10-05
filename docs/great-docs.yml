@@ -57,7 +57,12 @@ reference:
         - WorkerDiedError
         - DeclinedError
     - title: Housekeeping
-      desc: "Pool context from inside a task, and orphan reaping."
+      desc: >-
+        The process-wide default pool, the evaluating worker's own pool
+        handle, and orphan reaping.
       contents:
+        - default_pool
+        - set_default_pool
+        - using_pool
         - current_pool
         - prune

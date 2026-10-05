@@ -122,6 +122,40 @@ total
 
 (This example needs cloudpickle: `fan_out` is not an importable reference.)
 
+## A default pool for package code
+
+Package code can read a process-wide default pool with
+`pymizu.default_pool()`.
+`pymizu.set_default_pool(pool)` sets it — `None` clears it — and returns
+the previous default, so callers can save and restore.
+The registry anchors the handle: a pool set as the default stays alive even
+after its variable is deleted.
+`pymizu.using_pool(pool)` scopes the default to a with block, restoring the
+previous default on exit, including on exception.
+
+Resolve an optional pool in this order: an explicit `pool` argument,
+`current_pool()` inside a task, `default_pool()`, then your own fallback —
+sequential execution or an error.
+The default never overrides `current_pool()`: inside a task the worker's
+own handle wins, so nested submission is never shadowed.
+Setting a default checks the type only — a stopped pool is accepted and
+fails at use time — and handles from `Pool.attach()` are valid defaults.
+
+```{python}
+def run(x, pool=None):
+    pool = pool or pymizu.current_pool() or pymizu.default_pool()
+    if pool is None:
+        raise RuntimeError("no pool: pass one, or set a default")
+    return pool.submit(pow, x, 2).collect(timeout=30)
+
+with pymizu.Pool.create(2) as pool:
+    old = pymizu.set_default_pool(pool)
+    squared = run(21)
+    pymizu.set_default_pool(old)
+
+squared
+```
+
 ## Growing, shrinking, and joining a pool
 
 A pool can grow and shrink while it runs.

@@ -17,6 +17,15 @@ Initial pre-release.
 
 ### Added
 
+- Process-wide default pool: `default_pool()`, `set_default_pool(pool)`
+  (returns the previous default for save/restore; `None` clears), and
+  the `using_pool(pool)` context manager. Package code taking an
+  optional pool resolves it in this order: an explicit argument,
+  `current_pool()` inside a task, the default, then its own fallback.
+  The registry anchors the handle past `del`, validates the type only
+  at set time (a stopped pool is accepted and fails at use), accepts
+  `Pool.attach` handles, and reads as unset in a forked child. Mirrors
+  the R binding's `mizu_default_pool()` family.
 - Arrow export of `Pool.map(template=..., collect="view")` results: the
   `_MapOutView` now carries `__arrow_c_array__` (and the `to_arrow`
   alias), so any Arrow consumer — pyarrow, polars, duckdb — wraps a
