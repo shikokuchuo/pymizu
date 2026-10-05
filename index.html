@@ -268,7 +268,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="channels" class="level2">
 <h2 class="anchored" data-anchor-id="channels">Channels</h2>
 <p><a href="./reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with <code>ch</code> bound to the peer-side handle:</p>
-<div id="5ea09ad5" class="cell" data-execution_count="1">
+<div id="ac0f2c19" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -285,7 +285,7 @@ section.level2:first-of-type > h2:first-child,
 <pre><code>[1, 'a', None]</code></pre>
 </div>
 </div>
-<div id="fcf01a95" class="cell" data-execution_count="2">
+<div id="7bd054a0" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
 <pre><code>True</code></pre>
@@ -296,7 +296,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="task-pools" class="level2">
 <h2 class="anchored" data-anchor-id="task-pools">Task pools</h2>
 <p><a href="./reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop. <code>pool.submit()</code> returns a task handle immediately; <code>task.collect()</code> waits for its result:</p>
-<div id="e45e13ba" class="cell" data-execution_count="3">
+<div id="da51f493" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -311,7 +311,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="parallel-map" class="level2">
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:</p>
-<div id="911b8874" class="cell" data-execution_count="4">
+<div id="1840e13d" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
