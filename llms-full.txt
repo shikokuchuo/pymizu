@@ -218,6 +218,18 @@ bytes) derives deterministic per-element streams of the stdlib
 identical for any chunking, worker count, or steal order. Pass
 ``seed=(seed, offset)`` to shift every element's stream by
 ``offset`` positions, for maps split across runs or processes.
+``seed`` covers the stdlib ``random`` module only: a task
+drawing from numpy calls :func:`current_rng` inside the task
+(the element's own memoized ``numpy.random.Generator``, derived
+from the same seed material); other RNG universes are out of
+scope. The legacy ``np.random.*`` module functions draw from the
+worker's shared global RandomState and stay order-dependent. A
+seeded map element must not nested-submit and collect: worker
+helping can run another seeded map's batches mid-element, wiping
+this element's :func:`current_rng` stash — a later call rebuilds
+from the digest, restarting the stream instead of continuing it
+(the stdlib streams survive: the helped batch's save/restore
+nests inside this batch's own).
 
 ``fn`` may be a :class:`pymizu.call` specification instead of a
 callable — the way to map over a foreign pool (one spawned with
@@ -559,6 +571,25 @@ collect helps — executes work — instead of parking, so nested fan-outs
 run at fork/join cost and never deadlock the pool. None outside a
 task; the user-set process-wide default is :func:`default_pool`,
 which never overrides this runtime-owned binding.
+
+current_rng() -> '_np.random.Generator | None'
+
+The running element's own numpy Generator, inside a seeded map.
+
+``Pool.map(seed=...)`` seeds the stdlib ``random`` module per
+element; a task drawing from numpy calls this instead: the element's
+memoized ``numpy.random.Generator``, derived from the same seed
+material on first call in the element (domain-separated from the
+stdlib derivation, so those streams are unchanged). Two calls in one
+element continue one stream; distinct elements get distinct streams —
+results identical for any chunking, worker count, or steal order.
+
+None outside a seeded map element (an unseeded map, an ordinary
+task, the submitter process). Raises TypeError when numpy is not
+installed. A seeded map element must not nested-submit and collect:
+worker helping can run another map's batches mid-element, wiping
+this element's stash — a later call rebuilds from the digest,
+restarting the stream instead of continuing it.
 
 prune() -> 'list[str]'
 
@@ -1037,6 +1068,29 @@ with pymizu.Pool.create(4) as pool:
 
 Pass `seed=(seed, offset)` to shift every element's stream by `offset`
 positions, for maps split across runs or processes.
+
+`seed=` covers the stdlib `random` module only.
+A task drawing from numpy calls `pymizu.current_rng()` inside the task —
+the element's own `numpy.random.Generator`, derived from the same seed and
+memoized per element:
+
+```{python}
+def draw_np(i):
+    return pymizu.current_rng().random()
+
+with pymizu.Pool.create(4) as pool:
+    a = pool.map(draw_np, range(100), seed=123)
+    b = pool.map(draw_np, range(100), seed=123, chunks=10)
+    print(a == b)
+```
+
+The legacy `np.random.*` module functions draw from the worker's shared
+global `RandomState`, so a seeded map does not make them deterministic —
+results would depend on claim and steal order.
+Other RNG universes (torch, jax) are out of scope.
+A seeded map element must not nested-submit and collect: worker helping
+can run another map's batches mid-element, wiping the element's
+`current_rng()` stash (the stdlib streams survive).
 
 ## Templates
 

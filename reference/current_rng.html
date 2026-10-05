@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Pool.retire() | pymizu 水</title>
+<title>current_rng() | pymizu 水</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -118,9 +118,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="../theme-init.js"></script>
 
 
-  <link rel="alternate" type="text/markdown" href="Pool.retire.md">
-  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/Pool.retire.html">
-  <meta name="description" content="Ask the worker in slot to exit cleanly (non-blocking).">
+  <link rel="alternate" type="text/markdown" href="current_rng.md">
+  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/current_rng.html">
+  <meta name="description" content="The running element’s own numpy Generator, inside a seeded map.">
   <script type="application/ld+json">
 [
   {
@@ -139,23 +139,23 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    "name": "Pool.retire - pymizu 水",
+    "name": "current_rng - pymizu 水",
     "isPartOf": {
       "@type": "WebSite",
       "name": "pymizu 水"
     },
-    "url": "https://shikokuchuo.net/pymizu/reference/Pool.retire.html"
+    "url": "https://shikokuchuo.net/pymizu/reference/current_rng.html"
   }
 ]
 </script>
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Pool.retire() | pymizu 水">
-  <meta property="og:description" content="Ask the worker in slot to exit cleanly (non-blocking).">
-  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/Pool.retire.html">
+  <meta property="og:title" content="current_rng() | pymizu 水">
+  <meta property="og:description" content="The running element’s own numpy Generator, inside a seeded map.">
+  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/current_rng.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Pool.retire() | pymizu 水">
-  <meta name="twitter:description" content="Ask the worker in slot to exit cleanly (non-blocking).">
+  <meta name="twitter:title" content="current_rng() | pymizu 水">
+  <meta name="twitter:description" content="The running element’s own numpy Generator, inside a seeded map.">
 </head>
 
 <body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
@@ -201,7 +201,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">Pool.retire()</span></h5>
+        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">current_rng()</span></h5>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
     </div>
@@ -413,7 +413,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.retire.html" class="sidebar-item-text sidebar-link active">
+  <a href="../reference/Pool.retire.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Pool.retire</span></a>
   </div>
 </li>
@@ -661,7 +661,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/current_rng.html" class="sidebar-item-text sidebar-link">
+  <a href="../reference/current_rng.html" class="sidebar-item-text sidebar-link active">
  <span class="menu-text">current_rng</span></a>
   </div>
 </li>
@@ -686,7 +686,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title"><span class="doc-object-name doc-function doc-label doc-label-method">Pool.retire()</span></h1>
+<h1 class="title"><span class="doc-object-name doc-function doc-label doc-label-function">current_rng()</span></h1>
 </div>
 
 
@@ -704,14 +704,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Ask the worker in <code>slot</code> to exit cleanly (non-blocking).</p>
+<p>The running element’s own numpy Generator, inside a seeded map.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L690-L692" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L837-L857" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">retire</span>(<span class="va">slot</span>)</span></code></pre></div>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">current_rng</span>()</span></code></pre></div>
+</div>
+<div class="doc-text">
+<p><code>Pool.map(seed=...)</code> seeds the stdlib <code>random</code> module per element; a task drawing from numpy calls this instead: the element’s memoized <code>numpy.random.Generator</code>, derived from the same seed material on first call in the element (domain-separated from the stdlib derivation, so those streams are unchanged). Two calls in one element continue one stream; distinct elements get distinct streams — results identical for any chunking, worker count, or steal order.</p>
+<p>None outside a seeded map element (an unseeded map, an ordinary task, the submitter process). Raises TypeError when numpy is not installed. A seeded map element must not nested-submit and collect: worker helping can run another map’s batches mid-element, wiping this element’s stash — a later call rebuilds from the digest, restarting the stream instead of continuing it.</p>
 </div>
 
 

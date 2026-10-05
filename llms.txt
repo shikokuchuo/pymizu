@@ -100,4 +100,5 @@
 - [set_default_pool](https://shikokuchuo.net/pymizu/reference/set_default_pool.html): Set the process-wide default pool; None clears it
 - [using_pool](https://shikokuchuo.net/pymizu/reference/using_pool.html): Use ``pool`` as the default for the with block, then restore
 - [current_pool](https://shikokuchuo.net/pymizu/reference/current_pool.html): The evaluating worker's own pool handle, inside a task
+- [current_rng](https://shikokuchuo.net/pymizu/reference/current_rng.html): The running element's own numpy Generator, inside a seeded map
 - [prune](https://shikokuchuo.net/pymizu/reference/prune.html): Remove orphaned shared memory regions

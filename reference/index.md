@@ -238,5 +238,8 @@ Use `pool` as the default for the with block, then restore.
 [current_pool()](current_pool.md#pymizu.current_pool)  
 The evaluating worker's own pool handle, inside a task.
 
+[current_rng()](current_rng.md#pymizu.current_rng)  
+The running element's own numpy Generator, inside a seeded map.
+
 [prune()](prune.md#pymizu.prune)  
 Remove orphaned shared memory regions.

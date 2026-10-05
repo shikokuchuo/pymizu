@@ -158,6 +158,8 @@
     "reference/call.md",
     "reference/current_pool.html",
     "reference/current_pool.md",
+    "reference/current_rng.html",
+    "reference/current_rng.md",
     "reference/default_pool.html",
     "reference/default_pool.md",
     "reference/index.html",

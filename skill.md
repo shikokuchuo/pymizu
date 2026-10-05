@@ -120,6 +120,7 @@ The process-wide default pool, the evaluating worker's own pool handle, and orph
 - `set_default_pool`: Set the process-wide default pool; None clears it
 - `using_pool`: Use ``pool`` as the default for the with block, then restore
 - `current_pool`: The evaluating worker's own pool handle, inside a task
+- `current_rng`: The running element's own numpy Generator, inside a seeded map
 - `prune`: Remove orphaned shared memory regions
 
 ## Resources

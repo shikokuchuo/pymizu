@@ -68,6 +68,25 @@ with pymizu.Pool.create(4) as pool:
 
 Pass `seed=(seed, offset)` to shift every element's stream by `offset` positions, for maps split across runs or processes.
 
+`seed=` covers the stdlib `random` module only. A task drawing from numpy calls [pymizu.current_rng()](../reference/current_rng.md#pymizu.current_rng) inside the task -- the element's own `numpy.random.Generator`, derived from the same seed and memoized per element:
+
+
+``` python
+def draw_np(i):
+    return pymizu.current_rng().random()
+
+with pymizu.Pool.create(4) as pool:
+    a = pool.map(draw_np, range(100), seed=123)
+    b = pool.map(draw_np, range(100), seed=123, chunks=10)
+    print(a == b)
+```
+
+
+    True
+
+
+The legacy `np.random.*` module functions draw from the worker's shared global `RandomState`, so a seeded map does not make them deterministic -- results would depend on claim and steal order. Other RNG universes (torch, jax) are out of scope. A seeded map element must not nested-submit and collect: worker helping can run another map's batches mid-element, wiping the element's [current_rng()](../reference/current_rng.md#pymizu.current_rng) stash (the stdlib streams survive).
+
 
 # Templates
 
