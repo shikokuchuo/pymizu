@@ -13,6 +13,11 @@
 #include "mizu.h"
 #include "mizu_ext.h"
 
+/* The attr vocabulary single-sources through the core's MIZU_IX_ATTR_* /
+   MIZU_IX_CLASS_* / MIZU_IX_UNIT_* macros (the byte-shape helper
+   registry); a key crosses with its length as sizeof - 1. */
+#define IX_KEYLEN(s) ((uint32_t) (sizeof(s) - 1))
+
 // Arrow C Data Interface ---------------------------------------------------------
 
 /* The stable C ABI structs, defined locally per the spec (the layout is
@@ -287,16 +292,10 @@ PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
    decline, or MemoryError). */
 PyObject *pymizu_ix_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx);
 
-/* The err tag (0x11) framer: the three bare strings and the optional
+/* The err tag (0x11) framer is the core's mizu_ix_write_err (the
+   byte-shape helper registry): the three bare strings and the optional
    element index, truncated at UTF-8 boundaries to fit inline_max by
-   construction (type past 128 bytes, message past half the budget, detail
-   past what remains) — the writer cannot fail. Returns the stream size.
-   Serves the peer shim's _send_error and Phase 4's ERR publish. */
-size_t pymizu_ix_write_err(uint8_t *dst, uint32_t inline_max,
-                           const char *type, size_t type_n,
-                           const char *msg, size_t msg_n,
-                           const char *detail, size_t detail_n,
-                           int has_index, uint64_t index);
+   construction — the writer cannot fail. */
 
 /* The _write_stream test hook: the writer, as bytes (DeclinedError for a
    value outside the portable subset). */

@@ -37,44 +37,8 @@ static int is_na_r(uint64_t bits) {
   return ((bits >> 52) & 0x7FF) == 0x7FF && (uint32_t) bits == 0x7A2;
 }
 
-/* Strict UTF-8 validation (the copy of _pymizu.c's utf8_valid the MIZS
-   string-block checks run here). */
-static int ix_utf8_valid(const uint8_t *s, int64_t n) {
-  int64_t i = 0;
-  while (i < n) {
-    uint8_t c = s[i];
-    if (c < 0x80) {
-      i++;
-      continue;
-    }
-    int64_t need;
-    uint32_t cp;
-    if ((c & 0xE0) == 0xC0) {
-      need = 1;
-      cp = c & 0x1F;
-      if (cp == 0) return 0;                 /* overlong */
-    } else if ((c & 0xF0) == 0xE0) {
-      need = 2;
-      cp = c & 0x0F;
-    } else if ((c & 0xF8) == 0xF0) {
-      need = 3;
-      cp = c & 0x07;
-    } else {
-      return 0;
-    }
-    if (i + need >= n) return 0;
-    for (int64_t k = 1; k <= need; k++) {
-      if ((s[i + k] & 0xC0) != 0x80) return 0;
-      cp = (cp << 6) | (s[i + k] & 0x3F);
-    }
-    if ((need == 1 && cp < 0x80) || (need == 2 && cp < 0x800) ||
-        (need == 3 && cp < 0x10000) || cp > 0x10FFFF ||
-        (cp >= 0xD800 && cp <= 0xDFFF))
-      return 0;                              /* overlong / out of range */
-    i += need + 1;
-  }
-  return 1;
-}
+/* The UTF-8 rule single-sources through the core's mizu_ix_utf8_valid
+   (the byte-shape helper registry; the vendored mizu_ext.h inline). */
 
 /* Days-from-civil (Howard Hinnant's algorithm): days since 1970-01-01. */
 static int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
@@ -316,17 +280,8 @@ static size_t ixe_vec_begin(uint8_t *dst, int tag, uint64_t n) {
   return 9;
 }
 
-static int ix_tag_of_wire(int wire_type) {
-  switch (wire_type) {
-  case MIZU_TYPE_LGL: return MIZU_IX_TAG_LGLV;
-  case MIZU_TYPE_INT: return MIZU_IX_TAG_INTV;
-  case MIZU_TYPE_REAL: return MIZU_IX_TAG_REALV;
-  case MIZU_TYPE_CPLX: return MIZU_IX_TAG_CPLXV;
-  case MIZU_TYPE_RAW: return MIZU_IX_TAG_RAWV;
-  case MIZU_TYPE_INT64: return MIZU_IX_TAG_I64V;
-  }
-  return 0;
-}
+/* The wire-type -> vector-tag table is the core's mizu_ix_tag_of (the
+   byte-shape helper registry), used via ixe_vec_begin below. */
 
 /* A strv value, or the 0x04 scalar at length 1 (the corpus's scalar-form
    pin — attr dicts included). A len of -1 is NA (strs[i] then unused). */
@@ -428,23 +383,23 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts, uint64_t n,
    POSIXct: attr(realv seconds, {class: ["POSIXct", "POSIXt"], tzone: tz})
 */
 static void ixe_date(ixw *w, const int64_t *days, uint64_t n, double scale) {
-  static const char *cls[1] = { "Date" };
+  static const char *cls[1] = { MIZU_IX_CLASS_DATE };
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, days, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
-  ixe_key(w, "class");
+  ixe_key(w, MIZU_IX_ATTR_CLASS);
   ixe_class(w, cls, 1);
 }
 
 static void ixe_posixct(ixw *w, const int64_t *counts, uint64_t n,
                         const char *tz, double scale) {
-  static const char *cls[2] = { "POSIXct", "POSIXt" };
+  static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, counts, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
-  ixe_key(w, "class");
+  ixe_key(w, MIZU_IX_ATTR_CLASS);
   ixe_class(w, cls, 2);
-  ixe_key(w, "tzone");
+  ixe_key(w, MIZU_IX_ATTR_TZONE);
   const char *one[1] = { tz };
   int64_t len[1] = { (int64_t) strlen(tz) };
   ixe_strv(w, 1, one, len);
@@ -456,14 +411,14 @@ static void ixe_posixct(ixw *w, const int64_t *counts, uint64_t n,
    stamps the value with units = "secs". */
 static void ixe_difftime(ixw *w, const int64_t *counts, uint64_t n,
                          double scale) {
-  static const char *cls[1] = { "difftime" };
+  static const char *cls[1] = { MIZU_IX_CLASS_DIFFTIME };
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, counts, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
-  ixe_key(w, "class");
+  ixe_key(w, MIZU_IX_ATTR_CLASS);
   ixe_class(w, cls, 1);
-  ixe_key(w, "units");
-  const char *one[1] = { "secs" };
+  ixe_key(w, MIZU_IX_ATTR_UNITS);
+  const char *one[1] = { MIZU_IX_UNIT_SECS };
   int64_t len[1] = { 4 };
   ixe_strv(w, 1, one, len);
 }
@@ -493,7 +448,7 @@ size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
-  ixe_key(&w, "levels");
+  ixe_key(&w, MIZU_IX_ATTR_LEVELS);
   if (nlev == 1) {
     IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), bytes, offs[1] - offs[0]));
   } else {
@@ -502,38 +457,38 @@ size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
       IXW_PUT(&w, mizu_ix_put_strelt(IXW_DST(&w), bytes + offs[i],
                                      offs[i + 1] - offs[i]));
   }
-  ixe_key(&w, "class");
+  ixe_key(&w, MIZU_IX_ATTR_CLASS);
   {
-    static const char *cls[1] = { "factor" };
+    static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
     ixe_class(&w, cls, 1);
   }
   return w.total;
 }
 
 size_t mizu_py_blob_date(uint8_t *dst) {
-  static const char *cls[1] = { "Date" };
+  static const char *cls[1] = { MIZU_IX_CLASS_DATE };
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 1));
-  ixe_key(&w, "class");
+  ixe_key(&w, MIZU_IX_ATTR_CLASS);
   ixe_class(&w, cls, 1);
   return w.total;
 }
 
 size_t mizu_py_blob_ts(uint8_t *dst, const char *tz) {
-  static const char *cls[2] = { "POSIXct", "POSIXt" };
+  static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
-  ixe_key(&w, "class");
+  ixe_key(&w, MIZU_IX_ATTR_CLASS);
   ixe_class(&w, cls, 2);
-  ixe_key(&w, "tzone");
+  ixe_key(&w, MIZU_IX_ATTR_TZONE);
   IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), tz, (int32_t) strlen(tz)));
   return w.total;
 }
@@ -541,17 +496,18 @@ size_t mizu_py_blob_ts(uint8_t *dst, const char *tz) {
 /* The difftime dict {class = "difftime", units = "secs"} — the layout
    column's doubles are seconds, so the blob is unit-fixed. */
 size_t mizu_py_blob_difftime(uint8_t *dst) {
-  static const char *cls[1] = { "difftime" };
+  static const char *cls[1] = { MIZU_IX_CLASS_DIFFTIME };
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
-  ixe_key(&w, "class");
+  ixe_key(&w, MIZU_IX_ATTR_CLASS);
   ixe_class(&w, cls, 1);
-  ixe_key(&w, "units");
-  IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), "secs", 4));
+  ixe_key(&w, MIZU_IX_ATTR_UNITS);
+  IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), MIZU_IX_UNIT_SECS,
+                              (int32_t) (sizeof MIZU_IX_UNIT_SECS - 1)));
   return w.total;
 }
 
@@ -567,14 +523,14 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
   IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 3));
-  ixe_key(&w, "names");
+  ixe_key(&w, MIZU_IX_ATTR_NAMES);
   ixe_names(&w, names, ncols);
-  ixe_key(&w, "class");
+  ixe_key(&w, MIZU_IX_ATTR_CLASS);
   {
-    static const char *cls[1] = { "data.frame" };
+    static const char *cls[1] = { MIZU_IX_CLASS_DATAFRAME };
     ixe_class(&w, cls, 1);
   }
-  ixe_key(&w, "row.names");
+  ixe_key(&w, MIZU_IX_ATTR_ROWNAMES);
   if (row_names == NULL || row_names == Py_None) {
     int64_t vals[2] = { 0, -rows };
     int na[2] = { 1, 0 };
@@ -1203,7 +1159,7 @@ static void ixr_no_home(attr_ent *ents, int n, const char *what) {
   for (int i = 0; i < n && off < sizeof(msg) - 48; i++)
     off += snprintf(msg + off, sizeof(msg) - off, "%s\"%.*s\"",
                     i != 0 ? ", " : "", (int) ents[i].key_len, ents[i].key);
-  attr_ent *cls = attr_find(ents, n, "class");
+  attr_ent *cls = attr_find(ents, n, MIZU_IX_ATTR_CLASS);
   if (cls != NULL && off < sizeof(msg) - 48) {
     off += snprintf(msg + off, sizeof(msg) - off, "; class: ");
     if (cls->kind == AV_STR) {
@@ -1521,11 +1477,11 @@ static PyObject *realv_to_timedelta(const uint8_t *ptr, uint64_t n,
 /* The declared difftime units to seconds (R's five units), 0 when the
    string names none of them. */
 static double difftime_unit_secs(const char *u, size_t n) {
-  if (n == 4 && memcmp(u, "secs", 4) == 0) return 1.0;
-  if (n == 4 && memcmp(u, "mins", 4) == 0) return 60.0;
-  if (n == 5 && memcmp(u, "hours", 5) == 0) return 3600.0;
-  if (n == 4 && memcmp(u, "days", 4) == 0) return 86400.0;
-  if (n == 5 && memcmp(u, "weeks", 5) == 0) return 604800.0;
+  if (n == 4 && memcmp(u, MIZU_IX_UNIT_SECS, 4) == 0) return 1.0;
+  if (n == 4 && memcmp(u, MIZU_IX_UNIT_MINS, 4) == 0) return 60.0;
+  if (n == 5 && memcmp(u, MIZU_IX_UNIT_HOURS, 5) == 0) return 3600.0;
+  if (n == 4 && memcmp(u, MIZU_IX_UNIT_DAYS, 4) == 0) return 86400.0;
+  if (n == 5 && memcmp(u, MIZU_IX_UNIT_WEEKS, 5) == 0) return 604800.0;
   return 0.0;
 }
 
@@ -1661,13 +1617,13 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   int nent = 0;
   attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
   if (ents == NULL) return NULL;
-  attr_ent *cls = attr_find(ents, nent, "class");
-  attr_ent *lv = attr_find(ents, nent, "levels");
-  attr_ent *dm = attr_find(ents, nent, "dim");
-  attr_ent *tz = attr_find(ents, nent, "tzone");
-  attr_ent *un = attr_find(ents, nent, "units");
+  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+  attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
+  attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
+  attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
   if (cls != NULL && lv != NULL && nent == 2 &&
-      class_is(cls, "factor", NULL) && vtype == MIZU_TYPE_INT &&
+      class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
     int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
       (one_i > -2147483648LL && one_i <= 2147483647LL ? (int32_t) one_i : 0);
@@ -1694,16 +1650,16 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
     } else {
       out = dim_to_ndarray(vtype, vptr, vn, dims, nd);
     }
-  } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
+  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
              vtype == MIZU_TYPE_REAL) {
     out = realv_to_datetime(vptr, vn, 1);
   } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-             class_is(cls, "POSIXct", "POSIXt") &&
+             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
              vtype == MIZU_TYPE_REAL) {
     out = realv_to_datetime(vptr, vn, 0);   /* tzone: display metadata,
                                                dropped standalone */
   } else if (cls != NULL && nent == 2 && un != NULL &&
-             un->kind == AV_STR && class_is(cls, "difftime", NULL) &&
+             un->kind == AV_STR && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
              vtype == MIZU_TYPE_REAL &&
              difftime_unit_secs((const char *) un->val.ptr,
                                 (size_t) un->val.count) != 0.0) {
@@ -1931,11 +1887,11 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
     if (ents == NULL) return -1;
     int rc = -1;
-    attr_ent *cls = attr_find(ents, nent, "class");
-    attr_ent *lv = attr_find(ents, nent, "levels");
-    attr_ent *tz = attr_find(ents, nent, "tzone");
+    attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+    attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+    attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
     if (cls != NULL && lv != NULL && nent == 2 &&
-        class_is(cls, "factor", NULL) && vtype == MIZU_TYPE_INT &&
+        class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
         (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
       int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
         (one_i > -2147483648LL && one_i <= 2147483647LL ?
@@ -1951,11 +1907,11 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
         c->values = (uint8_t *) codes;
         rc = 0;
       }
-    } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
+    } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
                vtype == MIZU_TYPE_REAL) {
       rc = fcol_date_fill((const double *) vptr, vn, c);
     } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-               class_is(cls, "POSIXct", "POSIXt") &&
+               class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
                vtype == MIZU_TYPE_REAL) {
       rc = fcol_ts_fill((const double *) vptr, vn,
                         tz != NULL && tz->kind == AV_STR ?
@@ -1963,9 +1919,9 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
                         tz != NULL && tz->kind == AV_STR ?
                           (size_t) tz->val.count : 0, c);
     } else if (cls != NULL && nent == 2 &&
-               class_is(cls, "difftime", NULL) &&
+               class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
                vtype == MIZU_TYPE_REAL) {
-      attr_ent *un = attr_find(ents, nent, "units");
+      attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
       const double us = un != NULL && un->kind == AV_STR ?
         difftime_unit_secs((const char *) un->val.ptr,
                            (size_t) un->val.count) : 0.0;
@@ -2203,11 +2159,11 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
   int nent = 0;
   attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
   if (ents == NULL) goto fail;
-  attr_ent *cls = attr_find(ents, nent, "class");
-  attr_ent *nm = attr_find(ents, nent, "names");
-  attr_ent *rn = attr_find(ents, nent, "row.names");
+  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
+  attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
   if (cls == NULL || nm == NULL || rn == NULL || nent != 3 ||
-      !class_is(cls, "data.frame", NULL)) {
+      !class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL)) {
     if (!PyErr_Occurred())
       ixr_no_home(ents, nent, "an attributed list");
     attr_vals_free(ents, nent);
@@ -2486,11 +2442,11 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   attr_ent *ents = blob_attrs(data + body, (size_t) e->attrs_size, &nent);
   if (ents == NULL) return -1;
   int rc = -1;
-  attr_ent *cls = attr_find(ents, nent, "class");
-  attr_ent *lv = attr_find(ents, nent, "levels");
-  attr_ent *tz = attr_find(ents, nent, "tzone");
+  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+  attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   if (cls != NULL && lv != NULL && nent == 2 &&
-      class_is(cls, "factor", NULL) && tag == MIZU_TYPE_INT &&
+      class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && tag == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
     if (levels_read(lv, &c->lev_off, &c->bytes, &c->nlev,
                     &c->bytes_len) == 0) {
@@ -2502,20 +2458,20 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
       tree_valid(c, base, e->valid);
       rc = 0;
     }
-  } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
+  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
              tag == MIZU_TYPE_REAL) {
     rc = fcol_date_fill((const double *) data, (uint64_t) e->length, c);
   } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-             class_is(cls, "POSIXct", "POSIXt") &&
+             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
              tag == MIZU_TYPE_REAL) {
     rc = fcol_ts_fill((const double *) data, (uint64_t) e->length,
                       tz != NULL && tz->kind == AV_STR ?
                         (const char *) tz->val.ptr : "",
                       tz != NULL && tz->kind == AV_STR ?
                         (size_t) tz->val.count : 0, c);
-  } else if (cls != NULL && nent == 2 && class_is(cls, "difftime", NULL) &&
+  } else if (cls != NULL && nent == 2 && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
              tag == MIZU_TYPE_REAL) {
-    attr_ent *un = attr_find(ents, nent, "units");
+    attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
     const double us = un != NULL && un->kind == AV_STR ?
       difftime_unit_secs((const char *) un->val.ptr,
                          (size_t) un->val.count) : 0.0;
@@ -2650,11 +2606,11 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   attr_ent *ents = blob_attrs(blob, blob_size, &nent);
   if (ents == NULL) return NULL;
   PyObject *out = NULL;
-  attr_ent *cls = attr_find(ents, nent, "class");
-  attr_ent *lv = attr_find(ents, nent, "levels");
-  attr_ent *dm = attr_find(ents, nent, "dim");
+  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+  attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
   if (cls != NULL && lv != NULL && nent == 2 &&
-      class_is(cls, "factor", NULL) && type == MIZU_TYPE_INT &&
+      class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && type == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
     int32_t *lev_off = NULL, *codes = NULL;
     uint8_t *lev_bytes = NULL;
@@ -2673,19 +2629,19 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
     out = tree_dim_view(owner, loan,
                         nent == 2 ? MIZU_TYPE_INT64 : type, data, n,
                         valid, nulls, dm);
-  } else if (cls != NULL && nent == 1 && class_is(cls, "Date", NULL) &&
+  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
              type == MIZU_TYPE_REAL) {
     out = realv_to_datetime(data, (uint64_t) n, 1);
   } else if (cls != NULL &&
              (nent == 1 ||
-              (nent == 2 && attr_find(ents, nent, "tzone") != NULL)) &&
-             class_is(cls, "POSIXct", "POSIXt") &&
+              (nent == 2 && attr_find(ents, nent, MIZU_IX_ATTR_TZONE) != NULL)) &&
+             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
              type == MIZU_TYPE_REAL) {
     out = realv_to_datetime(data, (uint64_t) n, 0);   /* tzone: display
                                                          metadata, dropped */
   } else if (cls != NULL && nent == 2 &&
-             class_is(cls, "difftime", NULL) && type == MIZU_TYPE_REAL) {
-    attr_ent *un = attr_find(ents, nent, "units");
+             class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) && type == MIZU_TYPE_REAL) {
+    attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
     const double us = un != NULL && un->kind == AV_STR ?
       difftime_unit_secs((const char *) un->val.ptr,
                          (size_t) un->val.count) : 0.0;
@@ -2894,15 +2850,15 @@ fail:
 static PyObject *tree_home(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
                            attr_ent *ents, int nent) {
-  attr_ent *nm = attr_find(ents, nent, "names");
-  attr_ent *cls = attr_find(ents, nent, "class");
-  attr_ent *rn = attr_find(ents, nent, "row.names");
+  attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
+  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
   if (nent == 0)
     return tree_list(owner, loan, base, size, n);
   if (nent == 1 && nm != NULL)
     return tree_dict(owner, loan, base, size, n, nm);
   if (nent == 3 && cls != NULL && nm != NULL && rn != NULL &&
-      class_is(cls, "data.frame", NULL))
+      class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL))
     return tree_frame(owner, loan, base, size, n, nm, rn);
   ixr_no_home(ents, nent, "an attributed list");
   return NULL;
@@ -3034,7 +2990,7 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     break;
   }
   case FCOL_DICT: {
-    static const char *cls[1] = { "factor" };
+    static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
     const int32_t *codes = (const int32_t *) c->values;
     IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
     if (c->n == 1) {
@@ -3059,7 +3015,7 @@ static void ixe_fcol(ixw *w, const fcol *c) {
       w->total += (size_t) c->n * 4;
     }
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
-    ixe_key(w, "levels");
+    ixe_key(w, MIZU_IX_ATTR_LEVELS);
     if (c->nlev == 1) {
       IXW_PUT(w, mizu_ix_put_str(
                 IXW_DST(w), c->bytes, c->lev_off[1] - c->lev_off[0]));
@@ -3070,12 +3026,12 @@ static void ixe_fcol(ixw *w, const fcol *c) {
                   IXW_DST(w), c->bytes + c->lev_off[i],
                   c->lev_off[i + 1] - c->lev_off[i]));
     }
-    ixe_key(w, "class");
+    ixe_key(w, MIZU_IX_ATTR_CLASS);
     ixe_class(w, cls, 1);
     break;
   }
   case FCOL_DATE: {
-    static const char *cls[1] = { "Date" };
+    static const char *cls[1] = { MIZU_IX_CLASS_DATE };
     const int32_t *days = (const int32_t *) c->values;
     IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
     IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, (uint64_t) c->n));
@@ -3096,7 +3052,7 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     }
     w->total += (size_t) c->n * 8;
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
-    ixe_key(w, "class");
+    ixe_key(w, MIZU_IX_ATTR_CLASS);
     ixe_class(w, cls, 1);
     break;
   }
@@ -3117,7 +3073,7 @@ static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
   IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) fc->ncols));
   for (int i = 0; i < fc->ncols; i++) ixe_fcol(w, &fc->cols[i]);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 3));
-  ixe_key(w, "names");
+  ixe_key(w, MIZU_IX_ATTR_NAMES);
   if (fc->ncols == 1) {
     IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), fc->names,
                                fc->name_off[1] - fc->name_off[0]));
@@ -3128,12 +3084,12 @@ static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
                 IXW_DST(w), fc->names + fc->name_off[i],
                 fc->name_off[i + 1] - fc->name_off[i]));
   }
-  ixe_key(w, "class");
+  ixe_key(w, MIZU_IX_ATTR_CLASS);
   {
-    static const char *cls[1] = { "data.frame" };
+    static const char *cls[1] = { MIZU_IX_CLASS_DATAFRAME };
     ixe_class(w, cls, 1);
   }
-  ixe_key(w, "row.names");
+  ixe_key(w, MIZU_IX_ATTR_ROWNAMES);
   if (row_names == Py_None) {
     int64_t vals[2] = { 0, -fc->nrow };
     int na[2] = { 1, 0 };
@@ -3253,7 +3209,7 @@ static void ixe_scalar_dtype(ixw *w, const char *f, Py_ssize_t itemsize,
    per-element strided. */
 static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                          const cvt_row *row, int64_t stride) {
-  IXW_PUT(w, ixe_vec_begin(IXW_DST(w), ix_tag_of_wire(row->wire), n));
+  IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(row->wire), n));
   if (w->decline) return;
   if (w->dst != NULL && w->total + (size_t) n * row->w_out <= w->limit) {
     uint8_t *dst = w->dst + w->total;
@@ -3279,7 +3235,7 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
                         const cvt_row *row) {
   uint64_t total = 1;
   for (int i = 0; i < nd; i++) total *= (uint64_t) shape[i];
-  IXW_PUT(w, ixe_vec_begin(IXW_DST(w), ix_tag_of_wire(row->wire), total));
+  IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(row->wire), total));
   if (w->decline) return;
   if (w->dst != NULL &&
       w->total + (size_t) total * row->w_out <= w->limit) {
@@ -3323,7 +3279,7 @@ static void ixe_dim(ixw *w, const uint8_t *src, int nd,
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_nd_body(w, src, nd, shape, strides, row);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
-  ixe_key(w, "dim");
+  ixe_key(w, MIZU_IX_ATTR_DIM);
   int64_t dims[32];
   for (int i = 0; i < nd && i < 32; i++) dims[i] = shape[i];
   ixe_intv(w, nd, dims, NULL);
@@ -4273,7 +4229,8 @@ static int64_t fcol_str64_check(fcol *c) {
                    "cross to Arrow (latin1/bytes)", (long long) i);
       return -1;
     }
-    if (enc[i] == MIZU_CE_NATIVE && !ix_utf8_valid(data + lo, hi - lo)) {
+    if (enc[i] == MIZU_CE_NATIVE &&
+        !mizu_ix_utf8_valid(data + lo, (size_t) (hi - lo))) {
       PyErr_Format(MizuError,
                    "pymizu: string %lld is not valid UTF-8",
                    (long long) i);
@@ -5444,7 +5401,7 @@ typedef struct {
 
 static void ixs_emit_cvt_col(ixe *e, ixs *x, int col) {
   ixs_pcol *pc = &x->cols[col];
-  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), ix_tag_of_wire(pc->row->wire),
+  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), mizu_ix_tag_of(pc->row->wire),
                            (uint64_t) x->hold.rows));
   if (e->dst != NULL) {
     uint8_t *dst = e->dst + e->total;
@@ -5489,7 +5446,7 @@ static void ixs_emit_str_col(ixe *e, ixs *x, int col) {
 }
 
 static void ixs_emit_date_col(ixe *e, ixs *x, int col) {
-  static const char *cls[1] = { "Date" };
+  static const char *cls[1] = { MIZU_IX_CLASS_DATE };
   IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
   IXE_PUT(e, ixe_vec_begin(IXE_DST(e), MIZU_IX_TAG_REALV,
                            (uint64_t) x->hold.rows));
@@ -5513,7 +5470,7 @@ static void ixs_emit_date_col(ixe *e, ixs *x, int col) {
   }
   e->total += (size_t) x->hold.rows * 8;
   IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 1));
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "class", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_CLASS, IX_KEYLEN(MIZU_IX_ATTR_CLASS)));
   {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
@@ -5549,9 +5506,9 @@ static void ixs_emit_ts_col(ixe *e, ixs *x, int col) {
   }
   e->total += (size_t) x->hold.rows * 8;
   IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 2));
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "class", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_CLASS, IX_KEYLEN(MIZU_IX_ATTR_CLASS)));
   {
-    static const char *cls[2] = { "POSIXct", "POSIXt" };
+    static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
@@ -5559,7 +5516,7 @@ static void ixs_emit_ts_col(ixe *e, ixs *x, int col) {
     ixe_class(&w2, cls, 2);
     e->total += w2.total;
   }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "tzone", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_TZONE, IX_KEYLEN(MIZU_IX_ATTR_TZONE)));
   {
     const char *tz = pc->tz;
     ixw w2;
@@ -5600,9 +5557,9 @@ static void ixs_emit_td_col(ixe *e, ixs *x, int col) {
   }
   e->total += (size_t) x->hold.rows * 8;
   IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 2));
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "class", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_CLASS, IX_KEYLEN(MIZU_IX_ATTR_CLASS)));
   {
-    static const char *cls[1] = { "difftime" };
+    static const char *cls[1] = { MIZU_IX_CLASS_DIFFTIME };
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
@@ -5610,13 +5567,13 @@ static void ixs_emit_td_col(ixe *e, ixs *x, int col) {
     ixe_class(&w2, cls, 1);
     e->total += w2.total;
   }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "units", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_UNITS, IX_KEYLEN(MIZU_IX_ATTR_UNITS)));
   {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
     w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
-    const char *strs[1] = { "secs" };
+    const char *strs[1] = { MIZU_IX_UNIT_SECS };
     int64_t lens[1] = { 4 };
     ixe_strv(&w2, 1, strs, lens);
     e->total += w2.total;
@@ -5669,7 +5626,7 @@ static void ixs_emit_dict_col(ixe *e, ixs *x, int col, const int32_t *offs,
   }
   e->total += (size_t) x->hold.rows * 4;
   IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 2));
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "levels", 6));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_LEVELS, IX_KEYLEN(MIZU_IX_ATTR_LEVELS)));
   if (nlev == 1) {
     IXE_PUT(e, mizu_ix_put_str(IXE_DST(e), bytes, offs[1] - offs[0]));
   } else {
@@ -5678,9 +5635,9 @@ static void ixs_emit_dict_col(ixe *e, ixs *x, int col, const int32_t *offs,
       IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), bytes + offs[i],
                                     offs[i + 1] - offs[i]));
   }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "class", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_CLASS, IX_KEYLEN(MIZU_IX_ATTR_CLASS)));
   {
-    static const char *cls[1] = { "factor" };
+    static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
@@ -5709,7 +5666,7 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
     }
   }
   IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 3));
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "names", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_NAMES, IX_KEYLEN(MIZU_IX_ATTR_NAMES)));
   if (x->ncols == 1) {
     IXE_PUT(e, mizu_ix_put_str(IXE_DST(e), names[0],
                                (int32_t) strlen(names[0])));
@@ -5719,9 +5676,9 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
       IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), names[i],
                                     (int32_t) strlen(names[i])));
   }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "class", 5));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_CLASS, IX_KEYLEN(MIZU_IX_ATTR_CLASS)));
   {
-    static const char *cls[1] = { "data.frame" };
+    static const char *cls[1] = { MIZU_IX_CLASS_DATAFRAME };
     ixw w2;
     memset(&w2, 0, sizeof(w2));
     w2.dst = IXE_DST(e);
@@ -5729,7 +5686,7 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
     ixe_class(&w2, cls, 1);
     e->total += w2.total;
   }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), "row.names", 9));
+  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_ROWNAMES, IX_KEYLEN(MIZU_IX_ATTR_ROWNAMES)));
   {
     ixw w2;
     memset(&w2, 0, sizeof(w2));
@@ -6416,42 +6373,10 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
    message past half the inline budget (the task flatten's share), detail
    past what remains, each cut at a UTF-8 boundary — so the frame fits the
    slot by construction and the caller stamps INLINE with the keeperless
-   claim: the writer cannot fail. Serves the peer shim's _send_error and
-   Phase 4's ERR publish. */
-
-/* magic + version + tag + flags + index + three counted lengths. */
-#define IX_ERR_OVERHEAD 25
-#define IX_ERR_TYPE_SHARE 128
-
-/* The UTF-8-boundary floor of n bytes within share (s is valid UTF-8 — it
-   came from PyUnicode_AsUTF8AndSize). */
-static size_t ix_err_floor(const uint8_t *s, size_t n, size_t share) {
-  if (n <= share) return n;
-  size_t len = share;
-  while (len > 0 && (s[len] & 0xC0) == 0x80) len--;
-  return len;
-}
-
-size_t pymizu_ix_write_err(uint8_t *dst, uint32_t inline_max,
-                           const char *type, size_t type_n,
-                           const char *msg, size_t msg_n,
-                           const char *detail, size_t detail_n,
-                           int has_index, uint64_t index) {
-  const size_t budget = inline_max;
-  size_t avail = budget > IX_ERR_OVERHEAD ? budget - IX_ERR_OVERHEAD : 0;
-  size_t cap = avail < IX_ERR_TYPE_SHARE ? avail : IX_ERR_TYPE_SHARE;
-  const size_t tn = ix_err_floor((const uint8_t *) type, type_n, cap);
-  cap = budget / 2;
-  if (cap > avail - tn) cap = avail - tn;
-  const size_t mn = ix_err_floor((const uint8_t *) msg, msg_n, cap);
-  const size_t dn = ix_err_floor((const uint8_t *) detail, detail_n,
-                                 avail - tn - mn);
-  size_t n = mizu_ix_put_header(dst);
-  n += mizu_ix_put_err(dst != NULL ? dst + n : NULL, has_index, index,
-                       type, (uint32_t) tn, msg, (uint32_t) mn,
-                       detail, (uint32_t) dn);
-  return n;
-}
+   claim: the writer cannot fail. The budget algorithm is the core's
+   mizu_ix_write_err (the byte-shape helper registry); the span
+   resolution stays with _pymizu.c's callers. Serves the peer shim's
+   _send_error and Phase 4's ERR publish. */
 
 /* Run the two-pass walk over obj: header + one value. */
 static void ixw_stream(ixw *w, PyObject *obj) {
@@ -6750,59 +6675,10 @@ static int ixt_next(mizu_ix *cur, mizu_ix_item *it) {
   return 0;
 }
 
-/* The per-field shape checks of the exec decode and the hook decode: the
-   field tags are the builder's check, not the cursor's — a wrong tag is
-   the informative "wrong shape for its kind". */
-static int ixt_want_code(mizu_ix *cur, mizu_ix_item *it) {
-  if (ixt_next(cur, it) < 0) return -1;
-  if (it->kind != MIZU_IX_STR1 || it->na) {
-    PyErr_SetString(MizuError, "pymizu: malformed task stream: the code "
-                    "field is not a string");
-    return -1;
-  }
-  return 0;
-}
-
-static int ixt_want_list(mizu_ix *cur, mizu_ix_item *it) {
-  if (ixt_next(cur, it) < 0) return -1;
-  if (it->kind != MIZU_IX_LIST) {
-    PyErr_SetString(MizuError, "pymizu: malformed task stream: the "
-                    "positional field is not a list");
-    return -1;
-  }
-  return 0;
-}
-
-static int ixt_want_dict(mizu_ix *cur, mizu_ix_item *it) {
-  if (ixt_next(cur, it) < 0) return -1;
-  if (it->kind != MIZU_IX_DICT) {
-    PyErr_SetString(MizuError, "pymizu: malformed task stream: the named "
-                    "field is not a dict");
-    return -1;
-  }
-  return 0;
-}
-
-/* The task header: the TASK item and the supported kinds. */
-static int ixt_open(mizu_ix *cur, const uint8_t *src, size_t n,
-                    mizu_ix_item *it, int max_kind) {
-  if (mizu_ix_open(cur, src, n) != MIZU_OK) {
-    ixt_stop_tls();
-    return -1;
-  }
-  if (ixt_next(cur, it) < 0) return -1;
-  if (it->kind != MIZU_IX_TASK) {
-    PyErr_SetString(MizuError, "pymizu: malformed task stream: no task "
-                    "tag");
-    return -1;
-  }
-  if (it->task_kind > (uint32_t) max_kind) {
-    PyErr_Format(MizuError, "pymizu: unsupported task kind 0x%02X",
-                 it->task_kind);
-    return -1;
-  }
-  return 0;
-}
+/* The per-field shape checks are the core's mizu_ixt_* decode shim (the
+   byte-shape helper registry): the field tags are the builder's check,
+   not the cursor's, and the texts record through the TLS slot, surfacing
+   here through ixt_stop_tls like any cursor failure. */
 
 /* One named-argument key: a bare string under the duplicate-key rule (the
    builder's check — the cursor holds no key set). */
@@ -6894,10 +6770,10 @@ PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
   const ixr_mode mode = { 1, ctx };
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
-  if (ixt_open(&cur, src, n, &it, 1) < 0) return NULL;
+  if (mizu_ixt_open(&cur, src, n, &it, 1) != MIZU_OK) return ixt_stop_tls();
   *ident_out = it.u64[0];
   const int kind = (int) it.task_kind;
-  if (ixt_want_code(&cur, &code) < 0) return NULL;
+  if (mizu_ixt_want_code(&cur, &code) != MIZU_OK) return ixt_stop_tls();
   PyObject *fn = NULL, *ns = NULL;
   if (kind == 0) {
     fn = ixt_resolve_name(code.ptr, code.len);
@@ -6914,7 +6790,10 @@ PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
   PyObject **args = NULL;
   size_t nargs = 0, nkw = 0, filled = 0;
   int ok = 0;
-  if (ixt_want_list(&cur, &pos) < 0) goto out;
+  if (mizu_ixt_want_list(&cur, &pos) != MIZU_OK) {
+    ixt_stop_tls();
+    goto out;
+  }
   nargs = (size_t) pos.count;
   args = PyMem_Malloc((nargs != 0 ? nargs : 1) * sizeof(PyObject *));
   if (args == NULL) {
@@ -6934,7 +6813,10 @@ PyObject *pymizu_ix_task_run(const uint8_t *src, size_t n,
       if (rc < 0) goto out;
     }
   }
-  if (ixt_want_dict(&cur, &named) < 0) goto out;
+  if (mizu_ixt_want_dict(&cur, &named) != MIZU_OK) {
+    ixt_stop_tls();
+    goto out;
+  }
   nkw = (size_t) named.count;
   if (nkw != 0) {
     keyset = PySet_New(NULL);
@@ -7003,9 +6885,9 @@ PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
   const ixr_mode mode = { 2, NULL };
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
-  if (ixt_open(&cur, src, n, &it, 1) < 0) return NULL;
-  if (ixt_want_code(&cur, &code) < 0) return NULL;
-  if (ixt_want_list(&cur, &pos) < 0) return NULL;
+  if (mizu_ixt_open(&cur, src, n, &it, 1) != MIZU_OK) return ixt_stop_tls();
+  if (mizu_ixt_want_code(&cur, &code) != MIZU_OK) return ixt_stop_tls();
+  if (mizu_ixt_want_list(&cur, &pos) != MIZU_OK) return ixt_stop_tls();
   PyObject *positional = NULL, *kwargs = NULL, *keyset = NULL, *out = NULL;
   positional = PyList_New((Py_ssize_t) pos.count);
   if (positional == NULL) return NULL;
@@ -7014,7 +6896,10 @@ PyObject *pymizu_ix_read_task_components(const uint8_t *src, size_t n) {
     if (v == NULL) goto fail;
     PyList_SET_ITEM(positional, (Py_ssize_t) i, v);
   }
-  if (ixt_want_dict(&cur, &named) < 0) goto fail;
+  if (mizu_ixt_want_dict(&cur, &named) != MIZU_OK) {
+    ixt_stop_tls();
+    goto fail;
+  }
   kwargs = PyDict_New();
   if (kwargs == NULL) goto fail;
   keyset = PySet_New(NULL);
@@ -7283,8 +7168,8 @@ PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
                  "is not a call spec", it.task_kind);
     return NULL;
   }
-  if (ixt_want_code(&cur, &code) < 0) return NULL;
-  if (ixt_want_list(&cur, &pos) < 0) return NULL;
+  if (mizu_ixt_want_code(&cur, &code) != MIZU_OK) return ixt_stop_tls();
+  if (mizu_ixt_want_list(&cur, &pos) != MIZU_OK) return ixt_stop_tls();
   PyObject *positional = NULL, *kwargs = NULL, *keyset = NULL, *x = NULL;
   PyObject *cs = NULL, *out = NULL;
   positional = PyList_New((Py_ssize_t) pos.count);
@@ -7294,7 +7179,10 @@ PyObject *pymizu_ix_read_map_desc(const uint8_t *src, size_t n) {
     if (v == NULL) goto fail;
     PyList_SET_ITEM(positional, (Py_ssize_t) i, v);
   }
-  if (ixt_want_dict(&cur, &named) < 0) goto fail;
+  if (mizu_ixt_want_dict(&cur, &named) != MIZU_OK) {
+    ixt_stop_tls();
+    goto fail;
+  }
   kwargs = PyDict_New();
   if (kwargs == NULL) goto fail;
   keyset = PySet_New(NULL);
@@ -7359,7 +7247,7 @@ PyObject *pymizu_ix_runner_run(const uint8_t *src, size_t n,
                                uint64_t *ident_out) {
   mizu_ix cur;
   mizu_ix_item it, name, gen, seed;
-  if (ixt_open(&cur, src, n, &it, 2) < 0) return NULL;
+  if (mizu_ixt_open(&cur, src, n, &it, 2) != MIZU_OK) return ixt_stop_tls();
   *ident_out = it.u64[0];
   if (it.task_kind != 2) {
     PyErr_SetString(MizuError, "pymizu: malformed runner stream: not a "

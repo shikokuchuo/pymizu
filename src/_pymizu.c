@@ -2338,14 +2338,14 @@ static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
    int32 memcpy). */
 static size_t mizh_dim_blob_size(int nd) {
   return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 1) +
-    mizu_ix_put_key(NULL, "dim", 3) +
+    mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM)) +
     mizu_ix_put_vec(NULL, MIZU_TYPE_INT, NULL, (uint64_t) nd);
 }
 
 static void mizh_dim_blob_write(uint8_t *dst, const int32_t *dims, int nd) {
   dst += mizu_ix_put_header(dst);
   dst += mizu_ix_put_dict_begin(dst, 1);
-  dst += mizu_ix_put_key(dst, "dim", 3);
+  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
   mizu_ix_put_vec(dst, MIZU_TYPE_INT, dims, (uint64_t) nd);
 }
 
@@ -3070,45 +3070,10 @@ static PyObject *strview_to_list(PyObject *obj, PyObject *Py_UNUSED(dummy)) {
   return out;
 }
 
-/* Strict UTF-8 validation of a CE_NATIVE span at Arrow export (the
-   sender's MIZS filter admits a native-marked element only when it
-   validates as UTF-8; this is the reader-side defense). */
-static int utf8_valid(const uint8_t *s, int64_t n) {
-  int64_t i = 0;
-  while (i < n) {
-    uint8_t c = s[i];
-    if (c < 0x80) {
-      i++;
-      continue;
-    }
-    int64_t need;
-    uint32_t cp;
-    if ((c & 0xE0) == 0xC0) {
-      need = 1;
-      cp = c & 0x1F;
-      if (cp == 0) return 0;                 /* overlong */
-    } else if ((c & 0xF0) == 0xE0) {
-      need = 2;
-      cp = c & 0x0F;
-    } else if ((c & 0xF8) == 0xF0) {
-      need = 3;
-      cp = c & 0x07;
-    } else {
-      return 0;
-    }
-    if (i + need >= n) return 0;
-    for (int64_t k = 1; k <= need; k++) {
-      if ((s[i + k] & 0xC0) != 0x80) return 0;
-      cp = (cp << 6) | (s[i + k] & 0x3F);
-    }
-    if ((need == 1 && cp < 0x80) || (need == 2 && cp < 0x800) ||
-        (need == 3 && cp < 0x10000) || cp > 0x10FFFF ||
-        (cp >= 0xD800 && cp <= 0xDFFF))
-      return 0;                              /* overlong / out of range */
-    i += need + 1;
-  }
-  return 1;
-}
+/* The CE_NATIVE span check at Arrow export (the sender's MIZS filter
+   admits a native-marked element only when it validates as UTF-8; this
+   is the reader-side defense) single-sources through the core's
+   mizu_ix_utf8_valid (the byte-shape helper registry). */
 
 PyDoc_STRVAR(strview_arrow_c_array_doc,
 "__arrow_c_array__(requested_schema=None) -> (schema capsule, array capsule)\n\n\
@@ -3154,7 +3119,8 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
                    "to Arrow (latin1/bytes)", (long long) i);
       return NULL;
     }
-    if (enc == MIZU_CE_NATIVE && !utf8_valid(sv->data + lo, hi - lo)) {
+    if (enc == MIZU_CE_NATIVE &&
+        !mizu_ix_utf8_valid(sv->data + lo, (size_t) (hi - lo))) {
       PyErr_Format(MizuError,
                    "pymizu: string %lld is not valid UTF-8", (long long) i);
       return NULL;
@@ -4660,7 +4626,7 @@ static PyObject *traceback_text(PyObject *type, PyObject *value,
 }
 
 /* Frame an exception as an 'I' err stream INLINE (the _send_error shim
-   path): type name, str(), traceback text — pymizu_ix_write_err truncates
+   path): type name, str(), traceback text — mizu_ix_write_err truncates
    to the slot by construction, so the publish cannot fail. */
 static int frame_err_exc(PyObject *exc, uint8_t *payload,
                          uint32_t inline_max, mizu_slot_hdr *hdr) {
@@ -4691,7 +4657,7 @@ static int frame_err_exc(PyObject *exc, uint8_t *payload,
     if (ms_s == NULL) { ms_s = empty; ms_n = 0; }
     if (tb_s == NULL) { tb_s = empty; tb_n = 0; }
   }
-  size_t n = pymizu_ix_write_err(payload, inline_max,
+  size_t n = mizu_ix_write_err(payload, inline_max,
                                  tn_s, (size_t) tn_n, ms_s, (size_t) ms_n,
                                  tb_s, (size_t) tb_n, 0, 0);
   hdr->kind = MIZU_KIND_INLINE;
@@ -4772,7 +4738,7 @@ static int publish_exc(mizu_result_sink *sink, uint64_t sub_ident) {
       if (ms_s == NULL) { ms_s = empty; ms_n = 0; }
       if (tb_s == NULL) { tb_s = empty; tb_n = 0; }
     }
-    size_t n = pymizu_ix_write_err(sink->payload, budget,
+    size_t n = mizu_ix_write_err(sink->payload, budget,
                                    tn_s, (size_t) tn_n, ms_s, (size_t) ms_n,
                                    tb_s, (size_t) tb_n, eidx != NULL, widx);
     int rc = mizu_result_publish_err(sink, NULL, (uint32_t) n);
@@ -7400,7 +7366,7 @@ static PyObject *pymizu_write_err(PyObject *Py_UNUSED(module),
     dst = PyMem_Malloc(budget);
     if (dst == NULL) return PyErr_NoMemory();
   }
-  size_t n = pymizu_ix_write_err(dst, (uint32_t) budget,
+  size_t n = mizu_ix_write_err(dst, (uint32_t) budget,
                                  type, (size_t) tn, message, (size_t) mn,
                                  detail, (size_t) dn, has_index, idx);
   PyObject *out = PyBytes_FromStringAndSize((const char *) dst,
