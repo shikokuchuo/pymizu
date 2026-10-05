@@ -787,7 +787,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     for (int i = 0; i < ncols; i++) {
       int32_t len = fc->name_off[i + 1] - fc->name_off[i];
       memcpy(p, fc->names + fc->name_off[i], (size_t) len);
-      p[len] = ' ';
+      p[len] = '\0';
       ex->cname_ptrs[i] = p;
       p += len + 1;
     }
