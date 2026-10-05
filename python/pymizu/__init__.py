@@ -3,6 +3,8 @@ task pools (the Python binding for libmizu)."""
 
 from __future__ import annotations
 
+import contextlib as _contextlib
+import os as _os
 import re as _re
 import subprocess as _subprocess
 import sys as _sys
@@ -10,6 +12,7 @@ import threading as _threading
 import warnings as _warnings
 from collections.abc import Callable as _Callable
 from collections.abc import Iterable as _Iterable
+from collections.abc import Iterator as _Iterator
 from typing import Any as _Any
 
 from pymizu import _pymizu
@@ -751,6 +754,13 @@ class Pool:
 
 _worker_local = _threading.local()
 
+# The process-wide default pool registry: one (pool, pid-at-set) tuple, so
+# a reader never sees a torn pair across threads. The registry anchors the
+# handle — an unreferenced pool's finalizer stops the pool — and the pid
+# lets a forked child read the default as unset without touching a handle
+# it does not own (the C-side fork guard on handle unwrap is the backstop).
+_default_state: tuple[Pool | None, int] = (None, 0)
+
 
 def prune() -> list[str]:
     """Remove orphaned shared memory regions.
@@ -802,9 +812,66 @@ def current_pool() -> Pool | None:
     worker's own work-stealing deque (no ring, no wait), and a nested
     collect helps — executes work — instead of parking, so nested fan-outs
     run at fork/join cost and never deadlock the pool. None outside a
-    task.
+    task; the user-set process-wide default is :func:`default_pool`,
+    which never overrides this runtime-owned binding.
     """
     return getattr(_worker_local, "pool", None)
+
+
+def default_pool() -> Pool | None:
+    """The process-wide default pool, or None when none is set.
+
+    Set with :func:`set_default_pool`; scoped use with
+    :func:`using_pool`. Package code taking an optional pool resolves it
+    in this order: an explicit ``pool`` argument, then
+    :func:`current_pool` inside a task (the evaluating worker's own
+    pool, for nested submission), then ``default_pool()``, then the
+    caller's own fallback — sequential execution or an error.
+
+    Setting a default checks the type only: a stopped pool is accepted
+    (liveness is transient; a probe would prove nothing about use time)
+    and fails at use time with the usual stopped-pool errors. Handles
+    from :meth:`Pool.attach` are valid defaults; ownership and teardown
+    stay with the pool's creator.
+
+    The default is process-global — every thread sees the same pool, and
+    :func:`current_pool` remains the thread-local mechanism. After a
+    ``fork()``, a child process reads it as unset: handles are
+    process-private.
+    """
+    pool, pid = _default_state
+    return pool if pid == _os.getpid() else None
+
+
+def set_default_pool(pool: Pool | None) -> Pool | None:
+    """Set the process-wide default pool; None clears it.
+
+    Returns the previous default (a Pool or None), so callers can save
+    and restore. The registry anchors the handle: a pool set as the
+    default stays alive even after its variable is deleted, until the
+    default is cleared or replaced. See :func:`default_pool` for the
+    full semantics.
+    """
+    global _default_state
+    if pool is not None and not isinstance(pool, Pool):
+        raise TypeError("pymizu: pool must be a Pool or None")
+    prev = _default_state[0]
+    _default_state = (pool, _os.getpid())
+    return prev
+
+
+@_contextlib.contextmanager
+def using_pool(pool: Pool | None) -> _Iterator[Pool | None]:
+    """Use ``pool`` as the default for the with block, then restore.
+
+    Yields ``pool``. The previous default returns on exit, including on
+    exception; ``None`` scopes a cleared default.
+    """
+    prev = set_default_pool(pool)
+    try:
+        yield pool
+    finally:
+        set_default_pool(prev)
 
 
 __all__ = [
@@ -831,9 +898,12 @@ __all__ = [
     "abi_version",
     "call",
     "current_pool",
+    "default_pool",
     "is_remote_error",
     "is_sentinel",
     "prune",
     "r_launcher",
     "r_pool_launcher",
+    "set_default_pool",
+    "using_pool",
 ]
