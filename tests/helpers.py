@@ -137,6 +137,27 @@ def fail_at(i, bad):
     return i
 
 
+def fail_on(i, marks):
+    """Fail on every marked element (multi-error fail-fast tests)."""
+    if i in marks:
+        raise ValueError(f"element {i}")
+    return i
+
+
+def sleep_on(i, marks, t=0.3):
+    """Sleep on the marked elements, so those chunks complete last."""
+    if i in marks:
+        time.sleep(t)
+    return i
+
+
+def map_ctx_names(_):
+    """The worker's map-context cache keys (one attach per worker per map)."""
+    from pymizu import _map
+
+    return list(_map._ctx_cache)
+
+
 def sleep_then(i, t):
     time.sleep(t)
     return i

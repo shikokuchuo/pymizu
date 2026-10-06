@@ -17,6 +17,21 @@ Initial pre-release.
 
 ### Added
 
+- Streaming maps: `Pool.map(..., stream=True)` and
+  `Pool.map_prepare(..., stream=True)` never stage the whole of `x` into
+  shared memory — fixed x-slices ride ordinary chunk tasks under a
+  sliding submit/collect window of at most
+  `min(chunks, 2 * live workers, free result slots)` outstanding tasks,
+  so shared-memory residency is bounded by `window x slice` instead of
+  `sizeof(x)`. The chunk count defaults to `min(len(x), 32 * live
+  workers)` and `chunks=` overrides it outright. Result shapes,
+  ordering, `seed` invariance, and the error taxonomy are unchanged;
+  fail-fast latency coarsens from ~one adaptive morsel batch to ~one
+  chunk. A `pymizu.call()` spec as `fn` with `stream=True` raises
+  `TypeError` (same-language workers only). A streaming prepared map
+  re-slices a replacement `x` of any shape — only a length change under
+  `template=` restages — and restages into a fresh region after an
+  unclean run. Mirrors the R binding's `mizu_map(.stream = TRUE)`.
 - `pymizu.current_rng()`: inside a `Pool.map(seed=...)` element, the
   element's memoized `numpy.random.Generator` — derived lazily on first
   call from the element's seed material (domain-separated from the
