@@ -1,7 +1,7 @@
 # pymizu 水
 
 [![ci](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml/badge.svg)](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/shikokuchuo/pymizu/graph/badge.svg)](https://codecov.io/gh/shikokuchuo/pymizu)
+[![codecov](https://codecov.io/gh/shikokuchuo/pymizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/pymizu)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
@@ -30,6 +30,18 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 Pre-release.
 The API is not stable and may change at any time before a release.
 
+## Use cases
+
+**Parallelize Python at thread granularity.**
+The stdlib process pools spend around 100 µs per task on pickling and a socket round trip, so anything finer than coarse jobs runs faster serially.
+pymizu hands off a task in shared memory and wakes one worker — overhead under a microsecond — so functions measured in microseconds parallelize profitably across cores.
+See [Benchmarks](#benchmarks).
+
+**Orchestrate R workers from Python.**
+`pymizu.r_launcher()` and `pymizu.r_pool_launcher()` spawn R processes as channel peers or pool workers, driven by `pymizu.call()` specs.
+Data crosses as shared-memory views rather than serialized copies — a numpy array arrives in R as a vector, and results come back the same way — so a Python program can use R's package ecosystem as if it were local.
+See [R interop](#r-interop).
+
 ## Installation
 
 Install the development version from GitHub:
@@ -47,6 +59,32 @@ Optional extras:
 - `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
 To request an extra with the GitHub install, use `pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"`.
+
+## Benchmarks
+
+Communication overhead against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/mizu-stdlib-bench.py`):
+
+Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled payloads):
+
+| Benchmark | pymizu | ProcessPoolExecutor | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
+| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 70.3 µs/elt | 176x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
+
+Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
+
+| Benchmark | pymizu | ThreadPoolExecutor | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
+| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
+| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
+
+`benchmarks/mizu-bench.py` runs the pymizu rows standalone.
+
+\* elt = element; microseconds of wall time per map element.
 
 ## Channels
 
@@ -94,32 +132,6 @@ with pymizu.Pool.create(4) as pool:
     print(pool.map(abs, range(-5, 5)))
 ```
 
-## Benchmarks
-
-Communication overhead against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/mizu-stdlib-bench.py`):
-
-Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled payloads):
-
-| Benchmark | pymizu | ProcessPoolExecutor | Speedup |
-|----|----|----|----|
-| Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
-| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
-| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 70.3 µs/elt | 176x |
-| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
-
-Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
-
-| Benchmark | pymizu | ThreadPoolExecutor | Speedup |
-|----|----|----|----|
-| Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
-| Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
-| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
-| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
-
-`benchmarks/mizu-bench.py` runs the pymizu rows standalone.
-
-\* elt = element; microseconds of wall time per map element.
-
 ## R interop
 
 A channel peer can be an R process that runs the [mizu](https://github.com/shikokuchuo/mizu) package, the R binding of the same core.
@@ -150,7 +162,7 @@ ch.close()
 If R or the package is missing, it raises `MizuError` before the channel is created.
 
 Pools mix too: `pymizu.r_pool_launcher()` spawns R workers, driven through the neutral task format of `pymizu.call()` specs.
-The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and the dtype matrix — is on the [R interop](https://shikokuchuo.net/pymizu/interop.html) page.
+The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and the dtype matrix — is on the [R interop](https://shikokuchuo.net/pymizu/user-guide/interop.html) page.
 
 ## Documentation
 

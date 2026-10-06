@@ -1,5 +1,6 @@
 ---
 title: "Benchmarks"
+guide-section: "Guide"
 ---
 
 Communication overhead against the stdlib `concurrent.futures` pools (Apple

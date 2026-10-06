@@ -40,6 +40,24 @@ Python and R processes can share a channel.
 Pre-release.
 The API is not stable and may change at any time before a release.
 
+## Use cases
+
+**Parallelize Python at thread granularity.**
+The stdlib process pools spend around 100 µs per task on pickling and a
+socket round trip, so anything finer than coarse jobs runs faster serially.
+pymizu hands off a task in shared memory and wakes one worker — overhead
+under a microsecond — so functions measured in microseconds parallelize
+profitably across cores.
+See [Benchmarks](user-guide/benchmarks.qmd).
+
+**Orchestrate R workers from Python.**
+`pymizu.r_launcher()` and `pymizu.r_pool_launcher()` spawn R processes as
+channel peers or pool workers, driven by `pymizu.call()` specs.
+Data crosses as shared-memory views rather than serialized copies — a numpy
+array arrives in R as a vector, and results come back the same way — so a
+Python program can use R's package ecosystem as if it were local.
+See [R interop](user-guide/interop.qmd).
+
 ## Installation
 
 ```sh
@@ -116,6 +134,8 @@ See [Parallel map](user-guide/map.qmd).
 
 ## Where next
 
+- [Benchmarks](user-guide/benchmarks.qmd) — overhead against the stdlib
+  pools.
 - [Channels](user-guide/channels.qmd) — sending and receiving, batch
   operations, and what crosses a channel.
 - [Task pools](user-guide/pools.qmd) — outcomes, nested tasks, growing and
@@ -124,7 +144,5 @@ See [Parallel map](user-guide/map.qmd).
   templates, prepared maps.
 - [R interop](user-guide/interop.qmd) — R peers and workers, what crosses
   the language boundary, and the dtype matrix.
-- [Benchmarks](user-guide/benchmarks.qmd) — overhead against the stdlib
-  pools.
 - [API reference](reference/index.qmd) — the generated function and class
   reference.
