@@ -42,10 +42,9 @@ def test_wait_and_as_completed(pool):
         assert not not_done
         assert {f.result() for f in done} == {i * i for i in range(6)}
     with pymizu.PoolExecutor(pool) as ex:
-        # quick task first: a submission made mid-collect waits for the
-        # drain thread's next snapshot, so a later submit can't be
-        # guaranteed to resolve ahead of an earlier one
-        futs = [ex.submit(square, 3), ex.submit(sleep_ident, 0.5)]
+        # the late submit overtakes: the drain's short collect bound
+        # re-snapshots well before the 0.5s sleep completes
+        futs = [ex.submit(sleep_ident, 0.5), ex.submit(square, 3)]
         first = next(concurrent.futures.as_completed(futs, timeout=5))
         assert first.result() == 9
 

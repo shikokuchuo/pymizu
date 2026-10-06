@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 
 _MISSING = object()
 
+# Drain collect bound: a submission made mid-collect waits at most this
+# long for the next snapshot. 50ms keeps late submissions prompt; an idle
+# re-park costs one syscall.
+_COLLECT_BOUND = 0.05
+
 
 class _TaskFuture(_Future):
     """A Future carrying its pymizu Task: cancel() cancels the task too."""
@@ -121,7 +126,8 @@ class PoolExecutor(_Executor):
     def _drain_loop(self) -> None:
         """The one drain thread: collect_any over the outstanding tasks,
         resolving futures in completion order. The bounded collect bounds
-        how long a submission made mid-collect waits for its snapshot."""
+        how long a submission made mid-collect waits for its snapshot;
+        _COLLECT_BOUND keeps that wait short."""
         while True:
             with self._cond:
                 while not self._outstanding and not self._shutdown:
@@ -131,7 +137,7 @@ class PoolExecutor(_Executor):
                 pairs = list(self._outstanding.items())
             tasks = [task for _, task in pairs]
             try:
-                got = self._pool.collect_any(tasks, timeout=1.0)
+                got = self._pool.collect_any(tasks, timeout=_COLLECT_BOUND)
             except Exception as e:
                 index = getattr(e, "index", None)
                 if index is None:
