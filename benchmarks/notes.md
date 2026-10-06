@@ -760,3 +760,25 @@ suite's before/after runs swung the same rows inside suite noise
 streaming 21.2M -> 21.4M); no best-known swap.
 
 Status: full suite 403 pass, 5 skip; ruff + pyrefly clean.
+
+## 2026-10-06 — streaming Pool.map (stream=True) [(0c0c29d)]
+
+Validation rows for the streaming map (mirrors the R entry): the
+footprint model confirms at W/C — descriptor pickle + W slice buffers
+= 6.3% of x's 15.3 MB raw section (model 6.2%) — and the window keeps
+workers fed: big-x and trivial-f rows run at parity or ahead of the
+region path on this host (the region path pays one giant descriptor
+pickle plus a per-worker unpickle for a list x; streaming amortizes
+both). No loop pathology surfaced (the pymizu splice is a C-level
+list slice assignment).
+
+Results (big-x = 2e6 float64, 16 MB; trivial f = 1e6, 4 workers):
+big-x region 0.949s | stream 0.633s (0.67x); SHM 15.3 MB region |
+0.95 MB stream (6.3%, model 6.2%). trivial f region 0.066s | stream
+0.036s (0.55x); trivial f template region 0.038s | stream 0.041s
+(1.09x). Suite rows in band (map trivial f 0.4 us/elt, template
+copy/view 724k/726k, skew 7.3 ms); pipelined pool 2.0-2.1M vs the
+2.48M best is host drift (same-build re-runs swing ±6%).
+
+Status: full suite 448 pass, 5 skip (pandas-absence); ruff + pyrefly
+clean.
