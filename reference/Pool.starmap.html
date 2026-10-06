@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Task pools | pymizu 水</title>
+<title>Pool.starmap() | pymizu 水</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -71,8 +71,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="../site_libs/quarto-search/fuse.min.js"></script>
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
-<link href="../user-guide/map.html" rel="next">
-<link href="../user-guide/channels.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -121,20 +119,47 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.65">
 
 
-  <link rel="alternate" type="text/markdown" href="pools.md">
-  <link rel="canonical" href="https://shikokuchuo.net/pymizu/user-guide/pools.html">
-  <meta name="description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers claim tasks from per-submitter...">
+  <link rel="alternate" type="text/markdown" href="Pool.starmap.md">
+  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/Pool.starmap.html">
+  <meta name="description" content="Map fn over x, unpacking each element as the call’s">
+  <script type="application/ld+json">
+[
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "pymizu 水",
+    "description": "Lock-free shared-memory parallelism for Python",
+    "license": "https://opensource.org/licenses/MIT",
+    "url": "https://shikokuchuo.net/pymizu",
+    "documentation": "https://shikokuchuo.net/pymizu",
+    "programmingLanguage": {
+      "@type": "ComputerLanguage",
+      "name": "Python"
+    }
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "Pool.starmap - pymizu 水",
+    "isPartOf": {
+      "@type": "WebSite",
+      "name": "pymizu 水"
+    },
+    "url": "https://shikokuchuo.net/pymizu/reference/Pool.starmap.html"
+  }
+]
+</script>
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Task pools | pymizu 水">
-  <meta property="og:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers claim tasks from per-submitter...">
-  <meta property="og:url" content="https://shikokuchuo.net/pymizu/user-guide/pools.html">
+  <meta property="og:title" content="Pool.starmap() | pymizu 水">
+  <meta property="og:description" content="Map fn over x, unpacking each element as the call’s">
+  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/Pool.starmap.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Task pools | pymizu 水">
-  <meta name="twitter:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers claim tasks from per-submitter...">
+  <meta name="twitter:title" content="Pool.starmap() | pymizu 水">
+  <meta name="twitter:description" content="Map fn over x, unpacking each element as the call’s">
 </head>
 
-<body class="nav-sidebar floating nav-fixed quarto-light">
+<body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
 
 <div id="quarto-search-results"></div>
   <header id="quarto-header" class="headroom fixed-top">
@@ -152,11 +177,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
           <div class="collapse navbar-collapse" id="navbarCollapse">
             <ul class="navbar-nav navbar-nav-scroll me-auto">
   <li class="nav-item">
-    <a class="nav-link active" href="../user-guide/installation.html" aria-current="page"> 
+    <a class="nav-link" href="../user-guide/installation.html"> 
 <span class="menu-text">User Guide</span></a>
   </li>  
   <li class="nav-item">
-    <a class="nav-link" href="../reference/index.html"> 
+    <a class="nav-link active" href="../reference/index.html" aria-current="page"> 
 <span class="menu-text">Reference</span></a>
   </li>  
 </ul>
@@ -177,7 +202,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <h1 class="quarto-secondary-nav-title no-breadcrumbs">Task pools</h1>
+        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">Pool.starmap()</span></h5>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
     </div>
@@ -189,78 +214,510 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
     <div class="sidebar-menu-container"> 
     <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container" style="padding-bottom: 0.5rem; padding-top: 0.25rem;"> 
+  <a href="../reference/index.html" style="font-family: &quot;Open Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif;" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">API Index</span></a>
+  </div>
+</li>
         <li class="sidebar-item sidebar-item-section">
       <div class="sidebar-item-container"> 
             <a class="sidebar-item-text sidebar-link text-start">
- <span class="menu-text">Guide</span></a>
+ <span class="menu-text">Channels</span></a>
 </div>
       <ul id="quarto-sidebar-section-1" class="list-unstyled sidebar-section depth1 show">  
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../user-guide/benchmarks.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Benchmarks</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../user-guide/channels.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channels</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../user-guide/pools.html" class="sidebar-item-text sidebar-link active">
- <span class="menu-text">Task pools</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../user-guide/map.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Parallel map</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../user-guide/interop.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">R interop</span></a>
+  <a href="../reference/Channel.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel</span></a>
   </div>
 </li>
       </ul>
   </li>
-        <li class="sidebar-item">
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Channel Methods</span></a>
+</div>
+      <ul id="quarto-sidebar-section-2" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../user-guide/installation.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Installation</span></a>
+  <a href="../reference/Channel.create.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.create</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.attach.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.attach</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.token.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.token</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.send.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.send</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.send_batch.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.send_batch</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.recv.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.recv</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.recv_batch.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.recv_batch</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.close.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.close</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.close_signal.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.close_signal</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.destroy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.destroy</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.alive.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.alive</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.info.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.info</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.__enter__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.__enter__</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.__exit__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.__exit__</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.__iter__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.__iter__</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Task pools</span></a>
+</div>
+      <ul id="quarto-sidebar-section-3" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Task.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Task</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/PreparedMap.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">PreparedMap</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/PoolExecutor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">PoolExecutor</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Pool Methods</span></a>
+</div>
+      <ul id="quarto-sidebar-section-4" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.create.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.create</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.attach.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.attach</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.token.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.token</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.submit.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.submit</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.submit_batch.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.submit_batch</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.collect_any.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.collect_any</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.collect_all.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.collect_all</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.map</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.starmap.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">Pool.starmap</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.map_prepare.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.map_prepare</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.retire.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.retire</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.spawn_workers.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.spawn_workers</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.stop.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.stop</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.shutdown.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.shutdown</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.destroy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.destroy</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.status.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.status</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.dump.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.dump</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.stats.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.stats</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.trace.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.trace</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.__enter__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.__enter__</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.__exit__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.__exit__</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Cross-language interop</span></a>
+</div>
+      <ul id="quarto-sidebar-section-5" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/call.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">call</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/r_launcher.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">r_launcher</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/r_pool_launcher.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">r_pool_launcher</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Frame Methods</span></a>
+</div>
+      <ul id="quarto-sidebar-section-6" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.names.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame.names</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.row_names.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame.row_names</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.to_dict.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame.to_dict</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.__arrow_c_stream__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame.__arrow_c_stream__</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.__len__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame.__len__</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Frame.__reduce__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Frame.__reduce__</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Outcomes and errors</span></a>
+</div>
+      <ul id="quarto-sidebar-section-7" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Sentinel.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Sentinel</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/is_sentinel.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">is_sentinel</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/is_remote_error.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">is_remote_error</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/MizuError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">MizuError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/ShmError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">ShmError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/StartupError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">StartupError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/SubmitTimeoutError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">SubmitTimeoutError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/SlotsExhaustedError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">SlotsExhaustedError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/StoppedError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">StoppedError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/CancelledError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">CancelledError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/TaskError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">TaskError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/WorkerDiedError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">WorkerDiedError</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/DeclinedError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">DeclinedError</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start">
+ <span class="menu-text">Housekeeping</span></a>
+</div>
+      <ul id="quarto-sidebar-section-8" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/default_pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">default_pool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/set_default_pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">set_default_pool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/using_pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">using_pool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/current_pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">current_pool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/current_rng.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">current_rng</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/prune.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">prune</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
     </ul>
     </div>
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
-        <nav id="TOC" role="doc-toc" class="toc-active">
-    <h2 id="toc-title">On this page</h2>
-   
-  <ul class="collapse">
-  <li><a href="#task-callables" id="toc-task-callables" class="nav-link active" data-scroll-target="#task-callables">Task callables</a></li>
-  <li><a href="#outcomes" id="toc-outcomes" class="nav-link" data-scroll-target="#outcomes">Outcomes</a></li>
-  <li><a href="#waiting-on-several-tasks" id="toc-waiting-on-several-tasks" class="nav-link" data-scroll-target="#waiting-on-several-tasks">Waiting on several tasks</a></li>
-  <li><a href="#nested-tasks" id="toc-nested-tasks" class="nav-link" data-scroll-target="#nested-tasks">Nested tasks</a></li>
-  <li><a href="#a-default-pool-for-package-code" id="toc-a-default-pool-for-package-code" class="nav-link" data-scroll-target="#a-default-pool-for-package-code">A default pool for package code</a></li>
-  <li><a href="#growing-shrinking-and-joining-a-pool" id="toc-growing-shrinking-and-joining-a-pool" class="nav-link" data-scroll-target="#growing-shrinking-and-joining-a-pool">Growing, shrinking, and joining a pool</a></li>
-  <li><a href="#observing-a-pool" id="toc-observing-a-pool" class="nav-link" data-scroll-target="#observing-a-pool">Observing a pool</a></li>
-  <li><a href="#concurrent.futures-interop" id="toc-concurrent.futures-interop" class="nav-link" data-scroll-target="#concurrent.futures-interop">concurrent.futures interop</a></li>
-  <li><a href="#sizing-a-pool" id="toc-sizing-a-pool" class="nav-link" data-scroll-target="#sizing-a-pool">Sizing a pool</a></li>
-  </ul>
-</nav>
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
+        
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title d-none d-lg-block">Task pools</h1>
+<h1 class="title"><span class="doc-object-name doc-function doc-label doc-label-method">Pool.starmap()</span></h1>
 </div>
 
 
@@ -277,162 +734,38 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them. Workers claim tasks from per-submitter injection rings and steal work from each other, so the load balances itself. A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.</p>
-<div id="2fab4adb" class="cell" data-execution_count="1">
-<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
-<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="1">
-<pre><code>65536</code></pre>
+<div class="doc-subject">
+<p>Map <code>fn</code> over <code>x</code>, unpacking each element as the call’s</p>
 </div>
+<div class="doc-usage-source">
+<p>Usage</p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L693-L743" target="_blank" rel="noopener">Source</a></p>
 </div>
-<p><code>pool.submit()</code> returns a <a href="../reference/Task.html#pymizu.Task" class="gdls-link gdls-code">Task</a> handle immediately; <code>task.collect()</code> waits for the result. The pool is a context manager: leaving the block stops it. <code>pool.stop()</code> cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared memory. The pool’s lifetime is bound to the creating process — dropping the handle shuts the pool down without the wait.</p>
-<section id="task-callables" class="level1">
-<h1>Task callables</h1>
-<p>A task callable travels by pickle. With the standard pickle it must be an importable reference, as with <code>multiprocessing</code>. Installing cloudpickle lifts that restriction. Task arguments follow the same rules as <a href="../user-guide/channels.html#what-crosses-a-channel">channel values</a>. A buffer-protocol argument past the zero-copy floor (a fixed size threshold) arrives as a read-only view over the shared pages, not a writable copy.</p>
-</section>
-<section id="outcomes" class="level1">
-<h1>Outcomes</h1>
-<table class="caption-top table">
-<thead>
-<tr class="header">
-<th>Outcome</th>
-<th>On collect</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td>The task raised</td>
-<td><a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a>, with <code>remote_type</code> and <code>remote_traceback</code></td>
-</tr>
-<tr class="even">
-<td>The task was cancelled before it ran</td>
-<td><a href="../reference/CancelledError.html#pymizu.CancelledError" class="gdls-link gdls-code">pymizu.CancelledError</a></td>
-</tr>
-<tr class="odd">
-<td>The executing worker died</td>
-<td><a href="../reference/WorkerDiedError.html#pymizu.WorkerDiedError" class="gdls-link gdls-code">pymizu.WorkerDiedError</a>, with <code>slot</code> and <code>pid</code></td>
-</tr>
-<tr class="even">
-<td>The collect timeout expired</td>
-<td>the <code>pymizu.TIMEOUT</code> sentinel</td>
-</tr>
-</tbody>
-</table>
-<p>A task error crosses as a plain description of type, message, and traceback — never a pickled exception object. A worker’s death is detected at OS notification latency, with no heartbeats or polling. A dead worker fails exactly the tasks it had claimed. The surviving workers take over the rest of its queue.</p>
-<p><code>task.cancel()</code> withdraws a task. A task still queued is skipped. A task already running completes, and its result is discarded. Cancellation never interrupts executing code.</p>
-<p>Submission itself can fail: <a href="../reference/SubmitTimeoutError.html#pymizu.SubmitTimeoutError" class="gdls-link gdls-code">SubmitTimeoutError</a> when the submit queue stays full past <code>timeout</code>, <a href="../reference/SlotsExhaustedError.html#pymizu.SlotsExhaustedError" class="gdls-link gdls-code">SlotsExhaustedError</a> when too many tasks are outstanding and uncollected, <a href="../reference/StoppedError.html#pymizu.StoppedError" class="gdls-link gdls-code">StoppedError</a> on a stopped pool.</p>
-</section>
-<section id="waiting-on-several-tasks" class="level1">
-<h1>Waiting on several tasks</h1>
-<p><code>pool.collect_any()</code> waits on a list of task handles and returns <code>(index, value)</code> for the first to reach a terminal state — the other handles stay collectible. <code>pool.collect_all()</code> returns every value in input order once all are terminal. Both take one overall <code>timeout</code> and return the <code>TIMEOUT</code> sentinel on expiry, consuming nothing:</p>
-<div id="f4292c0a" class="cell" data-execution_count="2">
-<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> time</span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(time.sleep, <span class="fl">0.5</span>), pool.submit(<span class="bu">len</span>, <span class="st">"pymizu"</span>)]</span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    first <span class="op">=</span> pool.collect_any(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>first</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="2">
-<pre><code>(1, 6)</code></pre>
+<div class="doc-signature doc-Kind.FUNCTION">
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">starmap</span>(</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">fn</span>,</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="va">x</span>,</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="va">args</span><span class="op">=</span>(),</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="va">kwargs</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="va">n_chunks</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="va">seed</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="va">timeout</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="va">template</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="va">collect</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="va">stream</span><span class="op">=</span><span class="cn-bool">False</span>,</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
+<div class="doc-text">
+<p>positional arguments: <code>fn(*element, *args, **kwargs)</code>.</p>
+<p>The <code>multiprocessing.Pool.starmap</code> convention; for the multi-iterable shape of <code>concurrent.futures.Executor.map</code>, zip first: <code>pool.starmap(fn, zip(xs, ys))</code>. Elements must be iterables (a 2-D buffer’s rows qualify; a 1-D buffer’s scalars do not). A :class:<a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec cannot starmap: element unpacking is Python-only. Everything else — seeding, templates, streaming, the error taxonomy — is exactly :meth:<a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a>’s.</p>
 </div>
-<div id="f9e298d8" class="cell" data-execution_count="3">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> pool.collect_all(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>rest</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="3">
-<pre><code>[1, 2, 4, 8]</code></pre>
-</div>
-</div>
-<p><code>pool.submit_batch()</code> submits one task per zero-argument callable in a single call — bind arguments with <code>functools.partial</code>.</p>
-</section>
-<section id="nested-tasks" class="level1">
-<h1>Nested tasks</h1>
-<p>Inside a task, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a> returns the evaluating worker’s own handle. A nested submit pushes straight onto the worker’s own work-stealing deque — no ring, no wake. A worker waiting on a nested result executes other work instead of sleeping, so divide-and-conquer runs at fork/join cost and never deadlocks the pool:</p>
-<div id="74f4cd82" class="cell" data-execution_count="4">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fan_out(parts):</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pymizu.current_pool()</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    subs <span class="op">=</span> [pool.submit(<span class="bu">sum</span>, part) <span class="cf">for</span> part <span class="kw">in</span> parts]</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">sum</span>(t.collect() <span class="cf">for</span> t <span class="kw">in</span> subs)</span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>parts <span class="op">=</span> [<span class="bu">range</span>(<span class="dv">0</span>, <span class="dv">250</span>), <span class="bu">range</span>(<span class="dv">250</span>, <span class="dv">500</span>), <span class="bu">range</span>(<span class="dv">500</span>, <span class="dv">750</span>), <span class="bu">range</span>(<span class="dv">750</span>, <span class="dv">1000</span>)]</span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>    total <span class="op">=</span> pool.submit(fan_out, parts).collect()</span>
-<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>total</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="4">
-<pre><code>499500</code></pre>
-</div>
-</div>
-<p>(This example needs cloudpickle: <code>fan_out</code> is not an importable reference.)</p>
-</section>
-<section id="a-default-pool-for-package-code" class="level1">
-<h1>A default pool for package code</h1>
-<p>Package code can read a process-wide default pool with <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">pymizu.default_pool()</a>. <code>pymizu.set_default_pool(pool)</code> sets it — <code>None</code> clears it — and returns the previous default, so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted. <code>pymizu.using_pool(pool)</code> scopes the default to a with block, restoring the previous default on exit, including on exception.</p>
-<p>Resolve an optional pool in this order: an explicit <code>pool</code> argument, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a> inside a task, <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then your own fallback — sequential execution or an error. The default never overrides <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a>: inside a task the worker’s own handle wins, so nested submission is never shadowed. Setting a default checks the type only — a stopped pool is accepted and fails at use time — and handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link gdls-code">Pool.attach()</a> are valid defaults.</p>
-<div id="3d9e56a6" class="cell" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> run(x, pool<span class="op">=</span><span class="va">None</span>):</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pool <span class="kw">or</span> pymizu.current_pool() <span class="kw">or</span> pymizu.default_pool()</span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> pool <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">"no pool: pass one, or set a default"</span>)</span>
-<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> pool.submit(<span class="bu">pow</span>, x, <span class="dv">2</span>).collect(timeout<span class="op">=</span><span class="dv">30</span>)</span>
-<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
-<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    old <span class="op">=</span> pymizu.set_default_pool(pool)</span>
-<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>    squared <span class="op">=</span> run(<span class="dv">21</span>)</span>
-<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>    pymizu.set_default_pool(old)</span>
-<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>squared</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="5">
-<pre><code>441</code></pre>
-</div>
-</div>
-</section>
-<section id="growing-shrinking-and-joining-a-pool" class="level1">
-<h1>Growing, shrinking, and joining a pool</h1>
-<p>A pool can grow and shrink while it runs. <code>pool.spawn_workers(n)</code> adds workers, up to the <code>max_workers</code> limit set at create. <code>pool.retire(slot)</code> asks a worker to exit cleanly: it finishes its current task, and the remaining workers take over anything still queued to it.</p>
-<p>Other processes join a running pool as submitters with <code>Pool.attach(token)</code> — the token is <code>pool.token</code> on the creator — and submit and collect exactly as the creator does.</p>
-</section>
-<section id="observing-a-pool" class="level1">
-<h1>Observing a pool</h1>
-<p>Four read-only tools watch a running pool without disturbing it:</p>
-<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>pool.status()   <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>pool.stats()    <span class="co"># cumulative counters since each participant joined</span></span>
-<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>pool.dump()     <span class="co"># every slot in full detail — the first tool when a pool hangs</span></span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>pool.trace(fn)  <span class="co"># fn(event, id) at each task lifecycle event; None removes it</span></span></code></pre></div>
-</section>
-<section id="concurrent.futures-interop" class="level1">
-<h1>concurrent.futures interop</h1>
-<p><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">pymizu.PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface, so code written against <code>ProcessPoolExecutor</code> drops in: <code>submit</code> returns real <code>concurrent.futures.Future</code> objects, and <code>wait</code> / <code>as_completed</code> / <code>asyncio.wrap_future</code> / the base <code>Executor.map</code> all work unchanged.</p>
-<div id="9273c88a" class="cell" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
-<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
-<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="6">
-<pre><code>[1, 2, 4, 8]</code></pre>
-</div>
-</div>
-<p>Wrap an existing pool with <code>PoolExecutor(pool)</code> — its lifetime then stays with its owner; <code>PoolExecutor.create(workers, **pool_kwargs)</code> spawns an owned pool that <code>shutdown</code> stops. A task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a>, and cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task.cancel" class="gdls-link gdls-code">Task.cancel</a>. For bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a> remains the faster path — the executor’s <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> runs one task per element.</p>
-</section>
-<section id="sizing-a-pool" class="level1">
-<h1>Sizing a pool</h1>
-<p><a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> sizing options: <code>max_workers</code> (the worker limit), <code>max_submitters</code>, <code>injection_cap</code> (each submitter’s injection ring), <code>per_worker_cap</code> (each worker’s deque), <code>result_slots</code> (outstanding uncollected tasks per submitter), and <code>slot_size</code> (bytes per queue entry and result slot — a payload past the inline budget travels in a fresh shared-memory region).</p>
 
 
-</section>
 
-</main> <!-- /main -->
+</main>
+<hr style="padding: 0; margin: 0;">
+ <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
     const icon = "";
@@ -771,18 +1104,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     }
   });
   </script>
-<nav class="page-navigation">
-  <div class="nav-page nav-page-previous">
-      <a href="../user-guide/channels.html" class="pagination-link" aria-label="Channels">
-        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Channels</span>
-      </a>          
-  </div>
-  <div class="nav-page nav-page-next">
-      <a href="../user-guide/map.html" class="pagination-link" aria-label="Parallel map">
-        <span class="nav-page-text">Parallel map</span> <i class="bi bi-arrow-right-short"></i>
-      </a>
-  </div>
-</nav>
 </div> <!-- /content -->
 <footer class="footer">
   <div class="nav-footer">

@@ -244,6 +244,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
    
   <ul class="collapse">
   <li><a href="#scheduling" id="toc-scheduling" class="nav-link active" data-scroll-target="#scheduling">Scheduling</a></li>
+  <li><a href="#unpacked-elements-starmap" id="toc-unpacked-elements-starmap" class="nav-link" data-scroll-target="#unpacked-elements-starmap">Unpacked elements (starmap)</a></li>
   <li><a href="#reproducible-randomness" id="toc-reproducible-randomness" class="nav-link" data-scroll-target="#reproducible-randomness">Reproducible randomness</a></li>
   <li><a href="#templates" id="toc-templates" class="nav-link" data-scroll-target="#templates">Templates</a></li>
   <li><a href="#streaming-maps" id="toc-streaming-maps" class="nav-link" data-scroll-target="#streaming-maps">Streaming maps</a></li>
@@ -275,7 +276,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the results as a list in input order. It is not a loop over <code>pool.submit()</code>. The function, its constant <code>args=</code>/<code>kwargs=</code>, and the data are written to shared memory once, and one <em>runner</em> task per worker divides up the elements:</p>
-<div id="b83b4ece" class="cell" data-execution_count="1">
+<div id="445c49aa" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -288,9 +289,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <section id="scheduling" class="level1">
 <h1>Scheduling</h1>
-<p>Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap <code>fn</code> runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. <code>chunks=</code> sets the batch size directly.</p>
+<p>Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap <code>fn</code> runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. <code>n_chunks=</code> sets the batch size directly.</p>
 <p>A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes. Each worker views the same array in shared memory and reads its elements directly — <code>x</code> is never serialized:</p>
-<div id="ed7f1277" class="cell" data-execution_count="2">
+<div id="4203fe82" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -311,33 +312,47 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 </div>
 </section>
+<section id="unpacked-elements-starmap" class="level1">
+<h1>Unpacked elements (starmap)</h1>
+<p><code>pool.starmap(fn, x)</code> unpacks each element of <code>x</code> as the call’s positional arguments: <code>fn(*element, *args, **kwargs)</code>. This is the <code>multiprocessing.Pool.starmap</code> convention:</p>
+<div id="36db6622" class="cell" data-execution_count="3">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.starmap(<span class="bu">pow</span>, [(<span class="dv">2</span>, <span class="dv">10</span>), (<span class="dv">3</span>, <span class="dv">3</span>)])</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="3">
+<pre><code>[1024, 27]</code></pre>
+</div>
+</div>
+<p>For the multi-iterable shape of <code>concurrent.futures.Executor.map</code>, zip the iterables first: <code>pool.starmap(fn, zip(xs, ys))</code>. Starmap needs Python workers: a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec raises <code>TypeError</code>. Everything else — seeding, templates, streaming, the outcome taxonomy — is <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a>’s.</p>
+</section>
 <section id="reproducible-randomness" class="level1">
 <h1>Reproducible randomness</h1>
 <p><code>seed=</code> (an int or bytes) gives every element its own deterministic stream of the stdlib <code>random</code> module — element <code>i</code> is seeded from SHA-256 of the seed and <code>i</code>. Results are identical for any chunking, worker count, or steal order:</p>
-<div id="d45a3789" class="cell" data-execution_count="3">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> random</span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw(i):</span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> random.random()</span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    a <span class="op">=</span> pool.<span class="bu">map</span>(draw, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>)</span>
-<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> pool.<span class="bu">map</span>(draw, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>, chunks<span class="op">=</span><span class="dv">10</span>)</span>
-<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(a <span class="op">==</span> b)</span></code></pre></div>
+<div id="b7fb6dcb" class="cell" data-execution_count="4">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> random</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw(i):</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> random.random()</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    a <span class="op">=</span> pool.<span class="bu">map</span>(draw, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>)</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> pool.<span class="bu">map</span>(draw, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>, n_chunks<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(a <span class="op">==</span> b)</span></code></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>True</code></pre>
 </div>
 </div>
 <p>Pass <code>seed=(seed, offset)</code> to shift every element’s stream by <code>offset</code> positions, for maps split across runs or processes.</p>
 <p><code>seed=</code> covers the stdlib <code>random</code> module only. A task drawing from numpy calls <a href="../reference/current_rng.html#pymizu.current_rng" class="gdls-link gdls-code">pymizu.current_rng()</a> inside the task — the element’s own <code>numpy.random.Generator</code>, derived from the same seed and memoized per element:</p>
-<div id="25a0c951" class="cell" data-execution_count="4">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw_np(i):</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> pymizu.current_rng().random()</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    a <span class="op">=</span> pool.<span class="bu">map</span>(draw_np, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>)</span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> pool.<span class="bu">map</span>(draw_np, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>, chunks<span class="op">=</span><span class="dv">10</span>)</span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(a <span class="op">==</span> b)</span></code></pre></div>
+<div id="4cff248d" class="cell" data-execution_count="5">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw_np(i):</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> pymizu.current_rng().random()</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    a <span class="op">=</span> pool.<span class="bu">map</span>(draw_np, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>)</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> pool.<span class="bu">map</span>(draw_np, <span class="bu">range</span>(<span class="dv">100</span>), seed<span class="op">=</span><span class="dv">123</span>, n_chunks<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(a <span class="op">==</span> b)</span></code></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>True</code></pre>
 </div>
@@ -347,14 +362,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="templates" class="level1">
 <h1>Templates</h1>
 <p>A <code>template=</code> exemplar buffer (for example <code>np.empty(m, dtype=...)</code>) declares that every <code>fn</code> result is <code>m</code> values of that dtype. Workers write their results straight into a shared <code>n x m</code> output area, so each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer — or, when <code>m == 1</code>, a plain Python scalar:</p>
-<div id="7657cc6d" class="cell" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(math.log1p, [<span class="fl">1.0</span>, <span class="fl">2.0</span>, <span class="fl">3.0</span>], template<span class="op">=</span>np.empty(<span class="dv">1</span>))</span>
-<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="5">
+<div id="575ba8aa" class="cell" data-execution_count="6">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(math.log1p, [<span class="fl">1.0</span>, <span class="fl">2.0</span>, <span class="fl">3.0</span>], template<span class="op">=</span>np.empty(<span class="dv">1</span>))</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="6">
 <pre><code>array([0.69314718, 1.09861229, 1.38629436])</code></pre>
 </div>
 </div>
@@ -362,33 +377,32 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="streaming-maps" class="level1">
 <h1>Streaming maps</h1>
-<p>With <code>stream=True</code>, the map never stages the whole of <code>x</code> into shared memory: it streams slices of <code>x</code> to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most <code>min(chunks, 2 * live workers, free result slots)</code> outstanding tasks, so shared-memory residency is bounded by <code>window x slice</code> instead of <code>sizeof(x)</code>. The chunk count defaults to <code>min(len(x), 32 * live workers)</code> and <code>chunks=</code> overrides it outright.</p>
-<div id="9364ab8d" class="cell" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>), stream<span class="op">=</span><span class="va">True</span>)</span>
-<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="6">
+<p>With <code>stream=True</code>, the map never stages the whole of <code>x</code> into shared memory: it streams slices of <code>x</code> to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most <code>min(n_chunks, 2 * live workers, free result slots)</code> outstanding tasks, so shared-memory residency is bounded by <code>window x slice</code> instead of <code>sizeof(x)</code>. The chunk count defaults to <code>min(len(x), 32 * live workers)</code> and <code>n_chunks=</code> overrides it outright.</p>
+<div id="ea17b343" class="cell" data-execution_count="7">
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>), stream<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="7">
 <pre><code>[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]</code></pre>
 </div>
 </div>
-<p>Everything else — ordering, <code>template=</code> and <code>collect=</code>, <code>seed=</code> invariance, the error taxonomy — is exactly the non-streaming map’s. Two trade-offs come with fixed chunks: the adaptive batch sizing is lost (raise <code>chunks=</code> to mitigate skew), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit’s serialization rather than the raw section’s zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec as <code>fn</code> raises <code>TypeError</code>.</p>
+<p>Everything else — ordering, <code>template=</code> and <code>collect=</code>, <code>seed=</code> invariance, the error taxonomy — is exactly the non-streaming map’s. Two trade-offs come with fixed chunks: the adaptive batch sizing is lost (raise <code>n_chunks=</code> to mitigate skew), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit’s serialization rather than the raw section’s zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec as <code>fn</code> raises <code>TypeError</code>.</p>
 </section>
 <section id="prepared-maps" class="level1">
 <h1>Prepared maps</h1>
-<p><code>pool.map_prepare()</code> prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each <code>pool.map_run()</code> then costs only the task submissions and the collection, and reuses each worker’s cached map context:</p>
-<div id="93a5b202" class="cell" data-execution_count="7">
-<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> pool.map_prepare(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pool.map_run(m))</span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pool.map_run(m))</span>
-<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    m.close()</span></code></pre></div>
+<p><code>pool.map_prepare()</code> prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each <code>m.run()</code> then costs only the task submissions and the collection, and reuses each worker’s cached map context:</p>
+<div id="d5a7f4e5" class="cell" data-execution_count="8">
+<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> pool.map_prepare(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>)) <span class="im">as</span> m:</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span>(m.run())</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span>(m.run())</span></code></pre></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]</code></pre>
 </div>
 </div>
-<p><code>map_run(m, x=...)</code> replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps <code>x</code> submitter-side, so a replacement of any shape simply re-slices; only a length change under <code>template=</code> uses fresh shared memory. After a run collected with <code>collect="view"</code>, the next run uses fresh shared memory, because the previous output area belongs to the returned view.</p>
+<p><code>m.run(x=...)</code> replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps <code>x</code> submitter-side, so a replacement of any shape simply re-slices; only a length change under <code>template=</code> uses fresh shared memory. After a run collected with <code>collect="view"</code>, the next run uses fresh shared memory, because the previous output area belongs to the returned view.</p>
 </section>
 <section id="outcomes" class="level1">
 <h1>Outcomes</h1>

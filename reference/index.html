@@ -277,6 +277,12 @@ ul.task-list li input[type="checkbox"] {
  <span class="menu-text">Channel.__exit__</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.__iter__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.__iter__</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -295,6 +301,18 @@ ul.task-list li input[type="checkbox"] {
   <div class="sidebar-item-container"> 
   <a href="../reference/Task.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Task</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/PreparedMap.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">PreparedMap</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/PoolExecutor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">PoolExecutor</span></a>
   </div>
 </li>
       </ul>
@@ -355,14 +373,14 @@ ul.task-list li input[type="checkbox"] {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.map_prepare.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Pool.map_prepare</span></a>
+  <a href="../reference/Pool.starmap.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.starmap</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.map_run.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Pool.map_run</span></a>
+  <a href="../reference/Pool.map_prepare.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.map_prepare</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -381,6 +399,12 @@ ul.task-list li input[type="checkbox"] {
   <div class="sidebar-item-container"> 
   <a href="../reference/Pool.stop.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Pool.stop</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.shutdown.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.shutdown</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -509,6 +533,12 @@ ul.task-list li input[type="checkbox"] {
  <span class="menu-text">Outcomes and errors</span></a>
 </div>
       <ul id="quarto-sidebar-section-7" class="list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Sentinel.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Sentinel</span></a>
+  </div>
+</li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../reference/is_sentinel.html" class="sidebar-item-text sidebar-link">
@@ -744,6 +774,10 @@ ul.task-list li input[type="checkbox"] {
 <dd>
 
 </dd>
+<dt><a href="../reference/Channel.__iter__.html#pymizu.Channel.__iter__" class="doc-function doc-label doc-label-method">Channel.__iter__()</a></dt>
+<dd>
+<p>Iterate over received payloads until CLOSED or PEER_GONE.</p>
+</dd>
 </dl>
 </section>
 <section id="task-pools" class="level2 doc-group">
@@ -759,6 +793,14 @@ ul.task-list li input[type="checkbox"] {
 <dt><a href="../reference/Task.html#pymizu.Task" class="doc-class doc-label doc-label-class">Task</a></dt>
 <dd>
 <p>A task handle from _Pool.submit(). Collected exactly once; an uncollected handle’s finalizer releases its slot.</p>
+</dd>
+<dt><a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="doc-class doc-label doc-label-class">PreparedMap</a></dt>
+<dd>
+<p>A map staged once into a persistent region, run many times.</p>
+</dd>
+<dt><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="doc-class doc-label doc-label-class">PoolExecutor</a></dt>
+<dd>
+<p>A :class:<code>concurrent.futures.Executor</code> over a pymizu pool.</p>
 </dd>
 </dl>
 </section>
@@ -800,13 +842,13 @@ ul.task-list li input[type="checkbox"] {
 <dd>
 <p>Map <code>fn</code> over the elements of <code>x</code> on the pool; return the</p>
 </dd>
+<dt><a href="../reference/Pool.starmap.html#pymizu.Pool.starmap" class="doc-function doc-label doc-label-method">Pool.starmap()</a></dt>
+<dd>
+<p>Map <code>fn</code> over <code>x</code>, unpacking each element as the call’s</p>
+</dd>
 <dt><a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="doc-function doc-label doc-label-method">Pool.map_prepare()</a></dt>
 <dd>
-<p>Stage a map once for repeated runs; return a map handle.</p>
-</dd>
-<dt><a href="../reference/Pool.map_run.html#pymizu.Pool.map_run" class="doc-function doc-label doc-label-method">Pool.map_run()</a></dt>
-<dd>
-<p>Run a map handle from <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">map_prepare</a> once; return its results</p>
+<p>Stage a map once for repeated runs; return a :class:<a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</p>
 </dd>
 <dt><a href="../reference/Pool.retire.html#pymizu.Pool.retire" class="doc-function doc-label doc-label-method">Pool.retire()</a></dt>
 <dd>
@@ -819,6 +861,10 @@ ul.task-list li input[type="checkbox"] {
 <dt><a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="doc-function doc-label doc-label-method">Pool.stop()</a></dt>
 <dd>
 <p>Orderly shutdown (controller only): broadcast shutdown, cancel</p>
+</dd>
+<dt><a href="../reference/Pool.shutdown.html#pymizu.Pool.shutdown" class="doc-function doc-label doc-label-method">Pool.shutdown()</a></dt>
+<dd>
+<p>Alias for :meth:<a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link gdls-code">stop</a> — the <code>concurrent.futures.Executor</code></p>
 </dd>
 <dt><a href="../reference/Pool.destroy.html#pymizu.Pool.destroy" class="doc-function doc-label doc-label-method">Pool.destroy()</a></dt>
 <dd>
@@ -912,6 +958,10 @@ ul.task-list li input[type="checkbox"] {
 <p>Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.</p>
 </div>
 <dl>
+<dt><a href="../reference/Sentinel.html#pymizu.Sentinel" class="doc-class doc-label doc-label-class">Sentinel</a></dt>
+<dd>
+<p>Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.</p>
+</dd>
 <dt><a href="../reference/is_sentinel.html#pymizu.is_sentinel" class="doc-function doc-label doc-label-function">is_sentinel()</a></dt>
 <dd>
 <p>is_sentinel(x) -&gt; bool</p>
@@ -924,17 +974,17 @@ ul.task-list li input[type="checkbox"] {
 <dd>
 <p>Base class for all pymizu errors.</p>
 </dd>
-<dt><a href="../reference/ShmError.html#pymizu.ShmError" class="doc-class doc-label doc-label-class">ShmError</a></dt>
+<dt><a href="../reference/ShmError.html#pymizu.ShmError" class="doc-class doc-label doc-label-exception">ShmError</a></dt>
 <dd>
-<p>A shared-memory region operation failed.</p>
+<p>A shared-memory region operation failed. Also an OSError: the failure is at the OS layer.</p>
 </dd>
 <dt><a href="../reference/StartupError.html#pymizu.StartupError" class="doc-class doc-label doc-label-class">StartupError</a></dt>
 <dd>
 <p>A channel peer or pool worker failed to attach within the startup timeout.</p>
 </dd>
-<dt><a href="../reference/SubmitTimeoutError.html#pymizu.SubmitTimeoutError" class="doc-class doc-label doc-label-class">SubmitTimeoutError</a></dt>
+<dt><a href="../reference/SubmitTimeoutError.html#pymizu.SubmitTimeoutError" class="doc-class doc-label doc-label-exception">SubmitTimeoutError</a></dt>
 <dd>
-<p>Pool.submit() timed out waiting for injection-ring space.</p>
+<p>Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.</p>
 </dd>
 <dt><a href="../reference/SlotsExhaustedError.html#pymizu.SlotsExhaustedError" class="doc-class doc-label doc-label-class">SlotsExhaustedError</a></dt>
 <dd>

@@ -18,6 +18,7 @@ Task()
 |----|----|
 | [cancel()](#cancel) | cancel() -\> bool |
 | [collect()](#collect) | collect(timeout=None) -\> value \| sentinel |
+| [result()](#result) | result(timeout=None) -\> value \| sentinel |
 
 ------------------------------------------------------------------------
 
@@ -57,3 +58,23 @@ collect(timeout=None)
 
 
 Wait up to `timeout` seconds (None indefinitely, 0 polls) for the task's terminal state and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError. pymizu.TIMEOUT on expiry; a task is collected exactly once.
+
+
+------------------------------------------------------------------------
+
+
+### result()
+
+
+result(timeout=None) -\> value \| sentinel
+
+
+Usage
+
+
+``` python
+result(timeout=None)
+```
+
+
+Alias for collect() -- the concurrent.futures.Future spelling.

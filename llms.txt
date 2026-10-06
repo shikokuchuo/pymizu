@@ -28,12 +28,15 @@
 - [Channel.info](https://shikokuchuo.net/pymizu/reference/Channel.info.html)
 - [Channel.__enter__](https://shikokuchuo.net/pymizu/reference/Channel.__enter__.html)
 - [Channel.__exit__](https://shikokuchuo.net/pymizu/reference/Channel.__exit__.html)
+- [Channel.__iter__](https://shikokuchuo.net/pymizu/reference/Channel.__iter__.html)
 
 #### Task pools
 > A set of worker processes that divide submitted tasks among themselves.
 
 - [Pool](https://shikokuchuo.net/pymizu/reference/Pool.html): A shared-memory work-stealing task pool handle (process-private)
 - [Task](https://shikokuchuo.net/pymizu/reference/Task.html): A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
+- [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A map staged once into a persistent region, run many times
+- [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A :class:`concurrent.futures.Executor` over a pymizu pool
 
 #### Pool Methods
 > Methods for the Pool class
@@ -46,11 +49,12 @@
 - [Pool.collect_any](https://shikokuchuo.net/pymizu/reference/Pool.collect_any.html)
 - [Pool.collect_all](https://shikokuchuo.net/pymizu/reference/Pool.collect_all.html)
 - [Pool.map](https://shikokuchuo.net/pymizu/reference/Pool.map.html)
+- [Pool.starmap](https://shikokuchuo.net/pymizu/reference/Pool.starmap.html)
 - [Pool.map_prepare](https://shikokuchuo.net/pymizu/reference/Pool.map_prepare.html)
-- [Pool.map_run](https://shikokuchuo.net/pymizu/reference/Pool.map_run.html)
 - [Pool.retire](https://shikokuchuo.net/pymizu/reference/Pool.retire.html)
 - [Pool.spawn_workers](https://shikokuchuo.net/pymizu/reference/Pool.spawn_workers.html)
 - [Pool.stop](https://shikokuchuo.net/pymizu/reference/Pool.stop.html)
+- [Pool.shutdown](https://shikokuchuo.net/pymizu/reference/Pool.shutdown.html)
 - [Pool.destroy](https://shikokuchuo.net/pymizu/reference/Pool.destroy.html)
 - [Pool.status](https://shikokuchuo.net/pymizu/reference/Pool.status.html)
 - [Pool.dump](https://shikokuchuo.net/pymizu/reference/Pool.dump.html)
@@ -80,12 +84,13 @@
 #### Outcomes and errors
 > Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
 
+- [Sentinel](https://shikokuchuo.net/pymizu/reference/Sentinel.html): Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE
 - [is_sentinel](https://shikokuchuo.net/pymizu/reference/is_sentinel.html): is_sentinel(x) -> bool
 - [is_remote_error](https://shikokuchuo.net/pymizu/reference/is_remote_error.html): Test whether a received channel value is a remote error
 - [MizuError](https://shikokuchuo.net/pymizu/reference/MizuError.html): Base class for all pymizu errors
-- [ShmError](https://shikokuchuo.net/pymizu/reference/ShmError.html): A shared-memory region operation failed
+- [ShmError](https://shikokuchuo.net/pymizu/reference/ShmError.html): A shared-memory region operation failed. Also an OSError: the failure is at the OS layer
 - [StartupError](https://shikokuchuo.net/pymizu/reference/StartupError.html): A channel peer or pool worker failed to attach within the startup timeout
-- [SubmitTimeoutError](https://shikokuchuo.net/pymizu/reference/SubmitTimeoutError.html): Pool.submit() timed out waiting for injection-ring space
+- [SubmitTimeoutError](https://shikokuchuo.net/pymizu/reference/SubmitTimeoutError.html): Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError
 - [SlotsExhaustedError](https://shikokuchuo.net/pymizu/reference/SlotsExhaustedError.html): Pool.submit() found no free result slot: too many outstanding (uncollected) tasks
 - [StoppedError](https://shikokuchuo.net/pymizu/reference/StoppedError.html): The pool is stopped; no further submission is possible
 - [CancelledError](https://shikokuchuo.net/pymizu/reference/CancelledError.html): The task was cancelled before it ran

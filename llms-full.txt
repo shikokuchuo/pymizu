@@ -46,7 +46,7 @@ token
 
 The join token for the peer's attach.
 
-send(self, x: '_Any') -> '_pymizu._Sentinel | None'
+send(self, x: '_Any') -> 'Sentinel | None'
 
 Send one payload; return None, or the FULL / CLOSED /
 PEER_GONE sentinel (identity-tested). ``None`` itself is a
@@ -64,7 +64,7 @@ Receive one payload, waiting up to ``timeout`` seconds
 (None waits indefinitely); the TIMEOUT / CLOSED / PEER_GONE
 sentinel on the non-payload outcomes.
 
-recv_batch(self, n: 'int' = 256, timeout: 'float | None' = None) -> 'list[_Any] | _pymizu._Sentinel'
+recv_batch(self, n: 'int' = 256, timeout: 'float | None' = None) -> 'list[_Any] | Sentinel'
 
 Receive up to ``n`` payloads in one crossing; a list
 (possibly short or empty), or a terminal sentinel.
@@ -98,6 +98,13 @@ __enter__(self) -> 'Channel'
 
 __exit__(self, *exc: '_Any') -> 'bool'
 
+__iter__(self) -> '_Iterator[_Any]'
+
+Iterate over received payloads until CLOSED or PEER_GONE.
+
+Blocks indefinitely between payloads (``recv()`` with no
+timeout); use :meth:`recv` directly when a bound is needed.
+
 
 ## Task pools
 
@@ -122,6 +129,40 @@ installing cloudpickle lifts that transparently.
 _Task()
 
 A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
+
+PreparedMap(pool: 'pymizu.Pool', fn: '_Callable[..., _Any]', x: '_Any', *, args: '_Any' = (), kwargs: 'dict | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'None'
+
+A map staged once into a persistent region, run many times.
+
+Create with :meth:`pymizu.Pool.map_prepare`; run with :meth:`run`.
+Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word
+clear — and workers reuse their cached contexts, so a re-run pays
+neither the descriptor pickle nor the region create nor the
+worker-side re-attach. A view-collected run hands its region to the
+view; the next run restages into a fresh one (the mirror of mizu).
+Close with :meth:`close` (or a with block) to unlink the region.
+
+PoolExecutor(pool: 'pymizu.Pool', *, stop_pool: 'bool' = False) -> 'None'
+
+A :class:`concurrent.futures.Executor` over a pymizu pool.
+
+``pool`` is the pool to wrap; its lifetime stays with its owner
+unless ``stop_pool`` is set — then :meth:`shutdown` stops it.
+:meth:`create` spawns an owned pool instead. :meth:`submit` returns a
+real :class:`concurrent.futures.Future`: ``wait`` / ``as_completed``
+/ ``result(timeout)`` / ``asyncio.wrap_future`` and the stdlib base
+``Executor.map`` all work unchanged, so code written against
+``ProcessPoolExecutor`` drops in.
+
+Deltas from stdlib semantics: a task's failure surfaces as
+:class:`pymizu.TaskError` (the remote error envelope);
+``Future.running()`` is always False (futures resolve at completion);
+cancellation is advisory, mirroring :meth:`pymizu.Task.cancel` — and
+``shutdown(cancel_futures=True)`` cancels every outstanding future,
+since the pool exposes no queued-versus-running signal (a running
+task completes, but its result is discarded). ``map`` is the stdlib
+base implementation over ``submit`` — for bulk maps,
+:meth:`pymizu.Pool.map` is the faster path.
 
 
 ## Pool Methods
@@ -185,13 +226,13 @@ Ring-full past ``timeout`` ends the batch short — the returned
 handles stay valid and collectible. Use functools.partial to bind
 arguments.
 
-collect_any(self, tasks: '_Iterable[Task]', timeout: 'float | None' = None) -> 'tuple[int, _Any] | _pymizu._Sentinel'
+collect_any(self, tasks: '_Iterable[Task]', timeout: 'float | None' = None) -> 'tuple[int, _Any] | Sentinel'
 
 Wait on several tasks; return ``(index, value)`` of the first
 terminal one, or the TIMEOUT sentinel. A non-OK outcome raises
 with an ``index`` attribute (0-based).
 
-collect_all(self, tasks: '_Iterable[Task]', timeout: 'float | None' = None) -> 'list[_Any] | _pymizu._Sentinel'
+collect_all(self, tasks: '_Iterable[Task]', timeout: 'float | None' = None) -> 'list[_Any] | Sentinel'
 
 Wait until every task is terminal; return all values in input
 order. On the first non-OK outcome by position, raise with an
@@ -199,7 +240,7 @@ order. On the first non-OK outcome by position, raise with an
 consumed, the rest stay collectible. The TIMEOUT sentinel
 consumes nothing.
 
-map(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'list[_Any] | _pymizu._Sentinel | _Any'
+map(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'list[_Any] | Sentinel | _Any'
 
 Map ``fn`` over the elements of ``x`` on the pool; return the
 results as a list in input order.
@@ -210,7 +251,7 @@ small), then submits one *runner* task per live worker; runners
 self-schedule adaptively sized element batches off a shared
 cursor. A C-contiguous buffer of a supported dtype
 (float64/int32/int64/complex128/uint8) travels as bare bytes — workers
-wrap it once and index per element. ``chunks`` overrides the
+wrap it once and index per element. ``n_chunks`` overrides the
 morsel count (the scheduling granularity). ``seed`` (an int or
 bytes) derives deterministic per-element streams of the stdlib
 ``random`` module: element ``i`` runs under
@@ -261,19 +302,20 @@ With ``stream=True``, the map never stages the whole of ``x``
 into shared memory: it streams slices of ``x`` to workers as they
 take work; the return value is unchanged. Fixed x-slices ride
 ordinary chunk tasks under a sliding submit/collect window of at
-most ``min(chunks, 2 * live workers, free result slots)``
+most ``min(n_chunks, 2 * live workers, free result slots)``
 outstanding tasks, so shared-memory residency is bounded by
 ``window x slice`` instead of ``sizeof(x)`` — with the default
 chunk count (``min(len(x), 32 * live workers)``) that is roughly
-``(2 * workers) / chunks`` of the serialized ``x``. ``chunks=``
-overrides the chunk count outright (``chunks=len(x)`` is the
-mirai-style extreme of one element per task). Everything else —
+``(2 * workers) / n_chunks`` of the serialized ``x``.
+``n_chunks=`` overrides the chunk count outright
+(``n_chunks=len(x)`` is the mirai-style extreme of one element
+per task). Everything else —
 result order, ``template`` and ``collect``, ``seed`` invariance,
 the error taxonomy — is exactly the non-streaming map's.
 Fail-fast latency coarsens from about one adaptive morsel batch
-to about one chunk (the bound moves with ``chunks``), the
+to about one chunk (the bound moves with ``n_chunks``), the
 adaptive batch sizing of the morsel machinery is lost (skew
-mitigation is to raise ``chunks``), and slices cross via the
+mitigation is to raise ``n_chunks``), and slices cross via the
 serialized tiers, so per-chunk staging costs an ordinary submit's
 serialization rather than the raw section's zero-copy slicing. A
 streaming map always stages its descriptor region and needs
@@ -287,30 +329,38 @@ element ranges as ``lost`` (0-based half-open ``(lo, hi)`` pairs,
 conservative). On ``timeout`` expiry the outstanding work is
 cancelled and the TIMEOUT sentinel is returned, never raised.
 
-map_prepare(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> '_Any'
+:meth:`starmap` is the unpacking variant — ``fn(*element,
+*args, **kwargs)``, the ``multiprocessing.Pool.starmap``
+convention.
 
-Stage a map once for repeated runs; return a map handle.
+starmap(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'list[_Any] | Sentinel | _Any'
+
+Map ``fn`` over ``x``, unpacking each element as the call's
+positional arguments: ``fn(*element, *args, **kwargs)``.
+
+The ``multiprocessing.Pool.starmap`` convention; for the
+multi-iterable shape of ``concurrent.futures.Executor.map``,
+zip first: ``pool.starmap(fn, zip(xs, ys))``. Elements must be
+iterables (a 2-D buffer's rows qualify; a 1-D buffer's scalars
+do not). A :class:`pymizu.call` spec cannot starmap: element
+unpacking is Python-only. Everything else — seeding, templates,
+streaming, the error taxonomy — is exactly :meth:`map`'s.
+
+map_prepare(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'PreparedMap'
+
+Stage a map once for repeated runs; return a :class:`PreparedMap`.
 
 Takes the same arguments as ``map`` (minus ``timeout``, which is
-per-run). The descriptor pickle, the region create, and the
-worker-side attach are paid once here; each ``map_run`` re-arms in
-O(1) and reuses the workers' cached contexts. A run collected with
-``collect="view"`` hands its region to the view, so the next run
-restages into a fresh one. With ``stream=True`` the staged ``x``
-stays submitter-side, so a ``map_run`` replacement ``x`` of any
-shape simply re-slices — only a length change under ``template``
-restages (the output area is sized for the staged length). Close
-the handle (or use it as a context manager) to unlink the region.
-
-map_run(self, prepared: '_Any', x: '_Any' = None, timeout: 'float | None' = None) -> '_Any'
-
-Run a map handle from ``map_prepare`` once; return its results
-(the same shapes and outcome taxonomy as ``map``).
-
-``x`` replaces the staged data for this and later runs: a
-raw-buffer replacement of the same dtype and length swaps in
-place (a memcpy over the region, no restage); anything else
-restages transparently.
+per-run and moves to :meth:`PreparedMap.run`). The descriptor
+pickle, the region create, and the worker-side attach are paid
+once here; each ``pm.run()`` re-arms in O(1) and reuses the
+workers' cached contexts. A run collected with ``collect="view"``
+hands its region to the view, so the next run restages into a
+fresh one. With ``stream=True`` the staged ``x`` stays
+submitter-side, so a replacement ``x`` of any shape simply
+re-slices — only a length change under ``template`` restages (the
+output area is sized for the staged length). Close the handle (or
+use it as a context manager) to unlink the region.
 
 retire(self, slot: 'int') -> 'None'
 
@@ -326,6 +376,11 @@ stop(self, timeout: 'float' = 5.0) -> 'bool'
 Orderly shutdown (controller only): broadcast shutdown, cancel
 pending tasks, wait up to ``timeout`` seconds for clean worker
 exits, and unlink. Idempotent.
+
+shutdown(self, timeout: 'float' = 5.0) -> 'bool'
+
+Alias for :meth:`stop` — the ``concurrent.futures.Executor``
+spelling.
 
 destroy(self) -> 'None'
 
@@ -483,6 +538,10 @@ __reduce__(self, /)
 Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
 
 
+Sentinel()
+
+Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.
+
 is_sentinel(object, /)
 
 is_sentinel(x) -> bool
@@ -508,7 +567,7 @@ Base class for all pymizu errors.
 
 ShmError
 
-A shared-memory region operation failed.
+A shared-memory region operation failed. Also an OSError: the failure is at the OS layer.
 
 StartupError
 
@@ -516,7 +575,7 @@ A channel peer or pool worker failed to attach within the startup timeout.
 
 SubmitTimeoutError
 
-Pool.submit() timed out waiting for injection-ring space.
+Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.
 
 SlotsExhaustedError
 
@@ -1062,6 +1121,30 @@ pool.dump()     # every slot in full detail — the first tool when a pool hangs
 pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 ```
 
+## concurrent.futures interop
+
+`pymizu.PoolExecutor` adapts a pool to the stdlib
+`concurrent.futures.Executor` interface, so code written against
+`ProcessPoolExecutor` drops in: `submit` returns real
+`concurrent.futures.Future` objects, and `wait` / `as_completed` /
+`asyncio.wrap_future` / the base `Executor.map` all work unchanged.
+
+```{python}
+with pymizu.PoolExecutor.create(4) as ex:
+    futures = [ex.submit(pow, 2, i) for i in range(4)]
+    result = [f.result() for f in futures]
+
+result
+```
+
+Wrap an existing pool with `PoolExecutor(pool)` — its lifetime then stays
+with its owner; `PoolExecutor.create(workers, **pool_kwargs)` spawns an
+owned pool that `shutdown` stops.
+A task's failure surfaces as `pymizu.TaskError`, and cancellation is
+advisory, mirroring `Task.cancel`.
+For bulk maps, `Pool.map` remains the faster path — the executor's `map`
+runs one task per element.
+
 ## Sizing a pool
 
 `Pool.create()` sizing options: `max_workers` (the worker limit),
@@ -1096,7 +1179,7 @@ size adapts.
 A cheap `fn` runs in large batches at near-zero scheduling cost.
 An expensive or uneven one automatically takes smaller batches to keep the
 workers balanced.
-`chunks=` sets the batch size directly.
+`n_chunks=` sets the batch size directly.
 
 A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or
 uint8 crosses as raw bytes.
@@ -1111,6 +1194,25 @@ with pymizu.Pool.create(4) as pool:
 
 result
 ```
+
+## Unpacked elements (starmap)
+
+`pool.starmap(fn, x)` unpacks each element of `x` as the call's positional
+arguments: `fn(*element, *args, **kwargs)`.
+This is the `multiprocessing.Pool.starmap` convention:
+
+```{python}
+with pymizu.Pool.create(4) as pool:
+    result = pool.starmap(pow, [(2, 10), (3, 3)])
+
+result
+```
+
+For the multi-iterable shape of `concurrent.futures.Executor.map`, zip the
+iterables first: `pool.starmap(fn, zip(xs, ys))`.
+Starmap needs Python workers: a `pymizu.call` spec raises `TypeError`.
+Everything else — seeding, templates, streaming, the outcome taxonomy — is
+`Pool.map`'s.
 
 ## Reproducible randomness
 
@@ -1127,7 +1229,7 @@ def draw(i):
 
 with pymizu.Pool.create(4) as pool:
     a = pool.map(draw, range(100), seed=123)
-    b = pool.map(draw, range(100), seed=123, chunks=10)
+    b = pool.map(draw, range(100), seed=123, n_chunks=10)
     print(a == b)
 ```
 
@@ -1145,7 +1247,7 @@ def draw_np(i):
 
 with pymizu.Pool.create(4) as pool:
     a = pool.map(draw_np, range(100), seed=123)
-    b = pool.map(draw_np, range(100), seed=123, chunks=10)
+    b = pool.map(draw_np, range(100), seed=123, n_chunks=10)
     print(a == b)
 ```
 
@@ -1193,10 +1295,10 @@ With `stream=True`, the map never stages the whole of `x` into shared
 memory: it streams slices of `x` to workers as they take work, and the
 return value is unchanged.
 Fixed slices ride ordinary chunk tasks under a sliding submit/collect
-window of at most `min(chunks, 2 * live workers, free result slots)`
+window of at most `min(n_chunks, 2 * live workers, free result slots)`
 outstanding tasks, so shared-memory residency is bounded by
 `window x slice` instead of `sizeof(x)`.
-The chunk count defaults to `min(len(x), 32 * live workers)` and `chunks=`
+The chunk count defaults to `min(len(x), 32 * live workers)` and `n_chunks=`
 overrides it outright.
 
 ```{python}
@@ -1209,7 +1311,7 @@ result
 Everything else — ordering, `template=` and `collect=`, `seed=` invariance,
 the error taxonomy — is exactly the non-streaming map's.
 Two trade-offs come with fixed chunks: the adaptive batch sizing is lost
-(raise `chunks=` to mitigate skew), and slices cross via the serialized
+(raise `n_chunks=` to mitigate skew), and slices cross via the serialized
 tiers, so per-chunk staging costs an ordinary submit's serialization rather
 than the raw section's zero-copy slicing.
 A streaming map always stages its descriptor region and needs same-language
@@ -1219,18 +1321,17 @@ workers: a `pymizu.call` spec as `fn` raises `TypeError`.
 
 `pool.map_prepare()` prepares a map once for repeated runs: the data is
 written to shared memory once, and each worker sets up the map once.
-Each `pool.map_run()` then costs only the task submissions and the
-collection, and reuses each worker's cached map context:
+Each `m.run()` then costs only the task submissions and the collection,
+and reuses each worker's cached map context:
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
-    m = pool.map_prepare(abs, range(-5, 5))
-    print(pool.map_run(m))
-    print(pool.map_run(m))
-    m.close()
+    with pool.map_prepare(abs, range(-5, 5)) as m:
+        print(m.run())
+        print(m.run())
 ```
 
-`map_run(m, x=...)` replaces the data for that and later runs.
+`m.run(x=...)` replaces the data for that and later runs.
 A raw-buffer replacement of the same dtype and length swaps in place at
 memcpy cost.
 Any other replacement is written out fresh.

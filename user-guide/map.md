@@ -18,7 +18,7 @@ result
 
 # Scheduling
 
-Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap `fn` runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. `chunks=` sets the batch size directly.
+Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap `fn` runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. `n_chunks=` sets the batch size directly.
 
 A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes. Each worker views the same array in shared memory and reads its elements directly -- `x` is never serialized:
 
@@ -45,6 +45,25 @@ result
      np.float64(-4.0)]
 
 
+# Unpacked elements (starmap)
+
+`pool.starmap(fn, x)` unpacks each element of `x` as the call's positional arguments: `fn(*element, *args, **kwargs)`. This is the `multiprocessing.Pool.starmap` convention:
+
+
+``` python
+with pymizu.Pool.create(4) as pool:
+    result = pool.starmap(pow, [(2, 10), (3, 3)])
+
+result
+```
+
+
+    [1024, 27]
+
+
+For the multi-iterable shape of `concurrent.futures.Executor.map`, zip the iterables first: `pool.starmap(fn, zip(xs, ys))`. Starmap needs Python workers: a [pymizu.call](../reference/call.md#pymizu.call) spec raises `TypeError`. Everything else -- seeding, templates, streaming, the outcome taxonomy -- is [Pool.map](../reference/Pool.map.md#pymizu.Pool.map)'s.
+
+
 # Reproducible randomness
 
 `seed=` (an int or bytes) gives every element its own deterministic stream of the stdlib `random` module -- element `i` is seeded from SHA-256 of the seed and `i`. Results are identical for any chunking, worker count, or steal order:
@@ -58,7 +77,7 @@ def draw(i):
 
 with pymizu.Pool.create(4) as pool:
     a = pool.map(draw, range(100), seed=123)
-    b = pool.map(draw, range(100), seed=123, chunks=10)
+    b = pool.map(draw, range(100), seed=123, n_chunks=10)
     print(a == b)
 ```
 
@@ -77,7 +96,7 @@ def draw_np(i):
 
 with pymizu.Pool.create(4) as pool:
     a = pool.map(draw_np, range(100), seed=123)
-    b = pool.map(draw_np, range(100), seed=123, chunks=10)
+    b = pool.map(draw_np, range(100), seed=123, n_chunks=10)
     print(a == b)
 ```
 
@@ -111,7 +130,7 @@ With a template, `collect="copy"` (the default) returns the output as one numpy 
 
 # Streaming maps
 
-With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most `min(chunks, 2 * live workers, free result slots)` outstanding tasks, so shared-memory residency is bounded by `window x slice` instead of `sizeof(x)`. The chunk count defaults to `min(len(x), 32 * live workers)` and `chunks=` overrides it outright.
+With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most `min(n_chunks, 2 * live workers, free result slots)` outstanding tasks, so shared-memory residency is bounded by `window x slice` instead of `sizeof(x)`. The chunk count defaults to `min(len(x), 32 * live workers)` and `n_chunks=` overrides it outright.
 
 
 ``` python
@@ -125,20 +144,19 @@ result
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
 
-Everything else -- ordering, `template=` and `collect=`, `seed=` invariance, the error taxonomy -- is exactly the non-streaming map's. Two trade-offs come with fixed chunks: the adaptive batch sizing is lost (raise `chunks=` to mitigate skew), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` raises `TypeError`.
+Everything else -- ordering, `template=` and `collect=`, `seed=` invariance, the error taxonomy -- is exactly the non-streaming map's. Two trade-offs come with fixed chunks: the adaptive batch sizing is lost (raise `n_chunks=` to mitigate skew), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` raises `TypeError`.
 
 
 # Prepared maps
 
-`pool.map_prepare()` prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each `pool.map_run()` then costs only the task submissions and the collection, and reuses each worker's cached map context:
+`pool.map_prepare()` prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each `m.run()` then costs only the task submissions and the collection, and reuses each worker's cached map context:
 
 
 ``` python
 with pymizu.Pool.create(4) as pool:
-    m = pool.map_prepare(abs, range(-5, 5))
-    print(pool.map_run(m))
-    print(pool.map_run(m))
-    m.close()
+    with pool.map_prepare(abs, range(-5, 5)) as m:
+        print(m.run())
+        print(m.run())
 ```
 
 
@@ -146,7 +164,7 @@ with pymizu.Pool.create(4) as pool:
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
 
-`map_run(m, x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape simply re-slices; only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
+`m.run(x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape simply re-slices; only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
 
 
 # Outcomes

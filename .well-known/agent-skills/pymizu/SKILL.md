@@ -42,6 +42,7 @@ Methods for the Channel class
 - `Channel.info`
 - `Channel.__enter__`
 - `Channel.__exit__`
+- `Channel.__iter__`
 
 ### Task pools
 
@@ -49,6 +50,8 @@ A set of worker processes that divide submitted tasks among themselves.
 
 - `Pool`: A shared-memory work-stealing task pool handle (process-private)
 - `Task`: A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
+- `PreparedMap`: A map staged once into a persistent region, run many times
+- `PoolExecutor`: A :class:`concurrent.futures.Executor` over a pymizu pool
 
 ### Pool Methods
 
@@ -62,11 +65,12 @@ Methods for the Pool class
 - `Pool.collect_any`
 - `Pool.collect_all`
 - `Pool.map`
+- `Pool.starmap`
 - `Pool.map_prepare`
-- `Pool.map_run`
 - `Pool.retire`
 - `Pool.spawn_workers`
 - `Pool.stop`
+- `Pool.shutdown`
 - `Pool.destroy`
 - `Pool.status`
 - `Pool.dump`
@@ -99,12 +103,13 @@ Methods for the Frame class
 
 Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
 
+- `Sentinel`: Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE
 - `is_sentinel`: is_sentinel(x) -> bool
 - `is_remote_error`: Test whether a received channel value is a remote error
 - `MizuError`: Base class for all pymizu errors
-- `ShmError`: A shared-memory region operation failed
+- `ShmError`: A shared-memory region operation failed. Also an OSError: the failure is at the OS layer
 - `StartupError`: A channel peer or pool worker failed to attach within the startup timeout
-- `SubmitTimeoutError`: Pool.submit() timed out waiting for injection-ring space
+- `SubmitTimeoutError`: Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError
 - `SlotsExhaustedError`: Pool.submit() found no free result slot: too many outstanding (uncollected) tasks
 - `StoppedError`: The pool is stopped; no further submission is possible
 - `CancelledError`: The task was cancelled before it ran

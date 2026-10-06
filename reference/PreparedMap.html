@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Pool.map_run() | pymizu 水</title>
+<title>PreparedMap | pymizu 水</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -119,9 +119,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.65">
 
 
-  <link rel="alternate" type="text/markdown" href="Pool.map_run.md">
-  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/Pool.map_run.html">
-  <meta name="description" content="Run a map handle from map_prepare once; return its results">
+  <link rel="alternate" type="text/markdown" href="PreparedMap.md">
+  <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/PreparedMap.html">
+  <meta name="description" content="A map staged once into a persistent region, run many times.">
   <script type="application/ld+json">
 [
   {
@@ -140,23 +140,23 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    "name": "Pool.map_run - pymizu 水",
+    "name": "PreparedMap - pymizu 水",
     "isPartOf": {
       "@type": "WebSite",
       "name": "pymizu 水"
     },
-    "url": "https://shikokuchuo.net/pymizu/reference/Pool.map_run.html"
+    "url": "https://shikokuchuo.net/pymizu/reference/PreparedMap.html"
   }
 ]
 </script>
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Pool.map_run() | pymizu 水">
-  <meta property="og:description" content="Run a map handle from map_prepare once; return its results">
-  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/Pool.map_run.html">
+  <meta property="og:title" content="PreparedMap | pymizu 水">
+  <meta property="og:description" content="A map staged once into a persistent region, run many times.">
+  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/PreparedMap.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Pool.map_run() | pymizu 水">
-  <meta name="twitter:description" content="Run a map handle from map_prepare once; return its results">
+  <meta name="twitter:title" content="PreparedMap | pymizu 水">
+  <meta name="twitter:description" content="A map staged once into a persistent region, run many times.">
 </head>
 
 <body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
@@ -202,7 +202,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">Pool.map_run()</span></h5>
+        <h5 class="quarto-secondary-nav-title no-breadcrumbs gd-ref-title"><span class="gd-ref-title-prefix">API</span><span class="gd-ref-title-sep">/</span><span class="gd-ref-title-name">close()</span></h5>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
     </div>
@@ -324,6 +324,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="menu-text">Channel.__exit__</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Channel.__iter__.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Channel.__iter__</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -342,6 +348,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../reference/Task.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Task</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/PreparedMap.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">PreparedMap</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/PoolExecutor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">PoolExecutor</span></a>
   </div>
 </li>
       </ul>
@@ -402,14 +420,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.map_prepare.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Pool.map_prepare</span></a>
+  <a href="../reference/Pool.starmap.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.starmap</span></a>
   </div>
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.map_run.html" class="sidebar-item-text sidebar-link active">
- <span class="menu-text">Pool.map_run</span></a>
+  <a href="../reference/Pool.map_prepare.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.map_prepare</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -428,6 +446,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../reference/Pool.stop.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Pool.stop</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/Pool.shutdown.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Pool.shutdown</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -558,6 +582,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <ul id="quarto-sidebar-section-7" class="list-unstyled sidebar-section depth1 show">  
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../reference/Sentinel.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Sentinel</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../reference/is_sentinel.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">is_sentinel</span></a>
   </div>
@@ -679,15 +709,25 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#methods" id="toc-methods" class="nav-link active" data-scroll-target="#methods">Methods</a>
+  <ul class="collapse">
+  <li><a href="#close" id="toc-close" class="nav-link" data-scroll-target="#close"><span class="doc-object-name doc-function doc-label doc-label-method">close()</span></a></li>
+  <li><a href="#run" id="toc-run" class="nav-link" data-scroll-target="#run"><span class="doc-object-name doc-function doc-label doc-label-method">run()</span></a></li>
+  </ul></li>
+  </ul>
+</nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title"><span class="doc-object-name doc-function doc-label doc-label-method">Pool.map_run()</span></h1>
+<h1 class="title"><span class="doc-object-name doc-class doc-label doc-label-class">PreparedMap</span></h1>
 </div>
 
 
@@ -705,25 +745,103 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Run a map handle from <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">map_prepare</a> once; return its results</p>
+<p>A map staged once into a persistent region, run many times.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L717-L736" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1389-L1696" target="_blank" rel="noopener">Source</a></p>
 </div>
-<div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">map_run</span>(</span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">prepared</span>,</span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="va">x</span><span class="op">=</span><span class="cn-none">None</span>,</span>
-<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="va">timeout</span><span class="op">=</span><span class="cn-none">None</span>,</span>
-<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="doc-signature doc-Kind.CLASS">
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">PreparedMap</span>(</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">pool</span>,</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="va">fn</span>,</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="va">x</span>,</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="va">args</span><span class="op">=</span>(),</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="va">kwargs</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="va">n_chunks</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="va">seed</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="va">template</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="va">collect</span><span class="op">=</span><span class="cn-none">None</span>,</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="va">stream</span><span class="op">=</span><span class="cn-bool">False</span>,</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>(the same shapes and outcome taxonomy as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a>).</p>
-<p><code>x</code> replaces the staged data for this and later runs: a raw-buffer replacement of the same dtype and length swaps in place (a memcpy over the region, no restage); anything else restages transparently.</p>
+<p>Create with :meth:<a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">pymizu.Pool.map_prepare</a>; run with :meth:<a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link gdls-code">run</a>. Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word clear — and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with :meth:<code>close</code> (or a with block) to unlink the region.</p>
+</div>
+<section id="methods" class="level2 doc-methods">
+<h2 class="doc-methods anchored" data-anchor-id="methods">Methods</h2>
+<table class="gd-summary-table">
+<thead>
+<tr>
+<th>
+Name
+</th>
+<th>
+Description
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="#close" class="doc-function doc-label doc-label-method">close()</a>
+</td>
+<td>
+Unlink the staged region (idempotent; the GC backstop is the
+</td>
+</tr>
+<tr>
+<td>
+<a href="#run" class="doc-function doc-label doc-label-method">run()</a>
+</td>
+<td>
+Run the prepared map once; return its results (the same shapes
+</td>
+</tr>
+</tbody>
+</table>
+<hr style="border: none; border-top: 2px solid #c5c8cd; margin: 1.5rem 0 1rem 0;">
+<section id="close" class="level3">
+<h3 class="anchored" data-anchor-id="close"><span class="doc-object-name doc-function doc-label doc-label-method">close()</span></h3>
+<div class="doc-subject">
+<p>Unlink the staged region (idempotent; the GC backstop is the</p>
+</div>
+<div class="doc-usage-source">
+<p>Usage</p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1680-L1686" target="_blank" rel="noopener">Source</a></p>
+</div>
+<div class="doc-signature doc-Kind.FUNCTION">
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>close()</span></code></pre></div>
+</div>
+<div class="doc-text">
+<p>capsule destructor).</p>
+</div>
+</section>
+<hr style="border: none; border-top: 2px dotted #b0b4ba; margin: 1.5rem 0 1rem 0;">
+<section id="run" class="level3">
+<h3 class="anchored" data-anchor-id="run"><span class="doc-object-name doc-function doc-label doc-label-method">run()</span></h3>
+<div class="doc-subject">
+<p>Run the prepared map once; return its results (the same shapes</p>
+</div>
+<div class="doc-usage-source">
+<p>Usage</p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1537-L1622" target="_blank" rel="noopener">Source</a></p>
+</div>
+<div class="doc-signature doc-Kind.FUNCTION">
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>run(</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    x<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    timeout<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<div class="doc-text">
+<p>and outcome taxonomy as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a>).</p>
+<p><code>x</code> replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region’s x section — the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.</p>
 </div>
 
 
+</section>
+</section>
 
 </main>
 <hr style="padding: 0; margin: 0;">

@@ -146,6 +146,26 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 ```
 
 
+# concurrent.futures interop
+
+[pymizu.PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects, and `wait` / `as_completed` / `asyncio.wrap_future` / the base `Executor.map` all work unchanged.
+
+
+``` python
+with pymizu.PoolExecutor.create(4) as ex:
+    futures = [ex.submit(pow, 2, i) for i in range(4)]
+    result = [f.result() for f in futures]
+
+result
+```
+
+
+    [1, 2, 4, 8]
+
+
+Wrap an existing pool with `PoolExecutor(pool)` -- its lifetime then stays with its owner; `PoolExecutor.create(workers, **pool_kwargs)` spawns an owned pool that `shutdown` stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation is advisory, mirroring [Task.cancel](../reference/Task.md#pymizu.Task.cancel). For bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path -- the executor's [map](../reference/Pool.map.md#pymizu.Pool.map) runs one task per element.
+
+
 # Sizing a pool
 
 [Pool.create()](../reference/Pool.create.md#pymizu.Pool.create) sizing options: `max_workers` (the worker limit), `max_submitters`, `injection_cap` (each submitter's injection ring), `per_worker_cap` (each worker's deque), `result_slots` (outstanding uncollected tasks per submitter), and `slot_size` (bytes per queue entry and result slot -- a payload past the inline budget travels in a fresh shared-memory region).

@@ -57,6 +57,9 @@ A read-only wire-state snapshot of the channel (dict).
 
 [Channel.__exit__()](Channel.__exit__.md#pymizu.Channel.__exit__)  
 
+[Channel.__iter__()](Channel.__iter__.md#pymizu.Channel.__iter__)  
+Iterate over received payloads until CLOSED or PEER_GONE.
+
 
 ## Task pools
 
@@ -69,6 +72,12 @@ A shared-memory work-stealing task pool handle (process-private).
 
 [Task](Task.md#pymizu.Task)  
 A task handle from \_Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
+
+[PreparedMap](PreparedMap.md#pymizu.PreparedMap)  
+A map staged once into a persistent region, run many times.
+
+[PoolExecutor](PoolExecutor.md#pymizu.PoolExecutor)  
+A :class:`concurrent.futures.Executor` over a pymizu pool.
 
 
 ## Pool Methods
@@ -101,11 +110,11 @@ Wait until every task is terminal; return all values in input
 [Pool.map()](Pool.map.md#pymizu.Pool.map)  
 Map `fn` over the elements of `x` on the pool; return the
 
-[Pool.map_prepare()](Pool.map_prepare.md#pymizu.Pool.map_prepare)  
-Stage a map once for repeated runs; return a map handle.
+[Pool.starmap()](Pool.starmap.md#pymizu.Pool.starmap)  
+Map `fn` over `x`, unpacking each element as the call's
 
-[Pool.map_run()](Pool.map_run.md#pymizu.Pool.map_run)  
-Run a map handle from [map_prepare](Pool.map_prepare.md#pymizu.Pool.map_prepare) once; return its results
+[Pool.map_prepare()](Pool.map_prepare.md#pymizu.Pool.map_prepare)  
+Stage a map once for repeated runs; return a :class:[PreparedMap](PreparedMap.md#pymizu.PreparedMap).
 
 [Pool.retire()](Pool.retire.md#pymizu.Pool.retire)  
 Ask the worker in `slot` to exit cleanly (non-blocking).
@@ -115,6 +124,9 @@ Spawn `n` additional workers into free registry slots and wait
 
 [Pool.stop()](Pool.stop.md#pymizu.Pool.stop)  
 Orderly shutdown (controller only): broadcast shutdown, cancel
+
+[Pool.shutdown()](Pool.shutdown.md#pymizu.Pool.shutdown)  
+Alias for :meth:[stop](Pool.stop.md#pymizu.Pool.stop) -- the `concurrent.futures.Executor`
 
 [Pool.destroy()](Pool.destroy.md#pymizu.Pool.destroy)  
 Tear down the pool handle immediately, without the shutdown
@@ -183,6 +195,9 @@ Return len(self).
 Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
 
 
+[Sentinel](Sentinel.md#pymizu.Sentinel)  
+Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.
+
 [is_sentinel()](is_sentinel.md#pymizu.is_sentinel)  
 is_sentinel(x) -\> bool
 
@@ -193,13 +208,13 @@ Test whether a received channel value is a remote error.
 Base class for all pymizu errors.
 
 [ShmError](ShmError.md#pymizu.ShmError)  
-A shared-memory region operation failed.
+A shared-memory region operation failed. Also an OSError: the failure is at the OS layer.
 
 [StartupError](StartupError.md#pymizu.StartupError)  
 A channel peer or pool worker failed to attach within the startup timeout.
 
 [SubmitTimeoutError](SubmitTimeoutError.md#pymizu.SubmitTimeoutError)  
-Pool.submit() timed out waiting for injection-ring space.
+Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.
 
 [SlotsExhaustedError](SlotsExhaustedError.md#pymizu.SlotsExhaustedError)  
 Pool.submit() found no free result slot: too many outstanding (uncollected) tasks.
