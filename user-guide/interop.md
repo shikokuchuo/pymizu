@@ -89,7 +89,7 @@ A portable subset of values crosses in both directions:
 
 # pymizu.Frame
 
-A [pymizu.Frame](../reference/Frame.md#pymizu.Frame) is Python's home for an R `data.frame`: named columns with a row count. `frame.to_dict()` returns the columns as a dict -- numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as `list[str | None]`. `frame.names` and `frame.row_names` carry the metadata. Any Arrow consumer takes a frame in one line -- `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)`. Factors become dictionary columns, logicals Arrow `bool`, `Date` `date32`, and `POSIXct` `timestamp[us]`. A [Frame](../reference/Frame.md#pymizu.Frame) pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a `data.frame` again.
+A [pymizu.Frame](../reference/Frame.md#pymizu.Frame) is Python's home for an R `data.frame`: named columns with a row count. `frame.to_dict()` returns the columns as a dict -- numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as `list[str | None]`. `frame.names` and `frame.row_names` carry the metadata. Any Arrow consumer takes a frame in one line -- `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)` (polars \>= 2.0 returns a struct Series for a streaming producer; `.struct.unnest()` restores the columns). Factors become dictionary columns, logicals Arrow `bool`, `Date` `date32`, and `POSIXct` `timestamp[us]`. A [Frame](../reference/Frame.md#pymizu.Frame) pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a `data.frame` again.
 
 
 # Data frames without copying

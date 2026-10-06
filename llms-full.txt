@@ -1395,7 +1395,9 @@ row count.
 installed, memoryviews otherwise, strings and factors as `list[str | None]`.
 `frame.names` and `frame.row_names` carry the metadata.
 Any Arrow consumer takes a frame in one line — `pl.from_arrow(f)`,
-`pa.table(f)`, `pd.DataFrame.from_arrow(f)`.
+`pa.table(f)`, `pd.DataFrame.from_arrow(f)`
+(polars >= 2.0 returns a struct Series for a streaming producer;
+`.struct.unnest()` restores the columns).
 Factors become dictionary columns, logicals Arrow `bool`, `Date` `date32`,
 and `POSIXct` `timestamp[us]`.
 A `Frame` pickles, so it crosses Python-to-Python channels.
