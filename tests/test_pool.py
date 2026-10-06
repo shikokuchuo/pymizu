@@ -40,6 +40,11 @@ def test_submit_collect(pool):
     assert t.collect(timeout=5) == 1024
 
 
+def test_task_result_alias(pool):
+    t = pool.submit(pow, 2, 10)
+    assert t.result(timeout=5) == 1024
+
+
 def test_submit_kwargs(pool):
     t = pool.submit(round, 3.14159, ndigits=2)
     assert t.collect(timeout=5) == 3.14
@@ -412,6 +417,14 @@ def test_stop_idempotent_and_stopped(pool):
     with pytest.raises(pymizu.StoppedError):
         pa.submit(len, [1])
     pa.destroy()
+
+
+def test_shutdown_alias(pool):
+    t = pool.submit(len, [1])
+    assert t.collect(timeout=5) == 1
+    assert pool.shutdown(timeout=5) is True
+    with pytest.raises(pymizu.MizuError, match="closed"):
+        pool.submit(len, [1])
 
 
 def test_retire_and_spawn():

@@ -6843,9 +6843,15 @@ static void Task_dealloc(MizuTask *self) {
   MizuTaskType.tp_free((PyObject *) self);
 }
 
+PyDoc_STRVAR(task_result_doc,
+"result(timeout=None) -> value | sentinel\n\n\
+Alias for collect() — the concurrent.futures.Future spelling.");
+
 static PyMethodDef Task_methods[] = {
   {"collect", (PyCFunction)(void (*)(void)) Task_collect,
    METH_VARARGS | METH_KEYWORDS, task_collect_doc},
+  {"result", (PyCFunction)(void (*)(void)) Task_collect,
+   METH_VARARGS | METH_KEYWORDS, task_result_doc},
   {"cancel", (PyCFunction) Task_cancel, METH_NOARGS, task_cancel_doc},
   {NULL, NULL, 0, NULL}
 };
@@ -7576,7 +7582,7 @@ static struct PyModuleDef pymizu_module = {
 };
 
 static int add_exception(PyObject *m, PyObject **slot, const char *name,
-                         PyObject *base, const char *doc) {
+                         PyObject *base, PyObject *base2, const char *doc) {
   PyObject *dict = PyDict_New();
   PyObject *docstr = PyUnicode_FromString(doc);
   if (dict == NULL || docstr == NULL) {
@@ -7586,8 +7592,16 @@ static int add_exception(PyObject *m, PyObject **slot, const char *name,
   }
   int rc = PyDict_SetItemString(dict, "__doc__", docstr);
   Py_DECREF(docstr);
+  /* a second base gives the class a stdlib-interop home
+     (ShmError is an OSError, SubmitTimeoutError a TimeoutError) */
+  PyObject *bases = NULL;
+  if (rc == 0 && base2 != NULL) {
+    bases = PyTuple_Pack(2, base, base2);
+    if (bases == NULL) rc = -1;
+  }
   if (rc == 0)
-    *slot = PyErr_NewException(name, base, dict);
+    *slot = PyErr_NewException(name, bases != NULL ? bases : base, dict);
+  Py_XDECREF(bases);
   Py_DECREF(dict);
   if (rc != 0 || *slot == NULL) return -1;
   const char *dot = strchr(name, '.');
@@ -7644,36 +7658,42 @@ PyInit__pymizu(void)
   }
 
   if (add_exception(m, &MizuError, "pymizu.MizuError", PyExc_Exception,
+                    NULL,
                     "Base class for all pymizu errors.") < 0 ||
       add_exception(m, &MizuStartupError, "pymizu.StartupError", MizuError,
+                    NULL,
                     "A channel peer or pool worker failed to attach within "
                     "the startup timeout.") < 0 ||
       add_exception(m, &MizuShmError, "pymizu.ShmError", MizuError,
-                    "A shared-memory region operation failed.") < 0 ||
+                    PyExc_OSError,
+                    "A shared-memory region operation failed. Also an "
+                    "OSError: the failure is at the OS layer.") < 0 ||
       add_exception(m, &MizuSubmitTimeoutError, "pymizu.SubmitTimeoutError",
-                    MizuError,
+                    MizuError, PyExc_TimeoutError,
                     "Pool.submit() timed out waiting for injection-ring "
-                    "space.") < 0 ||
+                    "space. Also a TimeoutError.") < 0 ||
       add_exception(m, &MizuSlotsExhaustedError, "pymizu.SlotsExhaustedError",
-                    MizuError,
+                    MizuError, NULL,
                     "Pool.submit() found no free result slot: too many "
                     "outstanding (uncollected) tasks.") < 0 ||
       add_exception(m, &MizuStoppedError, "pymizu.StoppedError", MizuError,
+                    NULL,
                     "The pool is stopped; no further submission is "
                     "possible.") < 0 ||
       add_exception(m, &MizuCancelledError, "pymizu.CancelledError",
-                    MizuError,
+                    MizuError, NULL,
                     "The task was cancelled before it ran.") < 0 ||
       add_exception(m, &MizuWorkerDiedError, "pymizu.WorkerDiedError",
-                    MizuError,
+                    MizuError, NULL,
                     "The executing worker died mid-task. Carries 'slot' "
                     "and 'pid' attributes identifying the worker.") < 0 ||
       add_exception(m, &MizuTaskError, "pymizu.TaskError", MizuError,
+                    NULL,
                     "The task callable raised. Carries 'remote_type' and "
                     "'remote_traceback' attributes describing the "
                     "worker-side exception.") < 0 ||
       add_exception(m, &MizuDeclinedError, "pymizu.DeclinedError",
-                    PyExc_TypeError,
+                    PyExc_TypeError, NULL,
                     "A send on a foreign-language channel of a value "
                     "outside the portable interchange subset. Carries "
                     "'path' and 'reason' attributes.") < 0) {
@@ -7684,6 +7704,7 @@ PyInit__pymizu(void)
   if (PyModule_AddObject(m, "_Channel", (PyObject *) &MizuChannelType) < 0 ||
       PyModule_AddObject(m, "_Pool", (PyObject *) &MizuPoolType) < 0 ||
       PyModule_AddObject(m, "_Task", (PyObject *) &MizuTaskType) < 0 ||
+      PyModule_AddObject(m, "Sentinel", (PyObject *) &MizuSentinelType) < 0 ||
       PyModule_AddStringConstant(m, "__core_version__",
                                  MIZU_VERSION_STRING) < 0 ||
       mizu_py_map_register(m, MizuError, MizuShmError) < 0 ||

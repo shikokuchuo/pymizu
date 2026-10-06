@@ -416,12 +416,12 @@ def map_overhead(p):
     # and back-to-back runs hit the workers' cached map contexts
     pm = p.map_prepare(plus_one, xs)
     try:
-        p.map_run(pm)  # warm-up
+        pm.run()  # warm-up
         note_us(
             "map trivial f",
             "pymizu prepared",
             k * n,
-            lambda: [p.map_run(pm) for _ in range(k)],
+            lambda: [pm.run() for _ in range(k)],
             "us/elt",
         )
     finally:

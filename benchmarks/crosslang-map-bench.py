@@ -149,12 +149,12 @@ def main():
         # runner submit + collect, the workers' contexts cached
         pm = pool.map_prepare(spec, xs)
         try:
-            pool.map_run(pm)  # warm-up
+            pm.run()  # warm-up
             note_us(
                 "map trivial fn",
                 "pymizu spec prepared",
                 k * n,
-                lambda: [pool.map_run(pm) for _ in range(k)],
+                lambda: [pm.run() for _ in range(k)],
                 "us/elt",
             )
         finally:

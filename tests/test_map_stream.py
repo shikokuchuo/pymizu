@@ -43,7 +43,7 @@ def test_stream_matches_non_streaming(pool):
     x = list(range(200))
     want = pool.map(square, x)
     for chunks in (None, 1, 3, 64, 200):
-        assert pool.map(square, x, stream=True, chunks=chunks) == want
+        assert pool.map(square, x, stream=True, n_chunks=chunks) == want
 
 
 def test_stream_empty(pool):
@@ -60,7 +60,7 @@ def test_stream_out_of_order_completion(pool):
     # chunk 0's first element sleeps, so chunks 1+ complete first — the
     # splice still assembles in input order
     x = list(range(32))
-    out = pool.map(sleep_on, x, args=({0},), chunks=8, stream=True)
+    out = pool.map(sleep_on, x, args=({0},), n_chunks=8, stream=True)
     assert out == x
 
 
@@ -69,7 +69,7 @@ def test_stream_seed_invariance(pool):
     assert pool.map(rand_elt, list(range(50)), seed=42, stream=True) == a
     for chunks in (1, 3, 50):
         got = pool.map(
-            rand_elt, list(range(50)), seed=42, stream=True, chunks=chunks
+            rand_elt, list(range(50)), seed=42, stream=True, n_chunks=chunks
         )
         assert got == a
     # and across window sizes (a 1-worker pool halves the window)
@@ -93,7 +93,7 @@ def test_stream_fail_fast_element_index(pool):
     # must not clobber the envelope's element index (element 4 is in
     # chunk 2 of 4 here — the position would read 2)
     with pytest.raises(pymizu.TaskError) as exc_info:
-        pool.map(fail_at, list(range(8)), args=(4,), stream=True, chunks=4)
+        pool.map(fail_at, list(range(8)), args=(4,), stream=True, n_chunks=4)
     exc = exc_info.value
     assert exc.remote_type == "ValueError"
     assert exc.index == 4
@@ -108,7 +108,7 @@ def test_stream_fail_fast_min_index():
         with pytest.raises(pymizu.TaskError) as exc_info:
             p.map(
                 fail_on, list(range(8)), args=({3, 5},), stream=True,
-                chunks=4,
+                n_chunks=4,
             )
         assert exc_info.value.index == 3
     finally:
@@ -119,7 +119,7 @@ def test_stream_worker_died():
     p = pymizu.Pool.create(2)
     try:
         with pytest.raises(pymizu.WorkerDiedError) as exc_info:
-            p.map(kill_at, list(range(8)), args=(5,), stream=True, chunks=4)
+            p.map(kill_at, list(range(8)), args=(5,), stream=True, n_chunks=4)
         exc = exc_info.value
         assert exc.pid > 0
         # streaming chunks are fixed ranges: the lost set is the dead
@@ -150,7 +150,7 @@ def test_stream_submit_ring_full_timeout():
     try:
         pin1 = p.submit(sleep_ident, 3.0)
         pin2 = p.submit(sleep_ident, 3.0)
-        out = p.map(square, list(range(4)), stream=True, chunks=4, timeout=1)
+        out = p.map(square, list(range(4)), stream=True, n_chunks=4, timeout=1)
         assert out is pymizu.TIMEOUT
         # the pins really ran (the workers were genuinely busy)
         assert pin1.collect(timeout=15) == 3.0
@@ -305,13 +305,13 @@ def test_stream_prepared(pool):
     pm = pool.map_prepare(square, list(range(8)), stream=True)
     try:
         name = pm._name
-        assert pool.map_run(pm) == [i * i for i in range(8)]
-        assert pool.map_run(pm) == [i * i for i in range(8)]
+        assert pm.run() == [i * i for i in range(8)]
+        assert pm.run() == [i * i for i in range(8)]
         assert pm._name == name  # one region throughout
         # a replacement x of any shape re-slices: no restage
-        assert pool.map_run(pm, list(range(4))) == [0, 1, 4, 9]
+        assert pm.run(list(range(4))) == [0, 1, 4, 9]
         assert pm._name == name
-        assert pool.map_run(pm, [1, 2, 3]) == [1, 4, 9]
+        assert pm.run([1, 2, 3]) == [1, 4, 9]
         assert pm._name == name
     finally:
         pm.close()
@@ -321,7 +321,7 @@ def test_stream_prepared_seeded(pool):
     # a re-armed prepared run restarts every element's stream
     pm = pool.map_prepare(rand_elt, list(range(30)), seed=42, stream=True)
     try:
-        assert pool.map_run(pm) == pool.map_run(pm)
+        assert pm.run() == pm.run()
     finally:
         pm.close()
 
@@ -330,9 +330,9 @@ def test_stream_prepared_timeout_restages(pool):
     pm = pool.map_prepare(sleep_ident, [0.4, 0.1, 0.1], stream=True)
     try:
         name = pm._name
-        assert pool.map_run(pm, timeout=0.2) is pymizu.TIMEOUT
+        assert pm.run(timeout=0.2) is pymizu.TIMEOUT
         assert pm._capsule is None  # stale: the next run restages
-        assert pool.map_run(pm, timeout=60) == [0.4, 0.1, 0.1]
+        assert pm.run(timeout=60) == [0.4, 0.1, 0.1]
         assert pm._name != name
     finally:
         pm.close()
@@ -342,10 +342,10 @@ def test_stream_prepared_error_restages(pool):
     pm = pool.map_prepare(fail_at, list(range(4)), args=(2,), stream=True)
     try:
         with pytest.raises(pymizu.TaskError):
-            pool.map_run(pm, timeout=60)
+            pm.run(timeout=60)
         assert pm._capsule is None
         with pytest.raises(pymizu.TaskError) as exc_info:
-            pool.map_run(pm, timeout=60)
+            pm.run(timeout=60)
         assert exc_info.value.index == 2
     finally:
         pm.close()
@@ -355,9 +355,9 @@ def test_stream_ctx_cache_one_attach():
     # a multi-chunk map on one worker holds exactly one cached context
     p = pymizu.Pool.create(1)
     try:
-        pm = p.map_prepare(square, list(range(16)), chunks=4, stream=True)
+        pm = p.map_prepare(square, list(range(16)), n_chunks=4, stream=True)
         try:
-            assert p.map_run(pm) == [i * i for i in range(16)]
+            assert pm.run() == [i * i for i in range(16)]
             names = p.submit(map_ctx_names, []).collect(timeout=15)
             assert names == [pm._name]
         finally:
@@ -427,10 +427,10 @@ def test_stream_prepared_template_length_change_restages(pool):
     try:
         name = pm._name
         np.testing.assert_array_equal(
-            pool.map_run(pm), np.array([2.0, 4.0, 6.0])
+            pm.run(), np.array([2.0, 4.0, 6.0])
         )
         assert pm._name == name
-        out = pool.map_run(pm, [1, 2, 3, 4])
+        out = pm.run([1, 2, 3, 4])
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0, 8.0]))
         assert pm._name != name  # the output area sizes off the staged n
     finally:
@@ -446,13 +446,13 @@ def test_stream_prepared_template_view_transfers(pool):
         stream=True,
     )
     try:
-        out = pool.map_run(pm)
+        out = pm.run()
         assert not out.flags.writeable
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0]))
         # the view pins its region: the next run stages fresh
         assert pm._capsule is None
         np.testing.assert_array_equal(
-            pool.map_run(pm), np.array([2.0, 4.0, 6.0])
+            pm.run(), np.array([2.0, 4.0, 6.0])
         )
     finally:
         pm.close()

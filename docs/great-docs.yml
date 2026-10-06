@@ -34,6 +34,8 @@ reference:
       contents:
         - Pool
         - Task
+        - PreparedMap
+        - PoolExecutor
     - title: Cross-language interop
       desc: >-
         R peers and workers (the mizu R package), neutral task
@@ -49,6 +51,7 @@ reference:
         TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real
         failures raise from the exception hierarchy.
       contents:
+        - Sentinel
         - is_sentinel
         - is_remote_error
         - MizuError

@@ -275,6 +275,11 @@ def sum_mixed(xs):
     return float(xs[0].sum()) + xs[1]
 
 
+def mul_add(a, b, c=0):
+    """A multi-positional-arg callable (starmap tests)."""
+    return a * b + c
+
+
 def pair_up(v):
     """A length-2 float64 result per element (template maps, m = 2)."""
     import numpy as np

@@ -437,6 +437,20 @@ def _run_batch(
     return out
 
 
+class _Star:
+    """Pool.starmap's fn wrapper: unpacks the element into the call's
+    positional slots (multiprocessing.starmap semantics). A module-level
+    class so the descriptor pickle crosses by reference."""
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn: _Callable[..., _Any]) -> None:
+        self.fn = fn
+
+    def __call__(self, elt: _Any, *args: _Any, **kwargs: _Any) -> _Any:
+        return self.fn(*elt, *args, **kwargs)
+
+
 def _chunk(
     blob: bytes, lo: int, hi: int, seed_spec: tuple[bytes, int] | None
 ) -> list:
@@ -642,7 +656,7 @@ class _Plan:
     ``PreparedMap``: the spec/language verdict, normalized args/kwargs,
     the carried seed form (the wire pair on a spec map, ``(seed_bytes,
     offset)`` otherwise), the template probe, the resolved collect mode,
-    chunks, and the streaming verdict."""
+    n_chunks, and the streaming verdict."""
 
     __slots__ = (
         "spec",
@@ -652,7 +666,7 @@ class _Plan:
         "seed",
         "tprobe",
         "collect",
-        "chunks",
+        "n_chunks",
         "stream",
     )
 
@@ -662,7 +676,7 @@ class _Plan:
         fn: _Any,
         args: _Any,
         kwargs: dict | None,
-        chunks: int | None,
+        n_chunks: int | None,
         seed: _Any,
         template: _Any,
         collect: str | None,
@@ -701,9 +715,9 @@ class _Plan:
             if collect not in ("copy", "view"):
                 raise ValueError("pymizu: collect must be 'copy' or 'view'")
         self.collect = collect
-        if chunks is not None and chunks < 1:
-            raise ValueError("pymizu: chunks must be a positive number")
-        self.chunks = chunks
+        if n_chunks is not None and n_chunks < 1:
+            raise ValueError("pymizu: n_chunks must be a positive number")
+        self.n_chunks = n_chunks
         self.stream = stream
 
 
@@ -713,13 +727,13 @@ def pool_map(
     x: _Any,
     args: _Any,
     kwargs: dict | None,
-    chunks: int | None,
+    n_chunks: int | None,
     seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
     timeout: float | None,
     template: _Any = None,
     collect: str | None = None,
     stream: bool = False,
-) -> list | _pymizu._Sentinel | _Any:
+) -> list | _pymizu.Sentinel | _Any:
     """The one map path: stage, submit the runners (or blob chunks),
     collect against the single deadline, splice into input order. The
     try/finally backstop cancels outstanding work on KeyboardInterrupt or
@@ -728,7 +742,7 @@ def pool_map(
     import pymizu
 
     plan = _Plan(
-        pool, fn, args, kwargs, chunks, seed, template, collect, stream
+        pool, fn, args, kwargs, n_chunks, seed, template, collect, stream
     )
     probe, x, n = _probe_x(plan.spec, x)
     if n == 0:
@@ -792,7 +806,7 @@ def pool_map(
                 n,
                 # never a spec map here: the (seed_bytes, offset) form
                 plan.seed,  # pyrefly: ignore [bad-argument-type]
-                plan.chunks,
+                plan.n_chunks,
                 live,
                 free_rs,
                 inj_cap,
@@ -836,19 +850,22 @@ def _map_blob(
     blob: bytes,
     n: int,
     seed_spec: tuple[bytes, int] | None,
-    chunks: int | None,
+    n_chunks: int | None,
     live: int,
     free_rs: int,
     inj_cap: int,
     remaining: _Callable[[], float | None],
     expired: _Callable[[], bool],
     handles: list,
-) -> list | _pymizu._Sentinel:
+) -> list | _pymizu.Sentinel:
     """The region-less path: fixed chunks ride the task payloads inline.
     Worker death reports the dead chunk's fixed [lo, hi) range directly
     (there is no cursor)."""
     c = min(
-        n, chunks if chunks is not None else 8 * max(1, live), free_rs, inj_cap
+        n,
+        n_chunks if n_chunks is not None else 8 * max(1, live),
+        free_rs,
+        inj_cap,
     )
     c = max(1, c)
     size, extra = divmod(n, c)
@@ -970,7 +987,7 @@ def _stream_window(
     remaining: _Callable[[], float | None],
     expired: _Callable[[], bool],
     handles: list,
-) -> list | _pymizu._Sentinel | None:
+) -> list | _pymizu.Sentinel | None:
     """The sliding submit/collect window over one staged streaming map:
     prime W chunk tasks (unflagged, like blob chunks), then loop on
     collect_any over the outstanding set — each completion splices
@@ -1054,11 +1071,11 @@ def _map_stream(
     handles: list,
     box: dict,
     template: _Any,
-) -> list | _pymizu._Sentinel | _Any:
+) -> list | _pymizu.Sentinel | _Any:
     """The streaming path: x stays submitter-side and feeds fixed slices
     through ordinary chunk tasks under a sliding submit/collect window of
-    min(chunks, 2 x live workers, free result slots) outstanding tasks —
-    min(n, 32 x live workers) chunks by default, chunks= overriding
+    min(n_chunks, 2 x live workers, free result slots) outstanding tasks —
+    min(n, 32 x live workers) chunks by default, n_chunks= overriding
     outright (bounded only by n: the window paces outstanding work, so no
     slot/ring clamp, unlike the blob path). Shared-memory residency is
     bounded by window x slice instead of sizeof(x). The region is
@@ -1067,7 +1084,9 @@ def _map_stream(
     output area included (it sizes off the explicit n) — one code path
     and the workers' ctx cache. The morsel geometry rides inert (morsel=1:
     no streaming path claims, cursors, or reads the cancel word)."""
-    c = min(n, plan.chunks if plan.chunks is not None else 32 * max(1, live))
+    c = min(
+        n, plan.n_chunks if plan.n_chunks is not None else 32 * max(1, live)
+    )
     c = max(1, c)
     w = max(1, min(c, 2 * max(1, live), free_rs))
     ranges = _stream_geometry(n, c)
@@ -1101,20 +1120,20 @@ def _map_stream(
 
 
 def _morsel_geometry(
-    n: int, chunks: int | None, live: int, free_rs: int, inj_cap: int
+    n: int, n_chunks: int | None, live: int, free_rs: int, inj_cap: int
 ) -> tuple[int, int, int]:
     """(runners, morsel, n_morsels) for n elements: ~256 morsels per
     runner, clamped to the grain constants, runners clamped by the free
-    result slots and the injection ring; ``chunks`` overrides the morsel
+    result slots and the injection ring; ``n_chunks`` overrides the morsel
     count directly. n == 0 takes the unit geometry (a prepared handle
     stages before it knows a run's n)."""
     runners = max(1, min(max(1, live), free_rs, inj_cap))
     if n == 0:
         return runners, 1, 0
-    if chunks is None:
+    if n_chunks is None:
         morsel = max(1, min(n // (runners * _MORSELS_PER_RUNNER), _MORSEL_CAP))
     else:
-        morsel = -(-n // min(n, chunks))
+        morsel = -(-n // min(n, n_chunks))
     return runners, morsel, -(-n // morsel)
 
 
@@ -1149,7 +1168,7 @@ def _map_region(
     handles: list,
     box: dict,
     template: _Any,
-) -> list | _pymizu._Sentinel | _Any:
+) -> list | _pymizu.Sentinel | _Any:
     """The region path: stage, submit one runner per live worker (clamped
     by the morsel count, the free result slots, and the injection ring),
     collect under the exhausted-runner trim, splice by element position —
@@ -1158,7 +1177,7 @@ def _map_region(
     descriptor (the f spec nested as a task tag, the list-x bare or nil)
     and submits kind-2 runner tasks."""
     runners, morsel, n_morsels = _morsel_geometry(
-        n, plan.chunks, live, free_rs, inj_cap
+        n, plan.n_chunks, live, free_rs, inj_cap
     )
     desc = _write_desc(
         plan.spec, fn, plan.args, plan.kwargs, x, probe, plan.lang
@@ -1262,7 +1281,7 @@ def _collect_region(
     gen: int = 0,
     lang: int = 3,
     morsel: int = 1,
-) -> list | _pymizu._Sentinel | None:
+) -> list | _pymizu.Sentinel | None:
     """Collect the runner handles under the exhausted-runner trim, in a
     deferred collection order. A runner carries no work of its own, so
     once the cursor exhausts a still-queued runner is dead weight — but
@@ -1368,35 +1387,41 @@ def _collect_region(
 
 
 class PreparedMap:
-    """A map staged once into a persistent region, run many times
-    (``Pool.map_prepare`` / ``Pool.map_run``). Re-arming is O(1) — a
-    generation bump, a cursor reset, a cancel-word clear — and workers
-    reuse their cached contexts, so a re-run pays neither the descriptor
-    pickle nor the region create nor the worker-side re-attach. A
-    view-collected run hands its region to the view; the next run
-    restages into a fresh one (the mirror of mizu)."""
+    """A map staged once into a persistent region, run many times.
+
+    Create with :meth:`pymizu.Pool.map_prepare`; run with :meth:`run`.
+    Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word
+    clear — and workers reuse their cached contexts, so a re-run pays
+    neither the descriptor pickle nor the region create nor the
+    worker-side re-attach. A view-collected run hands its region to the
+    view; the next run restages into a fresh one (the mirror of mizu).
+    Close with :meth:`close` (or a with block) to unlink the region.
+    """
 
     def __init__(
         self,
         pool: pymizu.Pool,
         fn: _Callable[..., _Any],
         x: _Any,
-        args: _Any,
-        kwargs: dict | None,
-        chunks: int | None,
+        *,
+        args: _Any = (),
+        kwargs: dict | None = None,
+        n_chunks: int | None = None,
         seed: int
         | bytes
         | bytearray
         | tuple[int | bytes | bytearray, int]
-        | None,
-        template: _Any,
-        collect: str | None,
+        | None = None,
+        template: _Any = None,
+        collect: str | None = None,
         stream: bool = False,
     ) -> None:
         import pymizu
 
+        if not isinstance(pool, pymizu.Pool):
+            raise TypeError("pymizu: pool must be a pymizu.Pool")
         plan = _Plan(
-            pool, fn, args, kwargs, chunks, seed, template, collect, stream
+            pool, fn, args, kwargs, n_chunks, seed, template, collect, stream
         )
         self._pymizu = pymizu
         self._pool = pool
@@ -1409,7 +1434,7 @@ class PreparedMap:
         self._fn = fn
         self._args = plan.args
         self._kwargs = plan.kwargs
-        self._chunks = plan.chunks
+        self._n_chunks = plan.n_chunks
         self._template = template
         self._set_x(x)
         self._capsule = None
@@ -1434,8 +1459,8 @@ class PreparedMap:
             self._desc = _pickle.dumps((self._fn, self._args, self._kwargs), 4)
             c = min(
                 n,
-                self._chunks
-                if self._chunks is not None
+                self._n_chunks
+                if self._n_chunks is not None
                 else 32 * max(1, live),
             )
             self._ranges = _stream_geometry(n, max(1, c))
@@ -1450,7 +1475,7 @@ class PreparedMap:
             self._lang,
         )
         _, self._morsel, self._n_morsels = _morsel_geometry(
-            n, self._chunks, live, free_rs, inj_cap
+            n, self._n_chunks, live, free_rs, inj_cap
         )
 
     def _swap_x(self, x: _Any) -> None:

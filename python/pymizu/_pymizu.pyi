@@ -5,15 +5,15 @@ from typing import Any
 
 __core_version__: str
 
-class _Sentinel:
+class Sentinel:
     """A terminal-state sentinel singleton (identity-tested)."""
 
     def __repr__(self) -> str: ...
 
-FULL: _Sentinel
-TIMEOUT: _Sentinel
-CLOSED: _Sentinel
-PEER_GONE: _Sentinel
+FULL: Sentinel
+TIMEOUT: Sentinel
+CLOSED: Sentinel
+PEER_GONE: Sentinel
 
 def is_sentinel(x: Any) -> bool: ...
 def abi_version() -> int: ...
@@ -41,8 +41,8 @@ class Frame:
     def __len__(self) -> int: ...
     def __reduce__(self) -> Any: ...
 
-class ShmError(MizuError):
-    """Shared-memory setup/teardown failure."""
+class ShmError(MizuError, OSError):
+    """Shared-memory setup/teardown failure (also an OSError)."""
 
 class StartupError(MizuError):
     """A peer or worker failed to attach within the startup timeout."""
@@ -53,8 +53,9 @@ class StoppedError(MizuError):
 class SlotsExhaustedError(MizuError):
     """No free result slots for a submission."""
 
-class SubmitTimeoutError(MizuError):
-    """Submission timed out waiting for injection-ring space."""
+class SubmitTimeoutError(MizuError, TimeoutError):
+    """Submission timed out waiting for injection-ring space (also a
+    TimeoutError)."""
 
 class CancelledError(MizuError):
     """The task was cancelled before it ran."""
@@ -80,6 +81,7 @@ class _Task:
     @property
     def pool(self) -> _Pool: ...
     def collect(self, timeout: float | None = None) -> Any: ...
+    def result(self, timeout: float | None = None) -> Any: ...
     def cancel(self) -> bool: ...
 
 class _Channel:
@@ -89,7 +91,7 @@ class _Channel:
     def token(self) -> str: ...
     def ready_wait(self, timeout: float) -> bool: ...
     def ready_set(self) -> None: ...
-    def send(self, x: Any) -> _Sentinel | None: ...
+    def send(self, x: Any) -> Sentinel | None: ...
     def _send_error(self, exc: BaseException) -> bool: ...
     def send_batch(self, xs: Any) -> int: ...
     def recv(self, timeout: float | None = None) -> Any: ...

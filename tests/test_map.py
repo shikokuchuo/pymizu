@@ -3,6 +3,7 @@ region paths, raw-buffer x sections, the outcome taxonomy (element-indexed
 errors, fail-fast, timeout, worker death), seed determinism, nested maps,
 and the interrupt backstop — over real spawned workers."""
 
+import operator
 import os
 import random
 import signal
@@ -18,6 +19,7 @@ from tests.helpers import (
     huge_int,
     identity,
     kill_at,
+    mul_add,
     nested_map,
     np_rand_elt,
     np_rand_pair,
@@ -54,6 +56,55 @@ def test_map_args_kwargs(pool):
     assert pool.map(scale_add, [1, 2], kwargs={"scale": 2, "add": 1}) == [3, 5]
 
 
+def test_starmap(pool):
+    assert pool.starmap(pow, [(2, 10), (3, 3), (4, 0)]) == [1024, 27, 1]
+
+
+def test_starmap_zip_idiom(pool):
+    xs, ys = [1, 2, 3], [4, 5, 6]
+    assert pool.starmap(operator.mul, zip(xs, ys, strict=True)) == [4, 10, 18]
+
+
+def test_starmap_args_kwargs(pool):
+    assert pool.starmap(mul_add, [(1, 2), (3, 4)], args=(10,)) == [12, 22]
+    assert pool.starmap(mul_add, [(1, 2)], kwargs={"c": 100}) == [102]
+
+
+def test_starmap_generator_and_rows(pool):
+    import numpy as np
+
+    assert pool.starmap(pow, ((i, 2) for i in range(4))) == [0, 1, 4, 9]
+    assert pool.starmap(operator.add, np.arange(6).reshape(3, 2)) == [1, 5, 9]
+
+
+def test_starmap_empty(pool):
+    assert pool.starmap(pow, []) == []
+
+
+def test_starmap_spec_rejected(pool):
+    with pytest.raises(TypeError, match="starmap"):
+        pool.starmap(pymizu.call("math.sqrt"), [(1.0,)])
+
+
+def test_starmap_error_index(pool):
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.starmap(fail_at, [(0, 99), (4, 4)])
+    assert exc_info.value.index == 1
+
+
+def test_starmap_template(pool):
+    import numpy as np
+
+    out = pool.starmap(mul_add, [(1, 2), (3, 4)], template=np.empty(1))
+    np.testing.assert_array_equal(out, np.array([2.0, 12.0]))
+
+
+def test_starmap_stream(pool):
+    assert pool.starmap(pow, [(i, 2) for i in range(10)], stream=True) == [
+        i * i for i in range(10)
+    ]
+
+
 def test_map_blob_path(pool):
     # a small map whose chunk payloads fit the entry inline budget: no
     # region is created (the morsel machinery needs one)
@@ -70,7 +121,7 @@ def test_map_chunking_invariance(pool):
     x = list(range(500))
     want = [i * i for i in x]
     for chunks in (None, 1, 3, 7, 500):
-        assert pool.map(square, x, chunks=chunks) == want
+        assert pool.map(square, x, n_chunks=chunks) == want
 
 
 def test_map_error_index(pool):
@@ -118,8 +169,8 @@ def test_map_worker_died():
 
 def test_map_seed_determinism(pool):
     a = pool.map(rand_elt, list(range(50)), seed=42)
-    b = pool.map(rand_elt, list(range(50)), seed=42, chunks=7)
-    c = pool.map(rand_elt, list(range(50)), seed=42, chunks=1)
+    b = pool.map(rand_elt, list(range(50)), seed=42, n_chunks=7)
+    c = pool.map(rand_elt, list(range(50)), seed=42, n_chunks=1)
     assert a == b == c
     d = pool.map(rand_elt, list(range(50)), seed=43)
     assert a != d
@@ -220,7 +271,7 @@ def test_map_numpy_chunking_invariance(pool):
     a = np.arange(300, dtype=np.float64)
     want = pool.map(identity, a)
     for chunks in (1, 5, 300):
-        assert pool.map(identity, a, chunks=chunks) == want
+        assert pool.map(identity, a, n_chunks=chunks) == want
 
 
 # -- seeded numpy streams (pymizu.current_rng) --------------------------------
@@ -228,8 +279,8 @@ def test_map_numpy_chunking_invariance(pool):
 
 def test_map_seed_numpy_determinism(pool):
     a = pool.map(np_rand_elt, list(range(50)), seed=42)
-    b = pool.map(np_rand_elt, list(range(50)), seed=42, chunks=7)
-    c = pool.map(np_rand_elt, list(range(50)), seed=42, chunks=1)
+    b = pool.map(np_rand_elt, list(range(50)), seed=42, n_chunks=7)
+    c = pool.map(np_rand_elt, list(range(50)), seed=42, n_chunks=1)
     assert a == b == c
     d = pool.map(np_rand_elt, list(range(50)), seed=43)
     assert a != d
@@ -264,7 +315,7 @@ def test_map_seed_numpy_prepared_rerun(pool):
     # a re-armed prepared run restarts every element's stream
     pm = pool.map_prepare(np_rand_elt, list(range(30)), seed=42)
     try:
-        assert pool.map_run(pm) == pool.map_run(pm)
+        assert pm.run() == pm.run()
     finally:
         pm.close()
 
@@ -304,7 +355,7 @@ def test_map_template_m2(pool):
 
 def test_map_template_buffer_result(pool):
     # fn results may be buffers directly (no scalar conversion)
-    out = pool.map(pair_up, list(range(40)), template=np.empty(2), chunks=3)
+    out = pool.map(pair_up, list(range(40)), template=np.empty(2), n_chunks=3)
     assert out.shape == (40, 2)
 
 
@@ -393,17 +444,17 @@ def test_map_prepared_roundtrip(pool):
     try:
         want = [i * i for i in range(500)]
         for _ in range(3):
-            assert pool.map_run(pm) == want
+            assert pm.run() == want
     finally:
         pm.close()
 
 
 def test_map_prepared_rearm_fences_stragglers(pool):
     # repeated runs over the same region: every run returns the full set
-    pm = pool.map_prepare(identity, list(range(2000)), chunks=8)
+    pm = pool.map_prepare(identity, list(range(2000)), n_chunks=8)
     try:
         for _ in range(5):
-            assert pool.map_run(pm) == list(range(2000))
+            assert pm.run() == list(range(2000))
     finally:
         pm.close()
 
@@ -435,7 +486,7 @@ def test_map_prepared_template(pool):
     )
     try:
         for _ in range(3):
-            out = pool.map_run(pm)
+            out = pm.run()
             np.testing.assert_array_equal(out, np.arange(100) * 2.0)
     finally:
         pm.close()
@@ -446,10 +497,10 @@ def test_map_prepared_view_restages(pool):
         scalar_double, list(range(50)), template=np.empty(1), collect="view"
     )
     try:
-        v1 = pool.map_run(pm)
+        v1 = pm.run()
         np.testing.assert_array_equal(v1, np.arange(50) * 2.0)
         # the view owns the first region; the second run restages fresh
-        v2 = pool.map_run(pm)
+        v2 = pm.run()
         np.testing.assert_array_equal(v2, np.arange(50) * 2.0)
         np.testing.assert_array_equal(v1, np.arange(50) * 2.0)
     finally:
@@ -460,12 +511,12 @@ def test_map_prepared_error_and_reuse(pool):
     pm = pool.map_prepare(fail_at, list(range(10)), args=(4,))
     try:
         with pytest.raises(pymizu.TaskError) as exc_info:
-            pool.map_run(pm)
+            pm.run()
         assert exc_info.value.index == 4
         # the cancel word fired; the next run's re-arm clears it
         pm2 = pool.map_prepare(square, list(range(10)))
         try:
-            assert pool.map_run(pm2) == [i * i for i in range(10)]
+            assert pm2.run() == [i * i for i in range(10)]
         finally:
             pm2.close()
     finally:
@@ -475,7 +526,7 @@ def test_map_prepared_error_and_reuse(pool):
 def test_map_prepared_timeout(pool):
     pm = pool.map_prepare(sleep_ident, [0.4] * 8)
     try:
-        assert pool.map_run(pm, timeout=0.2) is pymizu.TIMEOUT
+        assert pm.run(timeout=0.2) is pymizu.TIMEOUT
         assert pool.map(square, [2], timeout=15) == [4]
     finally:
         pm.close()
@@ -485,11 +536,11 @@ def test_map_prepared_swap_x(pool):
     pm = pool.map_prepare(identity, np.arange(100, dtype=np.float64))
     try:
         name = pm._name
-        out = pool.map_run(pm)
+        out = pm.run()
         assert [float(v) for v in out] == [float(v) for v in np.arange(100)]
         # same dtype and length: an in-place swap — the region is reused
         x2 = np.arange(100, dtype=np.float64) * 10
-        out = pool.map_run(pm, x=x2)
+        out = pm.run(x=x2)
         assert [float(v) for v in out] == [float(v) for v in x2]
         assert pm._name == name
     finally:
@@ -501,9 +552,9 @@ def test_map_prepared_swap_x_template(pool):
         scalar_double, np.arange(100, dtype=np.float64), template=np.empty(1)
     )
     try:
-        np.testing.assert_array_equal(pool.map_run(pm), np.arange(100) * 2.0)
+        np.testing.assert_array_equal(pm.run(), np.arange(100) * 2.0)
         name = pm._name
-        out = pool.map_run(pm, x=np.ones(100))
+        out = pm.run(x=np.ones(100))
         np.testing.assert_array_equal(out, np.ones(100) * 2.0)
         assert pm._name == name
     finally:
@@ -513,22 +564,22 @@ def test_map_prepared_swap_x_template(pool):
 def test_map_prepared_replace_x_restages(pool):
     pm = pool.map_prepare(identity, np.arange(50, dtype=np.float64))
     try:
-        pool.map_run(pm)
+        pm.run()
         name = pm._name
         # a dtype change restages even at the same length
-        out = pool.map_run(pm, x=np.arange(50, dtype=np.int32))
+        out = pm.run(x=np.arange(50, dtype=np.int32))
         assert [int(v) for v in out] == list(range(50))
         assert pm._name != name
         # a different length restages
-        out = pool.map_run(pm, x=np.arange(10, dtype=np.float64))
+        out = pm.run(x=np.arange(10, dtype=np.float64))
         assert [float(v) for v in out] == [float(v) for v in np.arange(10)]
         # a non-buffer x restages onto the descriptor path
-        assert pool.map_run(pm, x=[1, 2, 3]) == [1, 2, 3]
+        assert pm.run(x=[1, 2, 3]) == [1, 2, 3]
         # and a raw-buffer x stages again afterwards
-        out = pool.map_run(pm, x=np.ones(4))
+        out = pm.run(x=np.ones(4))
         assert [float(v) for v in out] == [1.0] * 4
         # an empty replacement short-circuits
-        assert pool.map_run(pm, x=[]) == []
+        assert pm.run(x=[]) == []
     finally:
         pm.close()
 
@@ -539,25 +590,12 @@ def test_map_prepared_closed(pool):
     pm.close()
     assert pm.closed
     with pytest.raises(pymizu.MizuError):
-        pool.map_run(pm)
-
-
-def test_map_prepared_wrong_pool(pool):
-    other = pymizu.Pool.create(1)
-    try:
-        pm = other.map_prepare(square, [1])
-        try:
-            with pytest.raises(ValueError):
-                pool.map_run(pm)
-        finally:
-            pm.close()
-    finally:
-        other.stop()
+        pm.run()
 
 
 def test_map_prepared_context_manager(pool):
     with pool.map_prepare(square, [3]) as pm:
-        assert pool.map_run(pm) == [9]
+        assert pm.run() == [9]
     assert pm.closed
 
 
@@ -628,7 +666,7 @@ def test_map_spec_template_and_view(pool):
 def test_map_spec_seed_determinism(pool):
     fn = pymizu.call(source="import random\nrandom.random()")
     a = pool.map(fn, list(range(50)), seed=42)
-    b = pool.map(fn, list(range(50)), seed=42, chunks=7)
+    b = pool.map(fn, list(range(50)), seed=42, n_chunks=7)
     assert a == b
     # the split-map contract, and parity with the native derivation
     x = list(range(70))
@@ -650,9 +688,9 @@ def test_map_spec_prepared(pool):
     )
     try:
         name = pm._name
-        r1 = pool.map_run(pm)
+        r1 = pm.run()
         assert pm._name == name
-        r2 = pool.map_run(pm)
+        r2 = pm.run()
         assert pm._name == name
         # the prepared seed re-arms per run: identical streams
         assert r1 == r2

@@ -160,10 +160,26 @@ def test_recv_timeout(echo):
 def test_sentinels():
     for s in (pymizu.FULL, pymizu.TIMEOUT, pymizu.CLOSED, pymizu.PEER_GONE):
         assert pymizu.is_sentinel(s)
+        assert type(s) is pymizu.Sentinel
         assert not s
         assert repr(s).startswith("pymizu.")
     assert not pymizu.is_sentinel("timeout")
     assert not pymizu.is_sentinel(None)
+
+
+def test_channel_iter(echo):
+    echo.send_batch([1, 2, 3])
+    it = iter(echo)
+    assert [next(it) for _ in range(3)] == [1, 2, 3]
+
+
+def test_channel_iter_until_peer_close():
+    # the peer exits after sending; its close drains the ring first
+    ch = pymizu.Channel.create("ch.send_batch([1, 2, 3])")
+    try:
+        assert list(ch) == [1, 2, 3]
+    finally:
+        ch.close()
 
 
 def test_send_full():

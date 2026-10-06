@@ -59,6 +59,30 @@ def test_pool_direct_init():
         pymizu.Pool()
 
 
+def test_exception_interop_bases():
+    assert issubclass(pymizu.ShmError, pymizu.MizuError)
+    assert issubclass(pymizu.ShmError, OSError)
+    assert issubclass(pymizu.SubmitTimeoutError, pymizu.MizuError)
+    assert issubclass(pymizu.SubmitTimeoutError, TimeoutError)
+
+
+def test_prepared_map_export_and_close():
+    assert "PreparedMap" in pymizu.__all__
+    with pymizu.Pool.create(1) as pool:
+        pm = pool.map_prepare(abs, [-1, -2])
+        assert isinstance(pm, pymizu.PreparedMap)
+        assert not pm.closed
+        pm.close()
+        assert pm.closed
+        with pytest.raises(pymizu.MizuError, match="closed"):
+            pm.run()
+
+
+def test_prepared_map_direct_init():
+    with pytest.raises(TypeError, match="pool must be"):
+        pymizu.PreparedMap(object(), abs, [1])
+
+
 def test_channel_attach_bad_token():
     with pytest.raises(ValueError, match="malformed join token"):
         pymizu.Channel.attach("nope")

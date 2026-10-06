@@ -96,7 +96,7 @@ def test_seed_invariance_within_r(r_pool):
     # batching- and steal-order invariance holds within a worker language
     fn = pymizu.call(source="runif(1)")
     a = r_pool.map(fn, list(range(30)), seed=42)
-    b = r_pool.map(fn, list(range(30)), seed=42, chunks=7)
+    b = r_pool.map(fn, list(range(30)), seed=42, n_chunks=7)
     assert a == b
     # the split-map contract across the neutral pair
     x = list(range(40))
@@ -119,9 +119,9 @@ def test_prepared_spec_map_re_arms_without_restage(r_pool):
     )
     try:
         name = pm._name
-        r1 = r_pool.map_run(pm)
+        r1 = pm.run()
         assert pm._name == name
-        r2 = r_pool.map_run(pm)
+        r2 = pm.run()
         assert pm._name == name
         # the prepared seed re-arms per run: identical streams
         assert r1 == r2
@@ -158,7 +158,7 @@ def test_a_dead_r_workers_lost_set_scan():
             p.map(
                 pymizu.call(source="Sys.sleep(0.2)\nx"),
                 list(range(40)),
-                chunks=8,
+                n_chunks=8,
             )
         killer.join(30)
         # the lost ranges are 0-based half-open and cover the dead
