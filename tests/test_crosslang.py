@@ -1844,7 +1844,7 @@ mizu::mizu_recv(ch, timeout = 60)
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         f = ch.recv(60)
-        pf = pl.from_arrow(f)
+        pf = _pl_from_arrow_frame(pl, f)
         assert pf.schema == {"x": pl.Int32, "y": pl.Float64, "s": pl.String}
         assert pf["x"].null_count() == 1 and pf["s"].null_count() == 100000
         spans = pymizu._pymizu._debug_export_spans()
@@ -1881,7 +1881,7 @@ def test_r_peer_frame_export_survives_frame(r_mizu):
         assert set(pymizu._pymizu._debug_export_spans()) == before
         v = f.to_dict()["x"].base
         assert _settled_refcount(v) == 1
-        pf = pl.from_arrow(f)
+        pf = _pl_from_arrow_frame(pl, f)
         assert v.refcount == 2          # + the export's acquisition
         del f, v
         gc.collect()
@@ -1977,6 +1977,14 @@ mizu::mizu_recv(ch, timeout = 60)
         assert "not portable" in ch.recv(30)
     finally:
         ch.close()
+
+
+def _pl_from_arrow_frame(pl, f):
+    """DataFrame off a frame's Arrow stream: polars >= 2.0 hands a
+    stream-only producer back as a struct Series — unnest restores the
+    columns (still zero-copy, the fields alias the same buffers)."""
+    pf = pl.from_arrow(f)
+    return pf.struct.unnest() if isinstance(pf, pl.Series) else pf
 
 
 def _polars_col_buffers(pf):
