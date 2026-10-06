@@ -440,7 +440,9 @@ class Pool:
         slots = list(range(workers))
         try:
             _launch_workers(
-                h, launcher or _default_worker_launcher(), slots,
+                h,
+                launcher or _default_worker_launcher(),
+                slots,
                 startup_timeout,
             )
         except StartupError:
@@ -563,6 +565,7 @@ class Pool:
         timeout: float | None = None,
         template: _Any = None,
         collect: str | None = None,
+        stream: bool = False,
     ) -> list[_Any] | _pymizu._Sentinel | _Any:
         """Map ``fn`` over the elements of ``x`` on the pool; return the
         results as a list in input order.
@@ -620,6 +623,29 @@ class Pool:
         it zero-copy, with the map region's teardown deferred to the
         view's.
 
+        With ``stream=True``, the map never stages the whole of ``x``
+        into shared memory: it streams slices of ``x`` to workers as they
+        take work; the return value is unchanged. Fixed x-slices ride
+        ordinary chunk tasks under a sliding submit/collect window of at
+        most ``min(chunks, 2 * live workers, free result slots)``
+        outstanding tasks, so shared-memory residency is bounded by
+        ``window x slice`` instead of ``sizeof(x)`` — with the default
+        chunk count (``min(len(x), 32 * live workers)``) that is roughly
+        ``(2 * workers) / chunks`` of the serialized ``x``. ``chunks=``
+        overrides the chunk count outright (``chunks=len(x)`` is the
+        mirai-style extreme of one element per task). Everything else —
+        result order, ``template`` and ``collect``, ``seed`` invariance,
+        the error taxonomy — is exactly the non-streaming map's.
+        Fail-fast latency coarsens from about one adaptive morsel batch
+        to about one chunk (the bound moves with ``chunks``), the
+        adaptive batch sizing of the morsel machinery is lost (skew
+        mitigation is to raise ``chunks``), and slices cross via the
+        serialized tiers, so per-chunk staging costs an ordinary submit's
+        serialization rather than the raw section's zero-copy slicing. A
+        streaming map always stages its descriptor region and needs
+        same-language workers: a :class:`pymizu.call` spec as ``fn``
+        raises TypeError.
+
         A task error re-raises as TaskError carrying the failing element's
         0-based ``index``; failure is fail-fast (peers stop within about
         one batch). Worker death raises WorkerDiedError carrying the lost
@@ -630,8 +656,17 @@ class Pool:
         from pymizu import _map
 
         return _map.pool_map(
-            self, fn, x, args, kwargs, chunks, seed, timeout, template,
+            self,
+            fn,
+            x,
+            args,
+            kwargs,
+            chunks,
+            seed,
+            timeout,
+            template,
             collect,
+            stream,
         )
 
     def map_prepare(
@@ -649,6 +684,7 @@ class Pool:
         | None = None,
         template: _Any = None,
         collect: str | None = None,
+        stream: bool = False,
     ) -> _Any:
         """Stage a map once for repeated runs; return a map handle.
 
@@ -657,13 +693,25 @@ class Pool:
         worker-side attach are paid once here; each ``map_run`` re-arms in
         O(1) and reuses the workers' cached contexts. A run collected with
         ``collect="view"`` hands its region to the view, so the next run
-        restages into a fresh one. Close the handle (or use it as a
-        context manager) to unlink the region.
+        restages into a fresh one. With ``stream=True`` the staged ``x``
+        stays submitter-side, so a ``map_run`` replacement ``x`` of any
+        shape simply re-slices — only a length change under ``template``
+        restages (the output area is sized for the staged length). Close
+        the handle (or use it as a context manager) to unlink the region.
         """
         from pymizu import _map
 
         return _map.PreparedMap(
-            self, fn, x, args, kwargs, chunks, seed, template, collect
+            self,
+            fn,
+            x,
+            args,
+            kwargs,
+            chunks,
+            seed,
+            template,
+            collect,
+            stream,
         )
 
     def map_run(
@@ -711,7 +759,9 @@ class Pool:
             )
         slots = free[:n]
         _launch_workers(
-            self._h, launcher or _default_worker_launcher(), slots,
+            self._h,
+            launcher or _default_worker_launcher(),
+            slots,
             startup_timeout,
         )
         return slots
