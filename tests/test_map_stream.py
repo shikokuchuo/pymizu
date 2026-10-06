@@ -14,8 +14,8 @@ from tests.helpers import (
     map_ctx_names,
     pair_up,
     rand_elt,
-    scale_add,
     scalar_double,
+    scale_add,
     sleep_ident,
     sleep_on,
     square,
@@ -153,7 +153,7 @@ def test_stream_list_x_shallow(pool):
     out = pool.map(identity, x, stream=True)
     assert out == x
     # the submitter-side slice aliases; the elements then cross serialized
-    assert all(a is not b and a == b for a, b in zip(out, x))
+    assert all(a is not b and a == b for a, b in zip(out, x, strict=True))
 
 
 def test_stream_prepared(pool):
