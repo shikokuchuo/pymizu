@@ -109,6 +109,25 @@ result
 With a template, `collect="copy"` (the default) returns the output as one numpy array of shape `(n, m)` -- `(n,)` when `m == 1` -- or a memoryview when numpy is not installed. `collect="view"` returns the shared output area itself as a read-only zero-copy view, and the shared memory is released when the view is garbage-collected. The view exports `__arrow_c_array__`, so an Arrow consumer such as pyarrow or polars wraps it without numpy. With numpy, reach the view through the result's `.base` (`arr.base` when `m == 1`, one link deeper when `m > 1`). Without numpy, it is `mv.obj` on the memoryview.
 
 
+# Streaming maps
+
+With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most `min(chunks, 2 * live workers, free result slots)` outstanding tasks, so shared-memory residency is bounded by `window x slice` instead of `sizeof(x)`. The chunk count defaults to `min(len(x), 32 * live workers)` and `chunks=` overrides it outright.
+
+
+``` python
+with pymizu.Pool.create(4) as pool:
+    result = pool.map(abs, range(-5, 5), stream=True)
+
+result
+```
+
+
+    [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
+
+
+Everything else -- ordering, `template=` and `collect=`, `seed=` invariance, the error taxonomy -- is exactly the non-streaming map's. Two trade-offs come with fixed chunks: the adaptive batch sizing is lost (raise `chunks=` to mitigate skew), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` raises `TypeError`.
+
+
 # Prepared maps
 
 `pool.map_prepare()` prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each `pool.map_run()` then costs only the task submissions and the collection, and reuses each worker's cached map context:
@@ -127,7 +146,7 @@ with pymizu.Pool.create(4) as pool:
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
 
-`map_run(m, x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
+`map_run(m, x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape simply re-slices; only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
 
 
 # Outcomes

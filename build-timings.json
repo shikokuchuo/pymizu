@@ -1,390 +1,390 @@
 {
-  "build_time": "2026-10-05T22:35:52Z",
-  "total_seconds": 82.844,
+  "build_time": "2026-10-06T14:22:07Z",
+  "total_seconds": 69.806,
   "pages": [
     {
       "page": "user-guide/pools.qmd",
-      "seconds": 20.408,
+      "seconds": 17.388,
       "frozen": true
     },
     {
       "page": "index.qmd",
-      "seconds": 7.37,
+      "seconds": 7.331,
       "frozen": true
     },
     {
       "page": "user-guide/map.qmd",
-      "seconds": 7.305,
+      "seconds": 6.801,
+      "frozen": true
+    },
+    {
+      "page": "user-guide/channels.qmd",
+      "seconds": 2.513,
       "frozen": true
     },
     {
       "page": "code-of-conduct.qmd",
-      "seconds": 3.236,
+      "seconds": 2.406,
       "frozen": false
-    },
-    {
-      "page": "user-guide/channels.qmd",
-      "seconds": 3.09,
-      "frozen": true
     },
     {
       "page": "user-guide/installation.qmd",
-      "seconds": 0.849,
-      "frozen": false
-    },
-    {
-      "page": "user-guide/interop.qmd",
-      "seconds": 0.785,
-      "frozen": false
-    },
-    {
-      "page": "reference/index.qmd",
-      "seconds": 0.725,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.map.qmd",
-      "seconds": 0.635,
-      "frozen": false
-    },
-    {
-      "page": "reference/set_default_pool.qmd",
-      "seconds": 0.61,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.create.qmd",
-      "seconds": 0.609,
-      "frozen": false
-    },
-    {
-      "page": "reference/MizuError.qmd",
-      "seconds": 0.598,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.token.qmd",
-      "seconds": 0.587,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.attach.qmd",
-      "seconds": 0.586,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.create.qmd",
-      "seconds": 0.586,
-      "frozen": false
-    },
-    {
-      "page": "reference/Task.qmd",
-      "seconds": 0.586,
-      "frozen": false
-    },
-    {
-      "page": "reference/r_pool_launcher.qmd",
-      "seconds": 0.586,
-      "frozen": false
-    },
-    {
-      "page": "reference/prune.qmd",
-      "seconds": 0.585,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.__exit__.qmd",
-      "seconds": 0.584,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.alive.qmd",
-      "seconds": 0.581,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.submit.qmd",
-      "seconds": 0.58,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.recv_batch.qmd",
-      "seconds": 0.579,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.__exit__.qmd",
-      "seconds": 0.579,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.map_prepare.qmd",
-      "seconds": 0.579,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.attach.qmd",
-      "seconds": 0.578,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.__enter__.qmd",
-      "seconds": 0.577,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.trace.qmd",
-      "seconds": 0.577,
-      "frozen": false
-    },
-    {
-      "page": "reference/call.qmd",
-      "seconds": 0.577,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.collect_any.qmd",
-      "seconds": 0.576,
-      "frozen": false
-    },
-    {
-      "page": "reference/default_pool.qmd",
-      "seconds": 0.576,
-      "frozen": false
-    },
-    {
-      "page": "reference/Frame.__len__.qmd",
-      "seconds": 0.575,
+      "seconds": 0.7,
       "frozen": false
     },
     {
       "page": "reference/Channel.__enter__.qmd",
-      "seconds": 0.574,
+      "seconds": 0.624,
       "frozen": false
     },
     {
-      "page": "reference/Channel.close.qmd",
-      "seconds": 0.574,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.send.qmd",
-      "seconds": 0.574,
-      "frozen": false
-    },
-    {
-      "page": "reference/Frame.__arrow_c_stream__.qmd",
-      "seconds": 0.574,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.qmd",
-      "seconds": 0.573,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.retire.qmd",
-      "seconds": 0.572,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.status.qmd",
-      "seconds": 0.572,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.recv.qmd",
-      "seconds": 0.571,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.send_batch.qmd",
-      "seconds": 0.571,
-      "frozen": false
-    },
-    {
-      "page": "reference/DeclinedError.qmd",
-      "seconds": 0.571,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.collect_all.qmd",
-      "seconds": 0.571,
-      "frozen": false
-    },
-    {
-      "page": "reference/is_remote_error.qmd",
-      "seconds": 0.571,
-      "frozen": false
-    },
-    {
-      "page": "reference/CancelledError.qmd",
-      "seconds": 0.57,
+      "page": "user-guide/interop.qmd",
+      "seconds": 0.601,
       "frozen": false
     },
     {
       "page": "reference/Channel.info.qmd",
-      "seconds": 0.57,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.destroy.qmd",
-      "seconds": 0.569,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.qmd",
-      "seconds": 0.569,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.submit_batch.qmd",
-      "seconds": 0.569,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.dump.qmd",
-      "seconds": 0.568,
-      "frozen": false
-    },
-    {
-      "page": "reference/Frame.__reduce__.qmd",
-      "seconds": 0.567,
-      "frozen": false
-    },
-    {
-      "page": "reference/Frame.qmd",
-      "seconds": 0.567,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.close_signal.qmd",
-      "seconds": 0.566,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.map_run.qmd",
-      "seconds": 0.565,
-      "frozen": false
-    },
-    {
-      "page": "reference/current_rng.qmd",
-      "seconds": 0.565,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.spawn_workers.qmd",
-      "seconds": 0.564,
-      "frozen": false
-    },
-    {
-      "page": "reference/Channel.token.qmd",
       "seconds": 0.563,
       "frozen": false
     },
     {
-      "page": "reference/SlotsExhaustedError.qmd",
-      "seconds": 0.562,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.stop.qmd",
-      "seconds": 0.561,
-      "frozen": false
-    },
-    {
-      "page": "reference/StartupError.qmd",
-      "seconds": 0.561,
-      "frozen": false
-    },
-    {
-      "page": "reference/Frame.to_dict.qmd",
-      "seconds": 0.56,
-      "frozen": false
-    },
-    {
       "page": "reference/ShmError.qmd",
-      "seconds": 0.56,
+      "seconds": 0.561,
       "frozen": false
     },
     {
-      "page": "reference/Pool.destroy.qmd",
-      "seconds": 0.557,
+      "page": "reference/index.qmd",
+      "seconds": 0.558,
       "frozen": false
     },
     {
-      "page": "reference/Pool.stats.qmd",
-      "seconds": 0.557,
-      "frozen": false
-    },
-    {
-      "page": "reference/r_launcher.qmd",
-      "seconds": 0.557,
-      "frozen": false
-    },
-    {
-      "page": "reference/using_pool.qmd",
-      "seconds": 0.557,
-      "frozen": false
-    },
-    {
-      "page": "reference/is_sentinel.qmd",
+      "page": "reference/Channel.send.qmd",
       "seconds": 0.556,
       "frozen": false
     },
     {
-      "page": "reference/StoppedError.qmd",
-      "seconds": 0.554,
+      "page": "reference/Channel.recv_batch.qmd",
+      "seconds": 0.533,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.alive.qmd",
+      "seconds": 0.526,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.send_batch.qmd",
+      "seconds": 0.512,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.attach.qmd",
+      "seconds": 0.51,
+      "frozen": false
+    },
+    {
+      "page": "reference/DeclinedError.qmd",
+      "seconds": 0.507,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.map.qmd",
+      "seconds": 0.504,
+      "frozen": false
+    },
+    {
+      "page": "reference/r_pool_launcher.qmd",
+      "seconds": 0.494,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.to_dict.qmd",
+      "seconds": 0.488,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.close_signal.qmd",
+      "seconds": 0.472,
       "frozen": false
     },
     {
       "page": "reference/current_pool.qmd",
-      "seconds": 0.553,
+      "seconds": 0.47,
       "frozen": false
     },
     {
-      "page": "reference/Frame.names.qmd",
-      "seconds": 0.552,
+      "page": "reference/Channel.create.qmd",
+      "seconds": 0.469,
       "frozen": false
     },
     {
-      "page": "reference/TaskError.qmd",
-      "seconds": 0.551,
+      "page": "reference/Task.qmd",
+      "seconds": 0.464,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.qmd",
+      "seconds": 0.462,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.submit_batch.qmd",
+      "seconds": 0.461,
+      "frozen": false
+    },
+    {
+      "page": "reference/is_remote_error.qmd",
+      "seconds": 0.461,
+      "frozen": false
+    },
+    {
+      "page": "reference/MizuError.qmd",
+      "seconds": 0.458,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.__enter__.qmd",
+      "seconds": 0.456,
+      "frozen": false
+    },
+    {
+      "page": "reference/CancelledError.qmd",
+      "seconds": 0.455,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.collect_all.qmd",
+      "seconds": 0.455,
+      "frozen": false
+    },
+    {
+      "page": "reference/call.qmd",
+      "seconds": 0.454,
+      "frozen": false
+    },
+    {
+      "page": "reference/is_sentinel.qmd",
+      "seconds": 0.453,
+      "frozen": false
+    },
+    {
+      "page": "reference/prune.qmd",
+      "seconds": 0.453,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.attach.qmd",
+      "seconds": 0.452,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.recv.qmd",
+      "seconds": 0.452,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.__exit__.qmd",
+      "seconds": 0.451,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.destroy.qmd",
+      "seconds": 0.451,
+      "frozen": false
+    },
+    {
+      "page": "reference/StartupError.qmd",
+      "seconds": 0.448,
+      "frozen": false
+    },
+    {
+      "page": "reference/current_rng.qmd",
+      "seconds": 0.448,
+      "frozen": false
+    },
+    {
+      "page": "reference/default_pool.qmd",
+      "seconds": 0.448,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.close.qmd",
+      "seconds": 0.447,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.spawn_workers.qmd",
+      "seconds": 0.447,
+      "frozen": false
+    },
+    {
+      "page": "reference/SlotsExhaustedError.qmd",
+      "seconds": 0.446,
+      "frozen": false
+    },
+    {
+      "page": "reference/set_default_pool.qmd",
+      "seconds": 0.446,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.__len__.qmd",
+      "seconds": 0.445,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.__reduce__.qmd",
+      "seconds": 0.445,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.qmd",
+      "seconds": 0.444,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.__exit__.qmd",
+      "seconds": 0.444,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.map_prepare.qmd",
+      "seconds": 0.443,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.stats.qmd",
+      "seconds": 0.442,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.qmd",
+      "seconds": 0.441,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.submit.qmd",
+      "seconds": 0.441,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.__arrow_c_stream__.qmd",
+      "seconds": 0.44,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.destroy.qmd",
+      "seconds": 0.44,
+      "frozen": false
+    },
+    {
+      "page": "reference/Channel.token.qmd",
+      "seconds": 0.439,
       "frozen": false
     },
     {
       "page": "reference/Frame.row_names.qmd",
-      "seconds": 0.55,
+      "seconds": 0.439,
       "frozen": false
     },
     {
-      "page": "reference/WorkerDiedError.qmd",
-      "seconds": 0.55,
+      "page": "reference/Pool.trace.qmd",
+      "seconds": 0.439,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.retire.qmd",
+      "seconds": 0.438,
+      "frozen": false
+    },
+    {
+      "page": "reference/r_launcher.qmd",
+      "seconds": 0.438,
+      "frozen": false
+    },
+    {
+      "page": "reference/using_pool.qmd",
+      "seconds": 0.438,
+      "frozen": false
+    },
+    {
+      "page": "reference/StoppedError.qmd",
+      "seconds": 0.437,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.collect_any.qmd",
+      "seconds": 0.436,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.map_run.qmd",
+      "seconds": 0.436,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.names.qmd",
+      "seconds": 0.434,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.create.qmd",
+      "seconds": 0.434,
+      "frozen": false
+    },
+    {
+      "page": "reference/TaskError.qmd",
+      "seconds": 0.434,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.stop.qmd",
+      "seconds": 0.431,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.dump.qmd",
+      "seconds": 0.43,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.status.qmd",
+      "seconds": 0.43,
+      "frozen": false
+    },
+    {
+      "page": "reference/Pool.token.qmd",
+      "seconds": 0.428,
       "frozen": false
     },
     {
       "page": "reference/SubmitTimeoutError.qmd",
-      "seconds": 0.549,
+      "seconds": 0.428,
+      "frozen": false
+    },
+    {
+      "page": "reference/WorkerDiedError.qmd",
+      "seconds": 0.424,
       "frozen": false
     },
     {
       "page": "skills.qmd",
-      "seconds": 0.497,
+      "seconds": 0.399,
       "frozen": false
     },
     {
       "page": "user-guide/benchmarks.qmd",
-      "seconds": 0.481,
+      "seconds": 0.392,
       "frozen": false
     },
     {
       "page": "package-info.qmd",
-      "seconds": 0.474,
+      "seconds": 0.373,
       "frozen": false
     },
     {
       "page": "license.qmd",
-      "seconds": 0.451,
+      "seconds": 0.349,
       "frozen": false
     }
   ]

@@ -17,8 +17,9 @@ Pool.map_prepare(
     seed=None,
     template=None,
     collect=None,
+    stream=False,
 )
 ```
 
 
-Takes the same arguments as [map](Pool.map.md#pymizu.Pool.map) (minus `timeout`, which is per-run). The descriptor pickle, the region create, and the worker-side attach are paid once here; each [map_run](Pool.map_run.md#pymizu.Pool.map_run) re-arms in O(1) and reuses the workers' cached contexts. A run collected with `collect="view"` hands its region to the view, so the next run restages into a fresh one. Close the handle (or use it as a context manager) to unlink the region.
+Takes the same arguments as [map](Pool.map.md#pymizu.Pool.map) (minus `timeout`, which is per-run). The descriptor pickle, the region create, and the worker-side attach are paid once here; each [map_run](Pool.map_run.md#pymizu.Pool.map_run) re-arms in O(1) and reuses the workers' cached contexts. A run collected with `collect="view"` hands its region to the view, so the next run restages into a fresh one. With `stream=True` the staged `x` stays submitter-side, so a [map_run](Pool.map_run.md#pymizu.Pool.map_run) replacement `x` of any shape simply re-slices -- only a length change under `template` restages (the output area is sized for the staged length). Close the handle (or use it as a context manager) to unlink the region.
