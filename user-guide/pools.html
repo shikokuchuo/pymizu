@@ -278,7 +278,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them. Workers claim tasks from per-submitter injection rings and steal work from each other, so the load balances itself. A submission is one shared-memory write plus at most one directed wake: no dispatcher process is in the loop.</p>
-<div id="1f867793" class="cell" data-execution_count="1">
+<div id="c9d01d64" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -330,7 +330,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="waiting-on-several-tasks" class="level1">
 <h1>Waiting on several tasks</h1>
 <p><code>pool.collect_any()</code> waits on a list of task handles and returns <code>(index, value)</code> for the first to reach a terminal state — the other handles stay collectible. <code>pool.collect_all()</code> returns every value in input order once all are terminal. Both take one overall <code>timeout</code> and return the <code>TIMEOUT</code> sentinel on expiry, consuming nothing:</p>
-<div id="458230e0" class="cell" data-execution_count="2">
+<div id="13e52ca3" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> time</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
@@ -342,7 +342,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>(1, 6)</code></pre>
 </div>
 </div>
-<div id="628b573f" class="cell" data-execution_count="3">
+<div id="fb3b60ea" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> pool.collect_all(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -357,7 +357,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="nested-tasks" class="level1">
 <h1>Nested tasks</h1>
 <p>Inside a task, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a> returns the evaluating worker’s own handle. A nested submit pushes straight onto the worker’s own work-stealing deque — no ring, no wake. A worker waiting on a nested result executes other work instead of sleeping, so divide-and-conquer runs at fork/join cost and never deadlocks the pool:</p>
-<div id="86968458" class="cell" data-execution_count="4">
+<div id="ae61d1cc" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fan_out(parts):</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pymizu.current_pool()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    subs <span class="op">=</span> [pool.submit(<span class="bu">sum</span>, part) <span class="cf">for</span> part <span class="kw">in</span> parts]</span>
@@ -379,7 +379,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>A default pool for package code</h1>
 <p>Package code can read a process-wide default pool with <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">pymizu.default_pool()</a>. <code>pymizu.set_default_pool(pool)</code> sets it — <code>None</code> clears it — and returns the previous default, so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted. <code>pymizu.using_pool(pool)</code> scopes the default to a with block, restoring the previous default on exit, including on exception.</p>
 <p>Resolve an optional pool in this order: an explicit <code>pool</code> argument, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a> inside a task, <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then your own fallback — sequential execution or an error. The default never overrides <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a>: inside a task the worker’s own handle wins, so nested submission is never shadowed. Setting a default checks the type only — a stopped pool is accepted and fails at use time — and handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link gdls-code">Pool.attach()</a> are valid defaults.</p>
-<div id="09504fba" class="cell" data-execution_count="5">
+<div id="7171b261" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> run(x, pool<span class="op">=</span><span class="va">None</span>):</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pool <span class="kw">or</span> pymizu.current_pool() <span class="kw">or</span> pymizu.default_pool()</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> pool <span class="kw">is</span> <span class="va">None</span>:</span>
@@ -413,7 +413,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="concurrent.futures-interop" class="level1">
 <h1>concurrent.futures interop</h1>
 <p><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">pymizu.PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface, so code written against <code>ProcessPoolExecutor</code> drops in: <code>submit</code> returns real <code>concurrent.futures.Future</code> objects, and <code>wait</code> / <code>as_completed</code> / <code>asyncio.wrap_future</code> / the base <code>Executor.map</code> all work unchanged.</p>
-<div id="7c88e8eb" class="cell" data-execution_count="6">
+<div id="828dcc7d" class="cell" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
 <span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
