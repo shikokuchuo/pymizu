@@ -72,6 +72,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
 <link href="../user-guide/pools.html" rel="next">
+<link href="../user-guide/benchmarks.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -117,6 +118,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script>document.head.appendChild(Object.assign(document.createElement('link'),{rel:'stylesheet',href:(document.querySelector('meta[name="quarto:offset"]')||{content:''}).content+'gd-lightbox-annotate.css'}));</script>
 <script>(function(){var s=document.createElement('script');var m=document.querySelector('meta[name="quarto:offset"]');s.src=(m?m.content:'')+'gd-lightbox-annotate.js';s.defer=true;document.head.appendChild(s);})();</script>
 <script src="../theme-init.js"></script>
+<meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.65">
 
 
   <link rel="alternate" type="text/markdown" href="channels.md">
@@ -195,6 +197,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <ul id="quarto-sidebar-section-1" class="list-unstyled sidebar-section depth1 show">  
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../user-guide/benchmarks.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Benchmarks</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../user-guide/channels.html" class="sidebar-item-text sidebar-link active">
  <span class="menu-text">Channels</span></a>
   </div>
@@ -223,12 +231,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../user-guide/installation.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Installation</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../user-guide/benchmarks.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Benchmarks</span></a>
   </div>
 </li>
     </ul>
@@ -275,7 +277,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="creating-a-channel" class="level1">
 <h1>Creating a channel</h1>
 <p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns the peer process and connects both ends. The peer program is a Python source string, evaluated in the peer with <code>ch</code> bound to its side of the channel:</p>
-<div id="3582a430" class="cell" data-execution_count="1">
+<div id="82a88fc1" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -293,7 +295,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="sending-and-receiving" class="level1">
 <h1>Sending and receiving</h1>
 <p><code>ch.send()</code> publishes a value, visible to the peer the moment the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next value, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
-<div id="cd69c6f3" class="cell" data-execution_count="2">
+<div id="583562f7" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
@@ -329,7 +331,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </table>
 <p>Test them by identity — <code>x is pymizu.TIMEOUT</code> — or with <code>pymizu.is_sentinel(x)</code>. No call needs an error handler. If the peer dies, receives first drain what it already sent, then report <code>PEER_GONE</code>.</p>
 <p><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="gdls-link gdls-code">send_batch()</a> and <a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="gdls-link gdls-code">recv_batch()</a> move several values in one call. Use them at rates where the per-call overhead starts to matter:</p>
-<div id="3d69907f" class="cell" data-execution_count="3">
+<div id="2130af89" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch(<span class="bu">range</span>(<span class="dv">4</span>))</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>ch.recv_batch(<span class="dv">4</span>, timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="3">
@@ -341,7 +343,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="closing" class="level1">
 <h1>Closing</h1>
 <p><code>ch.close()</code> is the orderly shutdown: it signals the peer and waits for it to finish draining before releasing the shared resources:</p>
-<div id="b5c2ed81" class="cell" data-execution_count="4">
+<div id="7550a137" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="4">
 <pre><code>True</code></pre>
@@ -710,6 +712,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   </script>
 <nav class="page-navigation">
   <div class="nav-page nav-page-previous">
+      <a href="../user-guide/benchmarks.html" class="pagination-link" aria-label="Benchmarks">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Benchmarks</span>
+      </a>          
   </div>
   <div class="nav-page nav-page-next">
       <a href="../user-guide/pools.html" class="pagination-link" aria-label="Task pools">

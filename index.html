@@ -116,6 +116,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script>document.head.appendChild(Object.assign(document.createElement('link'),{rel:'stylesheet',href:(document.querySelector('meta[name="quarto:offset"]')||{content:''}).content+'gd-lightbox-annotate.css'}));</script>
 <script>(function(){var s=document.createElement('script');var m=document.querySelector('meta[name="quarto:offset"]');s.src=(m?m.content:'')+'gd-lightbox-annotate.js';s.defer=true;document.head.appendChild(s);})();</script>
 <script src="theme-init.js"></script>
+<meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.65">
 
 
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/">
@@ -260,6 +261,11 @@ section.level2:first-of-type > h2:first-child,
 <p>The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.</p>
 <p>pymizu is built on <a href="https://github.com/shikokuchuo/libmizu">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/mizu">mizu</a> binds the same core for R, so Python and R processes can share a channel.</p>
 <p>Pre-release. The API is not stable and may change at any time before a release.</p>
+<section id="use-cases" class="level2">
+<h2 class="anchored" data-anchor-id="use-cases">Use cases</h2>
+<p><strong>Parallelize Python at thread granularity.</strong> The stdlib process pools spend around 100 µs per task on pickling and a socket round trip, so anything finer than coarse jobs runs faster serially. pymizu hands off a task in shared memory and wakes one worker — overhead under a microsecond — so functions measured in microseconds parallelize profitably across cores. See <a href="./user-guide/benchmarks.html">Benchmarks</a>.</p>
+<p><strong>Orchestrate R workers from Python.</strong> <a href="./reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">pymizu.r_launcher()</a> and <a href="./reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">pymizu.r_pool_launcher()</a> spawn R processes as channel peers or pool workers, driven by <a href="./reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> specs. Data crosses as shared-memory views rather than serialized copies — a numpy array arrives in R as a vector, and results come back the same way — so a Python program can use R’s package ecosystem as if it were local. See <a href="./user-guide/interop.html">R interop</a>.</p>
+</section>
 <section id="installation" class="level2">
 <h2 class="anchored" data-anchor-id="installation">Installation</h2>
 <div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install git+https://github.com/shikokuchuo/pymizu</span></code></pre></div>
@@ -268,7 +274,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="channels" class="level2">
 <h2 class="anchored" data-anchor-id="channels">Channels</h2>
 <p><a href="./reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with <code>ch</code> bound to the peer-side handle:</p>
-<div id="be54f315" class="cell" data-execution_count="1">
+<div id="6ebabdac" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -285,7 +291,7 @@ section.level2:first-of-type > h2:first-child,
 <pre><code>[1, 'a', None]</code></pre>
 </div>
 </div>
-<div id="b276e713" class="cell" data-execution_count="2">
+<div id="299eda4a" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
 <pre><code>True</code></pre>
@@ -296,7 +302,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="task-pools" class="level2">
 <h2 class="anchored" data-anchor-id="task-pools">Task pools</h2>
 <p><a href="./reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop. <code>pool.submit()</code> returns a task handle immediately; <code>task.collect()</code> waits for its result:</p>
-<div id="f8cad937" class="cell" data-execution_count="3">
+<div id="99dc7cab" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -311,7 +317,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="parallel-map" class="level2">
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:</p>
-<div id="e38f8524" class="cell" data-execution_count="4">
+<div id="10c09ef4" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -325,11 +331,11 @@ section.level2:first-of-type > h2:first-child,
 <section id="where-next" class="level2">
 <h2 class="anchored" data-anchor-id="where-next">Where next</h2>
 <ul>
+<li><a href="./user-guide/benchmarks.html">Benchmarks</a> — overhead against the stdlib pools.</li>
 <li><a href="./user-guide/channels.html">Channels</a> — sending and receiving, batch operations, and what crosses a channel.</li>
 <li><a href="./user-guide/pools.html">Task pools</a> — outcomes, nested tasks, growing and observing a pool.</li>
 <li><a href="./user-guide/map.html">Parallel map</a> — scheduling, reproducible randomness, templates, prepared maps.</li>
 <li><a href="./user-guide/interop.html">R interop</a> — R peers and workers, what crosses the language boundary, and the dtype matrix.</li>
-<li><a href="./user-guide/benchmarks.html">Benchmarks</a> — overhead against the stdlib pools.</li>
 <li><a href="./reference/index.html">API reference</a> — the generated function and class reference.</li>
 </ul>
 

@@ -118,6 +118,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <script>document.head.appendChild(Object.assign(document.createElement('link'),{rel:'stylesheet',href:(document.querySelector('meta[name="quarto:offset"]')||{content:''}).content+'gd-lightbox-annotate.css'}));</script>
 <script>(function(){var s=document.createElement('script');var m=document.querySelector('meta[name="quarto:offset"]');s.src=(m?m.content:'')+'gd-lightbox-annotate.js';s.defer=true;document.head.appendChild(s);})();</script>
 <script src="../theme-init.js"></script>
+<meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.65">
 
 
   <link rel="alternate" type="text/markdown" href="map.md">
@@ -196,6 +197,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <ul id="quarto-sidebar-section-1" class="list-unstyled sidebar-section depth1 show">  
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../user-guide/benchmarks.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Benchmarks</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../user-guide/channels.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channels</span></a>
   </div>
@@ -224,12 +231,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../user-guide/installation.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Installation</span></a>
-  </div>
-</li>
-        <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../user-guide/benchmarks.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Benchmarks</span></a>
   </div>
 </li>
     </ul>
@@ -274,7 +275,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the results as a list in input order. It is not a loop over <code>pool.submit()</code>. The function, its constant <code>args=</code>/<code>kwargs=</code>, and the data are written to shared memory once, and one <em>runner</em> task per worker divides up the elements:</p>
-<div id="0c9d5bb4" class="cell" data-execution_count="1">
+<div id="b83b4ece" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -289,7 +290,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>Scheduling</h1>
 <p>Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap <code>fn</code> runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. <code>chunks=</code> sets the batch size directly.</p>
 <p>A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes. Each worker views the same array in shared memory and reads its elements directly — <code>x</code> is never serialized:</p>
-<div id="ac4b67cd" class="cell" data-execution_count="2">
+<div id="ed7f1277" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -313,7 +314,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="reproducible-randomness" class="level1">
 <h1>Reproducible randomness</h1>
 <p><code>seed=</code> (an int or bytes) gives every element its own deterministic stream of the stdlib <code>random</code> module — element <code>i</code> is seeded from SHA-256 of the seed and <code>i</code>. Results are identical for any chunking, worker count, or steal order:</p>
-<div id="cda0f838" class="cell" data-execution_count="3">
+<div id="d45a3789" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> random</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw(i):</span>
@@ -329,7 +330,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <p>Pass <code>seed=(seed, offset)</code> to shift every element’s stream by <code>offset</code> positions, for maps split across runs or processes.</p>
 <p><code>seed=</code> covers the stdlib <code>random</code> module only. A task drawing from numpy calls <a href="../reference/current_rng.html#pymizu.current_rng" class="gdls-link gdls-code">pymizu.current_rng()</a> inside the task — the element’s own <code>numpy.random.Generator</code>, derived from the same seed and memoized per element:</p>
-<div id="9f065470" class="cell" data-execution_count="4">
+<div id="25a0c951" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> draw_np(i):</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> pymizu.current_rng().random()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -346,7 +347,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="templates" class="level1">
 <h1>Templates</h1>
 <p>A <code>template=</code> exemplar buffer (for example <code>np.empty(m, dtype=...)</code>) declares that every <code>fn</code> result is <code>m</code> values of that dtype. Workers write their results straight into a shared <code>n x m</code> output area, so each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer — or, when <code>m == 1</code>, a plain Python scalar:</p>
-<div id="8e43ad95" class="cell" data-execution_count="5">
+<div id="7657cc6d" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -362,7 +363,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="streaming-maps" class="level1">
 <h1>Streaming maps</h1>
 <p>With <code>stream=True</code>, the map never stages the whole of <code>x</code> into shared memory: it streams slices of <code>x</code> to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most <code>min(chunks, 2 * live workers, free result slots)</code> outstanding tasks, so shared-memory residency is bounded by <code>window x slice</code> instead of <code>sizeof(x)</code>. The chunk count defaults to <code>min(len(x), 32 * live workers)</code> and <code>chunks=</code> overrides it outright.</p>
-<div id="9c2fe1b8" class="cell" data-execution_count="6">
+<div id="9364ab8d" class="cell" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>), stream<span class="op">=</span><span class="va">True</span>)</span>
 <span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -376,7 +377,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="prepared-maps" class="level1">
 <h1>Prepared maps</h1>
 <p><code>pool.map_prepare()</code> prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each <code>pool.map_run()</code> then costs only the task submissions and the collection, and reuses each worker’s cached map context:</p>
-<div id="2519ea11" class="cell" data-execution_count="7">
+<div id="93a5b202" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> pool.map_prepare(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
 <span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pool.map_run(m))</span>
