@@ -5,6 +5,8 @@ collect_any (the position stamp defers to the envelope's element index),
 worker-death lost ranges, buffer x forms, prepared maps, and the
 unclean-run restage — over real spawned workers."""
 
+import pickle
+
 import pytest
 from tests.helpers import (
     fail_at,
@@ -22,6 +24,7 @@ from tests.helpers import (
 )
 
 import pymizu
+from pymizu import _map as _map_mod
 
 
 @pytest.fixture
@@ -131,6 +134,148 @@ def test_stream_timeout(pool):
     assert out is pymizu.TIMEOUT
     # the cancellation drained: the pool is usable immediately after
     assert pool.map(square, [2], timeout=15) == [4]
+
+
+def test_stream_timeout_at_prime(pool):
+    # a zero deadline expires at the first refill's pre-check
+    assert pool.map(square, list(range(8)), stream=True, timeout=0) is (
+        pymizu.TIMEOUT
+    )
+
+
+def test_stream_submit_ring_full_timeout():
+    # ring-full past the deadline is the map's timeout, not an error:
+    # both workers pinned, the two-slot ring never drains
+    p = pymizu.Pool.create(2, injection_cap=2)
+    try:
+        pin1 = p.submit(sleep_ident, 3.0)
+        pin2 = p.submit(sleep_ident, 3.0)
+        out = p.map(square, list(range(4)), stream=True, chunks=4, timeout=1)
+        assert out is pymizu.TIMEOUT
+        # the pins really ran (the workers were genuinely busy)
+        assert pin1.collect(timeout=15) == 3.0
+        assert pin2.collect(timeout=15) == 3.0
+        # and the cancellation drained: the pool is usable after
+        assert p.map(square, [2], timeout=15) == [4]
+    finally:
+        p.stop()
+
+
+def _stage_stream_region(fn, n):
+    desc = pickle.dumps((fn, (), {}), 4)
+    return pymizu._pymizu._map_stage(desc, None, n, 1, None)
+
+
+def test_stream_window_expired_at_collect(pool):
+    # the loop-head deadline check: refill passes, then expiry lands
+    name, capsule = _stage_stream_region(identity, 2)
+    handles = [None] * 2
+    script = iter([False, True])  # refill pre-check, then the loop head
+    try:
+        out = _map_mod._stream_window(
+            pool,
+            pymizu,
+            name,
+            [(0, 1), (1, 2)],
+            1,
+            None,
+            lambda lo, hi: [0, 1][lo:hi],
+            False,
+            lambda: None,
+            lambda: next(script, True),
+            handles,
+        )
+        assert out is pymizu.TIMEOUT
+    finally:
+        for h in handles:
+            if h is not None:
+                h.cancel()
+        pymizu._pymizu._map_close(capsule)
+
+
+def test_stream_window_expired_at_refill(pool):
+    # the post-completion refill's deadline check: one chunk completes,
+    # then the deadline expires before its replacement submits
+    name, capsule = _stage_stream_region(identity, 2)
+    handles = [None] * 2
+    # prime pre-check, the loop head, then the refill pre-check
+    script = iter([False, False, True])
+    try:
+        out = _map_mod._stream_window(
+            pool,
+            pymizu,
+            name,
+            [(0, 1), (1, 2)],
+            1,
+            None,
+            lambda lo, hi: [0, 1][lo:hi],
+            False,
+            lambda: None,
+            lambda: next(script, True),
+            handles,
+        )
+        assert out is pymizu.TIMEOUT
+    finally:
+        for h in handles:
+            if h is not None:
+                h.cancel()
+        pymizu._pymizu._map_close(capsule)
+
+
+class _FakeHandle:
+    """A drain-test stand-in for a task handle: cancel() no-ops, collect()
+    replays a canned terminal outcome."""
+
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def cancel(self):
+        pass
+
+    def collect(self, timeout=None):
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+def _task_error(index):
+    e = pymizu.TaskError(f"ValueError: element {index}")
+    e.index = index
+    return e
+
+
+def test_stream_fail_drains_sibling_errors():
+    # the drain harvests already-terminal siblings for the minimum
+    # element index selection, ignoring values and cancellations
+    first = _task_error(3)
+    handles = [
+        _FakeHandle(_task_error(5)),
+        None,  # an already-consumed slot reads as None
+        _FakeHandle(pymizu.CancelledError("cancelled")),
+        _FakeHandle([0]),
+    ]
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        _map_mod._stream_fail(
+            pymizu, handles, [0, 1, 2, 3],
+            [(0, 2), (2, 4), (4, 6), (6, 8)], first,
+        )
+    assert exc_info.value.index == 3
+
+
+def test_stream_fail_death_takes_precedence():
+    # a sibling death in the drain beats the observed error and reports
+    # the dead chunk's range
+    first = _task_error(3)
+    handles = [
+        _FakeHandle(_task_error(5)),
+        None,
+        _FakeHandle(pymizu.WorkerDiedError("worker died")),
+    ]
+    with pytest.raises(pymizu.WorkerDiedError) as exc_info:
+        _map_mod._stream_fail(
+            pymizu, handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
+        )
+    assert exc_info.value.lost == [(4, 6)]
 
 
 def test_stream_spec_fn_raises(pool):
