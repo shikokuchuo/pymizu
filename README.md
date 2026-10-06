@@ -13,14 +13,16 @@
 
 pymizu makes communication between Python processes cheap enough to divide work at granularities usually reserved for threads.
 
+Shared memory has always been the fastest IPC transport.
+A socket round trip costs four system calls and four copies of the data; in shared memory, one process reads the bytes the other wrote — the kernel never touches the data.
+pymizu handles the synchronization, waiting, and peer crashes for you, so a task round trip drops from around 100 µs over sockets to under a microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
+
 In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
 Processes also isolate failures: a worker that crashes does not take the host down with it.
 
 Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
-
 A channel is a two-way message link between a Python process and a helper process that it spawns.
 A pool is a set of worker processes that divide submitted tasks among themselves.
-In both, one process writes data and the other reads it in place, without copying through a socket, pipe, or file.
 
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
@@ -32,12 +34,14 @@ The API is not stable and may change at any time before a release.
 
 ## Use cases
 
-**Parallelize Python at thread granularity.**
-The stdlib process pools spend around 100 µs per task on pickling and a socket round trip, so anything finer than coarse jobs runs faster serially.
-pymizu hands off a task in shared memory and wakes one worker — overhead under a microsecond — so functions measured in microseconds parallelize profitably across cores.
+### Parallelize Python at thread granularity
+
+A task measured in microseconds costs more to pickle and move over a socket than to run, so the stdlib process pools only pay off for coarse jobs.
+pymizu hands off a task in shared memory and wakes one worker, so functions measured in microseconds parallelize profitably across cores.
 See [Benchmarks](#benchmarks).
 
-**Orchestrate R workers from Python.**
+### Orchestrate R workers from Python
+
 `pymizu.r_launcher()` and `pymizu.r_pool_launcher()` spawn R processes as channel peers or pool workers, driven by `pymizu.call()` specs.
 Data crosses as shared-memory views rather than serialized copies — a numpy array arrives in R as a vector, and results come back the same way — so a Python program can use R's package ecosystem as if it were local.
 See [R interop](#r-interop).
@@ -134,34 +138,23 @@ with pymizu.Pool.create(4) as pool:
 
 ## R interop
 
-A channel peer can be an R process that runs the [mizu](https://github.com/shikokuchuo/mizu) package, the R binding of the same core.
-Pass the peer program as R source, and set the launcher to `pymizu.r_launcher()`:
+Pool workers can be R processes that run the [mizu](https://github.com/shikokuchuo/mizu) package, the R binding of the same core.
+`pymizu.r_pool_launcher()` spawns them and `pymizu.call()` describes the task — here R's built-in `mtcars` summarized by R itself, read back into polars:
 
 ```python
+import polars as pl
 import pymizu
 
-ch = pymizu.Channel.create(
-    """
-library(mizu)
-repeat {
-  x <- mizu_recv(ch, timeout = 30)
-  if (inherits(x, "mizu_sentinel")) break
-  mizu_send(ch, x)
-}
-""",
-    launcher=pymizu.r_launcher(),
-)
-
-import numpy as np
-ch.send(np.array([1.5, 2.5, 3.5]))   # arrives in R as a numeric vector
-print(ch.recv(timeout=5))            # echoes back as a float64 array
-ch.close()
+with pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:
+    task = pool.submit(
+        pymizu.call(source="aggregate(mpg ~ cyl, data = mtcars, FUN = mean)")
+    )
+    print(pl.DataFrame(task.collect()))
 ```
 
-`r_launcher()` needs R and the `mizu` R package installed.
-If R or the package is missing, it raises `MizuError` before the channel is created.
-
-Pools mix too: `pymizu.r_pool_launcher()` spawns R workers, driven through the neutral task format of `pymizu.call()` specs.
+A numpy array arrives in R as a numeric vector and a polars, pyarrow, or pandas frame as a data.frame; a vector or data.frame arrives back as a numpy array or a `pymizu.Frame`.
+For a channel peer, pass the peer program as R source and set the launcher to `pymizu.r_launcher()`.
+The launchers need R and the `mizu` package installed; if either is missing they raise `MizuError` before anything is spawned.
 The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and the dtype matrix — is on the [R interop](https://shikokuchuo.net/pymizu/user-guide/interop.html) page.
 
 ## Documentation
