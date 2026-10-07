@@ -95,6 +95,7 @@ Methods for the Frame class
 - `Frame.names`
 - `Frame.row_names`
 - `Frame.to_dict`
+- `Frame.from_arrow`
 - `Frame.__arrow_c_stream__`
 - `Frame.__len__`
 - `Frame.__reduce__`

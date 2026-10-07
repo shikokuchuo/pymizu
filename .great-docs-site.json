@@ -92,6 +92,8 @@
     "reference/Frame.__len__.md",
     "reference/Frame.__reduce__.html",
     "reference/Frame.__reduce__.md",
+    "reference/Frame.from_arrow.html",
+    "reference/Frame.from_arrow.md",
     "reference/Frame.html",
     "reference/Frame.md",
     "reference/Frame.names.html",

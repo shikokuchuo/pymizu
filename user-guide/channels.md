@@ -98,6 +98,62 @@ Each end of a channel knows the peer's language. Between two Python processes th
 An uncaught error in the peer crosses as a value, not a raised exception: a [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) carrying the original exception's class name and traceback text. `pymizu.is_remote_error(x)` tests a received value. Raise it to propagate the error.
 
 
+# Frames without pickling
+
+Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default: container-exact, but a full serialize/parse round trip. [pymizu.Frame.from_arrow()](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) opts an Arrow producer into the frame path instead -- one shared-memory region on the wire, read in place at receive:
+
+
+``` python
+import pyarrow as pa
+
+with pymizu.Channel.create("""
+import pymizu
+while True:
+    x = ch.recv()
+    if x is pymizu.CLOSED:
+        break
+    ch.send(x)
+""") as ch2:
+    f = pymizu.Frame.from_arrow(
+        pa.table({"x": pa.array([1.5, None] * 100_000)})
+    )
+    ch2.send(f)
+    echoed = pa.table(ch2.recv(timeout=5))
+echoed.column("x").null_count
+```
+
+
+    100000
+
+
+Construction adopts the producer's own buffers wherever the frame's column layout *is* the Arrow layout -- a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap adopts with the values) -- so it copies nothing it does not have to:
+
+| Stage | Copies |
+|----|----|
+| producer → [Frame.from_arrow()](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) | 0 per adopted column; a per-column copy only where its type forces it |
+| `ch.send(f)` | 1 -- the layout write into the shared region (the region is the wire) |
+| `ch.recv()` | 0 -- the frame reads the region in place |
+| `pa.table(f)` | 0 -- the frame's [__arrow_c_stream__](../reference/Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__) exports borrowed buffers |
+
+Values cross exactly, but types normalize. A column also copies -- never declines -- where its type forces it:
+
+| In | Out (the received frame's Arrow export) |
+|----|----|
+| `string` | `large_string` |
+| `string_view` | `large_string` (copies) |
+| `bool` | `bool` (copies: bit-packed) |
+| int8 / int16 / uint16 | int32 (copies) |
+| uint32 / uint64 / half_float / float32 | float64 (copies) |
+| timestamp\[s / ms / ns\] | timestamp\[us\] (copies: rescaled) |
+| duration\[s / ms / ns\] | duration\[us\] (copies: rescaled) |
+| dictionary\<i32, utf8\> | dictionary\<i32, string\> (adopts; other index widths copy) |
+| chunked or sliced columns | concatenated or rebased (copies) |
+
+Chunked pyarrow tables adopt after `table.combine_chunks()`.
+
+Adopted buffers stay alive for the frame's lifetime (numpy-view semantics: a frame from a 4 GB table pins it), and [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a task argument rides the pickle path (the worker gets a copy); a frame returned from a task rides the shared-memory region as on a channel. [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not take a frame as its element source.
+
+
 # Sizing
 
 [Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) takes `capacity` (ring slots, a power of two), `slot_size` (bytes per slot -- the inline payload budget is `slot_size - 16`), and `arena_size` (the channel's spill arena). A value past the inline budget spills to the arena or a fresh shared-memory region. `spin=True` selects pure-spin waiting: receivers never park to the OS -- the lowest latency, at full CPU use while waiting.

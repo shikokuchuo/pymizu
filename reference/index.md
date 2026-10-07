@@ -180,6 +180,9 @@ Methods for the Frame class
 [Frame.to_dict()](Frame.to_dict.md#pymizu.Frame.to_dict)  
 to_dict() -\> dict
 
+[Frame.from_arrow()](Frame.from_arrow.md#pymizu.Frame.from_arrow)  
+from_arrow(obj) -\> Frame
+
 [Frame.__arrow_c_stream__()](Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__)  
 **arrow_c_stream**(requested_schema=None) -\> capsule
 
