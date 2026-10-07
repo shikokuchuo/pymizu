@@ -275,6 +275,20 @@ def test_dim_shape_orders_and_strides():
     assert got.dtype == np.bool_ and np.array_equal(got, bm)
 
 
+def test_dim_shape_tiled_gather():
+    # the 2-D transpose fast path, exercised across tile boundaries (32)
+    base = np.arange(70 * 41) % 251
+    for dt in (np.uint8, np.int32, np.float64, np.complex128):
+        m = base.astype(dt).reshape(70, 41)  # C-order
+        got = _read(_pymizu._write_stream(m))
+        assert got.flags.f_contiguous and np.array_equal(got, m)
+    # a conversion row (float32 -> REAL) through the same loops
+    m = base.astype(np.float32).reshape(70, 41)
+    got = _read(_pymizu._write_stream(m))
+    assert got.dtype == np.float64
+    assert np.array_equal(got, m.astype(np.float64))
+
+
 def test_nested_dim_leaf():
     got = _read(_pymizu._write_stream([np.arange(6).reshape(2, 3)]))
     assert len(got) == 1 and got[0].shape == (2, 3)

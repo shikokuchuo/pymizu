@@ -3121,8 +3121,49 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
   w->total += (size_t) n * row->w_out;
 }
 
+/* A 2-D transpose gather in 32x32 element tiles: the inner loop walks a
+   source column (stride s0) writing sequentially, the tile keeping both
+   the read and write footprints cache-resident, and pointer marching
+   replaces the generic walk's div/mod pair per element. Identity rows
+   take fixed-width copies (alignment-safe single load/store pairs, the
+   cvt_run discipline); conversion rows keep the per-element convert
+   call. */
+#define IXE_T2_TILE 32
+static void ixe_transpose2(uint8_t *dst, const uint8_t *src, uint64_t m,
+                           uint64_t n, int64_t s0, int64_t s1,
+                           const cvt_row *row, cvt_warn *warn) {
+  const uint64_t wo = row->w_out;
+  const int copy = row->cvt == CVT_COPY;
+  for (uint64_t j0 = 0; j0 < n; j0 += IXE_T2_TILE) {
+    const uint64_t j1 = n - j0 < IXE_T2_TILE ? n : j0 + IXE_T2_TILE;
+    for (uint64_t i0 = 0; i0 < m; i0 += IXE_T2_TILE) {
+      const uint64_t i1 = m - i0 < IXE_T2_TILE ? m : i0 + IXE_T2_TILE;
+      for (uint64_t j = j0; j < j1; j++) {
+        const uint8_t *sp = src + (int64_t) i0 * s0 + (int64_t) j * s1;
+        uint8_t *dp = dst + (i0 + j * m) * wo;
+        for (uint64_t i = i0; i < i1; i++) {
+          if (copy) {
+            switch (wo) {
+            case 1: memcpy(dp, sp, 1); break;
+            case 4: memcpy(dp, sp, 4); break;
+            case 8: memcpy(dp, sp, 8); break;
+            case 16: memcpy(dp, sp, 16); break;
+            default: memcpy(dp, sp, wo); break;
+            }
+          } else {
+            mizu_py_cvt_convert(dp, sp, NULL, 0, 1, row, warn);
+          }
+          sp += s0;
+          dp += wo;
+        }
+      }
+    }
+  }
+}
+
 /* A multi-dimensional array's body: the F-order memcpy when contiguous,
-   the transpose gather otherwise (each inside the one stage copy). */
+   the transpose gather otherwise — tiled for 2-D, the generic div/mod
+   walk past it (each inside the one stage copy). */
 static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
                         const int64_t *shape, const int64_t *strides,
                         const cvt_row *row) {
@@ -3144,6 +3185,9 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
     }
     if (f_contig) {
       mizu_py_cvt_convert(dst, src, NULL, 0, (size_t) total, row, &w->warn);
+    } else if (nd == 2) {
+      ixe_transpose2(dst, src, (uint64_t) shape[0], (uint64_t) shape[1],
+                     strides[0], strides[1], row, &w->warn);
     } else {
       for (uint64_t t = 0; t < total; t++) {
         uint64_t rem = t;
