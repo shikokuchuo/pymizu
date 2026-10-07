@@ -123,7 +123,7 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | uint32 | double | widened, exact |
 | int64 | integer64 (bit64's layout) | bit-exact; `INT64_MIN` reads as `NA` |
 | uint64 | double | exact to ±2^53; past it, `NA` plus one warning |
-| float32 / float64 | double |  |
+| float16 / float32 / float64 | double | float16 and float32 widened, exact |
 | bool | logical |  |
 | complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
 | Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
@@ -157,6 +157,7 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | int64 | integer64 | int64 | exact |
 | uint64, ≤ ±2^53 | double | float64 | dtype lost, values exact |
 | uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
+| float16 | double | float64 | widened, values exact |
 | float32 | double | float64 | widened, values exact |
 | float64 | double | float64 | exact |
 | bool | logical | `bool_` (int32 with NAs) | dtype lost |

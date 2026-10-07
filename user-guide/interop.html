@@ -410,9 +410,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>exact to ±2^53; past it, <code>NA</code> plus one warning</td>
 </tr>
 <tr class="odd">
-<td>float32 / float64</td>
+<td>float16 / float32 / float64</td>
 <td>double</td>
-<td></td>
+<td>float16 and float32 widened, exact</td>
 </tr>
 <tr class="even">
 <td>bool</td>
@@ -533,30 +533,36 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>lost on the first hop</td>
 </tr>
 <tr class="even">
-<td>float32</td>
+<td>float16</td>
 <td>double</td>
 <td>float64</td>
 <td>widened, values exact</td>
 </tr>
 <tr class="odd">
+<td>float32</td>
+<td>double</td>
+<td>float64</td>
+<td>widened, values exact</td>
+</tr>
+<tr class="even">
 <td>float64</td>
 <td>double</td>
 <td>float64</td>
 <td>exact</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>bool</td>
 <td>logical</td>
 <td><code>bool_</code> (int32 with NAs)</td>
 <td>dtype lost</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>complex64 / complex128</td>
 <td>complex</td>
 <td>complex128</td>
 <td>exact</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>timedelta64</td>
 <td><code>difftime</code></td>
 <td>timedelta64[us]</td>
