@@ -543,6 +543,7 @@ static const cvt_row CVT_ROW_I32 = { MIZU_TYPE_INT, CVT_COPY, 4, 4 };
 static const cvt_row CVT_ROW_U32 = { MIZU_TYPE_REAL, CVT_U32_REAL, 4, 8 };
 static const cvt_row CVT_ROW_I64 = { MIZU_TYPE_INT64, CVT_COPY, 8, 8 };
 static const cvt_row CVT_ROW_U64 = { MIZU_TYPE_REAL, CVT_U64_REAL, 8, 8 };
+static const cvt_row CVT_ROW_F16 = { MIZU_TYPE_REAL, CVT_F16_REAL, 2, 8 };
 static const cvt_row CVT_ROW_F32 = { MIZU_TYPE_REAL, CVT_F32_REAL, 4, 8 };
 static const cvt_row CVT_ROW_F64 = { MIZU_TYPE_REAL, CVT_COPY, 8, 8 };
 static const cvt_row CVT_ROW_BOOL8 = { MIZU_TYPE_LGL, CVT_BOOL8_LGL, 1, 4 };
@@ -573,6 +574,7 @@ static const cvt_row *cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
     case 'L': return itemsize == 4 ? &CVT_ROW_U32 :
       itemsize == 8 ? &CVT_ROW_U64 : NULL;
     case 'Q': return itemsize == 8 ? &CVT_ROW_U64 : NULL;
+    case 'e': return itemsize == 2 ? &CVT_ROW_F16 : NULL;
     case 'f': return itemsize == 4 ? &CVT_ROW_F32 : NULL;
     case 'd': return itemsize == 8 ? &CVT_ROW_F64 : NULL;
     case '?': return itemsize == 1 ? &CVT_ROW_BOOL8 : NULL;
@@ -599,6 +601,7 @@ static const cvt_row *cvt_for_arrow(const char *f) {
   case 'I': return &CVT_ROW_U32;
   case 'l': return &CVT_ROW_I64;
   case 'L': return &CVT_ROW_U64;
+  case 'e': return &CVT_ROW_F16;
   case 'f': return &CVT_ROW_F32;
   case 'g': return &CVT_ROW_F64;
   case 'b': return &CVT_ROW_BOOLBIT;
@@ -606,6 +609,35 @@ static const cvt_row *cvt_for_arrow(const char *f) {
   return NULL;
 }
 
+
+/* IEEE 754 half -> double, exact: half's 5-bit exponent / 10-bit
+   mantissa decode into float's wider same-shaped fields (the subnormal
+   branch normalizes), the float widens losslessly. */
+static double half_to_double(uint16_t h) {
+  const uint32_t sign = (uint32_t) (h >> 15) << 31;
+  uint32_t exp = (h >> 10) & 0x1F, mant = h & 0x3FF;
+  uint32_t f;
+  if (exp == 0x1F) {
+    f = sign | 0x7F800000u | (mant << 13);       /* inf/nan */
+  } else if (exp == 0) {
+    if (mant == 0) {
+      f = sign;                                  /* ±0 */
+    } else {
+      int e = 0;
+      do {
+        mant <<= 1;
+        e--;
+      } while (!(mant & 0x400));
+      mant &= 0x3FF;
+      f = sign | (uint32_t) (113 + e) << 23 | (mant << 13);
+    }
+  } else {
+    f = sign | ((exp + 112) << 23) | (mant << 13);
+  }
+  float fv;
+  memcpy(&fv, &f, 4);
+  return (double) fv;
+}
 
 /* Convert a run of n valid elements. Per-element memcpy keeps every
    access alignment-safe (a contiguous buffer can still be
@@ -660,6 +692,14 @@ static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
         double o = (double) v;
         memcpy(dst + 8 * i, &o, 8);
       }
+    }
+    break;
+  case CVT_F16_REAL:
+    for (size_t i = 0; i < n; i++) {
+      uint16_t v;
+      memcpy(&v, src + 2 * i, 2);
+      double o = half_to_double(v);
+      memcpy(dst + 8 * i, &o, 8);
     }
     break;
   case CVT_F32_REAL:

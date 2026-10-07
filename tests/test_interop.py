@@ -251,6 +251,29 @@ def test_top_level_scalars_stay_scalars():
     h.destroy()
 
 
+def test_numpy_scalar_conversions_decode_by_kind():
+    # one converter for every row (the uint32-as-float32 misread's fix):
+    # the scalar path picks only the output tag per wire type
+    assert _read(_pymizu._write_stream(np.uint32(5))) == 5.0
+    assert _read(_pymizu._write_stream(np.array(5, dtype=np.uint32))) == 5.0
+    assert _read(_pymizu._write_stream(np.float32(1.5))) == 1.5
+    for dt, val in [
+        (np.bool_, True),
+        (np.int8, -5),
+        (np.uint8, 200),
+        (np.int16, -300),
+        (np.uint16, 60000),
+        (np.int32, -70000),
+        (np.int64, -(2**60)),
+        (np.float16, 1.5),
+        (np.float64, 1.5),
+        (np.complex64, 1 + 2j),
+        (np.complex128, 1 + 2j),
+    ]:
+        assert _read(_pymizu._write_stream(dt(val))) == val
+        assert _read(_pymizu._write_stream(np.array(val, dtype=dt))) == val
+
+
 def test_dim_shape_orders_and_strides():
     m = np.arange(6, dtype=np.float64).reshape(2, 3)
     got = _read(_pymizu._write_stream(m))
@@ -293,6 +316,40 @@ def test_nested_dim_leaf():
     got = _read(_pymizu._write_stream([np.arange(6).reshape(2, 3)]))
     assert len(got) == 1 and got[0].shape == (2, 3)
     assert np.array_equal(got[0], np.arange(6).reshape(2, 3))
+
+
+def test_float16_widens_to_double():
+    a = np.array([1.5, -2.25, 0.0, np.inf, np.nan], dtype=np.float16)
+    got = _read(_pymizu._write_stream(a))
+    assert got.dtype == np.float64
+    assert np.array_equal(got[:4], a[:4].astype(np.float64))
+    assert np.isnan(got[4])
+    # subnormals and the smallest normal decode exactly
+    a = np.array([6e-8, 6.1e-5, 65504.0], dtype=np.float16)
+    got = _read(_pymizu._write_stream(a))
+    assert np.array_equal(got, a.astype(np.float64))
+    # scalar, nested leaf, and the 2-D gather all take the same row
+    assert _read(_pymizu._write_stream(np.float16(1.5))) == 1.5
+    got = _read(
+        _pymizu._write_stream({"a": np.array([1.5], dtype=np.float16)})
+    )
+    assert got["a"].dtype == np.float64 and got["a"][0] == 1.5
+    m = np.arange(6, dtype=np.float16).reshape(2, 3)
+    got = _read(_pymizu._write_stream(m))
+    assert got.dtype == np.float64
+    assert np.array_equal(got, m.astype(np.float64))
+
+
+def test_nested_uint64_converts_with_a_warning():
+    got = _read(
+        _pymizu._write_stream({"a": np.array([1, 2], dtype=np.uint64)})
+    )
+    assert np.array_equal(got["a"], [1.0, 2.0])
+    with pytest.warns(RuntimeWarning, match="beyond"):
+        got = _read(
+            _pymizu._write_stream([np.array([2**62], dtype=np.uint64)])
+        )
+    assert np.isnan(got[0][0])
 
 
 def test_temporal_shapes():
@@ -468,7 +525,6 @@ def test_declined_error_paths():
         (np.ma.MaskedArray([1.0, 2.0], mask=[True, False]), "buffer subclass"),
         ([np.ma.MaskedArray([1.0])], "buffer subclass"),
         (np.array([["a"]], dtype=object), "dtype"),
-        ([np.array([1], dtype=np.uint64)], "uint64"),
         ([np.arange(4)[::2]], "strided"),
         ({1: "x"}, "non-str dict key"),
         ("\ud800", "UTF-8"),

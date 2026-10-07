@@ -3031,69 +3031,45 @@ static void ixe_scalar_dtype(ixw *w, const char *f, Py_ssize_t itemsize,
     ixw_decline(w, "a numpy scalar of this dtype has no portable home");
     return;
   }
+  /* One decode site for every conversion row (the table's own converter,
+     16 bytes covering the widest output) — the scalar path then chooses
+     only the output tag, so a new row can never drift from a
+     hand-written decode here. */
+  uint8_t buf[16];
+  mizu_py_cvt_convert(buf, data, NULL, 0, 1, row, &w->warn);
   switch (row->wire) {
-  case MIZU_TYPE_LGL:
-    IXW_PUT(w, mizu_ix_put_lgl(IXW_DST(w), data[0] != 0));
+  case MIZU_TYPE_LGL: {
+    int32_t v;
+    memcpy(&v, buf, 4);
+    IXW_PUT(w, mizu_ix_put_lgl(IXW_DST(w), v != 0));
     break;
+  }
   case MIZU_TYPE_INT: {
-    int64_t v;
-    switch (row->w_in) {
-    case 1: v = (int64_t) *(const int8_t *) data; break;
-    case 2:
-      if (row->cvt == CVT_U16_INT) {
-        uint16_t x;
-        memcpy(&x, data, 2);
-        v = x;
-      } else {
-        int16_t x;
-        memcpy(&x, data, 2);
-        v = x;
-      }
-      break;
-    default: {
-      int32_t x;
-      memcpy(&x, data, 4);
-      v = x;
-      break;
-    }
-    }
-    IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), v));
+    int32_t v;
+    memcpy(&v, buf, 4);
+    IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), (int64_t) v));
     break;
   }
   case MIZU_TYPE_INT64: {
     int64_t v;
-    memcpy(&v, data, 8);
+    memcpy(&v, buf, 8);
     IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), v));
     break;
   }
   case MIZU_TYPE_REAL: {
     double v;
-    if (row->w_in == 4) {
-      float x;
-      memcpy(&x, data, 4);
-      v = x;
-    } else {
-      memcpy(&v, data, 8);
-    }
+    memcpy(&v, buf, 8);
     IXW_PUT(w, mizu_ix_put_real(IXW_DST(w), v));
     break;
   }
   case MIZU_TYPE_CPLX: {
-    double re, im;
-    if (row->w_in == 8) {
-      float x[2];
-      memcpy(x, data, 8);
-      re = x[0];
-      im = x[1];
-    } else {
-      memcpy(&re, data, 8);
-      memcpy(&im, data + 8, 8);
-    }
-    IXW_PUT(w, mizu_ix_put_cplx(IXW_DST(w), re, im));
+    double z[2];
+    memcpy(z, buf, 16);
+    IXW_PUT(w, mizu_ix_put_cplx(IXW_DST(w), z[0], z[1]));
     break;
   }
   default:   /* RAW: no scalar form — a uint8 scalar reads back as int */
-    IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), (int64_t) data[0]));
+    IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), (int64_t) buf[0]));
     break;
   }
 }
@@ -3461,12 +3437,6 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
     PyBuffer_Release(&v);
     ixw_decline_type(w, obj, "a buffer of this dtype has no "
                      "portable home");
-    return;
-  }
-  if (row->cvt == CVT_U64_REAL && w->depth > 0) {
-    PyBuffer_Release(&v);
-    ixw_decline(w, "a uint64 array nested in a container has no "
-                "portable home (its conversion past 2^53 is lossy)");
     return;
   }
   if (strided && w->depth > 0) {
@@ -3998,7 +3968,6 @@ static void ixs_emit_cvt_col(ixe *e, ixs *x, int col) {
   if (e->dst != NULL) {
     uint8_t *dst = e->dst + e->total;
     size_t out_off = 0;
-    cvt_warn warn = { 0, 0 };
     for (size_t b = 0; b < x->hold.nb; b++) {
       ArrowArray *a = x->single ? &x->hold.arrs[b] :
         x->hold.arrs[b].children[col];
@@ -4008,10 +3977,10 @@ static void ixs_emit_cvt_col(ixe *e, ixs *x, int col) {
       size_t n = (size_t) a->length;
       if (pc->row->cvt == CVT_BIT_LGL) {
         mizu_py_cvt_convert(dst + out_off, data, valid, off, n, pc->row,
-                            &warn);
+                            &x->warn);
       } else {
         mizu_py_cvt_convert(dst + out_off, data + off * pc->row->w_in,
-                            valid, off, n, pc->row, &warn);
+                            valid, off, n, pc->row, &x->warn);
       }
       out_off += n * pc->row->w_out;
     }
@@ -4300,7 +4269,7 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
 /* Classify one schema (a frame's child, or the single non-struct column)
    into a plan column. top is set for the single column (uint64's lossy
    row is top-level-only). */
-static int ixs_classify(ixs *x, int col, const ArrowSchema *sc, int top) {
+static int ixs_classify(ixs *x, int col, const ArrowSchema *sc) {
   ixs_pcol *pc = &x->cols[col];
   memset(pc, 0, sizeof(*pc));
   const char *f = sc->format;
@@ -4379,11 +4348,6 @@ static int ixs_classify(ixs *x, int col, const ArrowSchema *sc, int top) {
   }
   const cvt_row *row = mizu_py_cvt_for_arrow(f);
   if (row != NULL) {
-    if (row->cvt == CVT_U64_REAL && !top) {
-      ixs_decline("a uint64 column has no portable home "
-                  "(its conversion past 2^53 is lossy)");
-      return -1;
-    }
     pc->kind = PC_CVT;
     pc->row = row;
     return 0;
@@ -4611,7 +4575,7 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   if (names == NULL) return 1;
   int rc = 1;
   for (int i = 0; i < x->ncols; i++)
-    if (ixs_classify(x, i, x->schema.children[i], 0) < 0) goto done;
+    if (ixs_classify(x, i, x->schema.children[i]) < 0) goto done;
   if (ixs_pull(x) < 0 || ixs_validate_dicts(x) < 0) goto done;
   {
     ixe e = { NULL, 0 };
@@ -4681,7 +4645,9 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   }
 done:
   free(names);
-  return rc;
+  /* the write half completed: raise the accumulated conversion warnings
+     (the MIZL paths raised their own and carry none here) */
+  return rc == 0 && mizu_py_cvt_warn(&x->warn) != 0 ? 1 : rc;
 }
 
 /* The single (Series / ChunkedArray) paths: the conversion table onto the
@@ -4719,7 +4685,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     PyErr_NoMemory();
     return 1;
   }
-  if (ixs_classify(x, 0, &x->schema, 1) < 0) return 1;
+  if (ixs_classify(x, 0, &x->schema) < 0) return 1;
   if (!x->borrowed_hold && ixs_pull(x) < 0) return 1;
   if (ixs_validate_dicts(x) < 0) return 1;
   ixs_pcol *pc = &x->cols[0];
@@ -4756,7 +4722,8 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     pc->kind == PC_DATE ? ixs_single_date_emit :
     pc->kind == PC_TD ? ixs_single_td_emit :
     pc->kind == PC_TS ? ixs_single_ts_emit : ixs_single_cvt_emit;
-  return ixs_stage_emit(x, hdr, payload, inline_max, h, emit);
+  int rc = ixs_stage_emit(x, hdr, payload, inline_max, h, emit);
+  return rc == 0 && mizu_py_cvt_warn(&x->warn) != 0 ? 1 : rc;
 }
 
 static int ixs_run(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -4907,7 +4874,7 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   names = ixs_names(x);
   if (names == NULL) goto out;
   for (int i = 0; i < x->ncols; i++)
-    if (ixs_classify(x, i, x->schema.children[i], 0) < 0) goto out;
+    if (ixs_classify(x, i, x->schema.children[i]) < 0) goto out;
   if (ixs_pull(x) < 0 || ixs_validate_dicts(x) < 0) goto out;
   {
     ixe e = { NULL, 0 };

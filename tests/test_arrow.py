@@ -278,6 +278,42 @@ def test_range_warning_as_error():
     h.destroy()
 
 
+def test_uint64_frame_columns_convert_with_a_warning():
+    # the frame policy is the container policy: exact values cross as
+    # doubles, past 2^53 converts to NA with one warning
+    h, p = foreign_pair()
+    t = pa.table({"a": pa.array([1, 2], type=pa.uint64())})
+    assert h.send(t) is True
+    got = p.recv(5)
+    assert list(got.to_dict()["a"]) == [1.0, 2.0]
+    t2 = pa.table({"a": pa.array([2**62], type=pa.uint64())})
+    with pytest.warns(RuntimeWarning, match="beyond"):
+        assert h.send(t2) is True
+    got = p.recv(5)
+    assert np.isnan(got.to_dict()["a"][0])
+    # raised as an error it rolls back: the channel stages on
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="beyond"):
+            h.send(t2)
+    assert h.send({"ok": 1}) is True
+    assert p.recv(5) == {"ok": 1}
+    p.destroy()
+    h.destroy()
+
+
+def test_int32_frame_column_genuine_intmin_warns():
+    # a genuine INT32_MIN in a nullable int32 column reads as NA_integer_
+    # in R: the frame path now raises the single path's one-warning
+    # contract (it was silently dropped before)
+    h, p = foreign_pair()
+    t = pa.table({"a": pa.array([-(2**31), None], type=pa.int32())})
+    with pytest.warns(RuntimeWarning, match="-2147483648"):
+        assert h.send(t) is True
+    p.destroy()
+    h.destroy()
+
+
 def test_prefixed_buffer_formats():
     # ctypes exports a '<'-prefixed format ('<i', or '<l' on Windows):
     # '='/'<' byte-order prefixes convert on foreign channels (every

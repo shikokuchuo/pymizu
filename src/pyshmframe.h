@@ -51,6 +51,9 @@ typedef struct {
   uint32_t caps;       /* the peer's capability mask (frame gate) */
   PyObject *row_names; /* a same-language Frame's row_names (borrowed);
                           NULL writes the automatic c(NA, -n) form */
+  cvt_warn warn;       /* the 'I' frame emit's conversion warnings,
+                          raised after the write completes (the MIZL
+                          writer keeps its own) */
 } ixs;
 
 /* The validity bit for element k of a batch (Arrow LSB-first). */

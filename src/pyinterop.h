@@ -120,6 +120,7 @@ enum {
   CVT_U16_INT,    /* zero-widen */
   CVT_U32_REAL,   /* exact */
   CVT_U64_REAL,
+  CVT_F16_REAL,   /* exact (half decodes into double's wider fields) */
   CVT_F32_REAL,   /* exact */
   CVT_BOOL8_LGL,  /* one byte per source lane (numpy '?') -> int32 0/1 */
   CVT_BIT_LGL,    /* one bit per source lane (Arrow 'b') -> int32 0/1 */
