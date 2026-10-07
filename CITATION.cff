@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: "pymizu: Lock-free shared-memory parallelism for Python"
+authors:
+  - family-names: Gao
+    given-names: Charlie
+    email: charlie.gao@posit.co
+    affiliation: Posit Software, PBC
+    orcid: https://orcid.org/0000-0002-0750-061X
+license: MIT
+repository-code: https://github.com/shikokuchuo/pymizu
+url: https://shikokuchuo.net/pymizu/

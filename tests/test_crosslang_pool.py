@@ -77,9 +77,7 @@ def test_errors_cross_with_remote_type(r_pool):
 
 def test_non_portable_result_fails_the_task(r_pool):
     with pytest.raises(pymizu.TaskError) as ei:
-        r_pool.submit(
-            pymizu.call(source="lm(mpg ~ wt, mtcars)")
-        ).collect()
+        r_pool.submit(pymizu.call(source="lm(mpg ~ wt, mtcars)")).collect()
     assert ei.value.remote_type == "mizu_error_not_portable"
     assert "not portable" in str(ei.value)
 
@@ -107,17 +105,19 @@ def test_collect_any_all_cross_language(r_pool):
 
 
 def test_a_dead_r_worker_surfaces_worker_died(r_pool):
-    p = pymizu.Pool.create(1, launcher=pymizu.r_pool_launcher(
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    p = pymizu.Pool.create(
+        1,
+        launcher=pymizu.r_pool_launcher(
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ),
+    )
     try:
         pid = p.dump()["workers"][0]["pid"]
         t = p.submit(pymizu.call(source="Sys.sleep(30)"))
         deadline = time.monotonic() + 10
         claimed = False
         while time.monotonic() < deadline and not claimed:
-            claimed = any(
-                w["in_flight"] != -1 for w in p.dump()["workers"]
-            )
+            claimed = any(w["in_flight"] != -1 for w in p.dump()["workers"])
             time.sleep(0.05)
         assert claimed
         os.kill(pid, signal.SIGKILL)
@@ -133,13 +133,15 @@ def test_a_worker_of_another_language_cannot_join(r_pool):
     with pytest.raises(pymizu.MizuError):
         _pymizu._pool_worker_join(r_pool.token, 2)
 
+
 def test_large_array_arg_crosses_by_reference(r_pool):
     import numpy as np
 
     big = np.random.default_rng(0).random(200_000)  # 1.6 MB
     # the value crosses, and the R worker proves the zero-copy arrival
-    assert r_pool.submit(pymizu.call("base::mean", big)).collect() == \
-        pytest.approx(float(big.mean()))
+    assert r_pool.submit(
+        pymizu.call("base::mean", big)
+    ).collect() == pytest.approx(float(big.mean()))
     src = 'if (.Call(mizu:::mizu_zc_view_check, x)) "view" else "copy"'
     assert r_pool.submit(pymizu.call(source=src, x=big)).collect() == "view"
 
@@ -153,8 +155,9 @@ def test_received_view_resent_as_arg(r_pool):
     ).collect()
     assert type(big.base).__name__ == "_ShmView"
     # re-send it as a task argument: REF, REFHELD, the per-task loan balanced
-    assert r_pool.submit(pymizu.call("base::mean", big)).collect() == \
-        pytest.approx(float(big.mean()))
+    assert r_pool.submit(
+        pymizu.call("base::mean", big)
+    ).collect() == pytest.approx(float(big.mean()))
     assert big.base.flags & 1 == 1  # REFHELD
     rc0 = big.base.refcount
     r_pool.submit(pymizu.call("base::mean", big)).collect()
@@ -242,9 +245,7 @@ def test_view_x_crosses_to_map_workers_as_a_ref(r_pool):
 def _probe_src(paths):
     if not paths:
         return "list(logical(0), 0)"
-    checks = ", ".join(
-        f".Call(mizu:::mizu_zc_view_check, {q})" for q in paths
-    )
+    checks = ", ".join(f".Call(mizu:::mizu_zc_view_check, {q})" for q in paths)
     sums = ", ".join(f"sum(as.numeric({q}))" for q in paths)
     return f"list(c({checks}), sum(c({sums})))"
 
@@ -325,9 +326,7 @@ def test_zc_selection_fold_candidate_matrix(r_pool):
     # candidates by value); 17 candidates exercise the record cap;
     # k = 0, inline and spilled by-value totals
     with fresh_pool() as p:
-        flags, _ = _run_probe(
-            p, ["..1", "..2"], (cand, rng.random(25000)), {}
-        )
+        flags, _ = _run_probe(p, ["..1", "..2"], (cand, rng.random(25000)), {})
         assert flags == [False, False]
         c17 = [rng.random(5120 + i) for i in range(17)]
         flags, _ = _run_probe(p, [f"..{j}" for j in range(1, 18)], c17, {})

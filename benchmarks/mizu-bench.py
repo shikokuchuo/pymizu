@@ -472,11 +472,15 @@ def map_template(p):
     tmpl = np.empty(2)
     p.map(winsum_t, xs, template=tmpl)  # warm-up
     note_rate(
-        "map template", "pymizu copy", n,
+        "map template",
+        "pymizu copy",
+        n,
         lambda: p.map(winsum_t, xs, template=tmpl),
     )
     note_rate(
-        "map template", "pymizu view", n,
+        "map template",
+        "pymizu view",
+        n,
         lambda: p.map(winsum_t, xs, template=tmpl, collect="view"),
     )
 
@@ -531,11 +535,16 @@ def arrow_masked(arr, ptype):
 
     class ArrowArray(ctypes.Structure):
         _fields_ = [
-            ("length", ctypes.c_int64), ("null_count", ctypes.c_int64),
-            ("offset", ctypes.c_int64), ("n_buffers", ctypes.c_int64),
-            ("n_children", ctypes.c_int64), ("buffers", ctypes.c_void_p),
-            ("children", ctypes.c_void_p), ("dictionary", ctypes.c_void_p),
-            ("release", ctypes.c_void_p), ("private_data", ctypes.c_void_p),
+            ("length", ctypes.c_int64),
+            ("null_count", ctypes.c_int64),
+            ("offset", ctypes.c_int64),
+            ("n_buffers", ctypes.c_int64),
+            ("n_children", ctypes.c_int64),
+            ("buffers", ctypes.c_void_p),
+            ("children", ctypes.c_void_p),
+            ("dictionary", ctypes.c_void_p),
+            ("release", ctypes.c_void_p),
+            ("private_data", ctypes.c_void_p),
         ]
 
     lib = ctypes.pythonapi
@@ -582,6 +591,7 @@ try:
 except ImportError:
     print("  pyarrow not installed: skipped")
 
+
 # the conversion rows are foreign-only (same-language channels pickle):
 # an in-process foreign pair stands in for an R peer
 def convert_foreign():
@@ -598,10 +608,14 @@ def convert_foreign():
         cases = [
             ("stage widen", base.astype(np.uint64)),
             ("stage masked", arrow_masked(base, pa.float64())),
-            ("stage masked int64",
-             arrow_masked(base.astype(np.int64), pa.int64())),
-            ("stage masked+scan",
-             arrow_masked(base.astype(np.int32), pa.int32())),
+            (
+                "stage masked int64",
+                arrow_masked(base.astype(np.int64), pa.int64()),
+            ),
+            (
+                "stage masked+scan",
+                arrow_masked(base.astype(np.int32), pa.int32()),
+            ),
         ]
         for label, x in cases:
 
@@ -674,8 +688,7 @@ else:
 
         def rep_ref():
             for _ in range(n):
-                rp.submit(pymizu.call("base::mean", view)).collect(
-                    timeout=60)
+                rp.submit(pymizu.call("base::mean", view)).collect(timeout=60)
 
         warmup(rep_ref, n=2)
         note_us("arg 8 MB", "R pool (REF)", n, rep_ref, "us/task")
@@ -713,8 +726,8 @@ def strlist_foreign():
     n = 10
     xs = [f"str-{i:08d}" for i in range(size)]
     for label, ident in [
-        ("stage str list 0x0b", (2, 0)),   # no caps: the value-copy tree
-        ("stage str list MIZS", (2, 1)),   # MIZU_CAP_MIZS: one layout write
+        ("stage str list 0x0b", (2, 0)),  # no caps: the value-copy tree
+        ("stage str list MIZS", (2, 1)),  # MIZU_CAP_MIZS: one layout write
     ]:
         h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
         p, _ = _pymizu._channel_attach(h.token, _ident=ident)
@@ -753,8 +766,8 @@ def mizh_foreign():
     )
     n = 10
     for label, ident in [
-        ("stage f64 matrix 0x0f", (2, 0)),   # no caps: the attr-tag copy
-        ("stage f64 matrix MIZH", (2, 2)),   # MIZU_CAP_ATTRS: layout + blob
+        ("stage f64 matrix 0x0f", (2, 0)),  # no caps: the attr-tag copy
+        ("stage f64 matrix MIZH", (2, 2)),  # MIZU_CAP_ATTRS: layout + blob
     ]:
         h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
         p, _ = _pymizu._channel_attach(h.token, _ident=ident)
@@ -865,8 +878,9 @@ while (TRUE) {
                 assert ch.recv(timeout=120) == nrows
 
         warmup(rep_unmod, n=2)
-        note_us("frame 10col relay", "R (unmodified REF)", n, rep_unmod,
-                "us/rt")
+        note_us(
+            "frame 10col relay", "R (unmodified REF)", n, rep_unmod, "us/rt"
+        )
 
         def rep_mod():
             for _ in range(n):
@@ -874,8 +888,9 @@ while (TRUE) {
                 assert ch.recv(timeout=120) == nrows
 
         warmup(rep_mod, n=2)
-        note_us("frame 10col relay", "R (one computed col)", n, rep_mod,
-                "us/rt")
+        note_us(
+            "frame 10col relay", "R (one computed col)", n, rep_mod, "us/rt"
+        )
 
         # the same shape with one column swapped to strings (mixed <=12B
         # and >12B): polars re-views it as string_view — verified
@@ -893,8 +908,9 @@ while (TRUE) {
   mizu::mizu_send(ch, nrow(y))
 }
 """
-        ch_str = pymizu.Channel.create(R_FRAME_STR_RELAY_BENCH,
-                                       launcher=frame_launcher)
+        ch_str = pymizu.Channel.create(
+            R_FRAME_STR_RELAY_BENCH, launcher=frame_launcher
+        )
         try:
             f_str = ch_str.recv(120)
             df_str = pl.DataFrame(f_str)
@@ -905,8 +921,13 @@ while (TRUE) {
                     assert ch_str.recv(timeout=120) == nrows
 
             warmup(rep_str_unmod, n=2)
-            note_us("frame strcol relay", "R (unmodified string REF)", n,
-                    rep_str_unmod, "us/rt")
+            note_us(
+                "frame strcol relay",
+                "R (unmodified string REF)",
+                n,
+                rep_str_unmod,
+                "us/rt",
+            )
         finally:
             ch_str.close(timeout=10)
 
@@ -924,14 +945,16 @@ while (TRUE) {
         p.ready_set()
         assert h.ready_wait(10)
         try:
+
             def rep_same():
                 for _ in range(n):
                     h.send(f2)
                     p.recv(timeout=30)
 
             warmup(rep_same, n=2)
-            note_us("frame 10col relay", "Python (flat)", n, rep_same,
-                    "us/send")
+            note_us(
+                "frame 10col relay", "Python (flat)", n, rep_same, "us/send"
+            )
         finally:
             p.destroy()
             h.destroy()

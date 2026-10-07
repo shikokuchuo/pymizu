@@ -1,6 +1,6 @@
 /_site/
 /_quarto/
 /.quarto/
-/_freeze/
+# _freeze/ is committed so CI does not re-execute the guide's examples.
 
 **/*.quarto_ipynb

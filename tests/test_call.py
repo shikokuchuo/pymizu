@@ -168,9 +168,19 @@ def test_a_task_targeting_another_language_mismatches():
         # a hand-built stream whose target byte is R: the Python worker
         # fails it with the neutral err stream, never executes
         raw = bytes.fromhex(
-            "4901" "12" "02" "00" "0000" "0200000007000000"
-            "04" "01000000" "66"
-            "0c" "0000000000000000" "0d" "0000000000000000"
+            "4901"
+            "12"
+            "02"
+            "00"
+            "0000"
+            "0200000007000000"
+            "04"
+            "01000000"
+            "66"
+            "0c"
+            "0000000000000000"
+            "0d"
+            "0000000000000000"
         )
         t = p._h.submit(raw, None)
         with pytest.raises(pymizu.TaskError) as ei:

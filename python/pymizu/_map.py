@@ -5,33 +5,33 @@ stream in one fresh map region — or entirely inline in chunk tasks when it
 fits the entry inline budget (the region-less blob path). It then submits
 one *runner* task per live worker: runners self-schedule element ranges
 off the shared cursor in the map region (morsel-driven scheduling), one
-adaptive-sized batch per ``_map_next`` transition, and publish their batch
+adaptive-sized batch per `_map_next` transition, and publish their batch
 histories and values as their single ordinary result. Workers materialize
 the map context at most once each (a small cache keyed by region name); a
 raw-buffer x is wrapped once per worker and indexed per element, never
 deserialized.
 
-Seeding: ``seed`` derives deterministic per-element streams of the stdlib
-``random`` module — element ``i`` runs under
-``random.seed(SHA-256(seed_bytes + (i + offset).to_bytes(8, "little")))``,
+Seeding: `seed` derives deterministic per-element streams of the stdlib
+`random` module — element `i` runs under
+`random.seed(SHA-256(seed_bytes + (i + offset).to_bytes(8, "little")))`,
 with the worker's prior RNG state saved and restored around each batch.
-``seed`` may be a ``(seed, offset)`` pair to shift every element's stream
-by ``offset`` positions (maps split across runs or processes). Because the
+`seed` may be a `(seed, offset)` pair to shift every element's stream
+by `offset` positions (maps split across runs or processes). Because the
 streams are per-element, results are identical for any chunking, worker
 count, or steal order. The spec rides the task payloads as a
-``(seed_bytes, offset)`` tuple.
+`(seed_bytes, offset)` tuple.
 
-``seed`` covers the stdlib ``random`` module only: a task drawing from
-numpy calls ``pymizu.current_rng()`` — the running element's memoized
-``numpy.random.Generator``, derived lazily from the same seed material
-(the entropy is domain-separated, so the stdlib streams above are
-unchanged). The legacy ``np.random.*`` module functions draw from the
-worker's shared global RandomState and stay order-dependent; other RNG
-universes are out of scope. A seeded element must not nested-submit and
-collect: the helped batch's stdlib save/restore nests inside this
-batch's, but its stash clear wipes this element's — a later
-``current_rng()`` call here rebuilds from the digest, restarting the
-stream instead of continuing it.
+`seed` covers the stdlib `random` module only: a task drawing from
+numpy calls [`current_rng()`](`pymizu.current_rng`) — the running
+element's memoized `numpy.random.Generator`, derived lazily from the
+same seed material (the entropy is domain-separated, so the stdlib
+streams above are unchanged). The legacy `np.random.*` module functions
+draw from the worker's shared global RandomState and stay
+order-dependent; other RNG universes are out of scope. A seeded element
+must not nested-submit and collect: the helped batch's stdlib
+save/restore nests inside this batch's, but its stash clear wipes this
+element's — a later `current_rng()` call here rebuilds from the digest,
+restarting the stream instead of continuing it.
 """
 
 from __future__ import annotations
@@ -128,8 +128,12 @@ def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
     would otherwise each fail remotely, one error per runner). A spec fn
     takes the cross-language path on any pool (the 'I' descriptor and
     kind-2 runner tasks), and needs the pool word already set: the
-    descriptor's target byte stages once, at stage time. Returns
-    (is_spec, worker_language)."""
+    descriptor's target byte stages once, at stage time.
+
+    Returns
+    -------
+        The `(is_spec, worker_language)` pair.
+    """
     import pymizu
 
     ident = pool._h._worker_ident()
@@ -148,8 +152,8 @@ def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
 def _seed_pair(
     seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
 ) -> tuple[int | bytes | bytearray, int] | None:
-    """The seed shape gate shared by both carried forms: a ``(seed,
-    offset)`` pair unpacks, a bare seed takes offset 0; a bool is neither
+    """The seed shape gate shared by both carried forms: a `(seed,
+    offset)` pair unpacks, a bare seed takes offset 0; a bool is neither
     an int seed nor bytes."""
     if seed is None:
         return None
@@ -176,7 +180,7 @@ def _seed_wire(
     lang: int,
 ) -> tuple[int, int] | None:
     """The spec-map seed gate: the kind-2 runner fields carry the
-    language-neutral ``(seed, offset)`` i64 pair, so a spec map takes int
+    language-neutral `(seed, offset)` i64 pair, so a spec map takes int
     seeds only — a bytes seed has no i64 form. On R workers the int must
     fit R's 32-bit derivation range; the local error beats one per
     runner."""
@@ -263,7 +267,7 @@ def _runner_ix(
     (seed, offset) pair when seeded. The runner is always same-language
     as the worker: unpack and run the native loop, rebuilding this
     language's own seed spec from the neutral pair (an int seed's bytes
-    are its ascii form, exactly as _seed_spec builds them)."""
+    are its ascii form, exactly as `_seed_spec` builds them)."""
     import pymizu
 
     k = gen_field >> 32
@@ -365,12 +369,12 @@ _rng_gen: _Any = None
 
 
 def _current_rng() -> _Any:
-    """pymizu.current_rng()'s worker side: the stashed element's memoized
-    numpy Generator, built lazily on first call in the element — the
-    digest is computed only on call, so a seeded map that never calls
-    pays the stash's two attribute writes per element, never a SHA-256.
-    The numpy entropy is domain-separated (the "np\\0" prefix) from the
-    stdlib digest, which stays byte-identical."""
+    """[`current_rng()`](`pymizu.current_rng`)'s worker side: the stashed
+    element's memoized numpy Generator, built lazily on first call in
+    the element — the digest is computed only on call, so a seeded map
+    that never calls pays the stash's two attribute writes per element,
+    never a SHA-256. The numpy entropy is domain-separated (the "np\\0"
+    prefix) from the stdlib digest, which stays byte-identical."""
     global _rng_key, _rng_gen
     key = _elt_key
     if key is None:
@@ -403,9 +407,10 @@ def _run_batch(
     An escaping error is annotated with the in-flight element index (the
     "first by element index" contract — the worker's error envelope
     carries it as the fourth tuple element). Seeded: install element i's
-    stream before its call and stash its (seed_bytes, i + offset) key for
-    pymizu.current_rng(); the worker's own RNG state is restored, and the
-    stash and memo cleared, around the batch either way."""
+    stream before its call and stash its (seed_bytes, i + offset) key
+    for [`current_rng()`](`pymizu.current_rng`); the worker's own RNG
+    state is restored, and the stash and memo cleared, around the batch
+    either way."""
     global _elt_key, _rng_key
     out = []
 
@@ -438,9 +443,10 @@ def _run_batch(
 
 
 class _Star:
-    """Pool.starmap's fn wrapper: unpacks the element into the call's
-    positional slots (multiprocessing.starmap semantics). A module-level
-    class so the descriptor pickle crosses by reference."""
+    """[`Pool.starmap()`](`pymizu.Pool.starmap`)'s fn wrapper: unpacks
+    the element into the call's positional slots
+    (`multiprocessing.Pool.starmap` semantics). A module-level class so
+    the descriptor pickle crosses by reference."""
 
     __slots__ = ("fn",)
 
@@ -470,11 +476,11 @@ def _stream_chunk(
 ) -> list | None:
     """Worker-side streaming chunk task, riding an importable reference:
     the map context comes from the worker's name-keyed cache (one attach
-    per worker per map), then the existing _run_batch runs over the slice
-    with the global [lo, hi) — seeding needs no seek machinery, the
-    per-element SHA-256 key being the global index i + offset. Template
-    results write into the region's output area (the publish is None);
-    generic results publish as the chunk's ordinary result."""
+    per worker per map), then the existing `_run_batch` runs over the
+    slice with the global [lo, hi) — seeding needs no seek machinery,
+    the per-element SHA-256 key being the global index i + offset.
+    Template results write into the region's output area (the publish is
+    None); generic results publish as the chunk's ordinary result."""
     ctx = _map_ctx(name)
     batch = _run_batch(
         ctx.fn,
@@ -545,9 +551,9 @@ def _runner(
 def _seed_spec(
     seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None,
 ) -> tuple[bytes, int] | None:
-    """Normalize the public ``seed`` argument to the carried spec: a
-    ``(seed_bytes, offset)`` tuple, element ``i`` drawing stream
-    ``i + offset`` (the ``.seed = c(seed, offset)`` mirror)."""
+    """Normalize the public `seed` argument to the carried spec: a
+    `(seed_bytes, offset)` tuple, element `i` drawing stream
+    `i + offset` (the `.seed = c(seed, offset)` mirror)."""
     pair = _seed_pair(seed)
     if pair is None:
         return None
@@ -590,8 +596,8 @@ def _template_probe(template: _Any) -> tuple:
 
 def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
     """Assemble the gathered output area: a numpy array (n, m) — (n,) for
-    m == 1 — when numpy is present, else a (cast) memoryview. `raw` is the
-    gather bytes (copy) or the _MapOutView exporter (view)."""
+    m == 1 — when numpy is present, else a (cast) memoryview. `raw` is
+    the gather bytes (copy) or the `_MapOutView` exporter (view)."""
     if _np is not None:
         a = _np.frombuffer(raw, dtype=_TAG_NP[tag])
         return a.reshape(n, m) if m > 1 else a
@@ -606,7 +612,12 @@ def _probe_x(spec: bool, x: _Any) -> tuple[tuple | None, _Any, int]:
     D6 — the workers read the resolved view off the shared pages);
     otherwise a C-contiguous buffer of a supported dtype rides the region
     as bare bytes (complex needs numpy's frombuffer); anything else
-    pickles into the descriptor as a list. Returns (probe, x, n)."""
+    pickles into the descriptor as a list.
+
+    Returns
+    -------
+        The `(probe, x, n)` triple.
+    """
     view_x = spec and _pymizu._view_check(x)
     probe = None if view_x else _pymizu._map_probe_x(x)
     if probe is not None and probe[0] == 15 and _np is None:
@@ -652,11 +663,11 @@ def _write_desc(
 
 
 class _Plan:
-    """The validated map entry, shared by ``pool_map`` and
-    ``PreparedMap``: the spec/language verdict, normalized args/kwargs,
-    the carried seed form (the wire pair on a spec map, ``(seed_bytes,
-    offset)`` otherwise), the template probe, the resolved collect mode,
-    n_chunks, and the streaming verdict."""
+    """The validated map entry, shared by `pool_map` and
+    [`PreparedMap`](`pymizu.PreparedMap`): the spec/language verdict,
+    normalized args/kwargs, the carried seed form (the wire pair on a
+    spec map, `(seed_bytes, offset)` otherwise), the template probe, the
+    resolved collect mode, n_chunks, and the streaming verdict."""
 
     __slots__ = (
         "spec",
@@ -945,8 +956,9 @@ def _stream_fail(
     read as cancelled / pending and are ignored. A sibling death takes
     precedence, its lost range read off the drained position; otherwise
     the minimum element index among the observed errors raises (the
-    erroring chunk's own ``index`` is the element index — collect_any's
-    position stamp defers to it)."""
+    erroring chunk's own `index` is the element index —
+    [`Pool.collect_any()`](`pymizu.Pool.collect_any`)'s position stamp
+    defers to it)."""
     errs = [first]
     died = None
     lost = []
@@ -990,11 +1002,12 @@ def _stream_window(
 ) -> list | _pymizu.Sentinel | None:
     """The sliding submit/collect window over one staged streaming map:
     prime W chunk tasks (unflagged, like blob chunks), then loop on
-    collect_any over the outstanding set — each completion splices
-    generic results into place (template results are already in the
-    region's output area; the chunk's None result is drained and dropped)
-    and immediately refills one chunk. The map's one deadline threads
-    submit and collect; expiry returns the sentinel."""
+    [`Pool.collect_any()`](`pymizu.Pool.collect_any`) over the
+    outstanding set — each completion splices generic results into place
+    (template results are already in the region's output area; the
+    chunk's None result is drained and dropped) and immediately refills
+    one chunk. The map's one deadline threads submit and collect; expiry
+    returns the sentinel."""
     c = len(ranges)
     n = ranges[-1][1]
     oi: list[int] = []
@@ -1074,16 +1087,17 @@ def _map_stream(
 ) -> list | _pymizu.Sentinel | _Any:
     """The streaming path: x stays submitter-side and feeds fixed slices
     through ordinary chunk tasks under a sliding submit/collect window of
-    min(n_chunks, 2 x live workers, free result slots) outstanding tasks —
-    min(n, 32 x live workers) chunks by default, n_chunks= overriding
+    min(n_chunks, 2 x live workers, free result slots) outstanding tasks
+    — min(n, 32 x live workers) chunks by default, n_chunks= overriding
     outright (bounded only by n: the window paces outstanding work, so no
     slot/ring clamp, unlike the blob path). Shared-memory residency is
     bounded by window x slice instead of sizeof(x). The region is
     descriptor-only — fn, args, kwargs through the existing
-    ``_pymizu._map_stage(desc, None, n, 1, template)``, the template
+    `_pymizu._map_stage(desc, None, n, 1, template)`, the template
     output area included (it sizes off the explicit n) — one code path
-    and the workers' ctx cache. The morsel geometry rides inert (morsel=1:
-    no streaming path claims, cursors, or reads the cancel word)."""
+    and the workers' ctx cache. The morsel geometry rides inert
+    (morsel=1: no streaming path claims, cursors, or reads the cancel
+    word)."""
     c = min(
         n, plan.n_chunks if plan.n_chunks is not None else 32 * max(1, live)
     )
@@ -1124,7 +1138,7 @@ def _morsel_geometry(
 ) -> tuple[int, int, int]:
     """(runners, morsel, n_morsels) for n elements: ~256 morsels per
     runner, clamped to the grain constants, runners clamped by the free
-    result slots and the injection ring; ``n_chunks`` overrides the morsel
+    result slots and the injection ring; `n_chunks` overrides the morsel
     count directly. n == 0 takes the unit geometry (a prepared handle
     stages before it knows a run's n)."""
     runners = max(1, min(max(1, live), free_rs, inj_cap))
@@ -1232,7 +1246,7 @@ def _submit_runners(
     run of a prepared map fails its first-call CAS against the re-armed
     CLAIM word. A spec map's runner is the kind-2 task stream — region
     name, ordinal and generation packed in one i64, the (seed, offset)
-    pair — framed off a _RunnerFrame."""
+    pair — framed off a `_RunnerFrame`."""
     for k in range(r):
         # pre-check, not just the verb's: a nested (worker-side) submit
         # never waits on ring space, so an expired deadline must be caught
@@ -1389,13 +1403,56 @@ def _collect_region(
 class PreparedMap:
     """A map staged once into a persistent region, run many times.
 
-    Create with :meth:`pymizu.Pool.map_prepare`; run with :meth:`run`.
-    Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word
-    clear — and workers reuse their cached contexts, so a re-run pays
-    neither the descriptor pickle nor the region create nor the
-    worker-side re-attach. A view-collected run hands its region to the
-    view; the next run restages into a fresh one (the mirror of mizu).
-    Close with :meth:`close` (or a with block) to unlink the region.
+    Create with [`Pool.map_prepare()`](`pymizu.Pool.map_prepare`); run
+    with `run()`. Re-arming is O(1) — a generation bump, a cursor reset,
+    a cancel-word clear — and workers reuse their cached contexts, so a
+    re-run pays neither the descriptor pickle nor the region create nor
+    the worker-side re-attach. A view-collected run hands its region to
+    the view; the next run restages into a fresh one (the mirror of
+    mizu). Close with `close()` (or a with block) to unlink the region.
+
+    Parameters
+    ----------
+    pool
+        The [`Pool`](`pymizu.Pool`) to run on.
+    fn
+        The function to map, or a [`call`](`pymizu.call`) spec — as for
+        [`Pool.map()`](`pymizu.Pool.map`).
+    x
+        The data to map over.
+    args
+        Constant positional arguments appended to every call.
+    kwargs
+        Constant keyword arguments for every call.
+    n_chunks
+        Overrides the morsel count (the scheduling granularity).
+    seed
+        Deterministic per-element seeding — as for
+        [`Pool.map()`](`pymizu.Pool.map`).
+    template
+        An exemplar buffer declaring each result's dtype and length —
+        as for [`Pool.map()`](`pymizu.Pool.map`).
+    collect
+        'copy' or 'view' with `template`; 'list' without.
+    stream
+        Stream slices of `x` instead of staging it whole — as for
+        [`Pool.map()`](`pymizu.Pool.map`).
+
+    Examples
+    --------
+    Stage the map once, then re-run it over replacement data at memcpy
+    cost (same dtype and length swap in place):
+
+    ```{python}
+    import numpy as np
+    import pymizu
+
+    with pymizu.Pool.create(2) as pool:
+        with pool.map_prepare(np.square, np.arange(4.0)) as pm:
+            first = pm.run(timeout=10)
+            second = pm.run(np.array([4.0, -5.0, 6.0, 7.0]), timeout=10)
+    second
+    ```
     """
 
     def __init__(
@@ -1446,10 +1503,11 @@ class PreparedMap:
             self._stage()
 
     def _set_x(self, x: _Any) -> None:
-        """(Re)target the map at x: probe for the raw section, rebuild the
-        descriptor, and recompute the geometry from the pool's current
-        caps (the morsel geometry, or a streaming map's fixed chunk
-        ranges — whose descriptor is x-independent: fn, args, kwargs)."""
+        """(Re)target the map at x: probe for the raw section, rebuild
+        the descriptor, and recompute the geometry from the pool's
+        current caps (the morsel geometry, or a streaming map's fixed
+        chunk ranges — whose descriptor is x-independent: fn, args,
+        kwargs)."""
         probe, x, n = _probe_x(self._spec, x)
         self._probe = probe
         self._x = x
@@ -1535,16 +1593,31 @@ class PreparedMap:
         self._name, self._capsule, self._gen = name, capsule, 0
 
     def run(self, x: _Any = None, timeout: float | None = None) -> list | _Any:
-        """Run the prepared map once; return its results (the same shapes
-        and outcome taxonomy as ``Pool.map``).
+        """Run the prepared map once; return its results (the same
+        shapes and outcome taxonomy as
+        [`Pool.map()`](`pymizu.Pool.map`)).
 
-        ``x`` replaces the staged data for this and later runs. When both
-        the staged and the replacement x are raw-buffer eligible with the
-        same dtype and length, the swap is an in-place memcpy over the
-        region's x section — the iterate-over-same-shape loop (optimizer
-        steps, simulation sweeps) runs at memcpy cost, skipping the region
-        create and the worker-side re-attach. Any other x restages
-        transparently on this run."""
+        Parameters
+        ----------
+        x
+            Replaces the staged data for this and later runs. When both
+            the staged and the replacement x are raw-buffer eligible
+            with the same dtype and length, the swap is an in-place
+            memcpy over the region's x section — the
+            iterate-over-same-shape loop (optimizer steps, simulation
+            sweeps) runs at memcpy cost, skipping the region create and
+            the worker-side re-attach. Any other x restages
+            transparently on this run.
+        timeout
+            Seconds before the run gives up; on expiry the outstanding
+            work is cancelled and the TIMEOUT
+            [`Sentinel`](`pymizu.Sentinel`) is returned, never raised.
+
+        Returns
+        -------
+            The results — the same shapes and outcome taxonomy as
+            [`Pool.map()`](`pymizu.Pool.map`).
+        """
         pymizu = self._pymizu
         if self._closed:
             raise pymizu.MizuError("pymizu: map handle is closed")

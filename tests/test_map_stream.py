@@ -107,7 +107,10 @@ def test_stream_fail_fast_min_index():
     try:
         with pytest.raises(pymizu.TaskError) as exc_info:
             p.map(
-                fail_on, list(range(8)), args=({3, 5},), stream=True,
+                fail_on,
+                list(range(8)),
+                args=({3, 5},),
+                stream=True,
                 n_chunks=4,
             )
         assert exc_info.value.index == 3
@@ -256,8 +259,11 @@ def test_stream_fail_drains_sibling_errors():
     ]
     with pytest.raises(pymizu.TaskError) as exc_info:
         _map_mod._stream_fail(
-            pymizu, handles, [0, 1, 2, 3],
-            [(0, 2), (2, 4), (4, 6), (6, 8)], first,
+            pymizu,
+            handles,
+            [0, 1, 2, 3],
+            [(0, 2), (2, 4), (4, 6), (6, 8)],
+            first,
         )
     assert exc_info.value.index == 3
 
@@ -412,9 +418,7 @@ def test_stream_template_view(pool):
 
 
 def test_stream_template_m2(pool):
-    out = pool.map(
-        pair_up, list(range(50)), template=np.empty(2), stream=True
-    )
+    out = pool.map(pair_up, list(range(50)), template=np.empty(2), stream=True)
     assert out.shape == (50, 2)
     np.testing.assert_array_equal(out[:, 0], np.arange(50))
     np.testing.assert_array_equal(out[:, 1], np.arange(50) * 2)
@@ -426,9 +430,7 @@ def test_stream_prepared_template_length_change_restages(pool):
     )
     try:
         name = pm._name
-        np.testing.assert_array_equal(
-            pm.run(), np.array([2.0, 4.0, 6.0])
-        )
+        np.testing.assert_array_equal(pm.run(), np.array([2.0, 4.0, 6.0]))
         assert pm._name == name
         out = pm.run([1, 2, 3, 4])
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0, 8.0]))
@@ -451,8 +453,6 @@ def test_stream_prepared_template_view_transfers(pool):
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0]))
         # the view pins its region: the next run stages fresh
         assert pm._capsule is None
-        np.testing.assert_array_equal(
-            pm.run(), np.array([2.0, 4.0, 6.0])
-        )
+        np.testing.assert_array_equal(pm.run(), np.array([2.0, 4.0, 6.0]))
     finally:
         pm.close()

@@ -21,6 +21,7 @@ def _na_real():
 @dataclass
 class ExpectedFrame:
     """A data.frame home: the to_dict() columns, names, and row_names."""
+
     columns: dict = field(default_factory=dict)
     names: list = field(default_factory=list)
     row_names: object = None  # None | list[str] | int32 array
@@ -29,6 +30,7 @@ class ExpectedFrame:
 @dataclass
 class ExpectedError:
     """An err home: a TaskError's remote_type, message, detail, index."""
+
     remote_type: str
     message: str
     detail: str
@@ -38,6 +40,7 @@ class ExpectedError:
 @dataclass
 class ExpectedTask:
     """A task home: the decoded components (a task is not a value)."""
+
     target: int
     kind: int
     ident: int
@@ -53,13 +56,15 @@ def load_cases(path):
         if not line or line.startswith("#"):
             continue
         parts = [p.strip() for p in line.split("|")]
-        out.append({
-            "id": parts[0],
-            "kind": parts[1],
-            "langs": parts[2],
-            "value": parts[3],
-            "note": parts[4] if len(parts) > 4 else "",
-        })
+        out.append(
+            {
+                "id": parts[0],
+                "kind": parts[1],
+                "langs": parts[2],
+                "value": parts[3],
+                "note": parts[4] if len(parts) > 4 else "",
+            }
+        )
     return out
 
 
@@ -97,7 +102,7 @@ class _Parser:
         j = self.i
         while self.i < len(self.s) and self.s[self.i] not in stop:
             self.i += 1
-        return self.s[j:self.i].strip()
+        return self.s[j : self.i].strip()
 
     def string(self):
         self.expect('"')
@@ -121,7 +126,7 @@ class _Parser:
                 elif e in ('"', "\\"):
                     out.append(e)
                 elif e == "u":
-                    out.append(chr(int(self.s[self.i:self.i + 4], 16)))
+                    out.append(chr(int(self.s[self.i : self.i + 4], 16)))
                     self.i += 4
                 else:
                     raise ValueError(f"bad escape \\{e}")
@@ -144,10 +149,29 @@ class _Parser:
 
     def value(self):
         self.ws()
-        for name in ("lglv", "intv", "realv", "cplxv", "rawv", "strv",
-                     "i64v", "list", "tuple", "dict", "attr", "lgl", "int",
-                     "real", "cplx", "str", "bytes", "err", "task", "ref",
-                     "nil"):
+        for name in (
+            "lglv",
+            "intv",
+            "realv",
+            "cplxv",
+            "rawv",
+            "strv",
+            "i64v",
+            "list",
+            "tuple",
+            "dict",
+            "attr",
+            "lgl",
+            "int",
+            "real",
+            "cplx",
+            "str",
+            "bytes",
+            "err",
+            "task",
+            "ref",
+            "nil",
+        ):
             if self.s.startswith(name, self.i):
                 self.i += len(name)
                 return getattr(self, "v_" + name)()
@@ -227,7 +251,7 @@ class _Parser:
             else:
                 tok = self.token("=")
                 try:
-                    keys.append(int(tok))   # a non-str key (wd-nonstr-key)
+                    keys.append(int(tok))  # a non-str key (wd-nonstr-key)
                 except ValueError:
                     keys.append(tok)
             self.expect("=")
@@ -303,9 +327,12 @@ class _Parser:
         toks = self.elt_tokens()
         if "na" in toks:
             return np.array(
-                [0 if t == "na" else int(t) for t in
-                 [t if t != "na" else "-2147483648" for t in toks]],
-                dtype=np.int32)
+                [
+                    0 if t == "na" else int(t)
+                    for t in [t if t != "na" else "-2147483648" for t in toks]
+                ],
+                dtype=np.int32,
+            )
         return np.array([int(t) for t in toks], dtype=np.bool_)
 
     def v_intv(self):
@@ -314,7 +341,8 @@ class _Parser:
         if "na" in toks:
             return np.array(
                 [_na_real() if t == "na" else float(t) for t in toks],
-                dtype=np.float64)
+                dtype=np.float64,
+            )
         return np.array([int(t) for t in toks], dtype=np.int32)
 
     def v_realv(self):
@@ -354,7 +382,8 @@ class _Parser:
         toks = self.elt_tokens()
         return np.array(
             [-9223372036854775808 if t == "na" else int(t) for t in toks],
-            dtype=np.int64)
+            dtype=np.int64,
+        )
 
     def elt_tokens(self):
         toks = []
@@ -388,14 +417,19 @@ def _factor_home(codes, levels):
 def _frame_home(cols, attrs):
     names = _str_list(attrs["names"])
     row_names = attrs["row.names"]
-    if (isinstance(row_names, np.ndarray)
-            and row_names.dtype == np.float64
-            and np.isnan(row_names[0])):
+    if (
+        isinstance(row_names, np.ndarray)
+        and row_names.dtype == np.float64
+        and np.isnan(row_names[0])
+    ):
         row_names = None  # the compact automatic form c(NA, +-n)
     elif isinstance(row_names, int):
         row_names = np.array([row_names], dtype=np.int32)
-    return ExpectedFrame(columns=dict(zip(names, cols, strict=True)),
-                         names=names, row_names=row_names)
+    return ExpectedFrame(
+        columns=dict(zip(names, cols, strict=True)),
+        names=names,
+        row_names=row_names,
+    )
 
 
 def attr_home(x, attrs):
@@ -426,19 +460,26 @@ def attr_home(x, attrs):
                 np.int64
             )
         isnat = np.array(
-            [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x])
+            [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x]
+        )
         out = us.astype("datetime64[us]")
         out[isnat] = np.datetime64("NaT", "us")
         return out
     if klass == ["difftime"]:
-        factor = {"secs": 1.0, "mins": 60.0, "hours": 3600.0,
-                  "days": 86400.0, "weeks": 604800.0}[attrs["units"]]
+        factor = {
+            "secs": 1.0,
+            "mins": 60.0,
+            "hours": 3600.0,
+            "days": 86400.0,
+            "weeks": 604800.0,
+        }[attrs["units"]]
         with np.errstate(invalid="ignore"):
             us = np.round(
                 np.asarray(x, dtype=np.float64) * factor * 1e6
             ).astype(np.int64)
         isnat = np.array(
-            [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x])
+            [struct.pack("<d", v) == struct.pack("<Q", NA_REAL) for v in x]
+        )
         out = us.astype("timedelta64[us]")
         out[isnat] = np.timedelta64("NaT", "us")
         return out
@@ -539,6 +580,7 @@ def frame_same(f, exp):
 def err_same(a, exp):
     """A TaskError against its spec-authored fields."""
     import pymizu
+
     return (
         isinstance(a, pymizu.TaskError)
         and a.remote_type == exp.remote_type
@@ -550,4 +592,5 @@ def err_same(a, exp):
 
 def _pymizu_frame():
     import pymizu
+
     return pymizu.Frame

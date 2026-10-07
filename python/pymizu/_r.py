@@ -1,10 +1,10 @@
 """Launching R channel peers (the R package ``mizu``).
 
-``r_launcher()`` returns a ``Channel.create`` launcher that spawns the
-peer as an R process through the package's static Rscript runner — the
-same spawn path an R host uses: no per-spawn command file (Rscript -e
-writes one), the entry expression and the probed library paths carried
-hex-encoded in argv.
+`r_launcher()` returns a [`Channel.create()`](`pymizu.Channel.create`)
+launcher that spawns the peer as an R process through the package's
+static Rscript runner — the same spawn path an R host uses: no
+per-spawn command file (Rscript -e writes one), the entry expression
+and the probed library paths carried hex-encoded in argv.
 """
 
 from __future__ import annotations
@@ -106,17 +106,36 @@ def r_launcher(
     stdout: _Any = None,
     stderr: _Any = None,
 ) -> _Callable[[str], _subprocess.Popen]:
-    """Return a ``Channel.create`` launcher spawning an R peer.
+    """Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
+    spawning an R peer.
 
-    The peer runs the R package ``mizu``: the returned ``callable(token)``
-    spawns ``rscript`` on the package's static child runner with
-    ``mizu:::peer_main(<token>)`` as the entry expression and the probed
-    library paths propagated in argv. Requires Rscript on the PATH (or
-    passed as ``rscript``) and an installed ``mizu`` with source string
-    support — MizuError is raised here, before the channel is created,
-    otherwise. ``stdout`` and ``stderr`` forward to subprocess.Popen;
-    the default inherits the console, where the peer's error epilogue
-    lands.
+    The peer runs the R package `mizu`: the returned `callable(token)`
+    spawns `rscript` on the package's static child runner with
+    `mizu:::peer_main(<token>)` as the entry expression and the probed
+    library paths propagated in argv.
+
+    Parameters
+    ----------
+    rscript
+        Path to Rscript; the default searches the PATH.
+    stdout
+        Forwarded to `subprocess.Popen`; the default inherits the
+        console, where the peer's error epilogue lands.
+    stderr
+        Forwarded to `subprocess.Popen`.
+
+    Returns
+    -------
+        A `callable(token)` launcher for
+        [`Channel.create()`](`pymizu.Channel.create`).
+
+    Raises
+    ------
+    MizuError
+        Raised here, before the channel is created, when Rscript is
+        not found or no installed `mizu` with source string support is
+        available.
+
     """
     rscript, script, libs = _resolve(rscript, "r_launcher")
 
@@ -139,23 +158,54 @@ def r_pool_launcher(
     stdout: _Any = None,
     stderr: _Any = None,
 ) -> _Callable[[str, int], _subprocess.Popen]:
-    """Return a ``Pool.create`` launcher spawning R workers.
+    """Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
+    spawning R workers.
 
-    Each worker runs the R package ``mizu``: the returned
-    ``callable(token, slot)`` spawns ``rscript`` on the package's static
-    child runner with ``mizu:::worker_main(<token>, <slot>)`` as the
+    Each worker runs the R package `mizu`: the returned
+    `callable(token, slot)` spawns `rscript` on the package's static
+    child runner with `mizu:::worker_main(<token>, <slot>)` as the
     entry expression and the probed library paths propagated in argv
-    (without them the workers cannot ``library(mizu)`` from the host's
-    libraries). Requires Rscript on the PATH (or passed as ``rscript``)
-    and an installed ``mizu`` with source string support — MizuError is
-    raised here, before any pool exists, otherwise. The mirror of the R
-    package's ``mizu_py_pool_launcher()``.
+    (without them the workers cannot `library(mizu)` from the host's
+    libraries). The mirror of the R package's `mizu_py_pool_launcher()`.
 
+    Parameters
+    ----------
+    rscript
+        Path to Rscript; the default searches the PATH.
+    stdout
+        Forwarded to `subprocess.Popen`.
+    stderr
+        Forwarded to `subprocess.Popen`.
+
+    Returns
+    -------
+        A `callable(token, slot)` launcher for
+        [`Pool.create()`](`pymizu.Pool.create`).
+
+    Raises
+    ------
+    MizuError
+        Raised here, before any pool exists, when Rscript is not found
+        or no installed `mizu` with source string support is available.
+
+    Notes
+    -----
     The first worker's join records the workers' language in the pool,
     so the launcher carries no language attribute: a pool of R workers
-    takes :class:`pymizu.call` specifications through ``Pool.submit()``,
-    and a plain callable errors locally naming the spec verb. A launcher
-    that spawns the wrong language fails at join, not at the first task.
+    takes [`pymizu.call()`](`pymizu.call`) specifications through
+    [`Pool.submit()`](`pymizu.Pool.submit`), and a plain callable
+    errors locally naming the spec verb. A launcher that spawns the
+    wrong language fails at join, not at the first task.
+
+    Examples
+    --------
+    ```python
+    import pymizu
+
+    with pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:
+        spec = pymizu.call(source="summary(cars$speed)")
+        print(pool.submit(spec).collect())
+    ```
     """
     rscript, script, libs = _resolve(rscript, "r_pool_launcher")
 

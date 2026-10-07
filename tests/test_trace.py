@@ -46,5 +46,5 @@ def test_trace_hook_error_is_unraisable(pool, capsys):
 
     pool.trace(boom)
     t = pool.submit(pow, 2, 2)
-    assert t.collect(timeout=5) == 4   # the hook error fails nothing
+    assert t.collect(timeout=5) == 4  # the hook error fails nothing
     pool.trace(None)

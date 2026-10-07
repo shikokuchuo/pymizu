@@ -23,10 +23,10 @@ CORPUS_DIR = pathlib.Path(__file__).parent / "interop-corpus"
 CASES = ixn.load_cases(CORPUS_DIR / "cases.txt")
 CORPUS = ixn.load_corpus(CORPUS_DIR / "corpus.txt")
 
-WARN_ON_READ = {"i64v-na", "list-i64-na"}   # the sentinel-carrying reads
-SKIP_WRITE_DECLINE = {"wd-dup-names"}       # a Python dict dedupes by
-                                            # construction; the decline is
-                                            # unreachable (R covers it)
+WARN_ON_READ = {"i64v-na", "list-i64-na"}  # the sentinel-carrying reads
+SKIP_WRITE_DECLINE = {"wd-dup-names"}  # a Python dict dedupes by
+# construction; the decline is
+# unreachable (R covers it)
 
 
 def _read(data):
@@ -58,14 +58,24 @@ def test_golden_corpus():
             home = ixn.parse(value)
             got = _pymizu._read_task(bytes.fromhex(CORPUS[cid]))
             assert tuple(got[:4]) == (
-                home.target, home.kind, home.ident, home.code,
+                home.target,
+                home.kind,
+                home.ident,
+                home.code,
             ), cid
             assert ixn.ix_same(got[4], home.positional), cid
             assert ixn.ix_same(got[5], home.named), cid
-            assert _pymizu._write_task(
-                home.code, home.kind, tuple(home.positional), home.named,
-                home.target, home.ident,
-            ).hex() == CORPUS[cid], cid
+            assert (
+                _pymizu._write_task(
+                    home.code,
+                    home.kind,
+                    tuple(home.positional),
+                    home.named,
+                    home.target,
+                    home.ident,
+                ).hex()
+                == CORPUS[cid]
+            ), cid
             continue
         if kind == "write-decline":
             if cid in SKIP_WRITE_DECLINE:
@@ -87,10 +97,15 @@ def test_golden_corpus():
             home = ixn.parse(value)
             assert ixn.ix_same(got, home), cid
             if isinstance(home, ixn.ExpectedError):
-                assert _pymizu._write_err(
-                    home.remote_type, home.message, home.detail,
-                    index=home.index,
-                ).hex() == CORPUS[cid], cid
+                assert (
+                    _pymizu._write_err(
+                        home.remote_type,
+                        home.message,
+                        home.detail,
+                        index=home.index,
+                    ).hex()
+                    == CORPUS[cid]
+                ), cid
             else:
                 assert _write(got) == CORPUS[cid], cid
         elif kind == "enc":
@@ -102,10 +117,21 @@ def test_golden_corpus():
 
 def test_scalar_and_container_roundtrips():
     h, p = foreign_pair()
-    for x in [None, True, 1, -1, 1.5, 1 + 2j, "héllo ✓",
-              [1, "a", [True, 2.5]], {"a": 1, "b": {"z": None}},
-              [1, "a", [True, 2.5]], {"a": 1, "b": {"z": None}},
-            2**53, -(2**53)]:
+    for x in [
+        None,
+        True,
+        1,
+        -1,
+        1.5,
+        1 + 2j,
+        "héllo ✓",
+        [1, "a", [True, 2.5]],
+        {"a": 1, "b": {"z": None}},
+        [1, "a", [True, 2.5]],
+        {"a": 1, "b": {"z": None}},
+        2**53,
+        -(2**53),
+    ]:
         assert h.send(x) is True
         assert p.recv(5) == x
     # top-level bytes stage raw and read back as a uint8 array
@@ -117,8 +143,10 @@ def test_scalar_and_container_roundtrips():
 
 
 def _tree(n):
-    return [{"id": i, "name": f"item-{i:04d}", "vals": [i, i * 1.5, True,
-            None]} for i in range(n)]
+    return [
+        {"id": i, "name": f"item-{i:04d}", "vals": [i, i * 1.5, True, None]}
+        for i in range(n)
+    ]
 
 
 def test_spilled_streams_roundtrip_on_each_carrier():
@@ -126,7 +154,7 @@ def test_spilled_streams_roundtrip_on_each_carrier():
     # (_write_stream is the two-pass oracle); these rows pin each
     # carrier's delivery — inline (one walk), an arena chunk, an SHM_RAW
     # region, and the n == inline_max boundary staying INLINE
-    h, p = foreign_pair()   # slot_size 1024 (inline budget 1008), 64 KB arena
+    h, p = foreign_pair()  # slot_size 1024 (inline budget 1008), 64 KB arena
     INLINE_MAX = 1024 - 16
     boundary = "x" * (INLINE_MAX - len(_pymizu._write_stream("")))
     assert len(_pymizu._write_stream(boundary)) == INLINE_MAX
@@ -155,7 +183,7 @@ def test_arena_pressure_forces_the_region_carrier():
     x = {"vals": list(range(3000))}
     size = len(_pymizu._write_stream(x))
     assert size < (1 << 16)
-    n = (1 << 16) // size + 4   # cumulatively past the arena
+    n = (1 << 16) // size + 4  # cumulatively past the arena
     for _ in range(n):
         assert h.send(x) is True
     for _ in range(n):
@@ -262,8 +290,14 @@ def test_temporal_shapes():
     a = np.array([1, 20000], dtype="datetime64[W]")
     got = _read(_pymizu._write_stream(a))
     assert np.array_equal(got.view(np.int64), a.view(np.int64) * 7)
-    scales = {"h": 3600e6, "m": 60e6, "s": 1e6, "ms": 1e3, "us": 1.0,
-              "ns": 1e-3}
+    scales = {
+        "h": 3600e6,
+        "m": 60e6,
+        "s": 1e6,
+        "ms": 1e3,
+        "us": 1.0,
+        "ns": 1e-3,
+    }
     for unit, factor in scales.items():
         a = np.array([1, 20000], dtype=f"datetime64[{unit}]")
         got = _read(_pymizu._write_stream(a))
@@ -282,6 +316,7 @@ def test_temporal_shapes():
     assert got == np.array(["2023-11-14T22:13:20"], dtype="datetime64[us]")[0]
     # an aware datetime converts to its UTC instant
     import zoneinfo
+
     try:
         zi = zoneinfo.ZoneInfo("Europe/Paris")
     except zoneinfo.ZoneInfoNotFoundError:
@@ -295,11 +330,13 @@ def test_temporal_shapes():
 
 
 def test_temporal_declines():
-    for bad in [np.array([1, 2], dtype="datetime64[Y]"),
-                np.array([1, 2], dtype="datetime64[M]"),
-                np.array([1], dtype="m8[Y]"),
-                np.array([1], dtype="m8[M]"),
-                np.array([1], dtype="m8[ps]")]:
+    for bad in [
+        np.array([1, 2], dtype="datetime64[Y]"),
+        np.array([1, 2], dtype="datetime64[M]"),
+        np.array([1], dtype="m8[Y]"),
+        np.array([1], dtype="m8[M]"),
+        np.array([1], dtype="m8[ps]"),
+    ]:
         with pytest.raises(pymizu.DeclinedError):
             _pymizu._write_stream(bad)
 
@@ -307,8 +344,16 @@ def test_temporal_declines():
 def test_timedelta_shapes():
     # timedelta64 both directions: any non-calendar unit converts to us
     # (a double-seconds hop), NaT kept
-    scales = {"W": 604800e6, "D": 86400e6, "h": 3600e6, "m": 60e6,
-              "s": 1e6, "ms": 1e3, "us": 1.0, "ns": 1e-3}
+    scales = {
+        "W": 604800e6,
+        "D": 86400e6,
+        "h": 3600e6,
+        "m": 60e6,
+        "s": 1e6,
+        "ms": 1e3,
+        "us": 1.0,
+        "ns": 1e-3,
+    }
     for unit, factor in scales.items():
         a = np.array([1, 20000], dtype=f"m8[{unit}]")
         got = _read(_pymizu._write_stream(a))
@@ -340,7 +385,7 @@ def test_frame_scalar_int_column():
         return b"\x04" + key(s)
 
     s = bytearray(b"I\x01")
-    s += b"\x0f"                             # ATTR
+    s += b"\x0f"  # ATTR
     s += b"\x0c" + (1).to_bytes(8, "little")  # LIST n=1
     s += b"\x02" + (5).to_bytes(8, "little", signed=True)  # INT 5
     s += b"\x0d" + (3).to_bytes(8, "little")  # DICT n=3
@@ -355,15 +400,20 @@ def test_frame_scalar_int_column():
 
 def test_arrow_temporal_columns():
     h, p = foreign_pair()
-    t = pa.table({
-        "d": pa.array([19000, None], type=pa.date32()),
-        "t": pa.array([1700000000000000, None],
-                      type=pa.timestamp("us", tz="UTC")),
-        "z": pa.array([1700000000000000, 1700000001000000],
-                      type=pa.timestamp("us", tz="America/New_York")),
-        "u": pa.array([90, None], type=pa.duration("s")),
-        "n": pa.array([250000, 1000000], type=pa.duration("ns")),
-    })
+    t = pa.table(
+        {
+            "d": pa.array([19000, None], type=pa.date32()),
+            "t": pa.array(
+                [1700000000000000, None], type=pa.timestamp("us", tz="UTC")
+            ),
+            "z": pa.array(
+                [1700000000000000, 1700000001000000],
+                type=pa.timestamp("us", tz="America/New_York"),
+            ),
+            "u": pa.array([90, None], type=pa.duration("s")),
+            "n": pa.array([250000, 1000000], type=pa.duration("ns")),
+        }
+    )
     assert h.send(t) is True
     f = p.recv(5)
     d = f.to_dict()
@@ -386,8 +436,10 @@ def test_arrow_temporal_columns():
 
 def test_arrow_duration_single():
     h, p = foreign_pair()
-    assert h.send(pa.chunked_array([[250, None], [500]],
-                                   type=pa.duration("ms"))) is True
+    assert (
+        h.send(pa.chunked_array([[250, None], [500]], type=pa.duration("ms")))
+        is True
+    )
     got = p.recv(5)
     assert got.dtype == np.dtype("timedelta64[us]")
     assert got[0] == np.timedelta64(250, "ms") and np.isnat(got[1])
@@ -459,11 +511,13 @@ def test_polars_series_and_categorical():
 def test_polars_frame_string_view_columns():
     pl = pytest.importorskip("polars")
     h, p = foreign_pair()
-    df = pl.DataFrame({
-        "s": ["a", "b", None],
-        "x": [1, 2, 3],
-        "c": pl.Series(["u", "v", "u"], dtype=pl.Categorical),
-    })
+    df = pl.DataFrame(
+        {
+            "s": ["a", "b", None],
+            "x": [1, 2, 3],
+            "c": pl.Series(["u", "v", "u"], dtype=pl.Categorical),
+        }
+    )
     h.send(df)
     f = p.recv(5)
     d = f.to_dict()
@@ -476,14 +530,18 @@ def test_polars_frame_string_view_columns():
 
 def test_multibatch_frame():
     h, p = foreign_pair()
-    t = pa.table({
-        "a": pa.chunked_array([[1, 2], [3, 4]]),
-        "b": pa.chunked_array([["x", "y"], ["z", "w"]]),
-        "d": pa.chunked_array([
-            pa.DictionaryArray.from_arrays([0, 0], ["u", "v"]),
-            pa.DictionaryArray.from_arrays([1, 0], ["u", "v"]),
-        ]),
-    })
+    t = pa.table(
+        {
+            "a": pa.chunked_array([[1, 2], [3, 4]]),
+            "b": pa.chunked_array([["x", "y"], ["z", "w"]]),
+            "d": pa.chunked_array(
+                [
+                    pa.DictionaryArray.from_arrays([0, 0], ["u", "v"]),
+                    pa.DictionaryArray.from_arrays([1, 0], ["u", "v"]),
+                ]
+            ),
+        }
+    )
     h.send(t)
     f = p.recv(5)
     d = f.to_dict()
@@ -496,13 +554,13 @@ def test_multibatch_frame():
 
 def test_corrupt_and_unknown_streams():
     for hexstream in [
-        "49017f",                    # unknown tag
-        "490200",                    # a newer version
-        "4901020102",                # truncated
-        "49010000",                  # trailing bytes
-        "49010d0100000000000000ffffffff",   # a dict key of length -1
-        "49010f0f",                  # an attr wraps an attr
-        "49010401000000ff",          # invalid UTF-8
+        "49017f",  # unknown tag
+        "490200",  # a newer version
+        "4901020102",  # truncated
+        "49010000",  # trailing bytes
+        "49010d0100000000000000ffffffff",  # a dict key of length -1
+        "49010f0f",  # an attr wraps an attr
+        "49010401000000ff",  # invalid UTF-8
     ]:
         with pytest.raises(pymizu.MizuError, match="pymizu"):
             _read(hexstream)
@@ -548,11 +606,12 @@ def test_frame_export_machinery():
     assert df.schema["n"] == pl.Float64
     assert df.schema["f"] == pl.Categorical
     assert df.schema["i"] == pl.Int64
-    assert df.to_dicts() == [{"n": 1.5, "f": "f", "i": 5},
-                             {"n": 2.5, "f": None, "i": None}]
+    assert df.to_dicts() == [
+        {"n": 1.5, "f": "f", "i": 5},
+        {"n": 2.5, "f": None, "i": None},
+    ]
     t = pa.table(f)
-    assert t.to_pydict() == {"n": [1.5, 2.5], "f": ["f", None],
-                             "i": [5, None]}
+    assert t.to_pydict() == {"n": [1.5, 2.5], "f": ["f", None], "i": [5, None]}
     # bitmap laziness: to_dict() alone builds none
     assert f.to_dict()["n"].tolist() == [1.5, 2.5]
     # a Frame re-sent through its own export keeps row names
@@ -589,12 +648,14 @@ def test_pandas_frame_foreign():
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
     h, p = foreign_pair()
-    df = pd.DataFrame({
-        "s": pd.array(["a", "b"], dtype="str"),
-        "o": pd.Series(["x", None], dtype=object),
-        "i": pd.array([1, None], dtype="Int64"),
-        "c": pd.Series(["u", "v"], dtype=pd.CategoricalDtype(["u", "v"])),
-    })
+    df = pd.DataFrame(
+        {
+            "s": pd.array(["a", "b"], dtype="str"),
+            "o": pd.Series(["x", None], dtype=object),
+            "i": pd.array([1, None], dtype="Int64"),
+            "c": pd.Series(["u", "v"], dtype=pd.CategoricalDtype(["u", "v"])),
+        }
+    )
     h.send(df)
     f = p.recv(5)
     d = f.to_dict()
@@ -607,9 +668,7 @@ def test_pandas_frame_foreign():
     h.send(df2)
     f = p.recv(5)
     assert (
-        "__index_level_0__" in f.names
-        or "index" in f.names
-        or "x" in f.names
+        "__index_level_0__" in f.names or "index" in f.names or "x" in f.names
     )
     # a named RangeIndex is dropped
     df3 = pd.DataFrame({"x": [1, 2]})
@@ -618,11 +677,13 @@ def test_pandas_frame_foreign():
     f = p.recv(5)
     assert f.names == ("x",)
     # an ordered Categorical declines
-    df4 = pd.DataFrame({
-        "c": pd.Series(
-            ["a"], dtype=pd.CategoricalDtype(["a", "b"], ordered=True)
-        )
-    })
+    df4 = pd.DataFrame(
+        {
+            "c": pd.Series(
+                ["a"], dtype=pd.CategoricalDtype(["a", "b"], ordered=True)
+            )
+        }
+    )
     with pytest.raises(pymizu.DeclinedError, match="ordered"):
         h.send(df4)
     p.destroy()
@@ -633,6 +694,7 @@ def test_pandas_without_pyarrow_declines():
     pd = pytest.importorskip("pandas")
     import builtins
     import sys
+
     real_import = builtins.__import__
 
     def no_pyarrow(name, *args, **kwargs):

@@ -59,6 +59,7 @@ except ImportError:  # Python < 3.14: no interpreter pool either
     class NotShareableError(Exception):
         """Fallback that nothing raises."""
 
+
 InterpreterPoolExecutor = getattr(
     concurrent.futures, "InterpreterPoolExecutor", None
 )
@@ -422,8 +423,7 @@ def main():
         for scenario, framework, value, unit in results:
             if scenario == s:
                 print(
-                    f"  {scenario:<20} {framework:<20} "
-                    f"{value:>15,.1f} {unit}"
+                    f"  {scenario:<20} {framework:<20} {value:>15,.1f} {unit}"
                 )
 
 

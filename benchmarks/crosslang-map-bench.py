@@ -70,8 +70,10 @@ def main():
 
     # 1. overhead regime: trivial fn, per-element cost is the whole story
 
-    print("\n== 1. cross-language map overhead (trivial fn, n = 10000, "
-          "4 workers) ==")
+    print(
+        "\n== 1. cross-language map overhead (trivial fn, n = 10000, "
+        "4 workers) =="
+    )
 
     n = 10000
     xs = np.arange(n, dtype=np.float64)
@@ -164,28 +166,39 @@ def main():
 
     # 2. compute regime: ~10 us of work per element as one map call
 
-    print("\n== 2. cross-language map compute (~10 us elements, "
-          "n = 2000) ==")
+    print("\n== 2. cross-language map compute (~10 us elements, n = 2000) ==")
 
     n = 2000
     gspec = pymizu.call(source="sum(runif(2000))")
 
-    note_rate("map ~10us tasks", "in-process", n,
-              lambda: [winsum(i) for i in range(n)])
+    note_rate(
+        "map ~10us tasks",
+        "in-process",
+        n,
+        lambda: [winsum(i) for i in range(n)],
+    )
 
     pool = pymizu.Pool.create(4)
     try:
         pool.map(winsum, range(n))  # warm-up
-        note_rate("map ~10us tasks", "pymizu pool", n,
-                  lambda: pool.map(winsum, range(n)))
+        note_rate(
+            "map ~10us tasks",
+            "pymizu pool",
+            n,
+            lambda: pool.map(winsum, range(n)),
+        )
     finally:
         pool.stop(timeout=15)
 
     pool = pymizu.Pool.create(4, launcher=r_launcher)
     try:
         pool.map(gspec, range(n))  # warm-up
-        note_rate("map ~10us tasks", "pymizu spec", n,
-                  lambda: pool.map(gspec, range(n)))
+        note_rate(
+            "map ~10us tasks",
+            "pymizu spec",
+            n,
+            lambda: pool.map(gspec, range(n)),
+        )
     finally:
         pool.stop(timeout=15)
 

@@ -41,7 +41,9 @@ def echo():
 
 
 def test_version():
-    assert pymizu.__version__ == "0.1.0.dev0"
+    import importlib.metadata
+
+    assert pymizu.__version__ == importlib.metadata.version("pymizu")
     assert pymizu.abi_version() == 1
 
 
@@ -724,9 +726,7 @@ def test_r_interop_named_vector_declined_at_send():
         " names(y) <- paste0('n', seq_along(y));"
         " e <- tryCatch({ mizu_send(ch, y); 'no error' },"
         "   error = function(e) conditionMessage(e));"
-        " mizu_send(ch, e)\n"
-        + _R_ECHO
-        + " }"
+        " mizu_send(ch, e)\n" + _R_ECHO + " }"
     )
     ch = _r_channel(src)
     try:
@@ -752,9 +752,7 @@ def test_r_interop_string_vector_crosses():
     # a character vector past the zero-copy floor: pymizu declares
     # MIZU_CAP_MIZS, so R stages MIZS — a region-backed string view whose
     # to_list() is the explicit copy (below the floor, the strv copy)
-    ch = _r_channel(
-        "{ mizu_send(ch, rep('x', 100000))\n" + _R_ECHO + " }"
-    )
+    ch = _r_channel("{ mizu_send(ch, rep('x', 100000))\n" + _R_ECHO + " }")
     try:
         v = ch.recv(timeout=10)
         assert type(v).__name__ == "_ShmStrView"

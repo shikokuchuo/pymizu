@@ -37,8 +37,9 @@ def r_mizu():
     try:
         return pymizu.r_launcher()
     except pymizu.MizuError:
-        pytest.skip("Rscript with the mizu package (source-drop support) "
-                    "not available")
+        pytest.skip(
+            "Rscript with the mizu package (source-drop support) not available"
+        )
 
 
 def test_r_launcher_missing_rscript():
@@ -120,7 +121,7 @@ def test_r_peer_string_view_arrow(r_mizu):
     ch = pymizu.Channel.create(R_STR_VIEW, launcher=r_mizu)
     try:
         v = ch.recv(30)
-        rc0 = _settled_refcount(v)   # wait R's producer loan out
+        rc0 = _settled_refcount(v)  # wait R's producer loan out
         arr = pa.array(v)
         assert v.refcount == rc0 + 1
         assert arr.type == pa.large_string()
@@ -141,8 +142,14 @@ def test_r_peer_string_view_polars(r_mizu):
         s = pl.Series(ch.recv(30))
         assert s.dtype == pl.String and len(s) == 20000
         assert s.null_count() == 4000
-        assert s.head(6).to_list() == ["hello", None, "", "héllo ✓",
-                                       "long " * 2000, "hello"]
+        assert s.head(6).to_list() == [
+            "hello",
+            None,
+            "",
+            "héllo ✓",
+            "long " * 2000,
+            "hello",
+        ]
     finally:
         ch.close()
 
@@ -197,8 +204,13 @@ def test_py_peer_string_view_echo(r_mizu):
         assert py_ch.send(v) is True
         back = py_ch.recv(30)
         assert type(back).__name__ == "_ShmStrView"
-        assert back.to_list()[:5] == ["hello", None, "", "héllo ✓",
-                                      "long " * 2000]
+        assert back.to_list()[:5] == [
+            "hello",
+            None,
+            "",
+            "héllo ✓",
+            "long " * 2000,
+        ]
     finally:
         py_ch.close()
         r_ch.close()
@@ -220,7 +232,7 @@ def test_py_peer_str_list_zero_copy(r_mizu):
         n = 200_000
         xs = [f"héllo ✓ {i}" if i % 3 else "" for i in range(n)]
         assert ch.send(xs) is True
-        assert ch.recv(60)                     # R's read was a MIZS view
+        assert ch.recv(60)  # R's read was a MIZS view
         back = ch.recv(60)
         assert type(back).__name__ == "_ShmStrView"
         assert back.to_list() == xs
@@ -243,8 +255,10 @@ def test_py_peer_str_list_na_mapping(r_mizu):
     ch = pymizu.Channel.create(R_MIZS_NA, launcher=r_mizu)
     try:
         n = 50_000
-        xs = [None if i % 7 == 0 else "" if i % 5 == 0 else f"s{i}"
-              for i in range(n)]
+        xs = [
+            None if i % 7 == 0 else "" if i % 5 == 0 else f"s{i}"
+            for i in range(n)
+        ]
         assert ch.send(xs) is True
         na = np.asarray(ch.recv(60))
         assert na.tolist() == [x is None for x in xs]
@@ -289,7 +303,7 @@ def test_py_peer_str_list_same_language():
 
 def test_str_list_no_cap_peer_copies():
     # a peer short of MIZU_CAP_MIZS gets the 0x0b value copy
-    h, p = foreign_pair(caps=30)   # every current cap minus MIZS
+    h, p = foreign_pair(caps=30)  # every current cap minus MIZS
     try:
         xs = [f"s{i}" for i in range(20_000)]
         assert h.send(xs) is True
@@ -321,12 +335,12 @@ def test_py_peer_str_list_retain_balance(r_mizu):
     try:
         xs = [f"s{i}" for i in range(50_000)]
         assert ch.send(xs) is True
-        assert ch.recv(60)               # R's read was a MIZS view
-        assert ch.send("ping") is True   # its reap drops the loan
-        assert ch.recv(60) == 1          # the settled floor: the wrap
-        assert ch.info()["ledger_entries"] == 1   # lent to R's view
+        assert ch.recv(60)  # R's read was a MIZS view
+        assert ch.send("ping") is True  # its reap drops the loan
+        assert ch.recv(60) == 1  # the settled floor: the wrap
+        assert ch.info()["ledger_entries"] == 1  # lent to R's view
         assert ch.recv(60) == "released"
-        assert ch.send(xs) is True       # recycles the released region
+        assert ch.send(xs) is True  # recycles the released region
         assert ch.info()["fl_hits"] >= 1
     finally:
         ch.close()
@@ -347,9 +361,10 @@ def test_py_peer_dim_array_zero_copy(r_mizu):
     ch = pymizu.Channel.create(R_MIZH_ECHO, launcher=r_mizu)
     try:
         a = np.arange(1024 * 1024, dtype=np.float64).reshape(
-            (1024, 1024), order="F")
+            (1024, 1024), order="F"
+        )
         assert ch.send(a) is True
-        assert ch.recv(60)                     # R's read was a MIZH view
+        assert ch.recv(60)  # R's read was a MIZH view
         back = ch.recv(60)
         assert back.shape == (1024, 1024)
         assert back.flags.f_contiguous and not back.flags.writeable
@@ -394,17 +409,37 @@ def test_py_peer_dim_array_dtypes(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_MIZH_DTYPES, launcher=r_mizu)
     try:
-        assert ch.send(np.arange(60000, dtype=np.float64).reshape(
-            (200, 300), order="F")) is True
+        assert (
+            ch.send(
+                np.arange(60000, dtype=np.float64).reshape(
+                    (200, 300), order="F"
+                )
+            )
+            is True
+        )
         assert ch.recv(60).tolist() == [1, 1]
-        assert ch.send(np.arange(60000, dtype=np.int32).reshape(
-            (200, 300), order="F")) is True
+        assert (
+            ch.send(
+                np.arange(60000, dtype=np.int32).reshape((200, 300), order="F")
+            )
+            is True
+        )
         assert ch.recv(60).tolist() == [1, 1]
-        assert ch.send(np.arange(20000, dtype=np.int64).reshape(
-            (100, 200), order="F")) is True
+        assert (
+            ch.send(
+                np.arange(20000, dtype=np.int64).reshape((100, 200), order="F")
+            )
+            is True
+        )
         assert ch.recv(60).tolist() == [1, 1, 1]
-        assert ch.send((np.arange(20000) + 1j).astype(np.complex128)
-                       .reshape((100, 200), order="F")) is True
+        assert (
+            ch.send(
+                (np.arange(20000) + 1j)
+                .astype(np.complex128)
+                .reshape((100, 200), order="F")
+            )
+            is True
+        )
         assert ch.recv(60).tolist() == [1, 1]
     finally:
         ch.close()
@@ -434,16 +469,30 @@ def test_py_peer_dim_array_c_order_copies(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_MIZH_DECLINE, launcher=r_mizu)
     try:
-        assert ch.send(np.arange(600 * 800, dtype=np.float64)
-                       .reshape(600, 800)) is True   # C-order
+        assert (
+            ch.send(np.arange(600 * 800, dtype=np.float64).reshape(600, 800))
+            is True
+        )  # C-order
         assert ch.recv(60).tolist() == [1, 1]
-        assert ch.send(np.asfortranarray(
-            np.arange(600 * 800, dtype=np.float64).reshape(600, 800)).T
-        ) is True                      # C-order by construction (a.T)
+        assert (
+            ch.send(
+                np.asfortranarray(
+                    np.arange(600 * 800, dtype=np.float64).reshape(600, 800)
+                ).T
+            )
+            is True
+        )  # C-order by construction (a.T)
         assert ch.recv(60).tolist() == [1, 1]
-        assert ch.send(np.asfortranarray(
-            np.arange(1200 * 1600, dtype=np.float64)
-            .reshape(1200, 1600))[::2, ::2]) is True   # strided slice
+        assert (
+            ch.send(
+                np.asfortranarray(
+                    np.arange(1200 * 1600, dtype=np.float64).reshape(
+                        1200, 1600
+                    )
+                )[::2, ::2]
+            )
+            is True
+        )  # strided slice
         assert ch.recv(60).tolist() == [1, 1]
     finally:
         ch.close()
@@ -462,8 +511,14 @@ def test_py_peer_dim_array_3d(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_MIZH_3D, launcher=r_mizu)
     try:
-        assert ch.send(np.arange(24000, dtype=np.int32).reshape(
-            (20, 30, 40), order="F")) is True
+        assert (
+            ch.send(
+                np.arange(24000, dtype=np.int32).reshape(
+                    (20, 30, 40), order="F"
+                )
+            )
+            is True
+        )
         assert ch.recv(60).tolist() == [1, 1]
     finally:
         ch.close()
@@ -481,8 +536,10 @@ def test_py_peer_dim_array_below_floor_copies(r_mizu):
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_MIZH_SMALL, launcher=r_mizu)
     try:
-        assert ch.send(np.arange(64, dtype=np.float64).reshape(
-            (8, 8), order="F")) is True
+        assert (
+            ch.send(np.arange(64, dtype=np.float64).reshape((8, 8), order="F"))
+            is True
+        )
         assert ch.recv(30).tolist() == [1, 1]
     finally:
         ch.close()
@@ -495,7 +552,8 @@ def test_py_peer_dim_array_same_language():
     ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
     try:
         a = np.arange(1024 * 1024, dtype=np.float64).reshape(
-            (1024, 1024), order="F")
+            (1024, 1024), order="F"
+        )
         assert ch.send(a) is True
         got = ch.recv(30)
         assert type(got) is np.ndarray
@@ -507,10 +565,11 @@ def test_py_peer_dim_array_same_language():
 def test_dim_array_no_cap_peer_copies():
     # a peer short of MIZU_CAP_ATTRS gets the 'I' value copy
     np = pytest.importorskip("numpy")
-    h, p = foreign_pair(caps=29)   # every current cap minus ATTRS
+    h, p = foreign_pair(caps=29)  # every current cap minus ATTRS
     try:
         a = np.arange(1024 * 1024, dtype=np.float64).reshape(
-            (1024, 1024), order="F")
+            (1024, 1024), order="F"
+        )
         assert h.send(a) is True
         got = p.recv(10)
         assert type(got) is np.ndarray
@@ -540,14 +599,15 @@ def test_py_peer_dim_array_retain_balance(r_mizu):
     ch = pymizu.Channel.create(R_MIZH_BALANCE, launcher=r_mizu)
     try:
         a = np.arange(200 * 300, dtype=np.float64).reshape(
-            (200, 300), order="F")
+            (200, 300), order="F"
+        )
         assert ch.send(a) is True
-        assert ch.recv(60)               # R's read was a MIZH view
-        assert ch.send("ping") is True   # its reap drops the loan
-        assert ch.recv(60) == 1          # the settled floor: the wrap
-        assert ch.info()["ledger_entries"] == 1   # lent to R's view
+        assert ch.recv(60)  # R's read was a MIZH view
+        assert ch.send("ping") is True  # its reap drops the loan
+        assert ch.recv(60) == 1  # the settled floor: the wrap
+        assert ch.info()["ledger_entries"] == 1  # lent to R's view
         assert ch.recv(60) == "released"
-        assert ch.send(a) is True        # recycles the released region
+        assert ch.send(a) is True  # recycles the released region
         assert ch.info()["fl_hits"] >= 1
     finally:
         ch.close()
@@ -579,11 +639,11 @@ mizu::mizu_recv(ch, timeout = 60)
         assert np.where(np.isnan(e))[0].tolist() == [4]
         f = ch.recv(30)
         assert f.dtype == np.int32 and not f.flags.writeable
-        assert np.where(f == -2**31)[0].tolist() == [6]
+        assert np.where(f == -(2**31))[0].tolist() == [6]
         b = ch.recv(30)
         assert b.dtype == np.bool_ and list(b) == [True, False, True]
         c = ch.recv(30)
-        assert c.dtype == np.int32 and list(c) == [1, -2**31, 0]
+        assert c.dtype == np.int32 and list(c) == [1, -(2**31), 0]
     finally:
         ch.close()
 
@@ -651,21 +711,21 @@ send(ci)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        a = ch.recv(30).base.to_numpy()          # LGL with NAs: the view
+        a = ch.recv(30).base.to_numpy()  # LGL with NAs: the view
         assert a.dtype == np.int32 and not a.flags.writeable
-        assert list(a[:3]) == [1, 0, -2**31]
-        del a                     # the view-backed copy pins the region
+        assert list(a[:3]) == [1, 0, -(2**31)]
+        del a  # the view-backed copy pins the region
         ch.send(b"")
-        b = ch.recv(30).base.to_numpy()          # clean LGL: a bool_ copy
+        b = ch.recv(30).base.to_numpy()  # clean LGL: a bool_ copy
         assert b.dtype == np.bool_ and list(b[:3]) == [True, False, True]
         del b
         ch.send(b"")
-        c = ch.recv(30).base.to_numpy()          # INT with an NA: float64
+        c = ch.recv(30).base.to_numpy()  # INT with an NA: float64
         assert c.dtype == np.float64
         assert c[0] == 1 and np.isnan(c[2]) and c[3] == 4
         del c
         ch.send(b"")
-        d = ch.recv(30).base.to_numpy()          # clean INT: the view
+        d = ch.recv(30).base.to_numpy()  # clean INT: the view
         assert d.dtype == np.int32 and not d.flags.writeable
         assert d[0] == 1 and d[-1] == 100
         del d
@@ -700,11 +760,11 @@ def test_py_peer_stamped_region_to_numpy():
     ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
     try:
         a = np.arange(200000, dtype=np.int32)
-        a[5] = -2**31
+        a[5] = -(2**31)
         assert ch.send(a) is True
-        back = ch.recv(30)               # the echo REFs the region back
+        back = ch.recv(30)  # the echo REFs the region back
         out = back.base.to_numpy()
-        assert out.dtype == np.int32 and out[5] == -2**31
+        assert out.dtype == np.int32 and out[5] == -(2**31)
         assert np.shares_memory(out, back)
     finally:
         ch.close()
@@ -747,16 +807,16 @@ def test_py_peer_int_sentinels_stay_exact():
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
     try:
-        a = np.array([1, -2**31, 3], dtype=np.int32)
+        a = np.array([1, -(2**31), 3], dtype=np.int32)
         assert ch.send(a) is True
         got = ch.recv(30)
-        assert got.dtype == np.int32 and list(got) == [1, -2**31, 3]
-        b = np.array([1, -2**63], dtype=np.int64)
+        assert got.dtype == np.int32 and list(got) == [1, -(2**31), 3]
+        b = np.array([1, -(2**63)], dtype=np.int64)
         assert ch.send(b) is True
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             got = ch.recv(30)
-        assert got.dtype == np.int64 and list(got) == [1, -2**63]
+        assert got.dtype == np.int64 and list(got) == [1, -(2**63)]
     finally:
         ch.close()
 
@@ -766,9 +826,9 @@ def test_r_peer_echo_roundtrip(r_mizu):
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
         for x in [
-            np.array([1.5, 2.5, 3.5]),                    # float64 <-> REALSXP
-            np.arange(10, dtype=np.int32),                # int32 <-> INTSXP
-            np.arange(256, dtype=np.uint8),               # uint8 <-> RAWSXP
+            np.array([1.5, 2.5, 3.5]),  # float64 <-> REALSXP
+            np.arange(10, dtype=np.int32),  # int32 <-> INTSXP
+            np.arange(256, dtype=np.uint8),  # uint8 <-> RAWSXP
         ]:
             assert ch.send(x) is True
             got = ch.recv(30)
@@ -857,7 +917,7 @@ mizu::mizu_send(ch, if (isTRUE(ok)) v else "R check failed")
     try:
         assert ch.send(np.array([-(2**63), 7], dtype=np.int64)) is True
         with pytest.warns(UserWarning, match="to_arrow"):
-            got = ch.recv(30)   # 3.2's warn-only rule: dtype unchanged
+            got = ch.recv(30)  # 3.2's warn-only rule: dtype unchanged
         assert isinstance(got, np.ndarray) and got.dtype == np.int64
         assert list(got) == [-(2**63), 2**53 + 1]
     finally:
@@ -991,8 +1051,19 @@ def test_py_r_py_exact_families(r_mizu):
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
         exact = [
-            None, True, False, 1, -1, 1.5, -2.5, 1 + 2j, "héllo ✓", "",
-            0, 2147483647, -2147483647,
+            None,
+            True,
+            False,
+            1,
+            -1,
+            1.5,
+            -2.5,
+            1 + 2j,
+            "héllo ✓",
+            "",
+            0,
+            2147483647,
+            -2147483647,
             [1, "a", [True, 2.5]],
             {"a": 1, "b": {"z": None}},
             np.array([1.5, 2.5]),
@@ -1000,11 +1071,12 @@ def test_py_r_py_exact_families(r_mizu):
             np.array([1, 2], dtype=np.int64),
             np.array([1, 255], dtype=np.uint8),
             np.array([1 + 2j, -3 + 0.5j]),
-            np.array([[1.0, 2.0], [3.0, 4.0]]),          # C-order 2x2
+            np.array([[1.0, 2.0], [3.0, 4.0]]),  # C-order 2x2
             np.asfortranarray(np.arange(6).reshape(2, 3)),
             np.array([19000, 19001], dtype="datetime64[D]"),
-            np.array([1700000000000000, 1700000000500000],
-                     dtype="datetime64[us]"),
+            np.array(
+                [1700000000000000, 1700000000500000], dtype="datetime64[us]"
+            ),
         ]
         for x in exact:
             assert ch.send(x) is True
@@ -1017,8 +1089,12 @@ def test_py_r_py_exact_families(r_mizu):
             else:
                 assert got == x
         # numpy scalars nested in a dict read as Python scalars
-        assert ch.send({"m": np.float64(1.5), "i": np.int64(7),
-                        "b": np.bool_(True)}) is True
+        assert (
+            ch.send(
+                {"m": np.float64(1.5), "i": np.int64(7), "b": np.bool_(True)}
+            )
+            is True
+        )
         assert ch.recv(30) == {"m": 1.5, "i": 7, "b": True}
         # a nested bool_ array returns as a bool_ array (lglv both ways)
         assert ch.send({"b": np.array([True, False])}) is True
@@ -1042,6 +1118,7 @@ def test_py_r_py_documented_shifts(r_mizu):
         assert got.flags.f_contiguous and np.array_equal(got, m)
         # stdlib date / datetime scalars return as length-1 arrays
         import datetime
+
         assert ch.send(datetime.date(2022, 3, 21)) is True
         got = ch.recv(30)
         assert got == np.array(["2022-03-21"], dtype="datetime64[D]")[0]
@@ -1060,8 +1137,10 @@ def test_py_r_py_documented_shifts(r_mizu):
         got = ch.recv(30)
         assert got == np.array(["2026-01-15"], dtype="datetime64[D]")[0]
         # stdlib timedelta scalar: microseconds preserved
-        assert ch.send(datetime.timedelta(days=1, seconds=30,
-                                          microseconds=500)) is True
+        assert (
+            ch.send(datetime.timedelta(days=1, seconds=30, microseconds=500))
+            is True
+        )
         got = ch.recv(30)
         assert got == np.timedelta64(86430000500, "us")
         # length-1 int32 / float64 / complex128 / bool_ arrays -> scalars
@@ -1241,15 +1320,26 @@ report_err(bs)
         with pytest.raises(pymizu.DeclinedError, match="pl.Categorical"):
             ch.send(pl.Series("e", ["a"], dtype=pl.Enum(["a", "b"])))
         with pytest.raises(pymizu.DeclinedError, match="ordered"):
-            ch.send(pa.table({
-                "c": pa.DictionaryArray.from_arrays(
-                    [0], pa.array(["a"]), ordered=True)
-            }))
+            ch.send(
+                pa.table(
+                    {
+                        "c": pa.DictionaryArray.from_arrays(
+                            [0], pa.array(["a"]), ordered=True
+                        )
+                    }
+                )
+            )
         pd = pytest.importorskip("pandas")
         with pytest.raises(pymizu.DeclinedError):
-            ch.send(pd.DataFrame({
-                "o": pd.Series([1, "x"], dtype=object)   # pyarrow rejects
-            }))
+            ch.send(
+                pd.DataFrame(
+                    {
+                        "o": pd.Series(
+                            [1, "x"], dtype=object
+                        )  # pyarrow rejects
+                    }
+                )
+            )
     finally:
         ch.close()
 
@@ -1321,8 +1411,8 @@ relay(data.frame(u = as.difftime(c(90, 135, NA), units = "secs"),
         for _ in range(src.count("relay(")):
             f = ch.recv(30)
             assert isinstance(f, pymizu.Frame)
-            assert ch.send(f) is True          # the Frame's own export
-            f2 = ch.recv(30)                   # R echoes the data.frame back
+            assert ch.send(f) is True  # the Frame's own export
+            f2 = ch.recv(30)  # R echoes the data.frame back
             assert ch.send(f2) is True
             assert ch.recv(30) is True
     finally:
@@ -1348,30 +1438,48 @@ mizu::mizu_send(ch, inherits(df$u, "difftime") &&
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         pl = pytest.importorskip("polars")
-        ch.send(pl.DataFrame({
-            "s": ["a", "b", None],
-            "x": [1, 2, 3],
-            "c": pl.Series(["u", "v", "u"], dtype=pl.Categorical),
-        }))
+        ch.send(
+            pl.DataFrame(
+                {
+                    "s": ["a", "b", None],
+                    "x": [1, 2, 3],
+                    "c": pl.Series(["u", "v", "u"], dtype=pl.Categorical),
+                }
+            )
+        )
         assert ch.recv(30) is True
         pa = pytest.importorskip("pyarrow")
-        ch.send(pa.table({
-            "a": pa.chunked_array([[1, 2], [3, 4]]),
-            "b": pa.chunked_array([["x", "y"], ["z", "w"]]),
-        }))
+        ch.send(
+            pa.table(
+                {
+                    "a": pa.chunked_array([[1, 2], [3, 4]]),
+                    "b": pa.chunked_array([["x", "y"], ["z", "w"]]),
+                }
+            )
+        )
         assert ch.recv(30) is True
         pd = pytest.importorskip("pandas")
-        ch.send(pd.DataFrame({
-            "s": pd.array(["a", "b"], dtype="str"),
-            "o": pd.Series(["x", None], dtype=object),
-            "i": pd.array([1, None], dtype="Int64"),
-            "c": pd.Series(["u", "v"], dtype=pd.CategoricalDtype(["u", "v"])),
-        }))
+        ch.send(
+            pd.DataFrame(
+                {
+                    "s": pd.array(["a", "b"], dtype="str"),
+                    "o": pd.Series(["x", None], dtype=object),
+                    "i": pd.array([1, None], dtype="Int64"),
+                    "c": pd.Series(
+                        ["u", "v"], dtype=pd.CategoricalDtype(["u", "v"])
+                    ),
+                }
+            )
+        )
         assert ch.recv(30) is True
         # an Arrow duration column: the R home is a difftime in seconds
-        ch.send(pa.table({
-            "u": pa.array([90, None, 86400], type=pa.duration("s")),
-        }))
+        ch.send(
+            pa.table(
+                {
+                    "u": pa.array([90, None, 86400], type=pa.duration("s")),
+                }
+            )
+        )
         assert ch.recv(30) is True
     finally:
         ch.close()
@@ -1404,7 +1512,7 @@ mizu::mizu_send(ch, e)
     try:
         got = ch.recv(30)
         assert np.array_equal(np.asarray(got), np.arange(1, 100001))
-        assert ch.recv(30) is True               # the sender is still compact
+        assert ch.recv(30) is True  # the sender is still compact
         big = ch.recv(30)
         assert isinstance(big, np.ndarray) and not big.flags.writeable
         assert big[0] == 1 and big[-1] == 1e7
@@ -1414,7 +1522,7 @@ mizu::mizu_send(ch, e)
         assert d["a"].tolist()[:3] == [1, 2, 3]
         assert d["b"].tolist()[-1] == 1.0
         fac = ch.recv(30)
-        assert fac == ["a", "b"] * 50000        # a big factor: the copy tier
+        assert fac == ["a", "b"] * 50000  # a big factor: the copy tier
         got = ch.recv(30)
         assert "not portable" in got and "named atomic vector" in got
     finally:
@@ -1534,7 +1642,8 @@ mizu::mizu_recv(ch, timeout = 60)
         assert d["i"].dtype == np.int64 and d["i"][:3].tolist() == [1, 2, 3]
         t = pa.table(f)
         assert t.schema.field("f").type == pa.dictionary(
-            pa.int32(), pa.string())
+            pa.int32(), pa.string()
+        )
         assert t.column("f").null_count == 100000
         assert t.column("f").slice(0, 3).to_pylist() == ["aa", "bb", None]
         assert t.schema.field("i").type == pa.int64()
@@ -1660,13 +1769,13 @@ mizu::mizu_recv(ch, timeout = 60)
         m = ch.recv(60)
         assert m.shape == (400, 500) and m.flags.f_contiguous
         assert m.dtype == np.float64 and not m.flags.writeable
-        assert ch.send(m) is True                  # F-order: by value
+        assert ch.send(m) is True  # F-order: by value
         assert ch.recv(30) is True
         im = ch.recv(60)
         assert im.shape == (400, 500) and im.flags.f_contiguous
         assert im.dtype == np.int64 and im[:3, 0].tolist() == [1, 2, 3]
-        assert im[0, :3].tolist() == [1, 401, 801]   # F-order layout
-        assert ch.send(np.ascontiguousarray(im)) is True   # C-order
+        assert im[0, :3].tolist() == [1, 401, 801]  # F-order layout
+        assert ch.send(np.ascontiguousarray(im)) is True  # C-order
         assert ch.recv(30) is True
     finally:
         ch.close()
@@ -1813,7 +1922,7 @@ def test_r_peer_tree_refcount_balance(r_mizu):
         v = f.to_dict()["x"].base
         # the tree's wrap, R's producer loan reaped
         assert _settled_refcount(v) == 1
-        assert ch.send(f) is True       # the frame REF
+        assert ch.send(f) is True  # the frame REF
         # R's producer loan is reaped by its own later verbs, so the
         # steady state is the tree anchor + R's own view ...
         assert ch.recv(30) == 2
@@ -1833,6 +1942,7 @@ def test_r_peer_frame_export_polars(r_mizu):
     pytest.importorskip("numpy")
     pl = pytest.importorskip("polars")
     import warnings
+
     warnings.filterwarnings("ignore", category=FutureWarning)
     src = r"""
 df <- data.frame(x = c(1:299999, NA), y = runif(300000),
@@ -1867,6 +1977,7 @@ def test_r_peer_frame_export_survives_frame(r_mizu):
     pa = pytest.importorskip("pyarrow")
     pl = pytest.importorskip("polars")
     import warnings
+
     warnings.filterwarnings("ignore", category=FutureWarning)
     ch = pymizu.Channel.create(R_REGION_FRAME, launcher=r_mizu)
     try:
@@ -1882,7 +1993,7 @@ def test_r_peer_frame_export_survives_frame(r_mizu):
         v = f.to_dict()["x"].base
         assert _settled_refcount(v) == 1
         pf = _pl_from_arrow_frame(pl, f)
-        assert v.refcount == 2          # + the export's acquisition
+        assert v.refcount == 2  # + the export's acquisition
         del f, v
         gc.collect()
         # polars holds the arrays: the region stays mapped, the data valid
@@ -1909,9 +2020,9 @@ mizu::mizu_recv(ch, timeout = 60)
     try:
         f = ch.recv(60)
         d = f.to_dict()
-        x = d["x"].base.to_numpy()      # the section says NAs: float64
+        x = d["x"].base.to_numpy()  # the section says NAs: float64
         assert x.dtype == np.float64 and np.isnan(x[-1])
-        y = d["y"].base.to_numpy()      # known-NA-free: the int32 view
+        y = d["y"].base.to_numpy()  # known-NA-free: the int32 view
         assert y.dtype == np.int32 and not y.flags.writeable
         t = pa.table(f)
         assert t.column("x").null_count == 1
@@ -1936,7 +2047,7 @@ mizu::mizu_recv(ch, timeout = 60)
         d = f.to_dict()
         assert d["id"][:3].tolist() == [1, 2, 3]
         assert d["id"][-1] == 300000
-        assert ch.recv(30) is True      # the sender is still compact
+        assert ch.recv(30) is True  # the sender is still compact
     finally:
         ch.close()
 
@@ -1969,7 +2080,7 @@ mizu::mizu_recv(ch, timeout = 60)
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
         assert "not portable" in ch.recv(30)
-        got = ch.recv(30)   # the difftime: one layout write, an owned copy
+        got = ch.recv(30)  # the difftime: one layout write, an owned copy
         assert got.dtype == np.dtype("m8[us]")
         assert got[0] == np.timedelta64(1, "s")
         assert got[-1] == np.timedelta64(299999 + 1, "s")
@@ -1993,21 +2104,31 @@ def _polars_col_buffers(pf):
     import ctypes
 
     class ArrowArrayStream(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_void_p) for n in
-                    ("get_schema", "get_next", "get_last_error",
-                     "release", "private_data")]
+        _fields_ = [
+            (n, ctypes.c_void_p)
+            for n in (
+                "get_schema",
+                "get_next",
+                "get_last_error",
+                "release",
+                "private_data",
+            )
+        ]
 
     class ArrowArray(ctypes.Structure):
         pass
 
     ArrowArray._fields_ = [
-        ("length", ctypes.c_int64), ("null_count", ctypes.c_int64),
-        ("offset", ctypes.c_int64), ("n_buffers", ctypes.c_int64),
+        ("length", ctypes.c_int64),
+        ("null_count", ctypes.c_int64),
+        ("offset", ctypes.c_int64),
+        ("n_buffers", ctypes.c_int64),
         ("n_children", ctypes.c_int64),
         ("buffers", ctypes.POINTER(ctypes.c_void_p)),
         ("children", ctypes.POINTER(ctypes.POINTER(ArrowArray))),
         ("dictionary", ctypes.POINTER(ArrowArray)),
-        ("release", ctypes.c_void_p), ("private_data", ctypes.c_void_p),
+        ("release", ctypes.c_void_p),
+        ("private_data", ctypes.c_void_p),
     ]
     get_ptr = ctypes.pythonapi.PyCapsule_GetPointer
     get_ptr.restype = ctypes.c_void_p
@@ -2015,8 +2136,10 @@ def _polars_col_buffers(pf):
     addr = get_ptr(pf.__arrow_c_stream__(), b"arrow_array_stream")
     stream = ArrowArrayStream.from_address(addr)
     get_next = ctypes.CFUNCTYPE(
-        ctypes.c_int, ctypes.POINTER(ArrowArrayStream),
-        ctypes.POINTER(ArrowArray))(stream.get_next)
+        ctypes.c_int,
+        ctypes.POINTER(ArrowArrayStream),
+        ctypes.POINTER(ArrowArray),
+    )(stream.get_next)
     arr = ArrowArray()
     # polars' stream is single-shot: exactly one get_next, no get_schema
     try:
@@ -2028,8 +2151,9 @@ def _polars_col_buffers(pf):
         return out
     finally:
         if arr.release:
-            ctypes.CFUNCTYPE(None, ctypes.POINTER(ArrowArray))(
-                arr.release)(ctypes.byref(arr))
+            ctypes.CFUNCTYPE(None, ctypes.POINTER(ArrowArray))(arr.release)(
+                ctypes.byref(arr)
+            )
 
 
 # Phase 3.6/3.8: attributed layouts Python -> R (the MIZL frame writer) and
@@ -2061,16 +2185,34 @@ def test_py_peer_polars_frame_to_dataframe(r_mizu):
     n = 300000
     ch = pymizu.Channel.create(R_FRAME_READ, launcher=r_mizu)
     try:
-        ch.send(pl.DataFrame({
-            "i": pl.Series([None if k % 10 == 0 else k for k in range(n)],
-                           dtype=pl.Int32),
-            "x": pl.Series([None if k % 10 == 0 else k * 0.5
-                            for k in range(n)], dtype=pl.Float64),
-            "s": pl.Series([None if k % 10 == 0 else f"s{k % 100}"
-                            for k in range(n)], dtype=pl.String),
-            "f": pl.Series([None if k % 10 == 0 else ["u", "v", "w"][k % 3]
-                            for k in range(n)], dtype=pl.Categorical),
-        }))
+        ch.send(
+            pl.DataFrame(
+                {
+                    "i": pl.Series(
+                        [None if k % 10 == 0 else k for k in range(n)],
+                        dtype=pl.Int32,
+                    ),
+                    "x": pl.Series(
+                        [None if k % 10 == 0 else k * 0.5 for k in range(n)],
+                        dtype=pl.Float64,
+                    ),
+                    "s": pl.Series(
+                        [
+                            None if k % 10 == 0 else f"s{k % 100}"
+                            for k in range(n)
+                        ],
+                        dtype=pl.String,
+                    ),
+                    "f": pl.Series(
+                        [
+                            None if k % 10 == 0 else ["u", "v", "w"][k % 3]
+                            for k in range(n)
+                        ],
+                        dtype=pl.Categorical,
+                    ),
+                }
+            )
+        )
         assert all(ch.recv(60))
     finally:
         ch.close()
@@ -2098,21 +2240,38 @@ def test_py_peer_pyarrow_frame_kinds(r_mizu):
     # (tzone kept), dictionary -> factor
     pa = pytest.importorskip("pyarrow")
     import datetime
+
     n = 200000
     ch = pymizu.Channel.create(R_FRAME_READ2, launcher=r_mizu)
     try:
-        ch.send(pa.table({
-            "l": pa.array([k + 1 for k in range(n)], type=pa.int64()),
-            "d": pa.array([None if k % 10 == 0 else
-                           datetime.date(2020, 1, 1) +
-                           datetime.timedelta(days=k)
-                           for k in range(n)], type=pa.date32()),
-            "p": pa.array([datetime.datetime(2021, 1, 1) +
-                           datetime.timedelta(seconds=k)
-                           for k in range(n)], type=pa.timestamp("us")),
-            "f": pa.array([["a", "b"][k % 2] for k in range(n)],
-                          type=pa.string()).dictionary_encode(),
-        }))
+        ch.send(
+            pa.table(
+                {
+                    "l": pa.array([k + 1 for k in range(n)], type=pa.int64()),
+                    "d": pa.array(
+                        [
+                            None
+                            if k % 10 == 0
+                            else datetime.date(2020, 1, 1)
+                            + datetime.timedelta(days=k)
+                            for k in range(n)
+                        ],
+                        type=pa.date32(),
+                    ),
+                    "p": pa.array(
+                        [
+                            datetime.datetime(2021, 1, 1)
+                            + datetime.timedelta(seconds=k)
+                            for k in range(n)
+                        ],
+                        type=pa.timestamp("us"),
+                    ),
+                    "f": pa.array(
+                        [["a", "b"][k % 2] for k in range(n)], type=pa.string()
+                    ).dictionary_encode(),
+                }
+            )
+        )
         assert all(ch.recv(60))
     finally:
         ch.close()
@@ -2140,7 +2299,7 @@ def test_py_peer_frame_relay_refs_unmodified(r_mizu):
         assert ch.send(df) is True
         # the REF emit marked the region (the refcount delta races R's
         # producer-loan reap; the flag is the deterministic read)
-        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert f.to_dict()["i"].base.flags & 1 == 1  # REFHELD
         assert all(ch.recv(60))
     finally:
         ch.close()
@@ -2166,7 +2325,7 @@ def test_py_peer_frame_relay_modified_copies(r_mizu):
         df = pl.DataFrame(f)
         flags0 = f.to_dict()["i"].base.flags
         assert ch.send(df.head(299999)) is True
-        assert f.to_dict()["i"].base.flags == flags0   # no REF emit
+        assert f.to_dict()["i"].base.flags == flags0  # no REF emit
         assert all(ch.recv(60))
     finally:
         ch.close()
@@ -2225,7 +2384,7 @@ def test_py_peer_frame_with_view_column_remote_leaf(r_mizu):
     ch = pymizu.Channel.create(R_VIEW_COLUMN_FRAME, launcher=r_mizu)
     try:
         x = ch.recv(60)
-        ch.send(x)   # the REF echo: v resolves to a view of x's region
+        ch.send(x)  # the REF echo: v resolves to a view of x's region
         f = ch.recv(60)
         d = f.to_dict()
         # the remote column's region word is x's own (the aliasing
@@ -2240,7 +2399,7 @@ def test_py_peer_frame_with_view_column_remote_leaf(r_mizu):
         assert rb == rx
         assert x.base.flags & 1 == 1
         assert d["b"].dtype == np.float64
-        assert d["b"][0:3].tolist() == x[0:3].tolist()   # the view's values
+        assert d["b"][0:3].tolist() == x[0:3].tolist()  # the view's values
         assert d["a"].dtype == np.float64
         assert ch.recv(60) is True
     finally:
@@ -2279,7 +2438,7 @@ def test_py_peer_pyarrow_relay_refs_strings(r_mizu):
         f = ch.recv(60)
         t = pa.table(f)
         assert ch.send(t) is True
-        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert f.to_dict()["i"].base.flags & 1 == 1  # REFHELD
         assert all(ch.recv(60))
     finally:
         ch.close()
@@ -2307,7 +2466,7 @@ def test_py_peer_polars_relay_refs_strings(r_mizu):
         f = ch.recv(60)
         df = pl.DataFrame(f)
         assert ch.send(df) is True
-        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert f.to_dict()["i"].base.flags & 1 == 1  # REFHELD
         assert all(ch.recv(60))
     finally:
         ch.close()
@@ -2336,13 +2495,12 @@ def test_py_peer_polars_relay_string_remote_leaf(r_mizu):
     # (the pointer half of the verification) crosses as a remote leaf,
     # the computed column a layout leaf
     pl = pytest.importorskip("polars")
-    ch = pymizu.Channel.create(R_FRAME_STR_RELAY_ONE_COMPUTED,
-                               launcher=r_mizu)
+    ch = pymizu.Channel.create(R_FRAME_STR_RELAY_ONE_COMPUTED, launcher=r_mizu)
     try:
         f = ch.recv(60)
         df = pl.DataFrame(f).with_columns((pl.col("x") * 2).alias("x"))
         assert ch.send(df) is True
-        assert f.to_dict()["i"].base.flags & 1 == 1        # REFHELD
+        assert f.to_dict()["i"].base.flags & 1 == 1  # REFHELD
         assert all(ch.recv(60))
     finally:
         ch.close()

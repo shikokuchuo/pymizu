@@ -3,6 +3,9 @@
 
 display_name: pymizu 水
 
+# Docstrings are NumPy-style (Parameters / Returns / Examples sections)
+parser: numpy
+
 site_url: "https://shikokuchuo.net/pymizu/"
 repo: https://github.com/shikokuchuo/pymizu
 github_style: icon
@@ -75,3 +78,13 @@ reference:
         - current_pool
         - current_rng
         - prune
+
+# Author metadata (landing page sidebar and citation page)
+authors:
+  - name: Charlie Gao
+    email: charlie.gao@posit.co
+    role: Author
+    affiliation: Posit Software, PBC
+    github: shikokuchuo
+    homepage: https://shikokuchuo.net
+    orcid: 0000-0002-0750-061X

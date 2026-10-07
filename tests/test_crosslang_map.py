@@ -101,9 +101,10 @@ def test_seed_invariance_within_r(r_pool):
     # the split-map contract across the neutral pair
     x = list(range(40))
     whole = r_pool.map(fn, x, seed=7)
-    assert r_pool.map(fn, x[:20], seed=7) + r_pool.map(
-        fn, x[20:], seed=(7, 20)
-    ) == whole
+    assert (
+        r_pool.map(fn, x[:20], seed=7) + r_pool.map(fn, x[20:], seed=(7, 20))
+        == whole
+    )
 
 
 def test_seed_outside_int32_on_r_workers_errors_locally(r_pool):

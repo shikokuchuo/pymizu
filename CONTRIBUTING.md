@@ -48,7 +48,7 @@ Conventions:
 
 ## Code of conduct
 
-This project is released with a [Contributor Code of Conduct](.github/CODE_OF_CONDUCT.md).
+This project is released with a [Contributor Code of Conduct](https://github.com/shikokuchuo/pymizu/blob/main/.github/CODE_OF_CONDUCT.md).
 By participating, you agree to abide by its terms.
 
 ## License

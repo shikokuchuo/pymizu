@@ -701,9 +701,7 @@ def test_map_spec_prepared(pool):
 def test_map_spec_error_index(pool):
     with pytest.raises(pymizu.TaskError) as exc_info:
         pool.map(
-            pymizu.call(
-                source="if x == 5:\n    raise ValueError('boom')\nx"
-            ),
+            pymizu.call(source="if x == 5:\n    raise ValueError('boom')\nx"),
             list(range(10)),
         )
     assert exc_info.value.index == 5

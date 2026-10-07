@@ -44,25 +44,46 @@ class _TaskFuture(_Future):
 
 
 class PoolExecutor(_Executor):
-    """A :class:`concurrent.futures.Executor` over a pymizu pool.
+    """A `concurrent.futures.Executor` over a pymizu pool.
 
-    ``pool`` is the pool to wrap; its lifetime stays with its owner
-    unless ``stop_pool`` is set — then :meth:`shutdown` stops it.
-    :meth:`create` spawns an owned pool instead. :meth:`submit` returns a
-    real :class:`concurrent.futures.Future`: ``wait`` / ``as_completed``
-    / ``result(timeout)`` / ``asyncio.wrap_future`` and the stdlib base
-    ``Executor.map`` all work unchanged, so code written against
-    ``ProcessPoolExecutor`` drops in.
+    `submit()` returns a real `concurrent.futures.Future`: `wait` /
+    `as_completed` / `result(timeout)` / `asyncio.wrap_future` and the
+    stdlib base `Executor.map` all work unchanged, so code written
+    against `ProcessPoolExecutor` drops in. `create()` spawns an owned
+    pool instead.
 
+    Parameters
+    ----------
+    pool
+        The pool to wrap; its lifetime stays with its owner unless
+        `stop_pool` is set — then `shutdown()` stops it.
+    stop_pool
+        When True, `shutdown()` stops the wrapped pool.
+
+    Notes
+    -----
     Deltas from stdlib semantics: a task's failure surfaces as
-    :class:`pymizu.TaskError` (the remote error envelope);
-    ``Future.running()`` is always False (futures resolve at completion);
-    cancellation is advisory, mirroring :meth:`pymizu.Task.cancel` — and
-    ``shutdown(cancel_futures=True)`` cancels every outstanding future,
-    since the pool exposes no queued-versus-running signal (a running
-    task completes, but its result is discarded). ``map`` is the stdlib
-    base implementation over ``submit`` — for bulk maps,
-    :meth:`pymizu.Pool.map` is the faster path.
+    `pymizu.TaskError` (the remote error envelope);
+    `Future.running()` is always False (futures resolve at completion);
+    cancellation is advisory, mirroring [`Task.cancel()`](`pymizu.Task`)
+    — and `shutdown(cancel_futures=True)` cancels every outstanding
+    future, since the pool exposes no queued-versus-running signal (a
+    running task completes, but its result is discarded). `map` is the
+    stdlib base implementation over `submit` — for bulk maps, `Pool.map`
+    is the faster path.
+
+    Examples
+    --------
+    Use as a drop-in `concurrent.futures.Executor`:
+
+    ```{python}
+    import pymizu
+
+    with pymizu.PoolExecutor.create(2) as ex:
+        futures = [ex.submit(pow, 2, i) for i in range(4)]
+        results = [f.result() for f in futures]
+    results
+    ```
     """
 
     def __init__(self, pool: pymizu.Pool, *, stop_pool: bool = False) -> None:
@@ -76,8 +97,21 @@ class PoolExecutor(_Executor):
 
     @classmethod
     def create(cls, workers: int = 1, **pool_kwargs: _Any) -> PoolExecutor:
-        """Spawn an owned pool — ``Pool.create(workers, **pool_kwargs)``
-        — and wrap it; :meth:`shutdown` stops it."""
+        """Spawn an owned pool —
+        [`Pool.create()`](`pymizu.Pool.create`) with `workers` and
+        `pool_kwargs` — and wrap it; `shutdown()` stops it.
+
+        Parameters
+        ----------
+        workers
+            Number of worker processes for the pool.
+        pool_kwargs
+            Forwarded to [`Pool.create()`](`pymizu.Pool.create`).
+
+        Returns
+        -------
+            A PoolExecutor wrapping the spawned pool.
+        """
         import pymizu
 
         return cls(pymizu.Pool.create(workers, **pool_kwargs), stop_pool=True)
@@ -85,8 +119,26 @@ class PoolExecutor(_Executor):
     def submit(
         self, fn: _Callable[..., _Any], /, *args: _Any, **kwargs: _Any
     ) -> _Future:
-        """Schedule ``fn(*args, **kwargs)``; return a Future.
-        RuntimeError after shutdown."""
+        """Schedule `fn(*args, **kwargs)` on the pool.
+
+        Parameters
+        ----------
+        fn
+            The callable to run.
+        args
+            Positional arguments for `fn`.
+        kwargs
+            Keyword arguments for `fn`.
+
+        Returns
+        -------
+            A `concurrent.futures.Future` resolving with the result.
+
+        Raises
+        ------
+        RuntimeError
+            After shutdown.
+        """
         with self._cond:
             if self._shutdown:
                 raise RuntimeError(
@@ -109,9 +161,16 @@ class PoolExecutor(_Executor):
     def shutdown(
         self, wait: bool = True, *, cancel_futures: bool = False
     ) -> None:
-        """Stdlib shutdown: ``wait`` waits for the outstanding futures;
-        ``cancel_futures`` cancels the not-yet-started ones. Stops the
-        pool only when ``stop_pool`` was set."""
+        """Stdlib shutdown.
+
+        Parameters
+        ----------
+        wait
+            Wait for the outstanding futures.
+        cancel_futures
+            Cancel the not-yet-started futures. Stops the pool only
+            when `stop_pool` was set.
+        """
         with self._cond:
             self._shutdown = True
             if cancel_futures:

@@ -540,18 +540,20 @@ def test_numpy_result_int_sentinels_unscanned(pool):
     # the copied-read scans are gated on a foreign writer (3.2): a pool
     # result's writer is the pool's worker word, and Python workers stage
     # identity int32/int64 — a genuine -2^31/-2^63 stays a value, unwarned
-    b = pool.submit(np.array, [1, -2**31, 3], dtype=np.int32).collect(
-        timeout=5)
+    b = pool.submit(np.array, [1, -(2**31), 3], dtype=np.int32).collect(
+        timeout=5
+    )
     assert b.dtype == np.int32
-    assert list(b) == [1, -2**31, 3]
+    assert list(b) == [1, -(2**31), 3]
     import warnings
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        b = pool.submit(np.array, [1, -2**63], dtype=np.int64).collect(
-            timeout=5)
+        b = pool.submit(np.array, [1, -(2**63)], dtype=np.int64).collect(
+            timeout=5
+        )
     assert b.dtype == np.int64
-    assert list(b) == [1, -2**63]
+    assert list(b) == [1, -(2**63)]
 
 
 def test_numpy_result_region(pool):

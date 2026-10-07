@@ -2,8 +2,8 @@
 
 Python binding for libmizu: lock-free shared-memory IPC (SPSC channels and
 work-stealing task pools) via the raw CPython C API. Pre-release
-(0.1.0.dev0; `CHANGELOG.md` is the release-facing feature summary, Keep a
-Changelog format).
+(`CHANGELOG.md` is the release-facing feature summary, Keep a Changelog
+format). The version is tag-derived — see Build and test.
 Sibling repos: `libmizu` (the C core, upstream authority) and `mizu` (the R
 package). The governing design document is the ipc plan in the libmizu repo
 (Phase 2 covers pymizu).
@@ -58,19 +58,26 @@ package). The governing design document is the ipc plan in the libmizu repo
   hand-written guides (numeric prefixes order the sidebar, `guide-section`
   frontmatter groups it), `docs/great-docs.yml` the config (site/canonical
   URLs, GitHub link, the `reference:` section list that replaces the old
-  quartodoc config). The README is the short pitch; the long-form details
-  live here (mirror of how mizu keeps them in the reference vignette).
-  Builds live in `docs/_quarto/` and output in `docs/_site/` (both
-  gitignored, as is `docs/_freeze/`).
+  quartodoc config, `parser: numpy`, and the `authors:` block;
+  `CITATION.cff` sits at the repo root). The README is the short pitch;
+  the long-form details live here (mirror of how mizu keeps them in the
+  reference vignette). Builds live in `docs/_quarto/` and output in
+  `docs/_site/` (both gitignored); `docs/_freeze/` is committed, so CI
+  does not re-execute the guide's process-spawning examples.
 
 ## Build and test
 
 ```sh
-pip install .          # builds the extension (setuptools backend)
-pip install -e .       # editable
-python -m pytest tests/
-ruff check python tests benchmarks   # lint (config in pyproject.toml)
-pyrefly check                        # typecheck
+pip install .            # builds the extension (setuptools backend)
+pip install -e ".[dev]"  # editable + dev tools (pytest, ruff, pyrefly, ...)
+python -m pytest         # testpaths/addopts configured in pyproject.toml
+ruff check python tests benchmarks          # lint (config in pyproject.toml)
+ruff format --check python tests benchmarks # format gate (CI enforces)
+pyrefly check            # typecheck (min-severity = "warn": warnings fail)
+
+make help    # the self-documenting developer interface: install, test,
+             # lint, check-format, type-check, check (pre-push gate),
+             # build, docs, docs-preview, clean
 
 great-docs build       # build the docs site (config docs/great-docs.yml)
 great-docs preview     # local preview server
@@ -78,9 +85,9 @@ great-docs check-links # validate links in the built site
 ```
 
 Docs: great-docs is installed from git main (unreleased, pinned to commit
-`2db0737eed16d4fcdb5d1a6a28a9ca1532a00fa1` — the pin in
-`.github/workflows/docs.yml`; install locally with the same
-`pip install "git+https://github.com/posit-dev/great-docs.git@<sha>"`). The
+`de82be025039c21fc5bff50f2e55747eb254109a` — the pin is the `docs` extra in
+`pyproject.toml`, which the docs workflow installs; install locally with the
+same `pip install "git+https://github.com/posit-dev/great-docs.git@<sha>"`). The
 build puts `python/` on PYTHONPATH, so the render imports pymizu from the
 source tree — the extension must be built in place (`pip install -e .`, or
 `python setup.py build_ext --inplace` after `pip install setuptools`); a
@@ -95,11 +102,26 @@ capture results inside `with Pool.create(...)` blocks and echo after.
 vendored core) and a `build_ext` override forcing clang-cl on Windows
 (setuptools' msvc backend resolves cl.exe itself and ignores CC).
 
+The version is tag-derived (`[tool.setuptools_scm]`, no hard-coded
+string): building from the repo needs git metadata (all CI checkouts use
+`fetch-depth: 0`), building from the sdist needs nothing (PKG-INFO).
+`__version__` reads the installed metadata via `importlib.metadata`, with
+a `PackageNotFoundError` fallback to `"0.0.0"`. Extras: `numpy` /
+`cloudpickle` (runtime), `dev` (test/lint/typecheck toolchain), `docs`
+(the pinned great-docs plus the render deps — a git direct reference that
+must become a version pin once great-docs releases, as direct references
+block PyPI uploads), `all` (self-referencing).
+
 The `.venv` install is non-editable: after editing `python/`, reinstall
 (`pip install .`) or tests import the stale copy.
 
 `.pre-commit-config.yaml` runs the standard hygiene hooks plus
-`ruff-check --fix` and `ruff-format`.
+`ruff-check --fix` and `ruff-format`. The ruff version is pinned
+identically in three places — the pre-commit rev, the `dev` extra, and
+the CI lint install (currently 0.14.0); bump all three together. A
+formatter version skew fails the `ruff format --check` gate, and the
+tree is format-clean under the pinned version (keep it that way: run
+`ruff format` before committing).
 
 ## Vendoring
 
@@ -337,6 +359,15 @@ tools/vendor-libmizu.sh` for a local checkout).
     element's stream by `offset`. On a spec map the (seed, offset) pair
     crosses as i64s and the worker rebuilds `str(seed).encode("ascii")`
     — identical draws to a native int-seeded run.
+- Docstrings follow the Great Docs NumPy style (`parser: numpy`):
+  `Parameters` / `Returns` / `Raises` sections with bare parameter names
+  (no types — the signature's hints are authoritative), Great Docs
+  interlinks (`` [`Pool.map()`](`pymizu.Pool.map`) ``) instead of RST
+  roles, and executable ```{python} `Examples` cells on the primary entry
+  points (they run at docs build; keep them under ~2 s, displayed values
+  as top-level expressions). Prose paragraphs belong before the first
+  section header — text after a section header parses as a section entry
+  and griffe reports "Could not parse line".
 - Commit messages are a single line (subject only, no body).
 - Never push without explicit approval — every push must be approved by
   the user first.
@@ -348,6 +379,9 @@ tools/vendor-libmizu.sh` for a local checkout).
   import them. The root `conftest.py` puts the repo root on `sys.path`,
   making `tests.helpers` importable to the test process and the workers
   (whose `sys.path[0]` is the repo root).
+- pytest is configured in `pyproject.toml` (`testpaths = ["tests"]`,
+  `addopts = "-ra --durations 10 --strict-markers"`; no custom markers
+  exist to declare). Coverage excludes `if TYPE_CHECKING:` blocks.
 - Coverage: `coverage run -m pytest tests/`; `conftest.py` arms the
   spawned child/worker interpreters via `COVERAGE_PROCESS_START` so they
   measure themselves too.
@@ -370,21 +404,23 @@ tools/vendor-libmizu.sh` for a local checkout).
 
 ## CI
 
-`.github/workflows/ci.yml`: a lint leg (ruff + pyrefly, with
-numpy/cloudpickle/pyarrow/polars installed so the optional paths
-typecheck), an sdist leg (the sdist must carry the vendored C core and
-build standalone), and a build matrix — ubuntu 3.10/3.13/3.14, macos
-3.11/3.14, windows 3.12/3.14 — that installs, runs an import smoke, and
-measures coverage (codecov upload from ubuntu only). Windows legs add
+`.github/workflows/ci.yml`: a lint leg (ruff check + `ruff format
+--check` + pyrefly, with numpy/cloudpickle/pyarrow/polars installed so
+the optional paths typecheck), an sdist leg (the sdist must carry the
+vendored C core and build standalone), and a build matrix — ubuntu
+3.10/3.13/3.14, macos 3.11/3.14, windows 3.12/3.14 — that installs, runs
+an import smoke, and measures coverage (codecov upload from ubuntu
+only). All checkouts use `fetch-depth: 0` so setuptools_scm sees the
+tags. Windows legs add
 the preinstalled LLVM to PATH for clang-cl. Linux legs run the
 cross-language R tests only when the `CROSSLANG_PAT` secret is set (mizu
 is a private repo; without it the steps skip and the tests probe-skip).
 
 `.github/workflows/docs.yml`: on pushes to main, installs the package
-editable plus the docs toolchain (great-docs from git main), runs
-`great-docs build`, and publishes `docs/_site` to GitHub Pages via the
-gh-pages branch (Pages must be enabled on the repo; the custom domain lives
-in the repo's Pages settings, canonical URLs come from `site_url` +
-`seo.canonical.base_url` in `docs/great-docs.yml`).
+editable with the `docs` extra (which carries the pinned great-docs and
+the render deps), runs `great-docs build`, and publishes `docs/_site` to
+GitHub Pages via the gh-pages branch (Pages must be enabled on the repo;
+the custom domain lives in the repo's Pages settings, canonical URLs come
+from `site_url` + `seo.canonical.base_url` in `docs/great-docs.yml`).
 
 License: MIT.

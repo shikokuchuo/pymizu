@@ -10,13 +10,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # setuptools_scm reads the version from tags
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Install tools
-        run: pip install ruff pyrefly numpy cloudpickle pyarrow polars
+        # ruff pinned to match the dev extra and .pre-commit-config.yaml —
+        # bump all three together.
+        run: pip install ruff==0.14.0 pyrefly numpy cloudpickle pyarrow polars
       - name: Ruff
         run: ruff check python tests benchmarks
+      - name: Ruff format
+        run: ruff format --check python tests benchmarks
       - name: Pyrefly
         run: pyrefly check
 
@@ -24,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # setuptools_scm reads the version from tags
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -51,6 +59,8 @@ jobs:
       CROSSLANG_PAT: ${{ secrets.CROSSLANG_PAT }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # setuptools_scm reads the version from tags
 
       - uses: actions/setup-python@v7
         with:

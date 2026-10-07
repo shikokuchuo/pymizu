@@ -1,28 +1,74 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymizu"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Lock-free shared-memory parallelism for Python"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "libmizu authors" }]
+authors = [{ name = "Charlie Gao", email = "charlie.gao@posit.co" }]
+maintainers = [{ name = "Charlie Gao", email = "charlie.gao@posit.co" }]
+keywords = [
+  "ipc",
+  "shared-memory",
+  "parallel-computing",
+  "zero-copy",
+  "task-pool",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: C",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Distributed Computing",
+  "Typing :: Typed",
 ]
 dependencies = []
 
 [project.optional-dependencies]
 numpy = ["numpy"]
 cloudpickle = ["cloudpickle"]
+# Keep the ruff pin in sync with the ruff-pre-commit rev in
+# .pre-commit-config.yaml — bump both together.
+dev = [
+  "pytest",
+  "coverage",
+  "ruff==0.14.0",
+  "pyrefly",
+  "build",
+  "numpy",
+  "cloudpickle",
+  "pyarrow",
+  "polars",
+]
+# great-docs is unreleased: a direct reference pinned to a main commit (the
+# docs workflow installs this extra). Direct references block PyPI uploads —
+# switch to a version pin once great-docs releases.
+docs = [
+  "great-docs @ git+https://github.com/posit-dev/great-docs.git@de82be025039c21fc5bff50f2e55747eb254109a",
+  "numpy",
+  "cloudpickle",
+  "jupyter",
+]
+all = ["pymizu[numpy,cloudpickle]"]
+
+[project.urls]
+Homepage = "https://shikokuchuo.net/pymizu/"
+Repository = "https://github.com/shikokuchuo/pymizu"
+Documentation = "https://shikokuchuo.net/pymizu/"
+"Bug Tracker" = "https://github.com/shikokuchuo/pymizu/issues"
 
 [tool.setuptools]
 package-dir = { "" = "python" }
@@ -30,6 +76,8 @@ packages = ["pymizu"]
 
 [tool.setuptools.package-data]
 pymizu = ["py.typed", "*.pyi"]
+
+[tool.setuptools_scm]
 
 [tool.ruff]
 target-version = "py310"
@@ -43,6 +91,12 @@ select = ["E", "F", "W", "I", "UP", "B"]
 project-includes = ["python"]
 search-path = ["python"]
 python-version = "3.10"
+# Surface warnings (e.g. deprecated) in output and the exit code.
+min-severity = "warn"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --durations 10 --strict-markers"
 
 [tool.coverage.run]
 source = ["pymizu"]
@@ -54,4 +108,5 @@ parallel = true
 show_missing = true
 exclude_also = [
   "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
 ]

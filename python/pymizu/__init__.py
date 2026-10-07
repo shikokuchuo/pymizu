@@ -11,8 +11,10 @@ import sys as _sys
 import threading as _threading
 import warnings as _warnings
 from collections.abc import Callable as _Callable
+from collections.abc import Generator as _Generator
 from collections.abc import Iterable as _Iterable
 from collections.abc import Iterator as _Iterator
+from importlib import metadata as _metadata
 from typing import TYPE_CHECKING
 from typing import Any as _Any
 
@@ -58,7 +60,10 @@ if TYPE_CHECKING:
 
     from pymizu._map import PreparedMap
 
-__version__ = "0.1.0.dev0"
+try:
+    __version__ = _metadata.version("pymizu")
+except _metadata.PackageNotFoundError:  # pragma: no cover
+    __version__ = "0.0.0"
 
 _DROP_SOURCE = 0x53  # 'S': UTF-8 source text in the peer's language
 _TOKEN_RE = _re.compile(r"[0-9a-f]+_[0-9a-f]+\Z")
@@ -78,9 +83,11 @@ def _default_launcher() -> _Callable[[str], _subprocess.Popen]:
 class Channel:
     """A shared-memory SPSC channel handle (process-private).
 
-    Create the host side with :meth:`create` (which spawns the peer);
-    the peer side attaches with :meth:`attach` — ``python -m pymizu.child``
-    does this. Handles do not survive ``fork()``.
+    Create the host side with [`Channel.create()`](`pymizu.Channel.create`)
+    (which spawns the peer); the peer side attaches with
+    [`Channel.attach()`](`pymizu.Channel.attach`) —
+    ``python -m pymizu.child`` does this. Handles do not survive
+    ``fork()``.
     """
 
     _h: _pymizu._Channel
@@ -111,13 +118,50 @@ class Channel:
     ) -> Channel:
         """Create a channel and spawn its peer.
 
-        ``peer`` is a Python source string, evaluated in the peer process
-        with ``ch`` bound to the peer-side handle. ``capacity`` and
-        ``slot_size`` are powers of two; the inline payload budget is
-        ``slot_size - 16``. ``launcher`` is a ``callable(token)`` arranging
-        for a Python process to run ``python -m pymizu.child <token>``; the
-        default spawns ``sys.executable`` directly. ``pymizu.r_launcher()``
-        returns one spawning an R peer (the R package ``mizu``).
+        Parameters
+        ----------
+        peer
+            A Python source string, evaluated in the peer process with
+            ``ch`` bound to the peer-side handle.
+        capacity
+            Ring capacity in slots; a power of two.
+        slot_size
+            Bytes per ring slot; a power of two. The inline payload
+            budget is ``slot_size - 16``.
+        arena_size
+            Bytes of shared staging arena for out-of-line payloads.
+        spin
+            Spin rather than park while waiting.
+        startup_timeout
+            Seconds to wait for the peer to attach.
+        launcher
+            A ``callable(token)`` arranging for a Python process to run
+            ``python -m pymizu.child <token>``; the default spawns
+            ``sys.executable`` directly.
+            [`r_launcher()`](`pymizu.r_launcher`) returns one spawning
+            an R peer (the R package ``mizu``).
+
+        Returns
+        -------
+            The host-side channel handle.
+
+        Examples
+        --------
+        >>> import pymizu
+        >>> with pymizu.Channel.create(
+        ...     \"\"\"
+        ... import pymizu
+        ... while True:
+        ...     x = ch.recv()
+        ...     if x is pymizu.CLOSED:
+        ...         break
+        ...     ch.send(x)
+        ... \"\"\"
+        ... ) as ch:
+        ...     ch.send([1, "a", None])
+        ...     received = ch.recv(timeout=5)
+        >>> received
+        [1, 'a', None]
         """
         if not isinstance(peer, str) or not peer:
             raise TypeError("pymizu: peer must be a non-empty source string")
@@ -139,6 +183,17 @@ class Channel:
     def attach(cls, token: str) -> Channel:
         """Attach to the channel named by a join token (the peer side).
 
+        Parameters
+        ----------
+        token
+            The join token from the host side's ``ch.token``.
+
+        Returns
+        -------
+            The peer-side channel handle.
+
+        Details
+        -------
         Low-level: the caller consumes ``ch.drop`` before signalling
         ``ch.ready_set()``. ``python -m pymizu.child`` is the reference
         peer entry.
@@ -156,10 +211,20 @@ class Channel:
         return self._h.token
 
     def send(self, x: _Any) -> Sentinel | None:
-        """Send one payload; return None, or the FULL / CLOSED /
-        PEER_GONE sentinel (identity-tested). ``None`` itself is a
-        valid payload; bytes and numpy arrays travel raw, everything
-        else rides pickle protocol 4."""
+        """Send one payload.
+
+        Parameters
+        ----------
+        x
+            The payload. ``None`` itself is a valid payload; bytes and
+            numpy arrays travel raw, everything else rides pickle
+            protocol 4.
+
+        Returns
+        -------
+            None, or the `FULL` / `CLOSED` / `PEER_GONE` sentinel
+            (identity-tested).
+        """
         return self._h.send(x)
 
     def _send_error(self, exc: BaseException) -> bool:
@@ -176,9 +241,18 @@ class Channel:
         return self._h.send_batch(xs)
 
     def recv(self, timeout: float | None = None) -> _Any:
-        """Receive one payload, waiting up to ``timeout`` seconds
-        (None waits indefinitely); the TIMEOUT / CLOSED / PEER_GONE
-        sentinel on the non-payload outcomes."""
+        """Receive one payload.
+
+        Parameters
+        ----------
+        timeout
+            Seconds to wait; None waits indefinitely.
+
+        Returns
+        -------
+            The payload, or the `TIMEOUT` / `CLOSED` / `PEER_GONE`
+            sentinel on the non-payload outcomes.
+        """
         return self._h.recv(timeout)
 
     def recv_batch(
@@ -231,7 +305,8 @@ class Channel:
         """Iterate over received payloads until CLOSED or PEER_GONE.
 
         Blocks indefinitely between payloads (``recv()`` with no
-        timeout); use :meth:`recv` directly when a bound is needed.
+        timeout); use [`Channel.recv()`](`pymizu.Channel.recv`) directly
+        when a bound is needed.
         """
         while True:
             x = self.recv()
@@ -281,19 +356,35 @@ _PY_NAME_RE = _re.compile(
 class call:
     """A task specification for a pool of another language's workers.
 
-    Describes a call for :meth:`Pool.submit`: a qualified name
-    (``"mod.fn"`` for Python workers, ``"pkg::fn"`` for R workers) or a
-    ``source=`` string in the workers' language, plus the constant
-    arguments. The spec describes a call; it is not a value. The
-    language never appears at the call site — Pool.submit resolves the
-    workers' language from the pool itself — and a bare (unqualified)
-    name errors at submit, not here.
+    Describes a call for [`Pool.submit()`](`pymizu.Pool.submit`): a
+    qualified name (``"mod.fn"`` for Python workers, ``"pkg::fn"`` for
+    R workers) or a ``source=`` string in the workers' language, plus
+    the constant arguments. The spec describes a call; it is not a
+    value. The language never appears at the call site — `Pool.submit`
+    resolves the workers' language from the pool itself — and a bare
+    (unqualified) name errors at submit, not here.
 
+    Parameters
+    ----------
+    name
+        A qualified name: ``"mod.fn"`` for Python workers,
+        ``"pkg::fn"`` for R workers.
+    args
+        Constant positional arguments of the call.
+    source
+        A source string in the workers' language. Exactly one of
+        ``name`` or ``source`` must be given.
+    kwargs
+        Constant keyword arguments of the call.
+
+    Details
+    -------
     Unnamed arguments map to the positional list and keyword arguments
     to the named dict, matching R's mixed-call convention. Arguments
     must be portable values (the interchange subset documented under
-    :meth:`Channel.send`): a non-portable argument raises
-    :class:`DeclinedError` at submit, never a fallback.
+    [`Channel.send()`](`pymizu.Channel.send`)): a non-portable argument
+    raises [`DeclinedError`](`pymizu.DeclinedError`) at submit, never a
+    fallback.
 
     A ``source=`` task evaluates in a fresh namespace with the keyword
     arguments bound as names and positional arguments bound as ``_1``,
@@ -307,6 +398,17 @@ class call:
     its identifier alone — zero payload bytes. On a pool whose workers
     predate the ref reader, such a task declines locally at submit
     naming the remedy.
+
+    Examples
+    --------
+    A spec task also runs on a normal (Python-worker) pool:
+
+    >>> import pymizu
+    >>> with pymizu.Pool.create(2) as pool:
+    ...     task = pool.submit(pymizu.call("math.sqrt", 2.0))
+    ...     results = pool.collect_all([task], timeout=10)
+    >>> results
+    [1.4142135623730951]
     """
 
     __slots__ = ("code", "kind", "args", "kwargs")
@@ -391,12 +493,13 @@ def _exec_source(source: str, ns: dict) -> _Any:
 class Pool:
     """A shared-memory work-stealing task pool handle (process-private).
 
-    Create the controller side with :meth:`create` (which spawns the
-    workers, ``python -m pymizu.worker``); other processes join as
-    submitters with :meth:`attach`. The pool's lifetime is bound to the
-    creating process: dropping the handle shuts the pool down as
-    :meth:`stop` does, but without the wait. Handles do not survive
-    ``fork()``.
+    Create the controller side with [`Pool.create()`](`pymizu.Pool.create`)
+    (which spawns the workers, ``python -m pymizu.worker``); other
+    processes join as submitters with
+    [`Pool.attach()`](`pymizu.Pool.attach`). The pool's lifetime is
+    bound to the creating process: dropping the handle shuts the pool
+    down as [`Pool.stop()`](`pymizu.Pool.stop`) does, but without the
+    wait. Handles do not survive ``fork()``.
 
     Task callables ride pickle: under stock pickle a submitted callable
     must be an importable reference (the multiprocessing constraint);
@@ -430,14 +533,43 @@ class Pool:
     ) -> Pool:
         """Create a pool and spawn its worker processes.
 
-        ``workers`` worker processes join the pool's registry (capacity
-        ``max_workers``). ``result_slots`` bounds each submitter's
-        outstanding (uncollected) tasks; ``slot_size`` is the bytes per
-        queue entry and result slot — a payload past the inline budget
-        travels in a fresh region per payload. ``launcher`` is a
-        ``callable(token, slot)`` arranging for a Python process to run
-        ``python -m pymizu.worker <token> <slot>``; the default spawns
-        ``sys.executable`` directly.
+        Parameters
+        ----------
+        workers
+            Number of worker processes to spawn; they join the pool's
+            registry (capacity ``max_workers``).
+        max_workers
+            Registry capacity; defaults to ``workers``.
+        max_submitters
+            Maximum number of submitter processes.
+        injection_cap
+            Capacity of the injection ring.
+        per_worker_cap
+            Capacity of each worker's work-stealing deque.
+        result_slots
+            Bounds each submitter's outstanding (uncollected) tasks.
+        slot_size
+            Bytes per queue entry and result slot — a payload past the
+            inline budget travels in a fresh region per payload.
+        launcher
+            A ``callable(token, slot)`` arranging for a Python process
+            to run ``python -m pymizu.worker <token> <slot>``; the
+            default spawns ``sys.executable`` directly.
+        startup_timeout
+            Seconds to wait for the workers to attach.
+
+        Returns
+        -------
+            The controller-side pool handle.
+
+        Examples
+        --------
+        >>> import pymizu
+        >>> with pymizu.Pool.create(2) as pool:
+        ...     task = pool.submit(pow, 2, 16)
+        ...     results = pool.collect_all([task], timeout=10)
+        >>> results
+        [65536]
         """
         if workers < 1:
             raise ValueError("pymizu: workers must be at least 1")
@@ -470,8 +602,15 @@ class Pool:
     def attach(cls, token: str) -> Pool:
         """Attach to a live pool as a submitter, by its join token.
 
-        The token travels out of band: it is ``pool.token`` on the
-        creator.
+        Parameters
+        ----------
+        token
+            The join token; it travels out of band and is
+            ``pool.token`` on the creator.
+
+        Returns
+        -------
+            The submitter-side pool handle.
         """
         if not _TOKEN_RE.fullmatch(token):
             raise ValueError("pymizu: malformed join token")
@@ -493,24 +632,55 @@ class Pool:
         """Submit ``fn(*args, **kwargs)`` as a task; return a Task handle.
 
         Blocks only for injection-ring space, up to ``timeout`` seconds
-        (None waits indefinitely): SubmitTimeoutError on expiry,
-        SlotsExhaustedError / StoppedError on the fatal outcomes.
+        (None waits indefinitely).
 
+        Parameters
+        ----------
+        fn
+            The callable to run, or a [`call`](`pymizu.call`) spec.
+        args
+            Positional arguments for ``fn``.
+        timeout
+            Seconds to wait for injection-ring space; None waits
+            indefinitely.
+        kwargs
+            Keyword arguments for ``fn``.
+
+        Returns
+        -------
+            A [`Task`](`pymizu.Task`) handle.
+
+        Raises
+        ------
+        SubmitTimeoutError
+            On ``timeout`` expiry.
+        SlotsExhaustedError
+            When no result slot is free.
+        StoppedError
+            When the pool is stopped.
+
+        Details
+        -------
         ``timeout`` belongs to the submission, not to ``fn``: a callable
         taking its own ``timeout=`` keyword argument cannot receive it
         through ``**kwargs`` here — bind it first with
-        ``functools.partial(fn, timeout=...)``.
+        `functools.partial` as ``functools.partial(fn, timeout=...)``.
 
         A buffer-protocol argument (e.g. a numpy array) past the
         zero-copy floor crosses as a read-only view over shared pages,
         not a writable copy.
 
-        With a :class:`pymizu.call` spec as ``fn`` (no ``*args`` /
+        With a [`call`](`pymizu.call`) spec as ``fn`` (no ``*args`` /
         ``**kwargs`` — the spec carries them), the task stream crosses
         in the neutral interchange format: this is how a pool of another
         language's workers is driven (spawn them with
-        :func:`pymizu.r_pool_launcher`). On a foreign pool a plain
-        callable errors locally, naming the spec verb.
+        [`r_pool_launcher()`](`pymizu.r_pool_launcher`)). On a foreign
+        pool a plain callable errors locally, naming the spec verb.
+
+        Examples
+        --------
+        See [`Pool.create()`](`pymizu.Pool.create`) for a submit and
+        collect example.
         """
         if type(fn) is call:
             if args or kwargs:
@@ -533,11 +703,23 @@ class Pool:
         *,
         timeout: float | None = None,
     ) -> list[Task]:
-        """Submit one task per zero-arg callable in ``fns`` in one crossing.
+        """Submit one task per zero-arg callable in ``fns`` in one
+        crossing.
 
-        Ring-full past ``timeout`` ends the batch short — the returned
-        handles stay valid and collectible. Use functools.partial to bind
-        arguments.
+        Parameters
+        ----------
+        fns
+            Zero-arg callables, one task each. Use `functools.partial`
+            to bind arguments.
+        timeout
+            Seconds to wait for injection-ring space; None waits
+            indefinitely.
+
+        Returns
+        -------
+            A list of [`Task`](`pymizu.Task`) handles. Ring-full past
+            ``timeout`` ends the batch short — the returned handles
+            stay valid and collectible.
         """
         _check_native(self._h._worker_ident(), "Pool.submit_batch")
         payloads = []
@@ -550,19 +732,42 @@ class Pool:
     def collect_any(
         self, tasks: _Iterable[Task], timeout: float | None = None
     ) -> tuple[int, _Any] | Sentinel:
-        """Wait on several tasks; return ``(index, value)`` of the first
-        terminal one, or the TIMEOUT sentinel. A non-OK outcome raises
-        with an ``index`` attribute (0-based)."""
+        """Wait on several tasks.
+
+        Parameters
+        ----------
+        tasks
+            The [`Task`](`pymizu.Task`) handles to wait on.
+        timeout
+            Seconds to wait; None waits indefinitely.
+
+        Returns
+        -------
+            ``(index, value)`` of the first terminal task, or the
+            `TIMEOUT` sentinel. A non-OK outcome raises with an
+            ``index`` attribute (0-based).
+        """
         return self._h.collect_any(tasks, timeout)
 
     def collect_all(
         self, tasks: _Iterable[Task], timeout: float | None = None
     ) -> list[_Any] | Sentinel:
-        """Wait until every task is terminal; return all values in input
-        order. On the first non-OK outcome by position, raise with an
-        ``index`` attribute (0-based) — handles up to it inclusive are
-        consumed, the rest stay collectible. The TIMEOUT sentinel
-        consumes nothing."""
+        """Wait until every task is terminal.
+
+        Parameters
+        ----------
+        tasks
+            The [`Task`](`pymizu.Task`) handles to wait on.
+        timeout
+            Seconds to wait; None waits indefinitely.
+
+        Returns
+        -------
+            All values in input order. On the first non-OK outcome by
+            position, raises with an ``index`` attribute (0-based) —
+            handles up to it inclusive are consumed, the rest stay
+            collectible. The `TIMEOUT` sentinel consumes nothing.
+        """
         return self._h.collect_all(tasks, timeout)
 
     def map(
@@ -586,93 +791,151 @@ class Pool:
         """Map ``fn`` over the elements of ``x`` on the pool; return the
         results as a list in input order.
 
+        Parameters
+        ----------
+        fn
+            The callable to apply, or a [`call`](`pymizu.call`) spec.
+        x
+            The iterable of elements.
+        args
+            Constant positional arguments appended to every call.
+        kwargs
+            Constant keyword arguments of every call.
+        n_chunks
+            Overrides the morsel count (the scheduling granularity).
+        seed
+            An int or bytes deriving deterministic per-element streams
+            of the stdlib `random` module; see Details. Pass
+            ``seed=(seed, offset)`` to shift every element's stream by
+            ``offset`` positions, for maps split across runs or
+            processes.
+        timeout
+            Seconds to wait for completion; None waits indefinitely.
+        template
+            An exemplar buffer (e.g. ``numpy.empty(m, dtype=...)``)
+            declaring that every ``fn`` result is ``m`` values of that
+            dtype; see Details.
+        collect
+            ``"copy"`` (the default) or ``"view"``; governs how a
+            template-backed output area is returned.
+        stream
+            Stream slices of ``x`` to workers instead of staging the
+            whole of ``x`` in shared memory; see Details.
+
+        Returns
+        -------
+            The results as a list in input order; with ``template``, the
+            gathered output area; on ``timeout`` expiry, the `TIMEOUT`
+            sentinel.
+
+        Raises
+        ------
+        TaskError
+            A task error re-raises as TaskError carrying the failing
+            element's 0-based ``index``; failure is fail-fast (peers
+            stop within about one batch).
+        WorkerDiedError
+            Worker death carries the lost element ranges as ``lost``
+            (0-based half-open ``(lo, hi)`` pairs, conservative).
+        TypeError
+            A [`call`](`pymizu.call`) spec as ``fn`` with
+            ``stream=True``.
+        DeclinedError
+            With a spec, a non-portable constant or element at stage
+            time.
+
+        Details
+        -------
         One call stages ``fn``, the constant ``args``/``kwargs``, and
-        ``x`` exactly once (a shared region, or inline in chunk tasks when
-        small), then submits one *runner* task per live worker; runners
-        self-schedule adaptively sized element batches off a shared
-        cursor. A C-contiguous buffer of a supported dtype
-        (float64/int32/int64/complex128/uint8) travels as bare bytes — workers
-        wrap it once and index per element. ``n_chunks`` overrides the
-        morsel count (the scheduling granularity). ``seed`` (an int or
-        bytes) derives deterministic per-element streams of the stdlib
-        ``random`` module: element ``i`` runs under
+        ``x`` exactly once (a shared region, or inline in chunk tasks
+        when small), then submits one *runner* task per live worker;
+        runners self-schedule adaptively sized element batches off a
+        shared cursor. A C-contiguous buffer of a supported dtype
+        (float64/int32/int64/complex128/uint8) travels as bare bytes —
+        workers wrap it once and index per element.
+
+        ``seed`` derives deterministic per-element streams of the stdlib
+        `random` module: element ``i`` runs under
         ``random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))``,
-        identical for any chunking, worker count, or steal order. Pass
-        ``seed=(seed, offset)`` to shift every element's stream by
-        ``offset`` positions, for maps split across runs or processes.
-        ``seed`` covers the stdlib ``random`` module only: a task
-        drawing from numpy calls :func:`current_rng` inside the task
-        (the element's own memoized ``numpy.random.Generator``, derived
-        from the same seed material); other RNG universes are out of
-        scope. The legacy ``np.random.*`` module functions draw from the
-        worker's shared global RandomState and stay order-dependent. A
-        seeded map element must not nested-submit and collect: worker
-        helping can run another seeded map's batches mid-element, wiping
-        this element's :func:`current_rng` stash — a later call rebuilds
-        from the digest, restarting the stream instead of continuing it
-        (the stdlib streams survive: the helped batch's save/restore
-        nests inside this batch's own).
+        identical for any chunking, worker count, or steal order.
+        ``seed`` covers the stdlib `random` module only: a task drawing
+        from numpy calls [`current_rng()`](`pymizu.current_rng`) inside
+        the task (the element's own memoized
+        ``numpy.random.Generator``, derived from the same seed
+        material); other RNG universes are out of scope. The legacy
+        ``np.random.*`` module functions draw from the worker's shared
+        global RandomState and stay order-dependent. A seeded map
+        element must not nested-submit and collect: worker helping can
+        run another seeded map's batches mid-element, wiping this
+        element's [`current_rng()`](`pymizu.current_rng`) stash — a
+        later call rebuilds from the digest, restarting the stream
+        instead of continuing it (the stdlib streams survive: the helped
+        batch's save/restore nests inside this batch's own).
 
-        ``fn`` may be a :class:`pymizu.call` specification instead of a
-        callable — the way to map over a foreign pool (one spawned with
-        :func:`r_pool_launcher`). A spec always stages a shared region:
-        the descriptor crosses in the interchange format and each runner
-        task carries a region reference any worker language reads. The
-        element fills the spec's first positional slot (name kind) or
-        binds as ``x`` (source kind), and the spec's own constant
-        arguments ride with it — so ``args`` and ``kwargs`` must be empty
-        with a spec. Constants and elements must be portable values; a
-        non-portable one raises :class:`DeclinedError` at stage time.
-        ``seed=`` carries as a language-neutral pair and each worker
-        language derives its own streams, so a spec map takes int seeds
-        only (32-bit-ranged on R workers); invariance holds within a
-        worker language, never identical draws across languages.
+        ``fn`` may be a [`call`](`pymizu.call`) specification instead of
+        a callable — the way to map over a foreign pool (one spawned
+        with [`r_pool_launcher()`](`pymizu.r_pool_launcher`)). A spec
+        always stages a shared region: the descriptor crosses in the
+        interchange format and each runner task carries a region
+        reference any worker language reads. The element fills the
+        spec's first positional slot (name kind) or binds as ``x``
+        (source kind), and the spec's own constant arguments ride with
+        it — so ``args`` and ``kwargs`` must be empty with a spec.
+        Constants and elements must be portable values; a non-portable
+        one raises [`DeclinedError`](`pymizu.DeclinedError`) at stage
+        time. ``seed=`` carries as a language-neutral pair and each
+        worker language derives its own streams, so a spec map takes int
+        seeds only (32-bit-ranged on R workers); invariance holds within
+        a worker language, never identical draws across languages.
 
-        ``template`` is an exemplar buffer (e.g. ``numpy.empty(m,
-        dtype=...)``) declaring that every ``fn`` result is ``m`` values
-        of that dtype: results are written in place into a shared
-        ``n x m`` output area and never serialized. Each result must be a
-        matching buffer — or, for ``m == 1``, a plain Python scalar. With
-        a template, ``collect="copy"`` (the default) returns the area as
-        one gathered numpy array (a memoryview without numpy) of shape
-        ``(n, m)`` — ``(n,)`` for ``m == 1``; ``collect="view"`` returns
-        it zero-copy, with the map region's teardown deferred to the
-        view's.
+        ``template`` declares that every ``fn`` result is ``m`` values
+        of the exemplar's dtype: results are written in place into a
+        shared ``n x m`` output area and never serialized. Each result
+        must be a matching buffer — or, for ``m == 1``, a plain Python
+        scalar. With a template, ``collect="copy"`` (the default)
+        returns the area as one gathered numpy array (a memoryview
+        without numpy) of shape ``(n, m)`` — ``(n,)`` for ``m == 1``;
+        ``collect="view"`` returns it zero-copy, with the map region's
+        teardown deferred to the view's.
 
         With ``stream=True``, the map never stages the whole of ``x``
-        into shared memory: it streams slices of ``x`` to workers as they
-        take work; the return value is unchanged. Fixed x-slices ride
-        ordinary chunk tasks under a sliding submit/collect window of at
-        most ``min(n_chunks, 2 * live workers, free result slots)``
-        outstanding tasks, so shared-memory residency is bounded by
-        ``window x slice`` instead of ``sizeof(x)`` — with the default
-        chunk count (``min(len(x), 32 * live workers)``) that is roughly
-        ``(2 * workers) / n_chunks`` of the serialized ``x``.
-        ``n_chunks=`` overrides the chunk count outright
+        into shared memory: it streams slices of ``x`` to workers as
+        they take work; the return value is unchanged. Fixed x-slices
+        ride ordinary chunk tasks under a sliding submit/collect window
+        of at most ``min(n_chunks, 2 * live workers, free result
+        slots)`` outstanding tasks, so shared-memory residency is
+        bounded by ``window x slice`` instead of ``sizeof(x)`` — with
+        the default chunk count (``min(len(x), 32 * live workers)``)
+        that is roughly ``(2 * workers) / n_chunks`` of the serialized
+        ``x``. ``n_chunks=`` overrides the chunk count outright
         (``n_chunks=len(x)`` is the mirai-style extreme of one element
-        per task). Everything else —
-        result order, ``template`` and ``collect``, ``seed`` invariance,
-        the error taxonomy — is exactly the non-streaming map's.
-        Fail-fast latency coarsens from about one adaptive morsel batch
-        to about one chunk (the bound moves with ``n_chunks``), the
-        adaptive batch sizing of the morsel machinery is lost (skew
-        mitigation is to raise ``n_chunks``), and slices cross via the
-        serialized tiers, so per-chunk staging costs an ordinary submit's
-        serialization rather than the raw section's zero-copy slicing. A
-        streaming map always stages its descriptor region and needs
-        same-language workers: a :class:`pymizu.call` spec as ``fn``
-        raises TypeError.
+        per task). Everything else — result order, ``template`` and
+        ``collect``, ``seed`` invariance, the error taxonomy — is
+        exactly the non-streaming map's. Fail-fast latency coarsens from
+        about one adaptive morsel batch to about one chunk (the bound
+        moves with ``n_chunks``), the adaptive batch sizing of the
+        morsel machinery is lost (skew mitigation is to raise
+        ``n_chunks``), and slices cross via the serialized tiers, so
+        per-chunk staging costs an ordinary submit's serialization
+        rather than the raw section's zero-copy slicing. A streaming map
+        always stages its descriptor region and needs same-language
+        workers: a [`call`](`pymizu.call`) spec as ``fn`` raises
+        TypeError.
 
-        A task error re-raises as TaskError carrying the failing element's
-        0-based ``index``; failure is fail-fast (peers stop within about
-        one batch). Worker death raises WorkerDiedError carrying the lost
-        element ranges as ``lost`` (0-based half-open ``(lo, hi)`` pairs,
-        conservative). On ``timeout`` expiry the outstanding work is
-        cancelled and the TIMEOUT sentinel is returned, never raised.
+        On ``timeout`` expiry the outstanding work is cancelled and the
+        `TIMEOUT` sentinel is returned, never raised.
 
-        :meth:`starmap` is the unpacking variant — ``fn(*element,
-        *args, **kwargs)``, the ``multiprocessing.Pool.starmap``
-        convention.
+        [`starmap()`](`pymizu.Pool.starmap`) is the unpacking variant —
+        ``fn(*element, *args, **kwargs)``, the
+        `multiprocessing.Pool.starmap` convention.
+
+        Examples
+        --------
+        >>> import pymizu
+        >>> with pymizu.Pool.create(2) as pool:
+        ...     results = pool.map(abs, range(-5, 5))
+        >>> results
+        [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
         """
         from pymizu import _map
 
@@ -711,13 +974,14 @@ class Pool:
         """Map ``fn`` over ``x``, unpacking each element as the call's
         positional arguments: ``fn(*element, *args, **kwargs)``.
 
-        The ``multiprocessing.Pool.starmap`` convention; for the
-        multi-iterable shape of ``concurrent.futures.Executor.map``,
+        The `multiprocessing.Pool.starmap` convention; for the
+        multi-iterable shape of `concurrent.futures.Executor.map`,
         zip first: ``pool.starmap(fn, zip(xs, ys))``. Elements must be
         iterables (a 2-D buffer's rows qualify; a 1-D buffer's scalars
-        do not). A :class:`pymizu.call` spec cannot starmap: element
+        do not). A [`call`](`pymizu.call`) spec cannot starmap: element
         unpacking is Python-only. Everything else — seeding, templates,
-        streaming, the error taxonomy — is exactly :meth:`map`'s.
+        streaming, the error taxonomy — is exactly
+        [`map()`](`pymizu.Pool.map`)'s.
         """
         from pymizu import _map
 
@@ -759,10 +1023,12 @@ class Pool:
         collect: str | None = None,
         stream: bool = False,
     ) -> PreparedMap:
-        """Stage a map once for repeated runs; return a :class:`PreparedMap`.
+        """Stage a map once for repeated runs; return a
+        [`PreparedMap`](`pymizu.PreparedMap`).
 
-        Takes the same arguments as ``map`` (minus ``timeout``, which is
-        per-run and moves to :meth:`PreparedMap.run`). The descriptor
+        Takes the same arguments as [`map()`](`pymizu.Pool.map`) (minus
+        ``timeout``, which is per-run and moves to
+        ``PreparedMap.run``). The descriptor
         pickle, the region create, and the worker-side attach are paid
         once here; each ``pm.run()`` re-arms in O(1) and reuses the
         workers' cached contexts. A run collected with ``collect="view"``
@@ -799,8 +1065,23 @@ class Pool:
         launcher: _Callable[[str, int], _Any] | None = None,
         startup_timeout: float = 30.0,
     ) -> list[int]:
-        """Spawn ``n`` additional workers into free registry slots and wait
-        for them to join. Returns the slot indices spawned into."""
+        """Spawn ``n`` additional workers into free registry slots and
+        wait for them to join.
+
+        Parameters
+        ----------
+        n
+            Number of workers to spawn.
+        launcher
+            As for [`Pool.create()`](`pymizu.Pool.create`); the default
+            spawns ``sys.executable`` directly.
+        startup_timeout
+            Seconds to wait for the workers to attach.
+
+        Returns
+        -------
+            The slot indices spawned into.
+        """
         if n < 1:
             raise ValueError("pymizu: n must be at least 1")
         free = [
@@ -820,9 +1101,16 @@ class Pool:
         return slots
 
     def stop(self, timeout: float = 5.0) -> bool:
-        """Orderly shutdown (controller only): broadcast shutdown, cancel
-        pending tasks, wait up to ``timeout`` seconds for clean worker
-        exits, and unlink. Idempotent."""
+        """Orderly shutdown (controller only).
+
+        Broadcast shutdown, cancel pending tasks, wait up to
+        ``timeout`` seconds for clean worker exits, and unlink.
+        Idempotent.
+
+        Returns
+        -------
+            True on clean worker exits within ``timeout``.
+        """
         ok = self._h.stop(timeout)
         if not ok:
             _warnings.warn(
@@ -833,8 +1121,8 @@ class Pool:
         return ok
 
     def shutdown(self, timeout: float = 5.0) -> bool:
-        """Alias for :meth:`stop` — the ``concurrent.futures.Executor``
-        spelling."""
+        """Alias for [`stop()`](`pymizu.Pool.stop`) — the
+        `concurrent.futures.Executor` spelling."""
         return self.stop(timeout)
 
     def destroy(self) -> None:
@@ -908,9 +1196,11 @@ def prune() -> list[str]:
     reads its own PID as alive). Run ``prune()`` while the PID is free,
     before reuse.
 
-    Returns the region names removed, or an empty list if none were. On
-    platforms whose shared memory namespace cannot be enumerated
-    (Windows, where orphans cannot exist), always an empty list.
+    Returns
+    -------
+        The region names removed, or an empty list if none were. On
+        platforms whose shared memory namespace cannot be enumerated
+        (Windows, where orphans cannot exist), always an empty list.
     """
     return _prune()
 
@@ -920,11 +1210,14 @@ def is_remote_error(x: _Any) -> bool:
 
     An uncaught error in a channel peer crosses as a value, not a raised
     exception (transport states are values, payloads are values — user
-    code decides to raise). The value is a :class:`TaskError` carrying
-    the original exception's class name as ``remote_type`` and its
-    traceback text as ``remote_traceback``; raise it to propagate.
+    code decides to raise). The value is a
+    [`TaskError`](`pymizu.TaskError`) carrying the original exception's
+    class name as ``remote_type`` and its traceback text as
+    ``remote_traceback``; raise it to propagate.
 
-    Returns True for a received remote error, False otherwise.
+    Returns
+    -------
+        True for a received remote error, False otherwise.
     """
     return isinstance(x, TaskError)
 
@@ -932,12 +1225,19 @@ def is_remote_error(x: _Any) -> bool:
 def current_pool() -> Pool | None:
     """The evaluating worker's own pool handle, inside a task.
 
+    Returns
+    -------
+        The worker's own pool handle inside a task; None outside one.
+
+    Details
+    -------
     A task uses it for nested submission: a nested submit pushes onto the
     worker's own work-stealing deque (no ring, no wait), and a nested
     collect helps — executes work — instead of parking, so nested fan-outs
-    run at fork/join cost and never deadlock the pool. None outside a
-    task; the user-set process-wide default is :func:`default_pool`,
-    which never overrides this runtime-owned binding.
+    run at fork/join cost and never deadlock the pool. The user-set
+    process-wide default is
+    [`default_pool()`](`pymizu.default_pool`), which never overrides
+    this runtime-owned binding.
     """
     return getattr(_worker_local, "pool", None)
 
@@ -945,17 +1245,30 @@ def current_pool() -> Pool | None:
 def current_rng() -> _np.random.Generator | None:
     """The running element's own numpy Generator, inside a seeded map.
 
-    ``Pool.map(seed=...)`` seeds the stdlib ``random`` module per
-    element; a task drawing from numpy calls this instead: the element's
-    memoized ``numpy.random.Generator``, derived from the same seed
-    material on first call in the element (domain-separated from the
-    stdlib derivation, so those streams are unchanged). Two calls in one
-    element continue one stream; distinct elements get distinct streams —
-    results identical for any chunking, worker count, or steal order.
+    Returns
+    -------
+        The element's memoized ``numpy.random.Generator`` inside a
+        seeded map element; None outside one.
 
-    None outside a seeded map element (an unseeded map, an ordinary
-    task, the submitter process). Raises TypeError when numpy is not
-    installed. A seeded map element must not nested-submit and collect:
+    Raises
+    ------
+    TypeError
+        When numpy is not installed.
+
+    Details
+    -------
+    [`Pool.map()`](`pymizu.Pool.map`) ``seed=`` seeds the stdlib
+    `random` module per element; a task drawing from numpy calls this
+    instead: the element's memoized ``numpy.random.Generator``, derived
+    from the same seed material on first call in the element
+    (domain-separated from the stdlib derivation, so those streams are
+    unchanged). Two calls in one element continue one stream; distinct
+    elements get distinct streams — results identical for any chunking,
+    worker count, or steal order.
+
+    Outside a seeded map element (an unseeded map, an ordinary task, the
+    submitter process) the return is None. A seeded map element must
+    not nested-submit and collect:
     worker helping can run another map's batches mid-element, wiping
     this element's stash — a later call rebuilds from the digest,
     restarting the stream instead of continuing it.
@@ -968,23 +1281,24 @@ def current_rng() -> _np.random.Generator | None:
 def default_pool() -> Pool | None:
     """The process-wide default pool, or None when none is set.
 
-    Set with :func:`set_default_pool`; scoped use with
-    :func:`using_pool`. Package code taking an optional pool resolves it
-    in this order: an explicit ``pool`` argument, then
-    :func:`current_pool` inside a task (the evaluating worker's own
-    pool, for nested submission), then ``default_pool()``, then the
-    caller's own fallback — sequential execution or an error.
+    Set with [`set_default_pool()`](`pymizu.set_default_pool`); scoped
+    use with [`using_pool()`](`pymizu.using_pool`). Package code taking
+    an optional pool resolves it in this order: an explicit ``pool``
+    argument, then [`current_pool()`](`pymizu.current_pool`) inside a
+    task (the evaluating worker's own pool, for nested submission), then
+    ``default_pool()``, then the caller's own fallback — sequential
+    execution or an error.
 
     Setting a default checks the type only: a stopped pool is accepted
     (liveness is transient; a probe would prove nothing about use time)
     and fails at use time with the usual stopped-pool errors. Handles
-    from :meth:`Pool.attach` are valid defaults; ownership and teardown
-    stay with the pool's creator.
+    from [`Pool.attach()`](`pymizu.Pool.attach`) are valid defaults;
+    ownership and teardown stay with the pool's creator.
 
     The default is process-global — every thread sees the same pool, and
-    :func:`current_pool` remains the thread-local mechanism. After a
-    ``fork()``, a child process reads it as unset: handles are
-    process-private.
+    [`current_pool()`](`pymizu.current_pool`) remains the thread-local
+    mechanism. After a ``fork()``, a child process reads it as unset:
+    handles are process-private.
     """
     pool, pid = _default_state
     return pool if pid == _os.getpid() else None
@@ -993,11 +1307,17 @@ def default_pool() -> Pool | None:
 def set_default_pool(pool: Pool | None) -> Pool | None:
     """Set the process-wide default pool; None clears it.
 
-    Returns the previous default (a Pool or None), so callers can save
-    and restore. The registry anchors the handle: a pool set as the
-    default stays alive even after its variable is deleted, until the
-    default is cleared or replaced. See :func:`default_pool` for the
-    full semantics.
+    Returns
+    -------
+        The previous default (a Pool or None), so callers can save and
+        restore.
+
+    Details
+    -------
+    The registry anchors the handle: a pool set as the default stays
+    alive even after its variable is deleted, until the default is
+    cleared or replaced. See [`default_pool()`](`pymizu.default_pool`)
+    for the full semantics.
     """
     global _default_state
     if pool is not None and not isinstance(pool, Pool):
@@ -1008,11 +1328,19 @@ def set_default_pool(pool: Pool | None) -> Pool | None:
 
 
 @_contextlib.contextmanager
-def using_pool(pool: Pool | None) -> _Iterator[Pool | None]:
+def using_pool(pool: Pool | None) -> _Generator[Pool | None, None, None]:
     """Use ``pool`` as the default for the with block, then restore.
 
-    Yields ``pool``. The previous default returns on exit, including on
-    exception; ``None`` scopes a cleared default.
+    Parameters
+    ----------
+    pool
+        The pool to make the default; ``None`` scopes a cleared
+        default.
+
+    Returns
+    -------
+        A context manager yielding ``pool``. The previous default
+        returns on exit, including on exception.
     """
     prev = set_default_pool(pool)
     try:

@@ -121,8 +121,9 @@ def r_mizu():
     try:
         return pymizu.r_launcher()
     except pymizu.MizuError:
-        pytest.skip("Rscript with the mizu package (source-drop support) "
-                    "not available")
+        pytest.skip(
+            "Rscript with the mizu package (source-drop support) not available"
+        )
 
 
 @pytest.fixture
@@ -175,12 +176,18 @@ _lib.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
 
 
 class _ArrowArray(ctypes.Structure):
-    _fields_ = [("length", ctypes.c_int64), ("null_count", ctypes.c_int64),
-                ("offset", ctypes.c_int64), ("n_buffers", ctypes.c_int64),
-                ("n_children", ctypes.c_int64), ("buffers", ctypes.c_void_p),
-                ("children", ctypes.c_void_p), ("dictionary", ctypes.c_void_p),
-                ("release", ctypes.c_void_p),
-                ("private_data", ctypes.c_void_p)]
+    _fields_ = [
+        ("length", ctypes.c_int64),
+        ("null_count", ctypes.c_int64),
+        ("offset", ctypes.c_int64),
+        ("n_buffers", ctypes.c_int64),
+        ("n_children", ctypes.c_int64),
+        ("buffers", ctypes.c_void_p),
+        ("children", ctypes.c_void_p),
+        ("dictionary", ctypes.c_void_p),
+        ("release", ctypes.c_void_p),
+        ("private_data", ctypes.c_void_p),
+    ]
 
 
 class _PatchedArray:
@@ -234,17 +241,22 @@ def test_int64_exact_and_sentinel(rcheck):
     # warning while no INT64_MIN rides
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        b = r_case(rcheck, "i64edge",
-                   np.array([2**53, -(2**53)], dtype=np.int64))
+        b = r_case(
+            rcheck, "i64edge", np.array([2**53, -(2**53)], dtype=np.int64)
+        )
         assert np.array_equal(b, [2**53, -(2**53)])
-        b = r_case(rcheck, "i64big",
-                   np.array([2**53 + 1, -(2**53) - 1], dtype=np.int64))
+        b = r_case(
+            rcheck,
+            "i64big",
+            np.array([2**53 + 1, -(2**53) - 1], dtype=np.int64),
+        )
         assert np.array_equal(b, [2**53 + 1, -(2**53) - 1])
     # INT64_MIN is the missing sentinel (documented): a genuine one reads
     # as NA_integer64_ in R, and its echo warns (3.2), dtype unchanged
     with pytest.warns(UserWarning, match="to_arrow"):
-        b = r_case(rcheck, "i64na2",
-                   np.array([2**53 + 1, -(2**63)], dtype=np.int64))
+        b = r_case(
+            rcheck, "i64na2", np.array([2**53 + 1, -(2**63)], dtype=np.int64)
+        )
     assert list(b) == [2**53 + 1, -(2**63)]
     # uint64 stays lossy: past 2^53 warns and converts to NA_real_
     with pytest.warns(RuntimeWarning, match="beyond"):
@@ -302,16 +314,18 @@ def test_arrow_masked_int64(rcheck):
     assert list(b) == [2, -(2**63), 4]
     # an out-of-range valid value under a mask: exact, warns likewise
     with pytest.warns(UserWarning, match="to_arrow"):
-        b = r_case(rcheck, "i64na2",
-                   pa.array([2**53 + 1, None], type=pa.int64()))
+        b = r_case(
+            rcheck, "i64na2", pa.array([2**53 + 1, None], type=pa.int64())
+        )
     assert list(b) == [2**53 + 1, -(2**63)]
 
 
 def test_arrow_masked_intmin(rcheck):
     # a genuine INT_MIN under a mask reads as NA_integer_ in R: warn once
     with pytest.warns(RuntimeWarning, match="-2147483648"):
-        b = r_case(rcheck, "intmin",
-                   pa.array([-2147483648, 1, None], type=pa.int32()))
+        b = r_case(
+            rcheck, "intmin", pa.array([-2147483648, 1, None], type=pa.int32())
+        )
     # the echo of the R integer (two NAs) reads float64, NaN payloads
     assert b.dtype == np.float64
     assert np.isnan(b[0]) and b[1] == 1 and np.isnan(b[2])
@@ -320,14 +334,23 @@ def test_arrow_masked_intmin(rcheck):
 def test_arrow_sliced(rcheck):
     # offset != 0: an element offset into the data buffer, a bit offset
     # into the validity bitmap
-    r_case(rcheck, "intpos",
-           pa.array([0, 1, 2, 3, 99], type=pa.int32()).slice(1, 3))
-    r_case(rcheck, "intna",
-           pa.array([0, 1, None, 3, 99], type=pa.int32()).slice(1, 3))
+    r_case(
+        rcheck,
+        "intpos",
+        pa.array([0, 1, 2, 3, 99], type=pa.int32()).slice(1, 3),
+    )
+    r_case(
+        rcheck,
+        "intna",
+        pa.array([0, 1, None, 3, 99], type=pa.int32()).slice(1, 3),
+    )
     # a sliced bool: the data buffer is bit-packed too — the offset is a
     # bit offset into both bitmaps
-    r_case(rcheck, "lglena",
-           pa.array([False, True, None, False, True]).slice(1, 3))
+    r_case(
+        rcheck,
+        "lglena",
+        pa.array([False, True, None, False, True]).slice(1, 3),
+    )
 
 
 def test_arrow_empty(rcheck):
@@ -342,7 +365,8 @@ def test_arrow_null_count_unknown(rcheck):
     # exported struct to reconstruct the shape)
     data = np.array([10, 20, 30, 40, 50], dtype=np.int32)
     arr = pa.Array.from_buffers(
-        pa.int32(), 5,
+        pa.int32(),
+        5,
         [pa.py_buffer(bytes([0b00011111])), pa.py_buffer(data.tobytes())],
         null_count=-1,
     )
@@ -386,8 +410,10 @@ def test_arrow_invalid_capsules():
         h.send(patched)
     # null_count < -1 rejects
     with pytest.raises(TypeError, match="invalid Arrow"):
-        h.send(_PatchedArray(pa.array([1, 2, 3], type=pa.int32()),
-                             null_count=-2))
+        h.send(
+            _PatchedArray(pa.array([1, 2, 3], type=pa.int32()), null_count=-2)
+        )
+
     # an exception from the dunder itself propagates
     class Boom:
         def __arrow_c_array__(self):
@@ -543,7 +569,8 @@ def test_export_types(echo):
         arr = pa.array(view)
         assert arr.type == ptype
         assert len(arr) * arr.type.bit_width // 8 == len(
-            memoryview(payload).cast("B"))
+            memoryview(payload).cast("B")
+        )
 
 
 def test_export_lifetime(echo):
@@ -600,7 +627,8 @@ def test_export_requested_schema_ignored(echo):
     view = _exporter(echo.recv(timeout=5))
     f32 = pa.array([1.0], type=pa.float32()).__arrow_c_array__()[0]
     arr = pa.Array._import_from_c_capsule(
-        *view.__arrow_c_array__(requested_schema=f32))
+        *view.__arrow_c_array__(requested_schema=f32)
+    )
     assert arr.type == pa.float64()
 
 
@@ -703,8 +731,9 @@ def test_mapview_export_na(pool):
 def test_mapview_export_m2_flat(pool):
     # the ruling: the export is always flat n * m, element-major — the
     # same bytes the buffer protocol view exposes
-    out = pool.map(pair_up, list(range(50)), template=np.empty(2),
-                   collect="view")
+    out = pool.map(
+        pair_up, list(range(50)), template=np.empty(2), collect="view"
+    )
     view = _mapview(out)
     assert type(view).__name__ == "_MapOutView"
     arr = pa.array(view)

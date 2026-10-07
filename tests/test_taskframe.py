@@ -158,8 +158,12 @@ def test_read_stream_task_frame_by_reference():
     stream = _task_stream(
         0,
         _s("builtins") + _s("pow"),
-        b"t" + (2).to_bytes(4, "little") + b"i" + (2).to_bytes(8, "little")
-        + b"i" + (10).to_bytes(8, "little"),
+        b"t"
+        + (2).to_bytes(4, "little")
+        + b"i"
+        + (2).to_bytes(8, "little")
+        + b"i"
+        + (10).to_bytes(8, "little"),
         b"d" + (0).to_bytes(4, "little"),
     )
     out = _read_stream(stream)
