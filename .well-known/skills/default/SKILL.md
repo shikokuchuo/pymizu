@@ -1,14 +1,14 @@
 ---
 name: pymizu
 description: >
-  Lock-free shared-memory parallelism for Python. Use when writing Python code that uses the pymizu package.
+  Zero-copy shared-memory parallelism across Python and R. Use when writing Python code that uses the pymizu package.
 license: MIT
 compatibility: Requires Python >=3.10.
 ---
 
 # pymizu 水
 
-Lock-free shared-memory parallelism for Python
+Zero-copy shared-memory parallelism across Python and R
 
 ## Installation
 

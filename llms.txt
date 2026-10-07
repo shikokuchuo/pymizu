@@ -1,6 +1,6 @@
 # pymizu
 
-> Lock-free shared-memory parallelism for Python
+> Zero-copy shared-memory parallelism across Python and R
 
 ## Docs
 
