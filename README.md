@@ -33,6 +33,7 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 - Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)
 - Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`
 - Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order
+- Nested parallel maps — a task can map over its own pool, deadlock-free
 - Sentinels, not exceptions, on hot paths; worker crashes detected at OS latency
 - Typed (`py.typed` + stubs); Python 3.10+ on Linux, macOS, and Windows
 
