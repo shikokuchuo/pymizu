@@ -11,4 +11,14 @@ Pool.attach(token)
 ```
 
 
-The token travels out of band: it is `pool.token` on the creator.
+## Parameters
+
+
+`token: str`  
+The join token; it travels out of band and is `pool.token` on the creator.
+
+
+## Returns
+
+
+`The submitter-side pool handle.`

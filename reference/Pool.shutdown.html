@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -121,7 +121,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
   <link rel="alternate" type="text/markdown" href="Pool.shutdown.md">
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/Pool.shutdown.html">
-  <meta name="description" content="Alias for :meth:stop — the concurrent.futures.Executor">
+  <meta name="description" content="Lock-free shared-memory parallelism for Python">
   <script type="application/ld+json">
 [
   {
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -151,12 +152,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </script>
   <meta property="og:type" content="website">
   <meta property="og:title" content="Pool.shutdown() | pymizu 水">
-  <meta property="og:description" content="Alias for :meth:stop — the concurrent.futures.Executor">
+  <meta property="og:description" content="Lock-free shared-memory parallelism for Python">
   <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/Pool.shutdown.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Pool.shutdown() | pymizu 水">
-  <meta name="twitter:description" content="Alias for :meth:stop — the concurrent.futures.Executor">
+  <meta name="twitter:description" content="Lock-free shared-memory parallelism for Python">
 </head>
 
 <body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
@@ -735,17 +736,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Alias for :meth:<a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link gdls-code">stop</a> — the <code>concurrent.futures.Executor</code></p>
+<p>Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> — the</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L835-L838" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1123-L1126" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">shutdown</span>(<span class="va">timeout</span><span class="op">=</span><span class="fl">5.0</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>spelling.</p>
+<p><code>concurrent.futures.Executor</code> spelling.</p>
 </div>
 
 
@@ -1095,7 +1096,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

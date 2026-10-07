@@ -27,13 +27,13 @@ Attach to the channel named by a join token (the peer side).
 The join token for the peer's attach.
 
 [Channel.send()](Channel.send.md#pymizu.Channel.send)  
-Send one payload; return None, or the FULL / CLOSED /
+Send one payload.
 
 [Channel.send_batch()](Channel.send_batch.md#pymizu.Channel.send_batch)  
 Send several payloads in one crossing; return the number
 
 [Channel.recv()](Channel.recv.md#pymizu.Channel.recv)  
-Receive one payload, waiting up to `timeout` seconds
+Receive one payload.
 
 [Channel.recv_batch()](Channel.recv_batch.md#pymizu.Channel.recv_batch)  
 Receive up to `n` payloads in one crossing; a list
@@ -77,7 +77,7 @@ A task handle from \_Pool.submit(). Collected exactly once; an uncollected handl
 A map staged once into a persistent region, run many times.
 
 [PoolExecutor](PoolExecutor.md#pymizu.PoolExecutor)  
-A :class:`concurrent.futures.Executor` over a pymizu pool.
+A `concurrent.futures.Executor` over a pymizu pool.
 
 
 ## Pool Methods
@@ -99,13 +99,13 @@ The join token for worker/submitter attach.
 Submit `fn(*args, **kwargs)` as a task; return a Task handle.
 
 [Pool.submit_batch()](Pool.submit_batch.md#pymizu.Pool.submit_batch)  
-Submit one task per zero-arg callable in `fns` in one crossing.
+Submit one task per zero-arg callable in `fns` in one
 
 [Pool.collect_any()](Pool.collect_any.md#pymizu.Pool.collect_any)  
-Wait on several tasks; return `(index, value)` of the first
+Wait on several tasks.
 
 [Pool.collect_all()](Pool.collect_all.md#pymizu.Pool.collect_all)  
-Wait until every task is terminal; return all values in input
+Wait until every task is terminal.
 
 [Pool.map()](Pool.map.md#pymizu.Pool.map)  
 Map `fn` over the elements of `x` on the pool; return the
@@ -114,19 +114,19 @@ Map `fn` over the elements of `x` on the pool; return the
 Map `fn` over `x`, unpacking each element as the call's
 
 [Pool.map_prepare()](Pool.map_prepare.md#pymizu.Pool.map_prepare)  
-Stage a map once for repeated runs; return a :class:[PreparedMap](PreparedMap.md#pymizu.PreparedMap).
+Stage a map once for repeated runs; return a
 
 [Pool.retire()](Pool.retire.md#pymizu.Pool.retire)  
 Ask the worker in `slot` to exit cleanly (non-blocking).
 
 [Pool.spawn_workers()](Pool.spawn_workers.md#pymizu.Pool.spawn_workers)  
-Spawn `n` additional workers into free registry slots and wait
+Spawn `n` additional workers into free registry slots and
 
 [Pool.stop()](Pool.stop.md#pymizu.Pool.stop)  
-Orderly shutdown (controller only): broadcast shutdown, cancel
+Orderly shutdown (controller only).
 
 [Pool.shutdown()](Pool.shutdown.md#pymizu.Pool.shutdown)  
-Alias for :meth:[stop](Pool.stop.md#pymizu.Pool.stop) -- the `concurrent.futures.Executor`
+Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> -- the
 
 [Pool.destroy()](Pool.destroy.md#pymizu.Pool.destroy)  
 Tear down the pool handle immediately, without the shutdown
@@ -158,10 +158,10 @@ R peers and workers (the mizu R package), neutral task specifications, and the d
 A task specification for a pool of another language's workers.
 
 [r_launcher()](r_launcher.md#pymizu.r_launcher)  
-Return a [Channel.create](Channel.create.md#pymizu.Channel.create) launcher spawning an R peer.
+Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> launcher
 
 [r_pool_launcher()](r_pool_launcher.md#pymizu.r_pool_launcher)  
-Return a [Pool.create](Pool.create.md#pymizu.Pool.create) launcher spawning R workers.
+Return a <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> launcher
 
 [Frame](Frame.md#pymizu.Frame)  
 A data.frame's Python home: named columns with a row count.

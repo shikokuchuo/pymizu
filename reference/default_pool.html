@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -739,15 +740,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L968-L990" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1281-L1304" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">default_pool</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Set with :func:<a href="../reference/set_default_pool.html#pymizu.set_default_pool" class="gdls-link gdls-code">set_default_pool</a>; scoped use with :func:<a href="../reference/using_pool.html#pymizu.using_pool" class="gdls-link gdls-code">using_pool</a>. Package code taking an optional pool resolves it in this order: an explicit <code>pool</code> argument, then :func:<a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool</a> inside a task (the evaluating worker’s own pool, for nested submission), then <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then the caller’s own fallback — sequential execution or an error.</p>
-<p>Setting a default checks the type only: a stopped pool is accepted (liveness is transient; a probe would prove nothing about use time) and fails at use time with the usual stopped-pool errors. Handles from :meth:<a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link gdls-code">Pool.attach</a> are valid defaults; ownership and teardown stay with the pool’s creator.</p>
-<p>The default is process-global — every thread sees the same pool, and :func:<a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool</a> remains the thread-local mechanism. After a <code>fork()</code>, a child process reads it as unset: handles are process-private.</p>
+<p>Set with <a href="../reference/set_default_pool.html#pymizu.set_default_pool" class="gdls-link"><code>set_default_pool()</code></a>; scoped use with <a href="../reference/using_pool.html#pymizu.using_pool" class="gdls-link"><code>using_pool()</code></a>. Package code taking an optional pool resolves it in this order: an explicit <code>pool</code> argument, then <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link"><code>current_pool()</code></a> inside a task (the evaluating worker’s own pool, for nested submission), then <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then the caller’s own fallback — sequential execution or an error.</p>
+<p>Setting a default checks the type only: a stopped pool is accepted (liveness is transient; a probe would prove nothing about use time) and fails at use time with the usual stopped-pool errors. Handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link"><code>Pool.attach()</code></a> are valid defaults; ownership and teardown stay with the pool’s creator.</p>
+<p>The default is process-global — every thread sees the same pool, and <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link"><code>current_pool()</code></a> remains the thread-local mechanism. After a <code>fork()</code>, a child process reads it as unset: handles are process-private.</p>
 </div>
 
 
@@ -1097,7 +1098,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

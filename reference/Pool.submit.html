@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -709,8 +710,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
+  <li><a href="#returns" id="toc-returns" class="nav-link" data-scroll-target="#returns">Returns</a></li>
+  <li><a href="#raises" id="toc-raises" class="nav-link" data-scroll-target="#raises">Raises</a></li>
+  <li><a href="#details" id="toc-details" class="nav-link" data-scroll-target="#details">Details</a></li>
+  <li><a href="#examples" id="toc-examples" class="nav-link" data-scroll-target="#examples">Examples</a></li>
+  </ul>
+</nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -739,7 +750,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L485-L528" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L624-L698" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">submit</span>(</span>
@@ -751,13 +762,73 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Blocks only for injection-ring space, up to <code>timeout</code> seconds (None waits indefinitely): SubmitTimeoutError on expiry, SlotsExhaustedError / StoppedError on the fatal outcomes.</p>
-<p><code>timeout</code> belongs to the submission, not to <code>fn</code>: a callable taking its own <code>timeout=</code> keyword argument cannot receive it through <code>**kwargs</code> here — bind it first with <code>functools.partial(fn, timeout=...)</code>.</p>
-<p>A buffer-protocol argument (e.g.&nbsp;a numpy array) past the zero-copy floor crosses as a read-only view over shared pages, not a writable copy.</p>
-<p>With a :class:<a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec as <code>fn</code> (no <code>*args</code> / <code>**kwargs</code> — the spec carries them), the task stream crosses in the neutral interchange format: this is how a pool of another language’s workers is driven (spawn them with :func:<a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">pymizu.r_pool_launcher</a>). On a foreign pool a plain callable errors locally, naming the spec verb.</p>
+<p>Blocks only for injection-ring space, up to <code>timeout</code> seconds (None waits indefinitely).</p>
 </div>
+<section id="parameters" class="level2 doc-parameters">
+<h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">fn</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[…, _Any]</span></code></dt>
+<dd>
+<p>The callable to run, or a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">args</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">()</span></code></dt>
+<dd>
+<p>Positional arguments for <code>fn</code>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Seconds to wait for injection-ring space; None waits indefinitely.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">kwargs</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">{}</span></code></dt>
+<dd>
+Keyword arguments for <code>fn</code>.
+</dd>
+</dl>
+</div>
+</section>
+<section id="returns" class="level2 doc-returns">
+<h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">A <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task</code></a> handle.</span></code></dt>
+<dd>
+
+</dd>
+</dl>
+</div>
+</section>
+<section id="raises" class="level2 doc-raises">
+<h2 class="doc-raises anchored" data-anchor-id="raises">Raises</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">SubmitTimeoutError</span></code></dt>
+<dd>
+<p>On <code>timeout</code> expiry.</p>
+</dd>
+<dt><code> <span class="doc-parameter-annotation">SlotsExhaustedError</span></code></dt>
+<dd>
+<p>When no result slot is free.</p>
+</dd>
+<dt><code> <span class="doc-parameter-annotation">StoppedError</span></code></dt>
+<dd>
+When the pool is stopped.
+</dd>
+</dl>
+</div>
+</section>
+<section id="details" class="level2 doc-details">
+<h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
+<p><code>timeout</code> belongs to the submission, not to <code>fn</code>: a callable taking its own <code>timeout=</code> keyword argument cannot receive it through <code>**kwargs</code> here — bind it first with <code>functools.partial</code> as <code>functools.partial(fn, timeout=...)</code>.</p>
+<p>A buffer-protocol argument (e.g.&nbsp;a numpy array) past the zero-copy floor crosses as a read-only view over shared pages, not a writable copy.</p>
+<p>With a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec as <code>fn</code> (no <code>*args</code> / <code>**kwargs</code> — the spec carries them), the task stream crosses in the neutral interchange format: this is how a pool of another language’s workers is driven (spawn them with <a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link"><code>r_pool_launcher()</code></a>). On a foreign pool a plain callable errors locally, naming the spec verb.</p>
+</section>
+<section id="examples" class="level2 doc-examples">
+<h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
+<p>See <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> for a submit and collect example.</p>
 
 
+</section>
 
 </main>
 <hr style="padding: 0; margin: 0;">
@@ -1104,7 +1175,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

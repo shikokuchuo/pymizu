@@ -51,7 +51,7 @@ A set of worker processes that divide submitted tasks among themselves.
 - `Pool`: A shared-memory work-stealing task pool handle (process-private)
 - `Task`: A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
 - `PreparedMap`: A map staged once into a persistent region, run many times
-- `PoolExecutor`: A :class:`concurrent.futures.Executor` over a pymizu pool
+- `PoolExecutor`: A `concurrent.futures.Executor` over a pymizu pool
 
 ### Pool Methods
 
@@ -84,8 +84,8 @@ Methods for the Pool class
 R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
 
 - `call`: A task specification for a pool of another language's workers
-- `r_launcher`: Return a ``Channel.create`` launcher spawning an R peer
-- `r_pool_launcher`: Return a ``Pool.create`` launcher spawning R workers
+- `r_launcher`: Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
+- `r_pool_launcher`: Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
 - `Frame`: A data.frame's Python home: named columns with a row count
 
 ### Frame Methods
@@ -133,3 +133,4 @@ The process-wide default pool, the evaluating worker's own pool handle, and orph
 - [Full documentation](https://shikokuchuo.net/pymizu/)
 - [llms.txt](llms.txt) — Indexed API reference for LLMs
 - [llms-full.txt](llms-full.txt) — Comprehensive documentation for LLMs
+- [Source code](https://github.com/shikokuchuo/pymizu)

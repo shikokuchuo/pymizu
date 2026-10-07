@@ -25,4 +25,4 @@ Pool.starmap(
 
 positional arguments: `fn(*element, *args, **kwargs)`.
 
-The `multiprocessing.Pool.starmap` convention; for the multi-iterable shape of `concurrent.futures.Executor.map`, zip first: `pool.starmap(fn, zip(xs, ys))`. Elements must be iterables (a 2-D buffer's rows qualify; a 1-D buffer's scalars do not). A :class:[pymizu.call](call.md#pymizu.call) spec cannot starmap: element unpacking is Python-only. Everything else -- seeding, templates, streaming, the error taxonomy -- is exactly :meth:[map](Pool.map.md#pymizu.Pool.map)'s.
+The `multiprocessing.Pool.starmap` convention; for the multi-iterable shape of `concurrent.futures.Executor.map`, zip first: `pool.starmap(fn, zip(xs, ys))`. Elements must be iterables (a 2-D buffer's rows qualify; a 1-D buffer's scalars do not). A <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec cannot starmap: element unpacking is Python-only. Everything else -- seeding, templates, streaming, the error taxonomy -- is exactly <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>map()</code></a>'s.

@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -709,8 +710,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#returns" id="toc-returns" class="nav-link active" data-scroll-target="#returns">Returns</a></li>
+  <li><a href="#raises" id="toc-raises" class="nav-link" data-scroll-target="#raises">Raises</a></li>
+  <li><a href="#details" id="toc-details" class="nav-link" data-scroll-target="#details">Details</a></li>
+  </ul>
+</nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -739,17 +748,40 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L945-L965" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1245-L1278" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">current_rng</span>()</span></code></pre></div>
 </div>
-<div class="doc-text">
-<p><code>Pool.map(seed=...)</code> seeds the stdlib <code>random</code> module per element; a task drawing from numpy calls this instead: the element’s memoized <code>numpy.random.Generator</code>, derived from the same seed material on first call in the element (domain-separated from the stdlib derivation, so those streams are unchanged). Two calls in one element continue one stream; distinct elements get distinct streams — results identical for any chunking, worker count, or steal order.</p>
-<p>None outside a seeded map element (an unseeded map, an ordinary task, the submitter process). Raises TypeError when numpy is not installed. A seeded map element must not nested-submit and collect: worker helping can run another map’s batches mid-element, wiping this element’s stash — a later call rebuilds from the digest, restarting the stream instead of continuing it.</p>
+<section id="returns" class="level2 doc-returns">
+<h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">The element’s memoized <code>numpy.random.Generator</code> inside a</span></code></dt>
+<dd>
+seeded map element; None outside one.
+</dd>
+</dl>
 </div>
+</section>
+<section id="raises" class="level2 doc-raises">
+<h2 class="doc-raises anchored" data-anchor-id="raises">Raises</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">TypeError</span></code></dt>
+<dd>
+When numpy is not installed.
+</dd>
+</dl>
+</div>
+</section>
+<section id="details" class="level2 doc-details">
+<h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
+<p><a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a> <code>seed=</code> seeds the stdlib <code>random</code> module per element; a task drawing from numpy calls this instead: the element’s memoized <code>numpy.random.Generator</code>, derived from the same seed material on first call in the element (domain-separated from the stdlib derivation, so those streams are unchanged). Two calls in one element continue one stream; distinct elements get distinct streams — results identical for any chunking, worker count, or steal order.</p>
+<p>Outside a seeded map element (an unseeded map, an ordinary task, the submitter process) the return is None. A seeded map element must not nested-submit and collect: worker helping can run another map’s batches mid-element, wiping this element’s stash — a later call rebuilds from the digest, restarting the stream instead of continuing it.</p>
 
 
+</section>
 
 </main>
 <hr style="padding: 0; margin: 0;">
@@ -1096,7 +1128,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

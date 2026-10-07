@@ -1,7 +1,7 @@
 # Channel.send()
 
 
-Send one payload; return None, or the FULL / CLOSED /
+Send one payload.
 
 
 Usage
@@ -11,4 +11,15 @@ Channel.send(x)
 ```
 
 
-PEER_GONE sentinel (identity-tested). `None` itself is a valid payload; bytes and numpy arrays travel raw, everything else rides pickle protocol 4.
+## Parameters
+
+
+`x: _Any`  
+The payload. `None` itself is a valid payload; bytes and numpy arrays travel raw, everything else rides pickle protocol 4.
+
+
+## Returns
+
+
+`None, or the ``FULL`` / ``CLOSED`` / ``PEER_GONE`` sentinel`  
+(identity-tested).

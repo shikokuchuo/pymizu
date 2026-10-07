@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -709,8 +710,16 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
+  <li><a href="#returns" id="toc-returns" class="nav-link" data-scroll-target="#returns">Returns</a></li>
+  <li><a href="#examples" id="toc-examples" class="nav-link" data-scroll-target="#examples">Examples</a></li>
+  </ul>
+</nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -739,7 +748,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L417-L467" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L520-L599" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">create</span>(</span>
@@ -755,11 +764,71 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="va">startup_timeout</span><span class="op">=</span><span class="fl">30.0</span>,</span>
 <span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
-<div class="doc-text">
-<p><code>workers</code> worker processes join the pool’s registry (capacity <code>max_workers</code>). <code>result_slots</code> bounds each submitter’s outstanding (uncollected) tasks; <code>slot_size</code> is the bytes per queue entry and result slot — a payload past the inline budget travels in a fresh region per payload. <code>launcher</code> is a <code>callable(token, slot)</code> arranging for a Python process to run <code>python -m pymizu.worker &lt;token&gt; &lt;slot&gt;</code>; the default spawns <code>sys.executable</code> directly.</p>
+<section id="parameters" class="level2 doc-parameters">
+<h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">workers</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1</span></span></code></dt>
+<dd>
+<p>Number of worker processes to spawn; they join the pool’s registry (capacity <code>max_workers</code>).</p>
+</dd>
+<dt><code><span class="doc-parameter-name">max_workers</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Registry capacity; defaults to <code>workers</code>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">max_submitters</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">8</span></span></code></dt>
+<dd>
+<p>Maximum number of submitter processes.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">injection_cap</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1024</span></span></code></dt>
+<dd>
+<p>Capacity of the injection ring.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">per_worker_cap</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1024</span></span></code></dt>
+<dd>
+<p>Capacity of each worker’s work-stealing deque.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">result_slots</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">4096</span></span></code></dt>
+<dd>
+<p>Bounds each submitter’s outstanding (uncollected) tasks.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">slot_size</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">512</span></span></code></dt>
+<dd>
+<p>Bytes per queue entry and result slot — a payload past the inline budget travels in a fresh region per payload.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">launcher</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[[str, int], _Any] | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>A <code>callable(token, slot)</code> arranging for a Python process to run <code>python -m pymizu.worker &lt;token&gt; &lt;slot&gt;</code>; the default spawns <code>sys.executable</code> directly.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">startup_timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="fl">30.0</span></span></code></dt>
+<dd>
+Seconds to wait for the workers to attach.
+</dd>
+</dl>
 </div>
+</section>
+<section id="returns" class="level2 doc-returns">
+<h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">The controller-side pool handle.</span></code></dt>
+<dd>
+
+</dd>
+</dl>
+</div>
+</section>
+<section id="examples" class="level2 doc-examples">
+<h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">import</span> pymizu</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>...     task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>...     results <span class="op">=</span> pool.collect_all([task], timeout<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> results</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>[<span class="dv">65536</span>]</span></code></pre></div>
 
 
+</section>
 
 </main>
 <hr style="padding: 0; margin: 0;">
@@ -1106,7 +1175,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

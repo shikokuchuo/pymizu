@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -714,7 +715,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <h2 id="toc-title">On this page</h2>
    
   <ul>
-  <li><a href="#methods" id="toc-methods" class="nav-link active" data-scroll-target="#methods">Methods</a>
+  <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
+  <li><a href="#examples" id="toc-examples" class="nav-link" data-scroll-target="#examples">Examples</a></li>
+  <li><a href="#methods" id="toc-methods" class="nav-link" data-scroll-target="#methods">Methods</a>
   <ul class="collapse">
   <li><a href="#close" id="toc-close" class="nav-link" data-scroll-target="#close"><span class="doc-object-name doc-function doc-label doc-label-method">close()</span></a></li>
   <li><a href="#run" id="toc-run" class="nav-link" data-scroll-target="#run"><span class="doc-object-name doc-function doc-label doc-label-method">run()</span></a></li>
@@ -749,7 +752,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1389-L1696" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1403-L1769" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.CLASS">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">PreparedMap</span>(</span>
@@ -767,8 +770,72 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Create with :meth:<a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">pymizu.Pool.map_prepare</a>; run with :meth:<a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link gdls-code">run</a>. Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word clear — and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with :meth:<code>close</code> (or a with block) to unlink the region.</p>
+<p>Create with <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link"><code>Pool.map_prepare()</code></a>; run with <a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link gdls-code">run()</a>. Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word clear — and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with <code>close()</code> (or a with block) to unlink the region.</p>
 </div>
+<section id="parameters" class="level2 doc-parameters">
+<h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">pool</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">pymizu.Pool</span></code></dt>
+<dd>
+<p>The <a href="../reference/Pool.html#pymizu.Pool" class="gdls-link"><code>Pool</code></a> to run on.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">fn</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[…, _Any]</span></code></dt>
+<dd>
+<p>The function to map, or a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">x</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span></code></dt>
+<dd>
+<p>The data to map over.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">args</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">()</span></code></dt>
+<dd>
+<p>Constant positional arguments appended to every call.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">kwargs</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">dict | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Constant keyword arguments for every call.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">n_chunks</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Overrides the morsel count (the scheduling granularity).</p>
+</dd>
+<dt><code><span class="doc-parameter-name">seed</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Deterministic per-element seeding — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">template</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>An exemplar buffer declaring each result’s dtype and length — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">collect</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">str | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>‘copy’ or ‘view’ with <code>template</code>; ‘list’ without.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">stream</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">False</span></span></code></dt>
+<dd>
+Stream slices of <code>x</code> instead of staging it whole — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.
+</dd>
+</dl>
+</div>
+</section>
+<section id="examples" class="level2 doc-examples">
+<h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
+<p>Stage the map once, then re-run it over replacement data at memcpy cost (same dtype and length swap in place):</p>
+<div id="194b6991" class="cell" data-execution_count="1">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> pool.map_prepare(np.square, np.arange(<span class="fl">4.0</span>)) <span class="im">as</span> pm:</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        first <span class="op">=</span> pm.run(timeout<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>        second <span class="op">=</span> pm.run(np.array([<span class="fl">4.0</span>, <span class="op">-</span><span class="fl">5.0</span>, <span class="fl">6.0</span>, <span class="fl">7.0</span>]), timeout<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>second</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="1">
+<pre><code>[np.float64(16.0), np.float64(25.0), np.float64(36.0), np.float64(49.0)]</code></pre>
+</div>
+</div>
+</section>
 <section id="methods" class="level2 doc-methods">
 <h2 class="doc-methods anchored" data-anchor-id="methods">Methods</h2>
 <table class="gd-summary-table">
@@ -796,7 +863,7 @@ Unlink the staged region (idempotent; the GC backstop is the
 <a href="#run" class="doc-function doc-label doc-label-method">run()</a>
 </td>
 <td>
-Run the prepared map once; return its results (the same shapes
+Run the prepared map once; return its results (the same
 </td>
 </tr>
 </tbody>
@@ -809,10 +876,10 @@ Run the prepared map once; return its results (the same shapes
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1680-L1686" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1753-L1759" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>close()</span></code></pre></div>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>close()</span></code></pre></div>
 </div>
 <div class="doc-text">
 <p>capsule destructor).</p>
@@ -822,24 +889,49 @@ Run the prepared map once; return its results (the same shapes
 <section id="run" class="level3">
 <h3 class="anchored" data-anchor-id="run"><span class="doc-object-name doc-function doc-label doc-label-method">run()</span></h3>
 <div class="doc-subject">
-<p>Run the prepared map once; return its results (the same shapes</p>
+<p>Run the prepared map once; return its results (the same</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1537-L1622" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1595-L1695" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>run(</span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    x<span class="op">=</span><span class="va">None</span>,</span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    timeout<span class="op">=</span><span class="va">None</span>,</span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>run(</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    x<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    timeout<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>and outcome taxonomy as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a>).</p>
-<p><code>x</code> replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region’s x section — the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.</p>
+<p>shapes and outcome taxonomy as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>).</p>
+</div>
+<section id="parameters-1" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-1">Parameters</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">x</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region’s x section — the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+Seconds before the run gives up; on expiry the outstanding work is cancelled and the TIMEOUT <a href="../reference/Sentinel.html#pymizu.Sentinel" class="gdls-link"><code>Sentinel</code></a> is returned, never raised.
+</dd>
+</dl>
+</div>
+</section>
+<section id="returns" class="level4 doc-returns">
+<h4 class="doc-returns anchored" data-anchor-id="returns">Returns</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">The results — the same shapes and outcome taxonomy as</span></code></dt>
+<dd>
+<a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.
+</dd>
+</dl>
 </div>
 
 
+</section>
 </section>
 </section>
 
@@ -1188,7 +1280,7 @@ Run the prepared map once; return its results (the same shapes
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

@@ -11,4 +11,15 @@ using_pool(pool)
 ```
 
 
-Yields `pool`. The previous default returns on exit, including on exception; `None` scopes a cleared default.
+## Parameters
+
+
+`pool: Pool | None`  
+The pool to make the default; `None` scopes a cleared default.
+
+
+## Returns
+
+
+`A context manager yielding ``pool``. The previous default`  
+returns on exit, including on exception.

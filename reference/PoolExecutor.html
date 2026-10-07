@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -121,7 +121,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
   <link rel="alternate" type="text/markdown" href="PoolExecutor.md">
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/PoolExecutor.html">
-  <meta name="description" content="A :class:concurrent.futures.Executor over a pymizu pool.">
+  <meta name="description" content="A concurrent.futures.Executor over a pymizu pool.">
   <script type="application/ld+json">
 [
   {
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -151,12 +152,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </script>
   <meta property="og:type" content="website">
   <meta property="og:title" content="PoolExecutor | pymizu 水">
-  <meta property="og:description" content="A :class:concurrent.futures.Executor over a pymizu pool.">
+  <meta property="og:description" content="A concurrent.futures.Executor over a pymizu pool.">
   <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/PoolExecutor.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="PoolExecutor | pymizu 水">
-  <meta name="twitter:description" content="A :class:concurrent.futures.Executor over a pymizu pool.">
+  <meta name="twitter:description" content="A concurrent.futures.Executor over a pymizu pool.">
 </head>
 
 <body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
@@ -714,7 +715,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <h2 id="toc-title">On this page</h2>
    
   <ul>
-  <li><a href="#methods" id="toc-methods" class="nav-link active" data-scroll-target="#methods">Methods</a>
+  <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
+  <li><a href="#notes" id="toc-notes" class="nav-link" data-scroll-target="#notes">Notes</a></li>
+  <li><a href="#examples" id="toc-examples" class="nav-link" data-scroll-target="#examples">Examples</a></li>
+  <li><a href="#methods" id="toc-methods" class="nav-link" data-scroll-target="#methods">Methods</a>
   <ul class="collapse">
   <li><a href="#create" id="toc-create" class="nav-link" data-scroll-target="#create"><span class="doc-object-name doc-function doc-label doc-label-method">create()</span></a></li>
   <li><a href="#shutdown" id="toc-shutdown" class="nav-link" data-scroll-target="#shutdown"><span class="doc-object-name doc-function doc-label doc-label-method">shutdown()</span></a></li>
@@ -746,11 +750,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>A :class:<code>concurrent.futures.Executor</code> over a pymizu pool.</p>
+<p>A <code>concurrent.futures.Executor</code> over a pymizu pool.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L46-L182" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L46-L241" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.CLASS">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">PoolExecutor</span>(</span>
@@ -760,9 +764,42 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p><code>pool</code> is the pool to wrap; its lifetime stays with its owner unless <code>stop_pool</code> is set — then :meth:<code>shutdown</code> stops it. :meth:<code>create</code> spawns an owned pool instead. :meth:<code>submit</code> returns a real :class:<code>concurrent.futures.Future</code>: <code>wait</code> / <code>as_completed</code> / <code>result(timeout)</code> / <code>asyncio.wrap_future</code> and the stdlib base <code>Executor.map</code> all work unchanged, so code written against <code>ProcessPoolExecutor</code> drops in.</p>
-<p>Deltas from stdlib semantics: a task’s failure surfaces as :class:<a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> (the remote error envelope); <code>Future.running()</code> is always False (futures resolve at completion); cancellation is advisory, mirroring :meth:<a href="../reference/Task.html#pymizu.Task.cancel" class="gdls-link gdls-code">pymizu.Task.cancel</a> — and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code> — for bulk maps, :meth:<a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">pymizu.Pool.map</a> is the faster path.</p>
+<p><code>submit()</code> returns a real <code>concurrent.futures.Future</code>: <code>wait</code> / <code>as_completed</code> / <code>result(timeout)</code> / <code>asyncio.wrap_future</code> and the stdlib base <code>Executor.map</code> all work unchanged, so code written against <code>ProcessPoolExecutor</code> drops in. <code>create()</code> spawns an owned pool instead.</p>
 </div>
+<section id="parameters" class="level2 doc-parameters">
+<h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">pool</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">pymizu.Pool</span></code></dt>
+<dd>
+<p>The pool to wrap; its lifetime stays with its owner unless <code>stop_pool</code> is set — then <code>shutdown()</code> stops it.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">stop_pool</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">False</span></span></code></dt>
+<dd>
+When True, <code>shutdown()</code> stops the wrapped pool.
+</dd>
+</dl>
+</div>
+</section>
+<section id="notes" class="level2 doc-notes">
+<h2 class="doc-notes anchored" data-anchor-id="notes">Notes</h2>
+<p>Deltas from stdlib semantics: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> (the remote error envelope); <code>Future.running()</code> is always False (futures resolve at completion); cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> — and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code> — for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a> is the faster path.</p>
+</section>
+<section id="examples" class="level2 doc-examples">
+<h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
+<p>Use as a drop-in <code>concurrent.futures.Executor</code>:</p>
+<div id="a4d882b1" class="cell" data-execution_count="1">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">2</span>) <span class="im">as</span> ex:</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    results <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>results</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="1">
+<pre><code>[1, 2, 4, 8]</code></pre>
+</div>
+</div>
+</section>
 <section id="methods" class="level2 doc-methods">
 <h2 class="doc-methods anchored" data-anchor-id="methods">Methods</h2>
 <table class="gd-summary-table">
@@ -782,7 +819,7 @@ Description
 <a href="#create" class="doc-function doc-label doc-label-method">create()</a>
 </td>
 <td>
-Spawn an owned pool — <code>Pool.create(workers, **pool_kwargs)</code>
+Spawn an owned pool —
 </td>
 </tr>
 <tr>
@@ -790,7 +827,7 @@ Spawn an owned pool — <code>Pool.create(workers, **pool_kwargs)</code>
 <a href="#shutdown" class="doc-function doc-label doc-label-method">shutdown()</a>
 </td>
 <td>
-Stdlib shutdown: <code>wait</code> waits for the outstanding futures;
+Stdlib shutdown.
 </td>
 </tr>
 <tr>
@@ -798,7 +835,7 @@ Stdlib shutdown: <code>wait</code> waits for the outstanding futures;
 <a href="#submit" class="doc-function doc-label doc-label-method">submit()</a>
 </td>
 <td>
-Schedule <code>fn(*args, **kwargs)</code>; return a Future.
+Schedule <code>fn(*args, **kwargs)</code> on the pool.
 </td>
 </tr>
 </tbody>
@@ -807,66 +844,142 @@ Schedule <code>fn(*args, **kwargs)</code>; return a Future.
 <section id="create" class="level3">
 <h3 class="anchored" data-anchor-id="create"><span class="doc-object-name doc-function doc-label doc-label-method">create()</span></h3>
 <div class="doc-subject">
-<p>Spawn an owned pool — <code>Pool.create(workers, **pool_kwargs)</code></p>
+<p>Spawn an owned pool —</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L77-L83" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L98-L117" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>create(</span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    workers<span class="op">=</span><span class="dv">1</span>,</span>
-<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">**</span>pool_kwargs,</span>
-<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>create(</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    workers<span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">**</span>pool_kwargs,</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>— and wrap it; :meth:<code>shutdown</code> stops it.</p>
+<p><a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> with <code>workers</code> and <code>pool_kwargs</code> — and wrap it; <code>shutdown()</code> stops it.</p>
 </div>
+<section id="parameters-1" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-1">Parameters</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">workers</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1</span></span></code></dt>
+<dd>
+<p>Number of worker processes for the pool.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">pool_kwargs</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">{}</span></code></dt>
+<dd>
+Forwarded to <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a>.
+</dd>
+</dl>
+</div>
+</section>
+<section id="returns" class="level4 doc-returns">
+<h4 class="doc-returns anchored" data-anchor-id="returns">Returns</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">A PoolExecutor wrapping the spawned pool.</span></code></dt>
+<dd>
+
+</dd>
+</dl>
+</div>
+</section>
 </section>
 <hr style="border: none; border-top: 2px dotted #b0b4ba; margin: 1.5rem 0 1rem 0;">
 <section id="shutdown" class="level3">
 <h3 class="anchored" data-anchor-id="shutdown"><span class="doc-object-name doc-function doc-label doc-label-method">shutdown()</span></h3>
 <div class="doc-subject">
-<p>Stdlib shutdown: <code>wait</code> waits for the outstanding futures;</p>
+<p>Stdlib shutdown.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L109-L124" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L161-L183" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>shutdown(</span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    wait<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    cancel_futures<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>shutdown(</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    wait<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    cancel_futures<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
-<div class="doc-text">
-<p><code>cancel_futures</code> cancels the not-yet-started ones. Stops the pool only when <code>stop_pool</code> was set.</p>
+<section id="parameters-2" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-2">Parameters</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">wait</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">True</span></span></code></dt>
+<dd>
+<p>Wait for the outstanding futures.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">cancel_futures</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">False</span></span></code></dt>
+<dd>
+Cancel the not-yet-started futures. Stops the pool only when <code>stop_pool</code> was set.
+</dd>
+</dl>
 </div>
+</section>
 </section>
 <hr style="border: none; border-top: 2px dotted #b0b4ba; margin: 1.5rem 0 1rem 0;">
 <section id="submit" class="level3">
 <h3 class="anchored" data-anchor-id="submit"><span class="doc-object-name doc-function doc-label doc-label-method">submit()</span></h3>
 <div class="doc-subject">
-<p>Schedule <code>fn(*args, **kwargs)</code>; return a Future.</p>
+<p>Schedule <code>fn(*args, **kwargs)</code> on the pool.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L85-L107" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L119-L159" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
-<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>submit(</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    fn,</span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">/</span>,</span>
-<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>args,</span>
-<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">**</span>kwargs,</span>
-<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>submit(</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    fn,</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">/</span>,</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>args,</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">**</span>kwargs,</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
-<div class="doc-text">
-<p>RuntimeError after shutdown.</p>
+<section id="parameters-3" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-3">Parameters</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">fn</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[…, _Any]</span></code></dt>
+<dd>
+<p>The callable to run.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">args</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">()</span></code></dt>
+<dd>
+<p>Positional arguments for <code>fn</code>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">kwargs</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">{}</span></code></dt>
+<dd>
+Keyword arguments for <code>fn</code>.
+</dd>
+</dl>
+</div>
+</section>
+<section id="returns-1" class="level4 doc-returns">
+<h4 class="doc-returns anchored" data-anchor-id="returns-1">Returns</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">A <code>concurrent.futures.Future</code> resolving with the result.</span></code></dt>
+<dd>
+
+</dd>
+</dl>
+</div>
+</section>
+<section id="raises" class="level4 doc-raises">
+<h4 class="doc-raises anchored" data-anchor-id="raises">Raises</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">RuntimeError</span></code></dt>
+<dd>
+After shutdown.
+</dd>
+</dl>
 </div>
 
 
+</section>
 </section>
 </section>
 
@@ -1215,7 +1328,7 @@ Schedule <code>fn(*args, **kwargs)</code>; return a Future.
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

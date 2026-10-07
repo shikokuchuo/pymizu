@@ -17,4 +17,9 @@ Regions of running processes are never touched. If another pymizu session on the
 
 A crashed process cannot clean up after itself, and a new process that happens to reuse its PID cannot reap its orphans either (it reads its own PID as alive). Run [prune()](prune.md#pymizu.prune) while the PID is free, before reuse.
 
-Returns the region names removed, or an empty list if none were. On platforms whose shared memory namespace cannot be enumerated (Windows, where orphans cannot exist), always an empty list.
+
+## Returns
+
+
+`The region names removed, or an empty list if none were. On`  
+platforms whose shared memory namespace cannot be enumerated (Windows, where orphans cannot exist), always an empty list.

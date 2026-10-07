@@ -1,7 +1,7 @@
 # Channel.recv()
 
 
-Receive one payload, waiting up to `timeout` seconds
+Receive one payload.
 
 
 Usage
@@ -11,4 +11,15 @@ Channel.recv(timeout=None)
 ```
 
 
-(None waits indefinitely); the TIMEOUT / CLOSED / PEER_GONE sentinel on the non-payload outcomes.
+## Parameters
+
+
+`timeout: float | None = None`  
+Seconds to wait; None waits indefinitely.
+
+
+## Returns
+
+
+`The payload, or the ``TIMEOUT`` / ``CLOSED`` / ``PEER_GONE`  
+sentinel on the non-payload outcomes.

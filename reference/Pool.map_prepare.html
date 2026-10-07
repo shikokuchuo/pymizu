@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -121,7 +121,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
   <link rel="alternate" type="text/markdown" href="Pool.map_prepare.md">
   <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/Pool.map_prepare.html">
-  <meta name="description" content="Stage a map once for repeated runs; return a :class:PreparedMap.">
+  <meta name="description" content="Stage a map once for repeated runs; return a">
   <script type="application/ld+json">
 [
   {
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -151,12 +152,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </script>
   <meta property="og:type" content="website">
   <meta property="og:title" content="Pool.map_prepare() | pymizu 水">
-  <meta property="og:description" content="Stage a map once for repeated runs; return a :class:PreparedMap.">
+  <meta property="og:description" content="Stage a map once for repeated runs; return a">
   <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/Pool.map_prepare.html">
   <meta property="og:site_name" content="pymizu 水">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="Pool.map_prepare() | pymizu 水">
-  <meta name="twitter:description" content="Stage a map once for repeated runs; return a :class:PreparedMap.">
+  <meta name="twitter:description" content="Stage a map once for repeated runs; return a">
 </head>
 
 <body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
@@ -735,11 +736,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Stage a map once for repeated runs; return a :class:<a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</p>
+<p>Stage a map once for repeated runs; return a</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L745-L789" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1009-L1055" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">map_prepare</span>(</span>
@@ -756,7 +757,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Takes the same arguments as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> (minus <code>timeout</code>, which is per-run and moves to :meth:<a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link gdls-code">PreparedMap.run</a>). The descriptor pickle, the region create, and the worker-side attach are paid once here; each <code>pm.run()</code> re-arms in O(1) and reuses the workers’ cached contexts. A run collected with <code>collect="view"</code> hands its region to the view, so the next run restages into a fresh one. With <code>stream=True</code> the staged <code>x</code> stays submitter-side, so a replacement <code>x</code> of any shape simply re-slices — only a length change under <code>template</code> restages (the output area is sized for the staged length). Close the handle (or use it as a context manager) to unlink the region.</p>
+<p><a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link"><code>PreparedMap</code></a>.</p>
+<p>Takes the same arguments as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>map()</code></a> (minus <code>timeout</code>, which is per-run and moves to <a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link gdls-code">PreparedMap.run</a>). The descriptor pickle, the region create, and the worker-side attach are paid once here; each <code>pm.run()</code> re-arms in O(1) and reuses the workers’ cached contexts. A run collected with <code>collect="view"</code> hands its region to the view, so the next run restages into a fresh one. With <code>stream=True</code> the staged <code>x</code> stays submitter-side, so a replacement <code>x</code> of any shape simply re-slices — only a length change under <code>template</code> restages (the output area is sized for the staged length). Close the handle (or use it as a context manager) to unlink the region.</p>
 </div>
 
 
@@ -1106,7 +1108,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

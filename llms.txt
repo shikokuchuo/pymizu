@@ -36,7 +36,7 @@
 - [Pool](https://shikokuchuo.net/pymizu/reference/Pool.html): A shared-memory work-stealing task pool handle (process-private)
 - [Task](https://shikokuchuo.net/pymizu/reference/Task.html): A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
 - [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A map staged once into a persistent region, run many times
-- [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A :class:`concurrent.futures.Executor` over a pymizu pool
+- [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A `concurrent.futures.Executor` over a pymizu pool
 
 #### Pool Methods
 > Methods for the Pool class
@@ -67,8 +67,8 @@
 > R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
 
 - [call](https://shikokuchuo.net/pymizu/reference/call.html): A task specification for a pool of another language's workers
-- [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a ``Channel.create`` launcher spawning an R peer
-- [r_pool_launcher](https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html): Return a ``Pool.create`` launcher spawning R workers
+- [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
+- [r_pool_launcher](https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html): Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
 - [Frame](https://shikokuchuo.net/pymizu/reference/Frame.html): A data.frame's Python home: named columns with a row count
 
 #### Frame Methods

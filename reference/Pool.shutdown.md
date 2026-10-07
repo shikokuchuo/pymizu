@@ -1,7 +1,7 @@
 # Pool.shutdown()
 
 
-Alias for :meth:[stop](Pool.stop.md#pymizu.Pool.stop) -- the `concurrent.futures.Executor`
+Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> -- the
 
 
 Usage
@@ -11,4 +11,4 @@ Pool.shutdown(timeout=5.0)
 ```
 
 
-spelling.
+`concurrent.futures.Executor` spelling.

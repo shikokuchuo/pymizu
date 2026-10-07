@@ -80,7 +80,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -129,6 +129,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     "@type": "SoftwareSourceCode",
     "name": "pymizu 水",
     "description": "Lock-free shared-memory parallelism for Python",
+    "codeRepository": "https://github.com/shikokuchuo/pymizu",
     "license": "https://opensource.org/licenses/MIT",
     "url": "https://shikokuchuo.net/pymizu",
     "documentation": "https://shikokuchuo.net/pymizu",
@@ -709,8 +710,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </nav>
 <div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
 <!-- margin-sidebar -->
-    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar zindex-bottom">
-        
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
+  <li><a href="#returns" id="toc-returns" class="nav-link" data-scroll-target="#returns">Returns</a></li>
+  <li><a href="#raises" id="toc-raises" class="nav-link" data-scroll-target="#raises">Raises</a></li>
+  <li><a href="#details" id="toc-details" class="nav-link" data-scroll-target="#details">Details</a></li>
+  <li><a href="#examples" id="toc-examples" class="nav-link" data-scroll-target="#examples">Examples</a></li>
+  </ul>
+</nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
@@ -739,7 +750,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L568-L691" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L773-L954" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-class">Pool</span><span class="op">.</span><span class="sig-name">map</span>(</span>
@@ -758,15 +769,108 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-text">
 <p>results as a list in input order.</p>
-<p>One call stages <code>fn</code>, the constant <code>args</code>/<code>kwargs</code>, and <code>x</code> exactly once (a shared region, or inline in chunk tasks when small), then submits one <em>runner</em> task per live worker; runners self-schedule adaptively sized element batches off a shared cursor. A C-contiguous buffer of a supported dtype (float64/int32/int64/complex128/uint8) travels as bare bytes — workers wrap it once and index per element. <code>n_chunks</code> overrides the morsel count (the scheduling granularity). <code>seed</code> (an int or bytes) derives deterministic per-element streams of the stdlib <code>random</code> module: element <code>i</code> runs under <code>random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))</code>, identical for any chunking, worker count, or steal order. Pass <code>seed=(seed, offset)</code> to shift every element’s stream by <code>offset</code> positions, for maps split across runs or processes. <code>seed</code> covers the stdlib <code>random</code> module only: a task drawing from numpy calls :func:<a href="../reference/current_rng.html#pymizu.current_rng" class="gdls-link gdls-code">current_rng</a> inside the task (the element’s own memoized <code>numpy.random.Generator</code>, derived from the same seed material); other RNG universes are out of scope. The legacy <code>np.random.*</code> module functions draw from the worker’s shared global RandomState and stay order-dependent. A seeded map element must not nested-submit and collect: worker helping can run another seeded map’s batches mid-element, wiping this element’s :func:<a href="../reference/current_rng.html#pymizu.current_rng" class="gdls-link gdls-code">current_rng</a> stash — a later call rebuilds from the digest, restarting the stream instead of continuing it (the stdlib streams survive: the helped batch’s save/restore nests inside this batch’s own).</p>
-<p><code>fn</code> may be a :class:<a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> specification instead of a callable — the way to map over a foreign pool (one spawned with :func:<a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">r_pool_launcher</a>). A spec always stages a shared region: the descriptor crosses in the interchange format and each runner task carries a region reference any worker language reads. The element fills the spec’s first positional slot (name kind) or binds as <code>x</code> (source kind), and the spec’s own constant arguments ride with it — so <code>args</code> and <code>kwargs</code> must be empty with a spec. Constants and elements must be portable values; a non-portable one raises :class:<a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> at stage time. <code>seed=</code> carries as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (32-bit-ranged on R workers); invariance holds within a worker language, never identical draws across languages.</p>
-<p><code>template</code> is an exemplar buffer (e.g.&nbsp;<code>numpy.empty(m, dtype=...)</code>) declaring that every <code>fn</code> result is <code>m</code> values of that dtype: results are written in place into a shared <code>n x m</code> output area and never serialized. Each result must be a matching buffer — or, for <code>m == 1</code>, a plain Python scalar. With a template, <code>collect="copy"</code> (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape <code>(n, m)</code> — <code>(n,)</code> for <code>m == 1</code>; <code>collect="view"</code> returns it zero-copy, with the map region’s teardown deferred to the view’s.</p>
-<p>With <code>stream=True</code>, the map never stages the whole of <code>x</code> into shared memory: it streams slices of <code>x</code> to workers as they take work; the return value is unchanged. Fixed x-slices ride ordinary chunk tasks under a sliding submit/collect window of at most <code>min(n_chunks, 2 * live workers, free result slots)</code> outstanding tasks, so shared-memory residency is bounded by <code>window x slice</code> instead of <code>sizeof(x)</code> — with the default chunk count (<code>min(len(x), 32 * live workers)</code>) that is roughly <code>(2 * workers) / n_chunks</code> of the serialized <code>x</code>. <code>n_chunks=</code> overrides the chunk count outright (<code>n_chunks=len(x)</code> is the mirai-style extreme of one element per task). Everything else — result order, <code>template</code> and <a href="../reference/Task.html#pymizu.Task.collect" class="gdls-link gdls-code">collect</a>, <code>seed</code> invariance, the error taxonomy — is exactly the non-streaming map’s. Fail-fast latency coarsens from about one adaptive morsel batch to about one chunk (the bound moves with <code>n_chunks</code>), the adaptive batch sizing of the morsel machinery is lost (skew mitigation is to raise <code>n_chunks</code>), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit’s serialization rather than the raw section’s zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a :class:<a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec as <code>fn</code> raises TypeError.</p>
-<p>A task error re-raises as TaskError carrying the failing element’s 0-based <code>index</code>; failure is fail-fast (peers stop within about one batch). Worker death raises WorkerDiedError carrying the lost element ranges as <code>lost</code> (0-based half-open <code>(lo, hi)</code> pairs, conservative). On <code>timeout</code> expiry the outstanding work is cancelled and the TIMEOUT sentinel is returned, never raised.</p>
-<p>:meth:<a href="../reference/Pool.starmap.html#pymizu.Pool.starmap" class="gdls-link gdls-code">starmap</a> is the unpacking variant — <code>fn(*element, *args, **kwargs)</code>, the <code>multiprocessing.Pool.starmap</code> convention.</p>
 </div>
+<section id="parameters" class="level2 doc-parameters">
+<h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">fn</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[…, _Any]</span></code></dt>
+<dd>
+<p>The callable to apply, or a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">x</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Iterable[_Any]</span></code></dt>
+<dd>
+<p>The iterable of elements.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">args</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Iterable[_Any]</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">()</span></code></dt>
+<dd>
+<p>Constant positional arguments appended to every call.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">kwargs</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">dict[str, _Any] | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Constant keyword arguments of every call.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">n_chunks</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Overrides the morsel count (the scheduling granularity).</p>
+</dd>
+<dt><code><span class="doc-parameter-name">seed</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>An int or bytes deriving deterministic per-element streams of the stdlib <code>random</code> module; see Details. Pass <code>seed=(seed, offset)</code> to shift every element’s stream by <code>offset</code> positions, for maps split across runs or processes.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Seconds to wait for completion; None waits indefinitely.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">template</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>An exemplar buffer (e.g.&nbsp;<code>numpy.empty(m, dtype=...)</code>) declaring that every <code>fn</code> result is <code>m</code> values of that dtype; see Details.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">collect</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">str | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p><code>"copy"</code> (the default) or <code>"view"</code>; governs how a template-backed output area is returned.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">stream</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">False</span></span></code></dt>
+<dd>
+Stream slices of <code>x</code> to workers instead of staging the whole of <code>x</code> in shared memory; see Details.
+</dd>
+</dl>
+</div>
+</section>
+<section id="returns" class="level2 doc-returns">
+<h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">The results as a list in input order; with <code>template</code>, the</span></code></dt>
+<dd>
+gathered output area; on <code>timeout</code> expiry, the <code>TIMEOUT</code> sentinel.
+</dd>
+</dl>
+</div>
+</section>
+<section id="raises" class="level2 doc-raises">
+<h2 class="doc-raises anchored" data-anchor-id="raises">Raises</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">TaskError</span></code></dt>
+<dd>
+<p>A task error re-raises as TaskError carrying the failing element’s 0-based <code>index</code>; failure is fail-fast (peers stop within about one batch).</p>
+</dd>
+<dt><code> <span class="doc-parameter-annotation">WorkerDiedError</span></code></dt>
+<dd>
+<p>Worker death carries the lost element ranges as <code>lost</code> (0-based half-open <code>(lo, hi)</code> pairs, conservative).</p>
+</dd>
+<dt><code> <span class="doc-parameter-annotation">TypeError</span></code></dt>
+<dd>
+<p>A <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec as <code>fn</code> with <code>stream=True</code>.</p>
+</dd>
+<dt><code> <span class="doc-parameter-annotation">DeclinedError</span></code></dt>
+<dd>
+With a spec, a non-portable constant or element at stage time.
+</dd>
+</dl>
+</div>
+</section>
+<section id="details" class="level2 doc-details">
+<h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
+<p>One call stages <code>fn</code>, the constant <code>args</code>/<code>kwargs</code>, and <code>x</code> exactly once (a shared region, or inline in chunk tasks when small), then submits one <em>runner</em> task per live worker; runners self-schedule adaptively sized element batches off a shared cursor. A C-contiguous buffer of a supported dtype (float64/int32/int64/complex128/uint8) travels as bare bytes — workers wrap it once and index per element.</p>
+<p><code>seed</code> derives deterministic per-element streams of the stdlib <code>random</code> module: element <code>i</code> runs under <code>random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))</code>, identical for any chunking, worker count, or steal order. <code>seed</code> covers the stdlib <code>random</code> module only: a task drawing from numpy calls <a href="../reference/current_rng.html#pymizu.current_rng" class="gdls-link"><code>current_rng()</code></a> inside the task (the element’s own memoized <code>numpy.random.Generator</code>, derived from the same seed material); other RNG universes are out of scope. The legacy <code>np.random.*</code> module functions draw from the worker’s shared global RandomState and stay order-dependent. A seeded map element must not nested-submit and collect: worker helping can run another seeded map’s batches mid-element, wiping this element’s <a href="../reference/current_rng.html#pymizu.current_rng" class="gdls-link"><code>current_rng()</code></a> stash — a later call rebuilds from the digest, restarting the stream instead of continuing it (the stdlib streams survive: the helped batch’s save/restore nests inside this batch’s own).</p>
+<p><code>fn</code> may be a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> specification instead of a callable — the way to map over a foreign pool (one spawned with <a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link"><code>r_pool_launcher()</code></a>). A spec always stages a shared region: the descriptor crosses in the interchange format and each runner task carries a region reference any worker language reads. The element fills the spec’s first positional slot (name kind) or binds as <code>x</code> (source kind), and the spec’s own constant arguments ride with it — so <code>args</code> and <code>kwargs</code> must be empty with a spec. Constants and elements must be portable values; a non-portable one raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link"><code>DeclinedError</code></a> at stage time. <code>seed=</code> carries as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (32-bit-ranged on R workers); invariance holds within a worker language, never identical draws across languages.</p>
+<p><code>template</code> declares that every <code>fn</code> result is <code>m</code> values of the exemplar’s dtype: results are written in place into a shared <code>n x m</code> output area and never serialized. Each result must be a matching buffer — or, for <code>m == 1</code>, a plain Python scalar. With a template, <code>collect="copy"</code> (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape <code>(n, m)</code> — <code>(n,)</code> for <code>m == 1</code>; <code>collect="view"</code> returns it zero-copy, with the map region’s teardown deferred to the view’s.</p>
+<p>With <code>stream=True</code>, the map never stages the whole of <code>x</code> into shared memory: it streams slices of <code>x</code> to workers as they take work; the return value is unchanged. Fixed x-slices ride ordinary chunk tasks under a sliding submit/collect window of at most <code>min(n_chunks, 2 * live workers, free result slots)</code> outstanding tasks, so shared-memory residency is bounded by <code>window x slice</code> instead of <code>sizeof(x)</code> — with the default chunk count (<code>min(len(x), 32 * live workers)</code>) that is roughly <code>(2 * workers) / n_chunks</code> of the serialized <code>x</code>. <code>n_chunks=</code> overrides the chunk count outright (<code>n_chunks=len(x)</code> is the mirai-style extreme of one element per task). Everything else — result order, <code>template</code> and <a href="../reference/Task.html#pymizu.Task.collect" class="gdls-link gdls-code">collect</a>, <code>seed</code> invariance, the error taxonomy — is exactly the non-streaming map’s. Fail-fast latency coarsens from about one adaptive morsel batch to about one chunk (the bound moves with <code>n_chunks</code>), the adaptive batch sizing of the morsel machinery is lost (skew mitigation is to raise <code>n_chunks</code>), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit’s serialization rather than the raw section’s zero-copy slicing. A streaming map always stages its descriptor region and needs same-language workers: a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec as <code>fn</code> raises TypeError.</p>
+<p>On <code>timeout</code> expiry the outstanding work is cancelled and the <code>TIMEOUT</code> sentinel is returned, never raised.</p>
+<p><a href="../reference/Pool.starmap.html#pymizu.Pool.starmap" class="gdls-link"><code>starmap()</code></a> is the unpacking variant — <code>fn(*element, *args, **kwargs)</code>, the <code>multiprocessing.Pool.starmap</code> convention.</p>
+</section>
+<section id="examples" class="level2 doc-examples">
+<h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">import</span> pymizu</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>...     results <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> results</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>[<span class="dv">5</span>, <span class="dv">4</span>, <span class="dv">3</span>, <span class="dv">2</span>, <span class="dv">1</span>, <span class="dv">0</span>, <span class="dv">1</span>, <span class="dv">2</span>, <span class="dv">3</span>, <span class="dv">4</span>]</span></code></pre></div>
 
 
+</section>
 
 </main>
 <hr style="padding: 0; margin: 0;">
@@ -1113,7 +1217,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>

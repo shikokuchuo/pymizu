@@ -20,4 +20,53 @@ Channel.create(
 ```
 
 
-`peer` is a Python source string, evaluated in the peer process with `ch` bound to the peer-side handle. `capacity` and `slot_size` are powers of two; the inline payload budget is `slot_size - 16`. `launcher` is a `callable(token)` arranging for a Python process to run `python -m pymizu.child <token>`; the default spawns `sys.executable` directly. [pymizu.r_launcher()](r_launcher.md#pymizu.r_launcher) returns one spawning an R peer (the R package `mizu`).
+## Parameters
+
+
+`peer: str`  
+A Python source string, evaluated in the peer process with `ch` bound to the peer-side handle.
+
+`capacity: int = ``16384`  
+Ring capacity in slots; a power of two.
+
+`slot_size: int = ``256`  
+Bytes per ring slot; a power of two. The inline payload budget is `slot_size - 16`.
+
+`arena_size: int = 4 * 1024 * 1024`  
+Bytes of shared staging arena for out-of-line payloads.
+
+`spin: bool = ``False`  
+Spin rather than park while waiting.
+
+`startup_timeout: float = ``30.0`  
+Seconds to wait for the peer to attach.
+
+`launcher: _Callable[[str], _Any] | None = None`  
+A `callable(token)` arranging for a Python process to run `python -m pymizu.child <token>`; the default spawns `sys.executable` directly. <a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link"><code>r_launcher()</code></a> returns one spawning an R peer (the R package `mizu`).
+
+
+## Returns
+
+
+`The host-side channel handle.`  
+
+
+## Examples
+
+``` python
+>>> import pymizu
+>>> with pymizu.Channel.create(
+...     """
+... import pymizu
+... while True:
+...     x = ch.recv()
+...     if x is pymizu.CLOSED:
+...         break
+...     ch.send(x)
+... """
+... ) as ch:
+...     ch.send([1, "a", None])
+...     received = ch.recv(timeout=5)
+>>> received
+[1, 'a', None]
+```

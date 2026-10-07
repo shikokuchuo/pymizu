@@ -45,7 +45,7 @@ ul.task-list li input[type="checkbox"] {
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-5c2e1c2319620f34f593bb3f97380b39.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -93,6 +93,7 @@ ul.task-list li input[type="checkbox"] {
   "@type": "SoftwareSourceCode",
   "name": "pymizu 水",
   "description": "Lock-free shared-memory parallelism for Python",
+  "codeRepository": "https://github.com/shikokuchuo/pymizu",
   "license": "https://opensource.org/licenses/MIT",
   "url": "https://shikokuchuo.net/pymizu",
   "documentation": "https://shikokuchuo.net/pymizu",
@@ -732,7 +733,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Channel.send.html#pymizu.Channel.send" class="doc-function doc-label doc-label-method">Channel.send()</a></dt>
 <dd>
-<p>Send one payload; return None, or the FULL / CLOSED /</p>
+<p>Send one payload.</p>
 </dd>
 <dt><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="doc-function doc-label doc-label-method">Channel.send_batch()</a></dt>
 <dd>
@@ -740,7 +741,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="doc-function doc-label doc-label-method">Channel.recv()</a></dt>
 <dd>
-<p>Receive one payload, waiting up to <code>timeout</code> seconds</p>
+<p>Receive one payload.</p>
 </dd>
 <dt><a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="doc-function doc-label doc-label-method">Channel.recv_batch()</a></dt>
 <dd>
@@ -800,7 +801,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="doc-class doc-label doc-label-class">PoolExecutor</a></dt>
 <dd>
-<p>A :class:<code>concurrent.futures.Executor</code> over a pymizu pool.</p>
+<p>A <code>concurrent.futures.Executor</code> over a pymizu pool.</p>
 </dd>
 </dl>
 </section>
@@ -828,15 +829,15 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Pool.submit_batch.html#pymizu.Pool.submit_batch" class="doc-function doc-label doc-label-method">Pool.submit_batch()</a></dt>
 <dd>
-<p>Submit one task per zero-arg callable in <code>fns</code> in one crossing.</p>
+<p>Submit one task per zero-arg callable in <code>fns</code> in one</p>
 </dd>
 <dt><a href="../reference/Pool.collect_any.html#pymizu.Pool.collect_any" class="doc-function doc-label doc-label-method">Pool.collect_any()</a></dt>
 <dd>
-<p>Wait on several tasks; return <code>(index, value)</code> of the first</p>
+<p>Wait on several tasks.</p>
 </dd>
 <dt><a href="../reference/Pool.collect_all.html#pymizu.Pool.collect_all" class="doc-function doc-label doc-label-method">Pool.collect_all()</a></dt>
 <dd>
-<p>Wait until every task is terminal; return all values in input</p>
+<p>Wait until every task is terminal.</p>
 </dd>
 <dt><a href="../reference/Pool.map.html#pymizu.Pool.map" class="doc-function doc-label doc-label-method">Pool.map()</a></dt>
 <dd>
@@ -848,7 +849,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="doc-function doc-label doc-label-method">Pool.map_prepare()</a></dt>
 <dd>
-<p>Stage a map once for repeated runs; return a :class:<a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</p>
+<p>Stage a map once for repeated runs; return a</p>
 </dd>
 <dt><a href="../reference/Pool.retire.html#pymizu.Pool.retire" class="doc-function doc-label doc-label-method">Pool.retire()</a></dt>
 <dd>
@@ -856,15 +857,15 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Pool.spawn_workers.html#pymizu.Pool.spawn_workers" class="doc-function doc-label doc-label-method">Pool.spawn_workers()</a></dt>
 <dd>
-<p>Spawn <code>n</code> additional workers into free registry slots and wait</p>
+<p>Spawn <code>n</code> additional workers into free registry slots and</p>
 </dd>
 <dt><a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="doc-function doc-label doc-label-method">Pool.stop()</a></dt>
 <dd>
-<p>Orderly shutdown (controller only): broadcast shutdown, cancel</p>
+<p>Orderly shutdown (controller only).</p>
 </dd>
 <dt><a href="../reference/Pool.shutdown.html#pymizu.Pool.shutdown" class="doc-function doc-label doc-label-method">Pool.shutdown()</a></dt>
 <dd>
-<p>Alias for :meth:<a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link gdls-code">stop</a> — the <code>concurrent.futures.Executor</code></p>
+<p>Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> — the</p>
 </dd>
 <dt><a href="../reference/Pool.destroy.html#pymizu.Pool.destroy" class="doc-function doc-label doc-label-method">Pool.destroy()</a></dt>
 <dd>
@@ -908,11 +909,11 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/r_launcher.html#pymizu.r_launcher" class="doc-function doc-label doc-label-function">r_launcher()</a></dt>
 <dd>
-<p>Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create</a> launcher spawning an R peer.</p>
+<p>Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> launcher</p>
 </dd>
 <dt><a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="doc-function doc-label doc-label-function">r_pool_launcher()</a></dt>
 <dd>
-<p>Return a <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create</a> launcher spawning R workers.</p>
+<p>Return a <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> launcher</p>
 </dd>
 <dt><a href="../reference/Frame.html#pymizu.Frame" class="doc-class doc-label doc-label-class">Frame</a></dt>
 <dd>
@@ -1390,7 +1391,7 @@ ul.task-list li input[type="checkbox"] {
 <footer class="footer">
   <div class="nav-footer">
 <div class="nav-footer-center">
-<p>Developed by <strong>libmizu&nbsp;authors</strong>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
+<p>Developed by <a href="https://shikokuchuo.net"><strong>Charlie&nbsp;Gao</strong></a>.<br>Site created with <strong>Great&nbsp;Docs</strong>.</p>
 </div>
 </div>
 </footer>
