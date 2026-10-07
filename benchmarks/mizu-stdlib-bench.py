@@ -1,6 +1,9 @@
 """Report-only benchmark: pymizu against the stdlib concurrent.futures
-executors — ProcessPoolExecutor (real parallelism, pickled payloads) and
-ThreadPoolExecutor (in-process, GIL-bound for CPU work) — matched
+executors — ProcessPoolExecutor (real parallelism, pickled payloads),
+ThreadPoolExecutor (in-process, GIL-bound for CPU work), and on 3.14+
+InterpreterPoolExecutor (per-interpreter GILs; payloads must be
+shareable — builtin scalars and plain containers, or buffer-protocol
+objects — so the numpy rows report unsupported) — matched
 scenario-for-scenario on one machine: the Python mirror of mizu's
 dev/bench/mizu-mirai.R. Prints each number as it lands and a summary
 table at the end; asserts nothing.
@@ -38,6 +41,7 @@ which is what makes benchmarks.tasks importable to them):
   python benchmarks/mizu-stdlib-bench.py
 """
 
+import concurrent.futures
 import os
 import subprocess
 import sys
@@ -47,6 +51,17 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import numpy as np
 
 import pymizu
+
+try:
+    from concurrent.interpreters import NotShareableError
+except ImportError:  # Python < 3.14: no interpreter pool either
+
+    class NotShareableError(Exception):
+        """Fallback that nothing raises."""
+
+InterpreterPoolExecutor = getattr(
+    concurrent.futures, "InterpreterPoolExecutor", None
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -115,15 +130,32 @@ def with_pool(workers, f, **args):
         p.stop(timeout=15)
 
 
-# every cf row runs both executor flavours: processes (real parallelism,
-# pickled payloads) and threads (in-process, GIL-bound for CPU work)
+# every cf row runs each available executor flavour: processes (real
+# parallelism, pickled payloads), threads (in-process, GIL-bound for CPU
+# work), and on 3.14+ subinterpreters (per-interpreter GILs, shareable
+# payloads only)
 def with_executors(workers, f):
-    for cls, label in (
+    flavours = [
         (ProcessPoolExecutor, "cf process pool"),
         (ThreadPoolExecutor, "cf thread pool"),
-    ):
+    ]
+    if InterpreterPoolExecutor is not None:
+        flavours.append((InterpreterPoolExecutor, "cf interpreter pool"))
+    for cls, label in flavours:
         with cls(max_workers=workers) as ex:
             f(ex, label)
+
+
+def unsupported_if_unshareable(scenario, f):
+    # the interpreter pool rejects unshareable payloads (numpy anything)
+    # outright: report the scenario as unsupported rather than crash
+    def g(ex, label):
+        try:
+            f(ex, label)
+        except NotShareableError:
+            note(scenario, label, float("nan"), "unsupported")
+
+    return g
 
 
 def main():
@@ -158,7 +190,7 @@ def main():
 
         note_us("sequential rt", label, n, rep)
 
-    with_executors(1, seq_cf)
+    with_executors(1, unsupported_if_unshareable("sequential rt", seq_cf))
 
     # 2. pipelined throughput -------------------------------------------------
 
@@ -192,7 +224,7 @@ def main():
         warmup(lambda: reap(fire()))
         note_rate("pipelined", label, n, lambda: pipeline(fire, reap, n))
 
-    with_executors(1, pipe_cf)
+    with_executors(1, unsupported_if_unshareable("pipelined", pipe_cf))
 
     # 3. payload round-trip ---------------------------------------------------
 
@@ -236,7 +268,12 @@ def main():
         for size, n, _ in payloads:
             x = np.random.random(size)
             scenario = f"payload {8 * size:,} B"
-            assert np.array_equal(ex.submit(identity, x).result(), x)
+            try:
+                assert np.array_equal(ex.submit(identity, x).result(), x)
+            except NotShareableError:
+                # the interpreter pool rejects numpy payloads outright
+                note(scenario, label, float("nan"), "unsupported")
+                continue
 
             def rep(x=x, n=n):
                 for _ in range(n):
@@ -277,7 +314,7 @@ def main():
         pipeline(fire, reap, n)
         note_rate("fan-out", label, n, lambda: pipeline(fire, reap, n))
 
-    with_executors(4, fanout_cf)
+    with_executors(4, unsupported_if_unshareable("fan-out", fanout_cf))
 
     # 5. parallel map ---------------------------------------------------------
 
@@ -318,7 +355,9 @@ def main():
             "us/elt",
         )
 
-    with_executors(4, map_overhead_cf)
+    with_executors(
+        4, unsupported_if_unshareable("map trivial f", map_overhead_cf)
+    )
 
     # compute regime: scenario 4's fan-out work as a single map call
     print("\n== 5a. map compute (winsum x 2000, 4 workers) ==")
@@ -343,7 +382,7 @@ def main():
             lambda: list(ex.map(winsum, xs, chunksize=1)),
         )
 
-    with_executors(4, map_cf)
+    with_executors(4, unsupported_if_unshareable("map", map_cf))
 
     # skew regime: 1% of elements cost ~100x the rest, clustered at the
     # head — fine self-scheduled claims keep the workers level where a
@@ -373,7 +412,7 @@ def main():
             "ms wall",
         )
 
-    with_executors(4, map_skew_cf)
+    with_executors(4, unsupported_if_unshareable("map skewed f", map_skew_cf))
 
     # summary -----------------------------------------------------------------
 

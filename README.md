@@ -4,6 +4,7 @@
 [![codecov](https://codecov.io/gh/shikokuchuo/pymizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/pymizu)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python 3.10+](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
 
       ________
      /\       \
@@ -29,22 +30,13 @@ The hot path stays in user space: single-producer single-consumer rings with bat
 pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [mizu](https://github.com/shikokuchuo/mizu) binds the same core for R, so Python and R processes can share a channel.
 
-Pre-release.
-The API is not stable and may change at any time before a release.
+- Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb).
+- Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`.
+- Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order.
+- Sentinels, not exceptions, on hot paths; worker crashes detected at OS latency.
+- Typed (`py.typed` + stubs); Python 3.10+ on Linux, macOS, and Windows.
 
-## Use cases
-
-### Parallelize Python at thread granularity
-
-A task measured in microseconds costs more to pickle and move over a socket than to run, so the stdlib process pools only pay off for coarse jobs.
-pymizu hands off a task in shared memory and wakes one worker, so functions measured in microseconds parallelize profitably across cores.
-See [Benchmarks](#benchmarks).
-
-### Orchestrate R workers from Python
-
-`pymizu.r_launcher()` and `pymizu.r_pool_launcher()` spawn R processes as channel peers or pool workers, driven by `pymizu.call()` specs.
-Data crosses as shared-memory views rather than serialized copies — a numpy array arrives in R as a vector, and results come back the same way — so a Python program can use R's package ecosystem as if it were local.
-See [R interop](#r-interop).
+> **Pre-release.** The API is not stable and may change at any time before a release.
 
 ## Installation
 
@@ -63,6 +55,16 @@ Optional extras:
 - `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
 To request an extra with the GitHub install, use `pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"`.
+
+## Quickstart
+
+```python
+import pymizu
+
+with pymizu.Pool.create(4) as pool:
+    task = pool.submit(pow, 2, 16)
+    print(task.collect(timeout=5))
+```
 
 ## Benchmarks
 
@@ -86,7 +88,10 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 | Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
 
+Against `InterpreterPoolExecutor` (Python 3.14+, subinterpreters with per-interpreter GILs): on the trivial-task rows it lands between the thread and process pools — 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07). The map rows it cannot run at all: task payloads must be shareable — builtin scalars, plain containers, or buffer-protocol objects — so numpy arrays and numpy scalars raise `NotShareableError`.
+
 `benchmarks/mizu-bench.py` runs the pymizu rows standalone.
+See [how pymizu compares](https://shikokuchuo.net/pymizu/user-guide/benchmarks.html) with Ray, Dask, joblib, ZeroMQ, and modern CPython.
 
 \* elt = element; microseconds of wall time per map element.
 
@@ -126,10 +131,23 @@ with pymizu.Pool.create(4) as pool:
 
 A task error re-raises on collect as `pymizu.TaskError`; the death of the executing worker raises `pymizu.WorkerDiedError`, detected at OS notification latency with no heartbeats or polling.
 
+## Drop-in `concurrent.futures`
+
+`PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface — code written against `ProcessPoolExecutor` drops in.
+`submit` returns real `Future` objects, so `wait` / `as_completed` / `asyncio.wrap_future` all work unchanged:
+
+```python
+with pymizu.PoolExecutor.create(4) as ex:
+    futures = [ex.submit(pow, 2, i) for i in range(4)]
+    print([f.result() for f in futures])
+```
+
 ## Parallel map
 
 `Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input order.
-The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:
+The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor.
+A 1-D numpy array crosses as raw bytes — every worker views the same array in shared memory — and with `template=`, results are written straight into a shared output array, never serialized.
+`seed=` gives every element a deterministic random stream, reproducible for any worker count or steal order:
 
 ```python
 with pymizu.Pool.create(4) as pool:
@@ -159,23 +177,11 @@ The full contract — the portable subset, `pymizu.Frame`, zero-copy frames, and
 
 ## Documentation
 
-The [documentation site](https://shikokuchuo.net/pymizu/) covers the full surface: channels and their payload tiers, task pools (batch operations, nested tasks, observing a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
+The [documentation site](https://shikokuchuo.net/pymizu/) covers the full surface: channels and their payload tiers, task pools (batch operations, nested tasks, the `concurrent.futures` executor, observing a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
 
-## Layout
+## Contributing
 
-- `src/_pymizu.c`: the extension module.
-  It uses the raw CPython C API (no pybind11, Cython, or cffi).
-- `src/vendor/libmizu/`: the vendored libmizu core.
-  `tools/vendor-libmizu.sh` generates this directory.
-  Do not edit these files by hand.
-- `python/pymizu/`: the Python package.
-  `child.py` and `worker.py` are the entry points for spawned processes (`python -m pymizu.child <token>`, `python -m pymizu.worker <suffix> <slot>`).
-- `tests/`: the pytest suite.
-  `tests/helpers.py` holds the task callables (pickle sends them by reference, so the workers must import them).
-- `docs/`: the documentation site, built with
-  [Great Docs](https://posit-dev.github.io/great-docs/).
-  `great-docs build` from the repo root builds it (config in
-  `docs/great-docs.yml`, guides in `docs/user_guide/`).
+The repository layout and contributor notes live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

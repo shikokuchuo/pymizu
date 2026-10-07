@@ -782,3 +782,29 @@ copy/view 724k/726k, skew 7.3 ms); pipelined pool 2.0-2.1M vs the
 
 Status: full suite 448 pass, 5 skip (pandas-absence); ruff + pyrefly
 clean.
+
+## 2026-10-07 — InterpreterPoolExecutor leg in mizu-stdlib-bench.py
+
+The stdlib comparison gains a third executor flavour on Python 3.14+:
+InterpreterPoolExecutor (per-interpreter GILs). Its payloads must be
+shareable — builtin scalars, plain containers of them, or
+buffer-protocol objects — so every numpy-shaped row reports
+"unsupported" rather than measuring: the gate raises NotShareableError
+on numpy arrays, numpy scalars, and tuples containing them (probed on
+3.14.8). Only the const-task rows produce numbers; the shareability
+gate, not speed, is this executor's defining constraint.
+
+Results (first run of the leg, Apple M4 Pro, Python 3.14.8):
+
+| row | pymizu pool | cf process | cf thread | cf interpreter |
+|----|----|----|----|----|
+| sequential rt | 0.7 us/task | 93.9 us/task | 9.7 us/task | 21.3 us/task |
+| pipelined | 2.12M tasks/s | 19.0k/s | 385k/s | 59.6k/s |
+| payload 8 KB / 800 KB / 8 MB | 2.6 / 61.4 / 107.5 us | 111 / 396 / 4,091 us | 9.9 / 9.3 / 9.5 us | unsupported |
+| fan-out | 287.5k/s | 16.3k/s | 38.8k/s | unsupported |
+| map trivial f | 0.4 us/elt | 71.6 us/elt | 3.1 us/elt | unsupported |
+| map (winsum x 2000) | 454.7k/s | 15.0k/s | 38.7k/s | unsupported |
+| map skewed f | 7.0 ms wall | 267.3 ms | 49.5 ms | unsupported |
+
+Status: ruff clean (benchmarks); full suite not run (benchmark-only
+change).
