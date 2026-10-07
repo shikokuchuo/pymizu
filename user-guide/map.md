@@ -167,6 +167,32 @@ with pymizu.Pool.create(4) as pool:
 `m.run(x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape simply re-slices; only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
 
 
+# Nested maps
+
+A map can nest: a task can start a map on the evaluating worker's own pool handle via [pymizu.current_pool()](../reference/current_pool.md#pymizu.current_pool). The runner submissions push straight onto the worker's own deque, and the blocked collect executes its own runners while idle peers steal the rest: nested maps never deadlock the pool.
+
+
+``` python
+def nested_total(parts):
+    return sum(pymizu.current_pool().map(sum, parts))
+
+parts = [range(0, 250), range(250, 500), range(500, 750), range(750, 1000)]
+
+with pymizu.Pool.create(4) as pool:
+    total = pool.submit(nested_total, parts).collect()
+
+total
+```
+
+
+    499500
+
+
+(This example needs cloudpickle: `nested_total` is not an importable reference.)
+
+The first nested map of a worker claims a submitter slot, so at the default `max_submitters = 8` -- one held by the creating process -- at most 7 workers can nest concurrently. Raise `max_submitters` for wider nested fan-outs. Do not nest inside the element of a seeded map: worker helping can run another map's batches mid-element, wiping the element's [current_rng()](../reference/current_rng.md#pymizu.current_rng) stash -- see [Reproducible randomness](#reproducible-randomness).
+
+
 # Outcomes
 
 - An error raised by `fn` re-raises as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) carrying the failing element's 0-based `index`. The map fails fast -- the workers stop within about one batch.

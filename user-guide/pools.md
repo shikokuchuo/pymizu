@@ -100,6 +100,8 @@ total
 
 (This example needs cloudpickle: `fan_out` is not an importable reference.)
 
+[Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) nests the same way: a task can map over its own pool -- see [Nested maps](map.md#nested-maps).
+
 
 # A default pool for package code
 
