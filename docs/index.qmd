@@ -1,5 +1,6 @@
 ---
 title: "pymizu 水"
+subtitle: "Zero-copy shared-memory parallelism across Python and R"
 ---
 
 ```
