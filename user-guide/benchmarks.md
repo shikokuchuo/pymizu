@@ -31,17 +31,79 @@ These rows measure communication overhead -- the cost pymizu is built to remove.
 
 pymizu occupies a specific point in the design space: parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies. The tools below overlap at the edges; the differences are in what has to run, how data moves, and what survives a crash.
 
-| Tool | What runs | How data moves | Best for |
-|----|----|----|----|
-| `multiprocessing` / `concurrent.futures` | Nothing beyond the stdlib | Pickle copies per task | Coarse tasks, maximum portability |
-| `joblib` | A reusable worker pool (loky) | Pickle; large arrays memmapped to a temp folder | Coarse parallel loops, anywhere Python runs |
-| `ipyparallel` | A controller process plus engines | Pickle over ZeroMQ sockets | Interactive parallelism from Jupyter |
-| Ray | A runtime: scheduler, object store, dashboard | Object store (zero-copy reads on one node) | Cluster scaling, actors, GPU placement |
-| Dask | A scheduler (plus workers for `distributed`) | Copies between processes; shared heap only on the threaded scheduler | Out-of-core dataframes and arrays |
-| Free-threaded CPython | Nothing; threads | Nothing; threads share one heap | Single-language CPU work needing no isolation |
-| `concurrent.interpreters` | Nothing beyond the stdlib | Shareable types only: builtins copy, buffers share; numpy rejected | Isolated parallelism without processes (3.14+) |
-| ZeroMQ | Nothing; a library | Socket copies | General messaging patterns |
-| pymizu | Nothing; a library | Shared-memory views, µs handoff | Fine-grained tasks, large arrays, R interop |
+<table class="caption-top table">
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Tool</th>
+<th>What runs</th>
+<th>How data moves</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>multiprocessing</code><br />
+<code>concurrent.futures</code></td>
+<td>Nothing beyond the stdlib</td>
+<td>Pickle copies per task</td>
+<td>Coarse tasks, maximum portability</td>
+</tr>
+<tr class="even">
+<td><code>joblib</code></td>
+<td>A reusable worker pool (loky)</td>
+<td>Pickle; large arrays memmapped to disk</td>
+<td>Coarse parallel loops, anywhere Python runs</td>
+</tr>
+<tr class="odd">
+<td><code>ipyparallel</code></td>
+<td>A controller process plus engines</td>
+<td>Pickle over ZeroMQ sockets</td>
+<td>Interactive parallelism from Jupyter</td>
+</tr>
+<tr class="even">
+<td>Ray</td>
+<td>Scheduler, object store, dashboard</td>
+<td>Object store (zero-copy on one node)</td>
+<td>Cluster scaling, actors, GPU placement</td>
+</tr>
+<tr class="odd">
+<td>Dask</td>
+<td>A scheduler (+ <code>distributed</code> workers)</td>
+<td>Process copies; threads share a heap</td>
+<td>Out-of-core dataframes and arrays</td>
+</tr>
+<tr class="even">
+<td>Free-threaded CPython</td>
+<td>Nothing; threads</td>
+<td>Nothing; threads share one heap</td>
+<td>CPU work needing no isolation</td>
+</tr>
+<tr class="odd">
+<td><code>concurrent.interpreters</code></td>
+<td>Nothing beyond the stdlib</td>
+<td>Builtins copy, buffers share; no numpy</td>
+<td>Process-free isolation (3.14+)</td>
+</tr>
+<tr class="even">
+<td>ZeroMQ</td>
+<td>Nothing; a library</td>
+<td>Socket copies</td>
+<td>General messaging patterns</td>
+</tr>
+<tr class="odd">
+<td>pymizu</td>
+<td>Nothing; a library</td>
+<td>Shared-memory views, µs handoff</td>
+<td>Fine-grained tasks, large arrays, R interop</td>
+</tr>
+</tbody>
+</table>
 
 
 ## Process pools: `multiprocessing`, `concurrent.futures`, joblib, ipyparallel

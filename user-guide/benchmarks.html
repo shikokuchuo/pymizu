@@ -83,7 +83,7 @@ ul.task-list li input[type="checkbox"] {
 <script>document.head.appendChild(Object.assign(document.createElement('link'),{rel:'stylesheet',href:(document.querySelector('meta[name="quarto:offset"]')||{content:''}).content+'gd-lightbox-annotate.css'}));</script>
 <script>(function(){var s=document.createElement('script');var m=document.querySelector('meta[name="quarto:offset"]');s.src=(m?m.content:'')+'gd-lightbox-annotate.js';s.defer=true;document.head.appendChild(s);})();</script>
 <script src="../theme-init.js"></script>
-<meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.65">
+<meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.5">
 
 
   <link rel="alternate" type="text/markdown" href="benchmarks.md">
@@ -333,7 +333,7 @@ ul.task-list li input[type="checkbox"] {
 </thead>
 <tbody>
 <tr class="odd">
-<td><code>multiprocessing</code> / <code>concurrent.futures</code></td>
+<td><code>multiprocessing</code><br><code>concurrent.futures</code></td>
 <td>Nothing beyond the stdlib</td>
 <td>Pickle copies per task</td>
 <td>Coarse tasks, maximum portability</td>
@@ -341,7 +341,7 @@ ul.task-list li input[type="checkbox"] {
 <tr class="even">
 <td><code>joblib</code></td>
 <td>A reusable worker pool (loky)</td>
-<td>Pickle; large arrays memmapped to a temp folder</td>
+<td>Pickle; large arrays memmapped to disk</td>
 <td>Coarse parallel loops, anywhere Python runs</td>
 </tr>
 <tr class="odd">
@@ -352,27 +352,27 @@ ul.task-list li input[type="checkbox"] {
 </tr>
 <tr class="even">
 <td>Ray</td>
-<td>A runtime: scheduler, object store, dashboard</td>
-<td>Object store (zero-copy reads on one node)</td>
+<td>Scheduler, object store, dashboard</td>
+<td>Object store (zero-copy on one node)</td>
 <td>Cluster scaling, actors, GPU placement</td>
 </tr>
 <tr class="odd">
 <td>Dask</td>
-<td>A scheduler (plus workers for <code>distributed</code>)</td>
-<td>Copies between processes; shared heap only on the threaded scheduler</td>
+<td>A scheduler (+ <code>distributed</code> workers)</td>
+<td>Process copies; threads share a heap</td>
 <td>Out-of-core dataframes and arrays</td>
 </tr>
 <tr class="even">
 <td>Free-threaded CPython</td>
 <td>Nothing; threads</td>
 <td>Nothing; threads share one heap</td>
-<td>Single-language CPU work needing no isolation</td>
+<td>CPU work needing no isolation</td>
 </tr>
 <tr class="odd">
 <td><code>concurrent.interpreters</code></td>
 <td>Nothing beyond the stdlib</td>
-<td>Shareable types only: builtins copy, buffers share; numpy rejected</td>
-<td>Isolated parallelism without processes (3.14+)</td>
+<td>Builtins copy, buffers share; no numpy</td>
+<td>Process-free isolation (3.14+)</td>
 </tr>
 <tr class="even">
 <td>ZeroMQ</td>
