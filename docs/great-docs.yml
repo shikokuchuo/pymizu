@@ -17,10 +17,12 @@ seo:
 
 dark_mode_toggle: true
 
-# Shrink wide tables to the content width; below 65% scale, scroll instead
+# Shrink wide tables to the content width; below 50% scale, scroll instead
+# (widest table: the benchmarks comparison table, ~1220px natural, scaling
+# to ~0.62 on desktop)
 scale_to_fit:
   - "table"
-scale_to_fit_min_scale: 0.65
+scale_to_fit_min_scale: 0.5
 
 reference:
   sections:

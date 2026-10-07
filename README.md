@@ -30,11 +30,11 @@ The hot path stays in user space: single-producer single-consumer rings with bat
 pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [mizu](https://github.com/shikokuchuo/mizu) binds the same core for R, so Python and R processes can share a channel.
 
-- Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb).
-- Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`.
-- Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order.
-- Sentinels, not exceptions, on hot paths; worker crashes detected at OS latency.
-- Typed (`py.typed` + stubs); Python 3.10+ on Linux, macOS, and Windows.
+- Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)
+- Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`
+- Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order
+- Sentinels, not exceptions, on hot paths; worker crashes detected at OS latency
+- Typed (`py.typed` + stubs); Python 3.10+ on Linux, macOS, and Windows
 
 > **Pre-release.** The API is not stable and may change at any time before a release.
 
@@ -51,8 +51,8 @@ The extension compiles the vendored C core, so no system library is necessary.
 
 Optional extras:
 
-- `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
-- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
+- `pymizu[numpy]`: zero-copy array views and raw-tier array staging
+- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks
 
 To request an extra with the GitHub install, use `pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"`.
 
