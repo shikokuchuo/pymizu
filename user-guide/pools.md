@@ -25,6 +25,11 @@ result
 A task callable travels by pickle. With the standard pickle it must be an importable reference, as with `multiprocessing`. Installing cloudpickle lifts that restriction. Task arguments follow the same rules as [channel values](channels.md#what-crosses-a-channel). A buffer-protocol argument past the zero-copy floor (a fixed size threshold) arrives as a read-only view over the shared pages, not a writable copy.
 
 
+# Frames as task arguments
+
+A <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link"><code>Frame</code></a> argument follows the same rule: past the zero-copy floor it crosses as one shared-memory region, and the worker's callable receives a region-backed frame, exactly as on a channel. Below the floor the argument pickles (the worker gets a copy-backed frame), as it does with a complex column (which has no Arrow type). One region crosses per task: a second region-sized argument -- another frame or a large buffer -- sends the whole task down the pickle path, values exact. Raw pyarrow and polars frames keep the pickle path (they round-trip container-exact); construct the [Frame](../reference/Frame.md#pymizu.Frame) first to opt in.
+
+
 # Outcomes
 
 | Outcome | On collect |

@@ -278,7 +278,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="creating-a-channel" class="level1">
 <h1>Creating a channel</h1>
 <p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns the peer process and connects both ends. The peer program is a Python source string, evaluated in the peer with <code>ch</code> bound to its side of the channel:</p>
-<div id="0c70a4f0" class="cell" data-execution_count="1">
+<div id="b57765cb" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -296,7 +296,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="sending-and-receiving" class="level1">
 <h1>Sending and receiving</h1>
 <p><code>ch.send()</code> publishes a value, visible to the peer the moment the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next value, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
-<div id="d57af180" class="cell" data-execution_count="2">
+<div id="ae9f3c10" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
@@ -332,7 +332,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </table>
 <p>Test them by identity — <code>x is pymizu.TIMEOUT</code> — or with <code>pymizu.is_sentinel(x)</code>. No call needs an error handler. If the peer dies, receives first drain what it already sent, then report <code>PEER_GONE</code>.</p>
 <p><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="gdls-link gdls-code">send_batch()</a> and <a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="gdls-link gdls-code">recv_batch()</a> move several values in one call. Use them at rates where the per-call overhead starts to matter:</p>
-<div id="ed3857b6" class="cell" data-execution_count="3">
+<div id="3ea3d037" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch(<span class="bu">range</span>(<span class="dv">4</span>))</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>ch.recv_batch(<span class="dv">4</span>, timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="3">
@@ -344,7 +344,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="closing" class="level1">
 <h1>Closing</h1>
 <p><code>ch.close()</code> is the orderly shutdown: it signals the peer and waits for it to finish draining before releasing the shared resources:</p>
-<div id="42fb9d50" class="cell" data-execution_count="4">
+<div id="667ab1e9" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="4">
 <pre><code>True</code></pre>
@@ -368,7 +368,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="frames-without-pickling" class="level1">
 <h1>Frames without pickling</h1>
 <p>Between two Python processes, a pyarrow <code>Table</code>, polars <code>DataFrame</code>, or duckdb relation pickles by default: container-exact, but a full serialize/parse round trip. <a href="../reference/Frame.from_arrow.html#pymizu.Frame.from_arrow" class="gdls-link gdls-code">pymizu.Frame.from_arrow()</a> opts an Arrow producer into the frame path instead — one shared-memory region on the wire, read in place at receive:</p>
-<div id="9fbdf50c" class="cell" data-execution_count="5">
+<div id="9a7b92fb" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyarrow <span class="im">as</span> pa</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -464,7 +464,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tbody>
 </table>
 <p>Chunked pyarrow tables adopt after <code>table.combine_chunks()</code>.</p>
-<p>Adopted buffers stay alive for the frame’s lifetime (numpy-view semantics: a frame from a 4 GB table pins it), and <a href="../reference/Frame.to_dict.html#pymizu.Frame.to_dict" class="gdls-link gdls-code">to_dict()</a>’s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a task argument rides the pickle path (the worker gets a copy); a frame returned from a task rides the shared-memory region as on a channel. <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a> does not take a frame as its element source.</p>
+<p>Adopted buffers stay alive for the frame’s lifetime (numpy-view semantics: a frame from a 4 GB table pins it), and <a href="../reference/Frame.to_dict.html#pymizu.Frame.to_dict" class="gdls-link gdls-code">to_dict()</a>’s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">Frame</a> task argument and a frame returned from a task both ride the shared-memory region as on a channel (see <a href="../user-guide/pools.html#frames-as-task-arguments">the pools guide</a>). <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a> does not take a frame as its element source.</p>
 </section>
 <section id="sizing" class="level1">
 <h1>Sizing</h1>

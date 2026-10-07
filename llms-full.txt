@@ -1593,9 +1593,10 @@ a frame from a 4 GB table pins it), and `to_dict()`'s masked reads copy
 where the Arrow export does not.
 When you want the exact producer type back, keep the default: a plain
 pyarrow or polars object pickles, container-exact.
-On a pool, a task argument rides the pickle path (the worker gets a copy);
-a frame returned from a task rides the shared-memory region as on a
-channel. `Pool.map` does not take a frame as its element source.
+On a pool, a `Frame` task argument and a frame returned from a task both
+ride the shared-memory region as on a channel (see [the pools
+guide](pools.qmd#frames-as-task-arguments)).
+`Pool.map` does not take a frame as its element source.
 
 ## Sizing
 
@@ -1647,6 +1648,19 @@ values](channels.qmd#what-crosses-a-channel).
 A buffer-protocol argument past the zero-copy floor (a fixed size
 threshold) arrives as a read-only view over the shared pages, not a
 writable copy.
+
+## Frames as task arguments
+
+A [`Frame`](`pymizu.Frame`) argument follows the same rule: past the
+zero-copy floor it crosses as one shared-memory region, and the worker's
+callable receives a region-backed frame, exactly as on a channel.
+Below the floor the argument pickles (the worker gets a copy-backed
+frame), as it does with a complex column (which has no Arrow type).
+One region crosses per task: a second region-sized argument — another
+frame or a large buffer — sends the whole task down the pickle path,
+values exact.
+Raw pyarrow and polars frames keep the pickle path (they round-trip
+container-exact); construct the `Frame` first to opt in.
 
 ## Outcomes
 

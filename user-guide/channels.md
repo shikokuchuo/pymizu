@@ -151,7 +151,7 @@ Values cross exactly, but types normalize. A column also copies -- never decline
 
 Chunked pyarrow tables adopt after `table.combine_chunks()`.
 
-Adopted buffers stay alive for the frame's lifetime (numpy-view semantics: a frame from a 4 GB table pins it), and [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a task argument rides the pickle path (the worker gets a copy); a frame returned from a task rides the shared-memory region as on a channel. [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not take a frame as its element source.
+Adopted buffers stay alive for the frame's lifetime (numpy-view semantics: a frame from a 4 GB table pins it), and [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a [Frame](../reference/Frame.md#pymizu.Frame) task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.md#frames-as-task-arguments)). [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not take a frame as its element source.
 
 
 # Sizing
