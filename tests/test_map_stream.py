@@ -226,11 +226,21 @@ def test_stream_window_expired_at_refill(pool):
 
 
 class _FakeHandle:
-    """A drain-test stand-in for a task handle: cancel() no-ops, collect()
-    replays a canned terminal outcome."""
+    """A drain-test stand-in for a task handle: cancel() no-ops, state
+    presets the probe, collect() replays a canned terminal outcome."""
 
-    def __init__(self, outcome):
+    def __init__(self, outcome, state=None):
         self.outcome = outcome
+        if state is None:
+            if isinstance(outcome, pymizu.CancelledError):
+                state = "cancel"
+            elif isinstance(outcome, pymizu.WorkerDiedError):
+                state = "died"
+            elif isinstance(outcome, pymizu.TaskError):
+                state = "err"
+            else:
+                state = "ok"
+        self.state = state
 
     def cancel(self):
         pass
@@ -282,6 +292,48 @@ def test_stream_fail_death_takes_precedence():
             pymizu, handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
         )
     assert exc_info.value.lost == [(4, 6)]
+
+
+def test_stream_fail_ignores_consumed_cancel():
+    # a just-cancelled sibling whose slot the worker already consumed
+    # (its publish or claim skip freed it) probes "collected": the drain
+    # must skip it, not read it as a double collect
+    first = _task_error(3)
+    handles = [
+        _FakeHandle(
+            pymizu.MizuError("task handle already collected"),
+            state="collected",
+        ),
+        _FakeHandle(pymizu.CancelledError("cancelled")),
+        _FakeHandle(None, state="pending"),
+    ]
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        _map_mod._stream_fail(
+            pymizu, handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
+        )
+    assert exc_info.value.index == 3
+
+
+def test_stream_fail_indexless_error_stays_fatal():
+    # a drained error carrying no element index is not fn's (pool stop,
+    # infrastructure): it re-raises rather than join the min selection
+    first = _task_error(3)
+    infra = pymizu.TaskError("attach failed")
+    handles = [_FakeHandle(infra)]
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        _map_mod._stream_fail(pymizu, handles, [0], [(0, 2)], first)
+    assert exc_info.value is infra
+
+
+def test_stream_fail_collect_failure_stays_fatal():
+    # a genuine collect failure on a terminal sibling (a vanished payload
+    # region, not the raced cancel consume) is not the drain's to swallow
+    first = _task_error(3)
+    handles = [
+        _FakeHandle(pymizu.MizuError("payload region vanished"), state="ok")
+    ]
+    with pytest.raises(pymizu.MizuError, match="payload region vanished"):
+        _map_mod._stream_fail(pymizu, handles, [0], [(0, 2)], first)
 
 
 def test_stream_spec_fn_raises(pool):

@@ -951,14 +951,18 @@ def _stream_fail(
     first: _Any,
 ) -> _NoReturn:
     """The fail path of the streaming window, NORET: cancel the
-    outstanding chunks, then drain them non-blockingly (a per-handle
-    collect stamps no position) — cancelled and still-executing tasks
-    read as cancelled / pending and are ignored. A sibling death takes
-    precedence, its lost range read off the drained position; otherwise
-    the minimum element index among the observed errors raises (the
-    erroring chunk's own `index` is the element index —
+    outstanding chunks, then drain them non-blockingly. A blind collect
+    of a just-cancelled task races the worker's cancel consume (its
+    publish or claim skip frees the slot, which a collect reads as
+    already collected), so each sibling is probed first and only a
+    stable terminal outcome (ok / err / died) is collected — pending and
+    cancelled siblings carry no outcome and are ignored. A sibling death
+    takes precedence, its lost range read off the drained position;
+    otherwise the minimum element index among the observed errors raises
+    (the erroring chunk's own `index` is the element index —
     [`Pool.collect_any()`](`pymizu.Pool.collect_any`)'s position stamp
-    defers to it)."""
+    defers to it). An error carrying no element index is not fn's
+    (infrastructure) and stays fatal, as the runner path's."""
     errs = [first]
     died = None
     lost = []
@@ -971,6 +975,8 @@ def _stream_fail(
         if h is None:
             continue
         handles[k] = None
+        if h.state not in ("ok", "err", "died"):
+            continue
         try:
             h.collect(timeout=0)
         except pymizu.WorkerDiedError as e:
@@ -978,9 +984,9 @@ def _stream_fail(
                 died = e
             lost.append(ranges[k])
         except pymizu.TaskError as e:
+            if not hasattr(e, "index"):
+                raise
             errs.append(e)
-        except (pymizu.CancelledError, pymizu.MizuError):
-            pass  # our cancel, collect_any's consumed handle, or pending
     if died is not None:
         died.lost = lost
         raise died
