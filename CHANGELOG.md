@@ -17,6 +17,20 @@ Initial pre-release.
 
 ### Added
 
+- `pymizu.Frame.from_arrow()`: the opt-in zero-copy frame path for
+  Python-to-Python channels. Constructs a `Frame` from any
+  `__arrow_c_stream__` producer (a pyarrow `Table` or
+  `RecordBatchReader`, a polars `DataFrame`, a duckdb relation),
+  adopting the producer's buffers wherever a column's frame layout is
+  the Arrow layout — a single-batch producer on offset-0 boundaries,
+  nulls included — so construction copies nothing it does not have to.
+  A column copies, never declines, where its type forces it (bool,
+  narrow ints, floats of other widths, non-microsecond timestamps,
+  `large_string` / `string_view`, multi-batch or sliced columns);
+  unsupported Arrow types decline with `MizuError` naming the column.
+  The frame then crosses a channel as one shared-memory region
+  (value-exact, type-normalized) where a plain Arrow object pickles —
+  the pickle path stays the default for exact container round trips.
 - Streaming maps: `Pool.map(..., stream=True)` and
   `Pool.map_prepare(..., stream=True)` never stage the whole of `x` into
   shared memory — fixed x-slices ride ordinary chunk tasks under a

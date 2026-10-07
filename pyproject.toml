@@ -61,6 +61,7 @@ docs = [
   "numpy",
   "cloudpickle",
   "jupyter",
+  "pyarrow",   # Frame.from_arrow's docstring example and guide cell
 ]
 all = ["pymizu[numpy,cloudpickle]"]
 

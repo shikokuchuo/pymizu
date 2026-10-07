@@ -24,6 +24,24 @@ enum {
                  validity/i64 offsets/bytes in place — Arrow large_utf8 */
 };
 
+/* The adoption hold: one per single-batch Frame.from_arrow construction.
+   The batch struct's release covers its children and their dictionaries
+   (the C Data Interface's discipline), so adopted values, codes, level
+   buffers and validity bitmaps all ride the one hold; the last decref runs
+   release pure-C from any thread (the frame_export discipline) and frees
+   the hold. */
+typedef struct {
+  ArrowArray arr;
+  _Atomic size_t refs;
+} mizu_arrow_hold;
+
+static inline void ahold_decref(mizu_arrow_hold *h) {
+  if (atomic_fetch_sub_explicit(&h->refs, 1, memory_order_acq_rel) != 1)
+    return;
+  if (h->arr.release != NULL) h->arr.release(&h->arr);
+  free(h);
+}
+
 typedef struct {
   int kind;
   int64_t n;
@@ -51,6 +69,11 @@ typedef struct {
                          counted loan is released here, the frame_export
                          acquisition's pure-C discipline */
   long hold_pid;      /* the fork guard */
+  mizu_arrow_hold *ahold;  /* a Frame.from_arrow adopted column: values,
+                              valid, bytes and lev_off borrow the producer's
+                              batch buffers (freed by the hold's release,
+                              never here); borrowed stays 0, so the region
+                              arms never take it */
 } fcol;
 
 /* The column block: C-owned (no PyObject inside — the Arrow export's
@@ -114,10 +137,27 @@ int mizu_py_frame_register(PyObject *m, PyObject *mizu_error);
 
 PyObject *ixr_memoryview(const void *src, size_t n);
 void conv_lgl_bool(uint8_t *dst, const void *ctx);
+void conv_days_i64(uint8_t *dst, const void *ctx);
 PyObject *ixr_vec_conv(const char *dt, const uint8_t *ptr, uint64_t count,
                        size_t elt, void (*conv)(uint8_t *, const void *),
                        const void *ctx);
 PyObject *ixr_vec_raw(const char *dt, const uint8_t *ptr, uint64_t count,
                       size_t elt);
+
+/* to_dict's null-fidelity reads (fcol_to_obj's fixed-width arms): a
+   Frame.from_arrow adopted column carries nulls bitmap-only — garbage at
+   null slots — so valid != NULL masks; NULL is the owned sentinel
+   invariant and reduces to the fused ixr_vec policy. One mechanism, both
+   callers. */
+PyObject *ixr_masked_f64(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n);
+PyObject *ixr_masked_i32(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n);
+PyObject *ixr_masked_i64(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n);
+PyObject *ixr_masked_days(const uint8_t *values, const uint8_t *valid,
+                          uint64_t n);
+PyObject *ixr_masked_us(const char *dt, const uint8_t *values,
+                        const uint8_t *valid, uint64_t n);
 
 #endif

@@ -278,3 +278,33 @@ def test_task_arg_memoryview_shm_vec_without_numpy(tmp_path):
             p.stop()
         """,
     )
+
+
+def test_from_arrow_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        from tests.helpers import RawArrowStream
+
+        import pymizu
+
+        # a single-batch producer: every column adopts, nulls bitmap-only
+        prod = RawArrowStream(
+            [
+                ("i", "i", [([10, 20, 30], [1, 0, 1])]),
+                ("l", "l", [([10, 20, 30], [1, 0, 1])]),
+                ("g", "x", [([1.5, 2.5, 3.5], [0, 1, 1])]),
+                ("u", "s", [(([0, 1, 2, 3], b"abc"), [1, 1, 0])]),
+            ]
+        )
+        f = pymizu.Frame.from_arrow(prod)
+        d = f.to_dict()
+        # the masked memoryview arms: the sentinel at null slots, never
+        # garbage from the producer's buffers
+        assert list(d["i"].cast("i")) == [10, -2147483648, 30]
+        assert list(d["l"].cast("q")) == [10, -9223372036854775808, 30]
+        xv = d["x"].cast("d")
+        assert xv[0] != xv[0] and xv[1] == 2.5  # the NA_real_ payload
+        assert d["s"] == ["a", "b", None]
+        """,
+    )

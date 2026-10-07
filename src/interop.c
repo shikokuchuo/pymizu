@@ -661,6 +661,16 @@ void conv_lgl_bool(uint8_t *dst, const void *ctx) {
   for (uint64_t i = 0; i < s->n; i++) dst[i] = (uint8_t) (s->p[i] != 0);
 }
 
+/* Date days -> i64 days, the NA sentinel shifted (to_dict's
+   datetime64[D] conversion). */
+void conv_days_i64(uint8_t *dst, const void *ctx) {
+  const i32_span *s = (const i32_span *) ctx;
+  for (uint64_t i = 0; i < s->n; i++) {
+    int64_t v = s->p[i] == MIZU_NA_INT32 ? INT64_MIN : (int64_t) s->p[i];
+    memcpy(dst + 8 * i, &v, 8);
+  }
+}
+
 static void conv_int_f64(uint8_t *dst, const void *ctx) {
   const i32_span *s = (const i32_span *) ctx;
   for (uint64_t i = 0; i < s->n; i++) {
@@ -754,6 +764,150 @@ typedef struct {
   int refs;
   mizu_read_ctx *rctx;
 } ixr_mode;
+
+// to_dict's null-fidelity reads (pyframe.h) -------------------------------------
+
+/* The masked-arm workhorse: fill a fresh buffer of n elements of elt
+   bytes, valid lanes verbatim from values, masked lanes the kind's
+   missing form. NULL on OOM. */
+static uint8_t *masked_buf(const uint8_t *values, const uint8_t *valid,
+                           uint64_t n, size_t elt, int kind) {
+  size_t bytes = (size_t) (n != 0 ? n : 1) * elt;
+  uint8_t *buf = malloc(bytes);
+  if (buf == NULL) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+  memcpy(buf, values, (size_t) n * elt);
+  for (uint64_t i = 0; i < n; i++) {
+    if (bitmap_at(valid, i)) continue;
+    switch (kind) {
+    case FCOL_F64: store_na_r(buf + 8 * i); break;
+    case FCOL_I64: case FCOL_TS: case FCOL_TD: {
+      const int64_t na = MIZU_NA_INT64;
+      memcpy(buf + 8 * i, &na, 8);
+      break;
+    }
+    default: {   /* I32 / DATE */
+      const int32_t na = MIZU_NA_INT32;
+      memcpy(buf + 4 * i, &na, 4);
+      break;
+    }
+    }
+  }
+  return buf;
+}
+
+/* The bitmap's clear-bit count (0 short-circuits every masked arm to the
+   owned forms). */
+static uint64_t masked_nulls(const uint8_t *valid, uint64_t n) {
+  uint64_t nulls = 0;
+  for (uint64_t i = 0; i < n; i++) nulls += !bitmap_at(valid, i);
+  return nulls;
+}
+
+PyObject *ixr_masked_f64(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n) {
+  if (valid == NULL || masked_nulls(valid, n) == 0)
+    return ixr_vec_raw("float64", values, n, 8);
+  uint8_t *buf = masked_buf(values, valid, n, 8, FCOL_F64);
+  if (buf == NULL) return NULL;
+  PyObject *np = mizu_py_numpy_module();
+  PyObject *out = np == NULL ? ixr_memoryview(buf, (size_t) n * 8) :
+    ixr_vec_conv("float64", buf, n, 8, NULL, NULL);
+  free(buf);
+  return out;
+}
+
+PyObject *ixr_masked_i32(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n) {
+  if (valid == NULL) return ixr_vec(MIZU_TYPE_INT, values, n);
+  if (masked_nulls(valid, n) == 0) return ixr_vec_raw("int32", values, n, 4);
+  PyObject *np = mizu_py_numpy_module();
+  if (np == NULL) {
+    uint8_t *buf = masked_buf(values, valid, n, 4, FCOL_I32);
+    if (buf == NULL) return NULL;
+    PyObject *out = ixr_memoryview(buf, (size_t) n * 4);
+    free(buf);
+    return out;
+  }
+  /* the fused read rule: int32 with nulls crosses to float64, R's NA_real_
+     payload at the masked lanes (every int32 exact there) */
+  Py_ssize_t dims[1] = { (Py_ssize_t) n };
+  PyObject *arr = ixr_np_alloc(dims, 1, "float64", 0);
+  if (arr == NULL) return NULL;
+  Py_buffer v;
+  if (PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE) < 0) {
+    Py_DECREF(arr);
+    return NULL;
+  }
+  const int32_t *p = (const int32_t *) values;
+  for (uint64_t i = 0; i < n; i++) {
+    if (bitmap_at(valid, i)) {
+      double x = (double) p[i];
+      memcpy((uint8_t *) v.buf + 8 * i, &x, 8);
+    } else {
+      store_na_r((uint8_t *) v.buf + 8 * i);
+    }
+  }
+  PyBuffer_Release(&v);
+  return arr;
+}
+
+PyObject *ixr_masked_i64(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n) {
+  if (valid == NULL) return ixr_vec(MIZU_TYPE_INT64, values, n);
+  if (masked_nulls(valid, n) == 0) return ixr_vec(MIZU_TYPE_INT64, values, n);
+  uint8_t *buf = masked_buf(values, valid, n, 8, FCOL_I64);
+  if (buf == NULL) return NULL;
+  /* a genuine INT64_MIN on a valid lane is now indistinguishable from a
+     null — the fused read rule's warning, counted on valid lanes only */
+  uint64_t amb = 0;
+  const int64_t *p = (const int64_t *) values;
+  for (uint64_t i = 0; i < n; i++)
+    if (bitmap_at(valid, i)) amb += p[i] == MIZU_NA_INT64;
+  if (amb != 0 &&
+      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                       "pymizu: %llu int64 value(s) of -9223372036854775808 "
+                       "read as NA_integer64_ in R",
+                       (unsigned long long) amb) < 0) {
+    free(buf);
+    return NULL;
+  }
+  PyObject *np = mizu_py_numpy_module();
+  PyObject *out = np == NULL ? ixr_memoryview(buf, (size_t) n * 8) :
+    ixr_vec_conv("int64", buf, n, 8, NULL, NULL);
+  free(buf);
+  return out;
+}
+
+PyObject *ixr_masked_days(const uint8_t *values, const uint8_t *valid,
+                          uint64_t n) {
+  if (valid == NULL || masked_nulls(valid, n) == 0) {
+    i32_span s = { (const int32_t *) values, n };
+    return ixr_vec_conv("datetime64[D]", values, n, 8, conv_days_i64, &s);
+  }
+  /* masked lanes -> datetime64[D] NaT (the INT32_MIN payload) */
+  uint8_t *buf = masked_buf(values, valid, n, 4, FCOL_DATE);
+  if (buf == NULL) return NULL;
+  i32_span s = { (const int32_t *) buf, n };
+  PyObject *out = ixr_vec_conv("datetime64[D]", buf, n, 8, conv_days_i64,
+                               &s);
+  free(buf);
+  return out;
+}
+
+PyObject *ixr_masked_us(const char *dt, const uint8_t *values,
+                        const uint8_t *valid, uint64_t n) {
+  if (valid == NULL || masked_nulls(valid, n) == 0)
+    return ixr_vec_conv(dt, values, n, 8, NULL, NULL);
+  /* masked lanes -> NaT (INT64_MIN is datetime64/timedelta64's own) */
+  uint8_t *buf = masked_buf(values, valid, n, 8, FCOL_TS);
+  if (buf == NULL) return NULL;
+  PyObject *out = ixr_vec_conv(dt, buf, n, 8, NULL, NULL);
+  free(buf);
+  return out;
+}
 
 static PyObject *ixr_value(mizu_ix *cur, const ixr_mode *mode);
 static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols,
@@ -3875,10 +4029,26 @@ static void ixs_decline(const char *what) {
 static int ixs_levels_read(ixs *x, int col, int32_t **off_out,
                            uint8_t **bytes_out, int64_t *nlev_out,
                            int64_t *blen_out) {
+  if (x->hold.nb == 0) {
+    /* a zero-row stream serves no batch: the canonical levels are empty */
+    int32_t *offs = malloc(4);
+    if (offs == NULL) {
+      PyErr_NoMemory();
+      return -1;
+    }
+    offs[0] = 0;
+    *off_out = offs;
+    *bytes_out = NULL;
+    *nlev_out = 0;
+    *blen_out = 0;
+    return 0;
+  }
   const ArrowArray *first = x->single ? &x->hold.arrs[0] :
     x->hold.arrs[0].children[col];
   const ArrowArray *dict = first->dictionary;
-  if (dict == NULL || dict->n_buffers < 3) {
+  if (dict == NULL || dict->n_buffers < 3 || dict->buffers == NULL ||
+      (dict->length > 0 &&
+       (dict->buffers[1] == NULL || dict->buffers[2] == NULL))) {
     PyErr_SetString(MizuError, "pymizu: invalid Arrow dictionary export");
     return -1;
   }
@@ -4928,6 +5098,557 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
   int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h);
   ixs_free(&x);
   return rc;
+}
+
+// The Frame.from_arrow builder (pyshmframe.h) --------------------------------------
+
+/* Re-raise a front-end decline as the constructor's MizuError (an
+   unsupported type is the foreign decline's shape, surfaced informatively);
+   MizuError and out-of-contract exceptions pass through. name names the
+   column when known. */
+static void fc_err_reraise(const char *name) {
+  PyObject *et, *ev, *tb;
+  PyErr_Fetch(&et, &ev, &tb);
+  if (et == NULL) {
+    PyErr_SetString(MizuError, "pymizu: Frame.from_arrow failed");
+    return;
+  }
+  if (!PyErr_GivenExceptionMatches(et, MizuDeclinedError)) {
+    PyErr_Restore(et, ev, tb);
+    return;
+  }
+  PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
+  const char *msg = es != NULL ? PyUnicode_AsUTF8(es) : NULL;
+  if (msg != NULL && strncmp(msg, "pymizu: ", 8) == 0) msg += 8;
+  if (name != NULL)
+    PyErr_Format(MizuError, "pymizu: Frame.from_arrow: column '%s': %s",
+                 name, msg != NULL ? msg : "a failure");
+  else
+    PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",
+                 msg != NULL ? msg : "a failure");
+  Py_XDECREF(es);
+  Py_DECREF(et);
+  Py_XDECREF(ev);
+  Py_XDECREF(tb);
+}
+
+/* The adoption verdict for one column of a single offset-0 batch: the fcol
+   layout IS the Arrow layout for these types, nulls included (the validity
+   bitmap adopts with the values — every fcol reader consults it before the
+   values). 1 adopt, 0 copy, -1 a malformed utf8 offsets buffer declined
+   (adoption trusts producer geometry the owned constructors never had to:
+   the O(n) monotonic walk bounds it). */
+static int fc_adopt_gate(ixs *x, int col, char **names) {
+  const ixs_pcol *pc = &x->cols[col];
+  const ArrowArray *a = x->hold.arrs[0].children[col];
+  const ArrowSchema *sc = x->schema.children[col];
+  if (a->offset != 0) return 0;   /* a sliced column: the copy arm rebases */
+  switch (pc->kind) {
+  case PC_CVT:
+    return pc->row->cvt == CVT_COPY &&
+      (pc->row->wire == MIZU_TYPE_REAL || pc->row->wire == MIZU_TYPE_INT ||
+       pc->row->wire == MIZU_TYPE_INT64 || pc->row->wire == MIZU_TYPE_RAW);
+  case PC_STR: {
+    if (pc->str_form != 1) return 0;
+    const int32_t *offs = (const int32_t *) a->buffers[1];
+    if (offs == NULL || offs[0] != 0) return 0;
+    for (int64_t k = 0; k < a->length; k++)
+      if (offs[k + 1] < offs[k]) {
+        PyErr_Format(MizuError,
+                     "pymizu: Frame.from_arrow: column '%s' has malformed "
+                     "offsets (element %lld's span ends before it starts)",
+                     names[col], (long long) k);
+        return -1;
+      }
+    return 1;
+  }
+  case PC_DICT: {
+    /* i32 codes, utf8 levels on offset-0 buffers (the level contents —
+       monotonic offsets, no null levels, code bounds — are the validation
+       pass's verdicts, already run) */
+    const ArrowArray *d = a->dictionary;
+    if (pc->idx_w != 4 || !pc->idx_signed || pc->str_form != 1 ||
+        d == NULL || d->offset != 0)
+      return 0;
+    if (d->length == 0) return 1;
+    const int32_t *loff = (const int32_t *) d->buffers[1];
+    return loff != NULL && d->buffers[2] != NULL && loff[0] == 0;
+  }
+  case PC_DATE: return 1;
+  case PC_TS: case PC_TD:
+    /* µs is the fcol unit; other units rescale (copy) */
+    return sc->format[2] == 'u';
+  }
+  return 0;
+}
+
+/* The copy arm for the cvt-table kinds (bool, narrow ints, uint32/64,
+   half/float — and the adoptable types whose gates failed): one fused
+   masked convert per batch into the owned buffer. */
+static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
+                          int kind, cvt_warn *warn) {
+  int64_t n = x->hold.rows;
+  uint8_t *buf = malloc((size_t) (n != 0 ? n : 1) * row->w_out);
+  if (buf == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  size_t off = 0;
+  for (size_t b = 0; b < x->hold.nb; b++) {
+    ArrowArray *a = x->hold.arrs[b].children[col];
+    const uint8_t *data = (const uint8_t *) a->buffers[1];
+    const uint8_t *valid = (const uint8_t *) a->buffers[0];
+    uint64_t aoff = (uint64_t) a->offset;
+    size_t alen = (size_t) a->length;
+    if (row->cvt == CVT_BIT_LGL) {
+      mizu_py_cvt_convert(buf + off, data, valid, aoff, alen, row, warn);
+    } else {
+      mizu_py_cvt_convert(buf + off, data + aoff * row->w_in, valid, aoff,
+                          alen, row, warn);
+    }
+    off += alen * row->w_out;
+  }
+  c->kind = kind;
+  c->n = n;
+  c->values = buf;
+  return 0;
+}
+
+/* The string copy: per-batch gather with rebased i32 offsets, a null slot
+   collapsed to a zero-byte span with its bitmap bit clear (the owned
+   invariant); a malformed record degrades to NA, the wire's rule. */
+static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
+  const ixs_pcol *pc = &x->cols[col];
+  int64_t n = x->hold.rows;
+  int32_t *offs = malloc(((size_t) n + 1) * 4);
+  uint8_t *bytes = NULL, *valid = NULL;
+  size_t blen = 0;
+  if (offs == NULL) goto nomem;
+  offs[0] = 0;
+  {
+    int64_t done = 0;
+    for (size_t b = 0; b < x->hold.nb; b++) {
+      ArrowArray *a = x->hold.arrs[b].children[col];
+      for (int64_t k = 0; k < a->length; k++) {
+        const uint8_t *s;
+        int32_t len;
+        int64_t i = done + k;
+        if (arrow_str_at(a, k, pc->str_form, &s, &len) == 1) {
+          if (valid != NULL) valid[i >> 3] |= 1 << (i & 7);
+          if (blen + (size_t) len > INT32_MAX) {
+            PyErr_Format(MizuError, "pymizu: Frame.from_arrow: column "
+                         "'%s' is past the int32 offset range",
+                         names[col]);
+            goto fail;
+          }
+          uint8_t *nb = realloc(bytes, blen + (size_t) len + 1);
+          if (nb == NULL) goto nomem;
+          bytes = nb;
+          memcpy(bytes + blen, s, (size_t) len);
+          blen += (size_t) len;
+        } else if (valid == NULL) {
+          valid = calloc(((size_t) n + 7) / 8, 1);
+          if (valid == NULL) goto nomem;
+          for (int64_t q = 0; q < i; q++) valid[q >> 3] |= 1 << (q & 7);
+        }
+        offs[i + 1] = (int32_t) blen;
+      }
+      done += a->length;
+    }
+  }
+  c->kind = FCOL_STR;
+  c->n = n;
+  c->values = (uint8_t *) offs;
+  c->bytes = bytes;
+  c->bytes_len = (int64_t) blen;
+  c->valid = valid;
+  return 0;
+nomem:
+  PyErr_NoMemory();
+fail:
+  free(offs);
+  free(bytes);
+  free(valid);
+  return -1;
+}
+
+/* The dictionary copy: the codes to owned i32 (NA32 at nulls — the owned
+   invariant), the canonical levels stolen from the validation pass. */
+static int fcol_build_dict(ixs *x, int col, fcol *c) {
+  const ixs_pcol *pc = &x->cols[col];
+  int64_t n = x->hold.rows;
+  int32_t *codes = malloc((size_t) (n != 0 ? n : 1) * 4);
+  if (codes == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  int64_t done = 0;
+  for (size_t b = 0; b < x->hold.nb; b++) {
+    ArrowArray *a = x->hold.arrs[b].children[col];
+    const uint8_t *idx = (const uint8_t *) a->buffers[1];
+    for (int64_t k = 0; k < a->length; k++) {
+      int32_t v;
+      if (!arrow_valid(a, k)) {
+        v = MIZU_NA_INT32;
+      } else {
+        int64_t i = a->offset + k, cv;
+        switch (pc->idx_w) {
+        case 1:
+          cv = pc->idx_signed ? (int64_t) ((const int8_t *) idx)[i] :
+            (int64_t) ((const uint8_t *) idx)[i];
+          break;
+        case 2:
+          cv = pc->idx_signed ? (int64_t) ((const int16_t *) idx)[i] :
+            (int64_t) ((const uint16_t *) idx)[i];
+          break;
+        case 4:
+          cv = pc->idx_signed ? (int64_t) ((const int32_t *) idx)[i] :
+            (int64_t) ((const uint32_t *) idx)[i];
+          break;
+        default:
+          cv = ((const int64_t *) idx)[i];
+          break;
+        }
+        v = (int32_t) cv;   /* the bounds are the validation pass's */
+      }
+      codes[done + k] = v;
+    }
+    done += a->length;
+  }
+  c->kind = FCOL_DICT;
+  c->n = n;
+  c->values = (uint8_t *) codes;
+  c->lev_off = x->lev_offs[col];
+  c->bytes = x->lev_bytes[col];
+  c->nlev = x->nlevs[col];
+  c->bytes_len = x->lev_blens[col];
+  x->lev_offs[col] = NULL;
+  x->lev_bytes[col] = NULL;
+  return 0;
+}
+
+/* The date copy: i32 days verbatim, NA32 at masked lanes (a hand loop,
+   not the "i" cvt row — the row counts genuine INT32_MIN lanes for R's
+   NA_integer_ warning, which is not a date's semantics). */
+static int fcol_build_date(ixs *x, int col, fcol *c) {
+  int64_t n = x->hold.rows;
+  int32_t *days = malloc((size_t) (n != 0 ? n : 1) * 4);
+  if (days == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  int64_t done = 0;
+  for (size_t b = 0; b < x->hold.nb; b++) {
+    ArrowArray *a = x->hold.arrs[b].children[col];
+    const int32_t *src = (const int32_t *) a->buffers[1];
+    for (int64_t k = 0; k < a->length; k++)
+      days[done + k] = arrow_valid(a, k) ? src[a->offset + k] :
+        MIZU_NA_INT32;
+    done += a->length;
+  }
+  c->kind = FCOL_DATE;
+  c->n = n;
+  c->values = (uint8_t *) days;
+  return 0;
+}
+
+/* The temporal copy: i64 counts of a non-µs unit rescaled to µs, masked
+   (the fcol unit is µs; a value past the i64 µs budget declines). */
+static int fcol_build_rescale(ixs *x, int col, fcol *c, char **names) {
+  const ixs_pcol *pc = &x->cols[col];
+  int64_t n = x->hold.rows;
+  int64_t *us = malloc((size_t) (n != 0 ? n : 1) * 8);
+  if (us == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  const double factor = pc->ts_scale * 1e6;
+  int64_t done = 0;
+  for (size_t b = 0; b < x->hold.nb; b++) {
+    ArrowArray *a = x->hold.arrs[b].children[col];
+    const int64_t *counts = (const int64_t *) a->buffers[1];
+    for (int64_t k = 0; k < a->length; k++) {
+      if (!arrow_valid(a, k)) {
+        us[done + k] = MIZU_NA_INT64;
+        continue;
+      }
+      double v = (double) counts[a->offset + k] * factor;
+      if (!isfinite(v) || fabs(v) > 9.0e18) {
+        free(us);
+        PyErr_Format(MizuError, "pymizu: Frame.from_arrow: column '%s' has "
+                     "a value outside the microsecond range", names[col]);
+        return -1;
+      }
+      us[done + k] = (int64_t) llround(v);
+    }
+    done += a->length;
+  }
+  c->kind = pc->kind == PC_TS ? FCOL_TS : FCOL_TD;
+  c->n = n;
+  c->values = (uint8_t *) us;
+  if (pc->kind == PC_TS) {
+    const char *tz = x->schema.children[col]->format + 4;
+    snprintf(c->tz, sizeof(c->tz), "%s", tz);
+  }
+  return 0;
+}
+
+/* One adopted column: borrow the producer's buffers and stamp the
+   null-free / advisory-nulls state. The batch still sits in the pull slot
+   (the hold move happens only after every column built). */
+static void fcol_adopt(ixs *x, int col, fcol *c, mizu_arrow_hold *hold) {
+  const ixs_pcol *pc = &x->cols[col];
+  const ArrowArray *a = x->hold.arrs[0].children[col];
+  switch (pc->kind) {
+  case PC_CVT:
+    c->kind = pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
+      pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
+      pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 : FCOL_U8;
+    c->values = (uint8_t *) a->buffers[1];
+    break;
+  case PC_STR: {
+    c->kind = FCOL_STR;
+    c->values = (uint8_t *) a->buffers[1];
+    c->bytes = (uint8_t *) a->buffers[2];
+    c->bytes_len = ((const int32_t *) a->buffers[1])[a->length];
+    break;
+  }
+  case PC_DICT: {
+    const ArrowArray *d = a->dictionary;
+    c->kind = FCOL_DICT;
+    c->values = (uint8_t *) a->buffers[1];
+    c->bytes = (uint8_t *) d->buffers[2];
+    c->lev_off = (int32_t *) d->buffers[1];
+    c->nlev = d->length;
+    c->bytes_len = d->length > 0 ? c->lev_off[d->length] : 0;
+    break;
+  }
+  case PC_DATE:
+    c->kind = FCOL_DATE;
+    c->values = (uint8_t *) a->buffers[1];
+    break;
+  case PC_TS: case PC_TD:
+    c->kind = pc->kind == PC_TS ? FCOL_TS : FCOL_TD;
+    c->values = (uint8_t *) a->buffers[1];
+    if (pc->kind == PC_TS) {
+      const char *tz = x->schema.children[col]->format + 4;
+      snprintf(c->tz, sizeof(c->tz), "%s", tz);
+    }
+    break;
+  }
+  c->n = a->length;
+  if (a->null_count == 0 || a->buffers[0] == NULL) {
+    c->known_free = 1;
+  } else {
+    c->valid = (uint8_t *) a->buffers[0];
+    c->vnulls = a->null_count;   /* advisory; readers decide per bit */
+  }
+  c->ahold = hold;
+  atomic_fetch_add_explicit(&hold->refs, 1, memory_order_relaxed);
+}
+
+frame_cols *ixs_frame_cols_build(PyObject *obj) {
+  /* the producer gate is the __arrow_c_stream__ attribute alone (pyarrow,
+     polars, duckdb producers all qualify) */
+  if (!PyObject_HasAttrString(obj, "__arrow_c_stream__")) {
+    PyErr_SetString(MizuError, "pymizu: Frame.from_arrow: object has no "
+                    "__arrow_c_stream__ (a pyarrow Table or "
+                    "RecordBatchReader, a polars DataFrame, a duckdb "
+                    "relation)");
+    return NULL;
+  }
+  PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_stream__");
+  if (fn == NULL) return NULL;
+  PyObject *cap = PyObject_CallNoArgs(fn);
+  Py_DECREF(fn);
+  if (cap == NULL) {
+    /* the producer claimed the interface and failed: the foreign
+       front-end's split, as MizuError */
+    if (PyErr_ExceptionMatches(PyExc_ImportError)) {
+      PyObject *et, *ev, *tb;
+      PyErr_Fetch(&et, &ev, &tb);
+      PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
+      PyErr_Format(MizuError, "pymizu: Frame.from_arrow: the Arrow export "
+                   "needs pyarrow: %s",
+                   es != NULL ? PyUnicode_AsUTF8(es) : "not installed");
+      Py_XDECREF(es);
+      Py_XDECREF(et);
+      Py_XDECREF(ev);
+      Py_XDECREF(tb);
+    } else {
+      PyObject *et, *ev, *tb;
+      PyErr_Fetch(&et, &ev, &tb);
+      PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
+      PyErr_Format(MizuError, "pymizu: Frame.from_arrow: the Arrow export "
+                   "failed: %s",
+                   es != NULL ? PyUnicode_AsUTF8(es) : "unknown error");
+      Py_XDECREF(es);
+      Py_XDECREF(et);
+      Py_XDECREF(ev);
+      Py_XDECREF(tb);
+    }
+    return NULL;
+  }
+  ArrowArrayStream *st = (ArrowArrayStream *) PyCapsule_GetPointer(
+    cap, "arrow_array_stream");
+  if (st == NULL) {
+    Py_DECREF(cap);
+    return NULL;
+  }
+  ixs x;
+  memset(&x, 0, sizeof(x));
+  x.st = st;
+  x.cap = cap;
+  frame_cols *fc = NULL;
+  char **names = NULL;
+  mizu_arrow_hold *hold = NULL;
+  int *adopt = NULL;
+  memset(&x.schema, 0, sizeof(x.schema));
+  if (x.st->get_schema(x.st, &x.schema) != 0) {
+    const char *e = x.st->get_last_error != NULL ?
+      x.st->get_last_error(x.st) : NULL;
+    PyErr_Format(MizuError, "pymizu: Frame.from_arrow: the Arrow export "
+                 "failed: %s", e != NULL ? e : "unknown error");
+    goto done;
+  }
+  x.schema_owned = 1;
+  if (x.schema.format == NULL || x.schema.release == NULL ||
+      strcmp(x.schema.format, "+s") != 0 ||
+      x.schema.n_children < 1 || x.schema.children == NULL) {
+    PyErr_SetString(MizuError, "pymizu: Frame.from_arrow: the stream's "
+                    "root is not a struct with at least one column (a "
+                    "table, not an array)");
+    goto done;
+  }
+  x.ncols = (int) x.schema.n_children;
+  x.cols = calloc((size_t) x.ncols, sizeof(ixs_pcol));
+  if (x.cols == NULL) {
+    PyErr_NoMemory();
+    goto done;
+  }
+  names = ixs_names(&x);
+  if (names == NULL) {
+    fc_err_reraise(NULL);
+    goto done;
+  }
+  for (int i = 0; i < x.ncols; i++)
+    if (ixs_classify(&x, i, x.schema.children[i]) < 0) {
+      fc_err_reraise(names[i]);
+      goto done;
+    }
+  if (ixs_pull(&x) < 0 || ixs_validate_dicts(&x) < 0) {
+    fc_err_reraise(NULL);
+    goto done;
+  }
+  /* the dispositions: one struct batch on offset-0 boundaries adopts per
+     column (with or without nulls); anything else copies per column */
+  {
+    int single = x.hold.nb == 1 && x.hold.arrs[0].offset == 0 &&
+      x.hold.rows > 0;
+    int nadopt = 0;
+    if (single) {
+      adopt = calloc((size_t) x.ncols, sizeof(int));
+      if (adopt == NULL) {
+        PyErr_NoMemory();
+        goto done;
+      }
+      for (int i = 0; i < x.ncols; i++) {
+        int v = fc_adopt_gate(&x, i, names);
+        if (v < 0) goto done;
+        adopt[i] = v;
+        nadopt += v;
+      }
+      if (nadopt > 0) {
+        hold = malloc(sizeof(*hold));
+        if (hold == NULL) {
+          PyErr_NoMemory();
+          goto done;
+        }
+        /* the batch moves into the hold only after every column built
+           (the copy arms read the pull slot): until then the hold is an
+           empty shell — release NULL, so a mid-build failure decrefs it
+           away and ixs_free releases the batch */
+        memset(&hold->arr, 0, sizeof(hold->arr));
+        atomic_init(&hold->refs, 0);
+      }
+    }
+    fc = frame_cols_new(x.ncols, x.hold.rows);
+    if (fc == NULL) {
+      PyErr_NoMemory();
+      goto done_hold;
+    }
+    {
+      cvt_warn warn = { 0, 0 };
+      for (int i = 0; i < x.ncols; i++) {
+        ixs_pcol *pc = &x.cols[i];
+        fcol *c = &fc->cols[i];
+        if (adopt != NULL && adopt[i]) {
+          fcol_adopt(&x, i, c, hold);
+          continue;
+        }
+        int rc;
+        switch (pc->kind) {
+        case PC_CVT:
+          rc = fcol_build_cvt(&x, i, c, pc->row,
+                              pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
+                              pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
+                              pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 :
+                              pc->row->wire == MIZU_TYPE_RAW ? FCOL_U8 :
+                              FCOL_LGL, &warn);
+          break;
+        case PC_STR: rc = fcol_build_str(&x, i, c, names); break;
+        case PC_DICT: rc = fcol_build_dict(&x, i, c); break;
+        case PC_DATE: rc = fcol_build_date(&x, i, c); break;
+        default: rc = fcol_build_rescale(&x, i, c, names); break;
+        }
+        if (rc < 0) {
+          frame_cols_decref(fc);
+          fc = NULL;
+          goto done;
+        }
+      }
+      if (mizu_py_cvt_warn(&warn) != 0) {
+        frame_cols_decref(fc);
+        fc = NULL;
+        goto done;
+      }
+    }
+    /* names into the block's packed store (ixs_names already proved them
+       present and unique) */
+    {
+      size_t name_len = 0;
+      for (int i = 0; i < x.ncols; i++) {
+        size_t len = strlen(names[i]);
+        char *nb = realloc(fc->names, name_len + len + 1);
+        if (nb == NULL) {
+          PyErr_NoMemory();
+          frame_cols_decref(fc);
+          fc = NULL;
+          goto done;
+        }
+        fc->names = nb;
+        memcpy(fc->names + name_len, names[i], len);
+        fc->name_off[i] = (int32_t) name_len;
+        name_len += len;
+      }
+      fc->name_off[x.ncols] = (int32_t) name_len;
+    }
+    if (hold != NULL) {
+      /* the batch struct moves into the hold (the pull slot zeroed, so
+         ixs_free skips it); the parent struct's release covers the
+         children and their dictionaries */
+      hold->arr = x.hold.arrs[0];
+      memset(&x.hold.arrs[0], 0, sizeof(x.hold.arrs[0]));
+    }
+  }
+  goto done;
+done_hold:
+  if (hold != NULL) free(hold);   /* the batch never moved: ixs_free's */
+done:
+  free(adopt);
+  free(names);
+  ixs_free(&x);
+  return fc;
 }
 
 // Entry points ---------------------------------------------------------------------

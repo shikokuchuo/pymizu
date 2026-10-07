@@ -21,6 +21,14 @@ static PyObject *frame_rebuild_fn;
 // The column block's lifecycle (pyframe.h's) -------------------------------------
 
 void fcol_free(fcol *c) {
+  if (c->ahold != NULL) {
+    /* an adopted column is wholly borrowed — values, validity, bytes and
+       lev_off ride the hold's batch release, and the lazy owned buffers
+       (bits / codes0 / valid_owned) belong to LGL and region kinds an
+       adopted column never takes: nothing to free, just the decref */
+    ahold_decref(c->ahold);
+    return;
+  }
   if (!c->borrowed) {
     free(c->values);
     free(c->valid);
@@ -72,16 +80,6 @@ int fcol_fixed_size(int kind) {
   case FCOL_U8: return 1;
   }
   return 0;
-}
-
-/* Date days -> i64 days, the NA sentinel shifted (to_dict's
-   datetime64[D] conversion). */
-static void conv_days_i64(uint8_t *dst, const void *ctx) {
-  const i32_span *s = (const i32_span *) ctx;
-  for (uint64_t i = 0; i < s->n; i++) {
-    int64_t v = s->p[i] == MIZU_NA_INT32 ? INT64_MIN : (int64_t) s->p[i];
-    memcpy(dst + 8 * i, &v, 8);
-  }
 }
 
 // Frame methods ---------------------------------------------------------------------
@@ -183,7 +181,10 @@ static PyObject *fcol_to_list(const fcol *c) {
   const int32_t *codes = (const int32_t *) c->values;
   for (int64_t i = 0; i < c->n; i++) {
     PyObject *s;
-    if (codes[i] == MIZU_NA_INT32) {
+    /* the bitmap is authoritative (an adopted column's codes at null
+       slots are unspecified); the sentinel is the owned invariant */
+    if ((c->valid != NULL && !bitmap_at(c->valid, i)) ||
+        codes[i] == MIZU_NA_INT32) {
       Py_INCREF(Py_None);
       s = Py_None;
     } else {
@@ -275,11 +276,11 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
   }
   switch (c->kind) {
   case FCOL_F64:
-    return ixr_vec_raw("float64", c->values, n, 8);
+    return ixr_masked_f64(c->values, c->valid, n);
   case FCOL_I32:
-    return ixr_vec_raw("int32", c->values, n, 4);
+    return ixr_masked_i32(c->values, c->valid, n);
   case FCOL_I64:
-    return ixr_vec_raw("int64", c->values, n, 8);
+    return ixr_masked_i64(c->values, c->valid, n);
   case FCOL_U8:
     return ixr_vec_raw("uint8", c->values, n, 1);
   case FCOL_C128:
@@ -303,9 +304,7 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                       "to_dict() (install it)");
       return NULL;
     }
-    i32_span s = { (const int32_t *) c->values, n };
-    return ixr_vec_conv("datetime64[D]", c->values, n, 8, conv_days_i64,
-                        &s);
+    return ixr_masked_days(c->values, c->valid, n);
   }
   case FCOL_TS: {
     PyObject *np = mizu_py_numpy_module();
@@ -314,7 +313,7 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                       "for to_dict() (install it)");
       return NULL;
     }
-    return ixr_vec_conv("datetime64[us]", c->values, n, 8, NULL, NULL);
+    return ixr_masked_us("datetime64[us]", c->values, c->valid, n);
   }
   case FCOL_TD: {
     PyObject *np = mizu_py_numpy_module();
@@ -323,7 +322,7 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                       "for to_dict() (install it)");
       return NULL;
     }
-    return ixr_vec_conv("timedelta64[us]", c->values, n, 8, NULL, NULL);
+    return ixr_masked_us("timedelta64[us]", c->values, c->valid, n);
   }
   }
   PyErr_SetString(MizuError, "pymizu: unknown frame column kind");
@@ -962,7 +961,13 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
     if (payload == NULL) goto fail;
     for (int64_t j = 0; j < c->n; j++) {
       PyObject *v = NULL;
-      switch (c->kind) {
+      /* the bitmap is authoritative wherever one exists (an adopted
+         column's values at null slots are unspecified); the switch's
+         sentinel checks are the owned invariant */
+      if (c->valid != NULL && !bitmap_at(c->valid, j)) {
+        Py_INCREF(Py_None);
+        v = Py_None;
+      } else switch (c->kind) {
       case FCOL_F64: {
         double x;
         memcpy(&x, c->values + 8 * j, 8);
@@ -1280,8 +1285,16 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       PyObject *v = PyList_GET_ITEM(payload, j);
       switch (c->kind) {
       case FCOL_F64: {
-        double x = PyFloat_AsDouble(v);
-        if (x == -1.0 && PyErr_Occurred()) goto nomem_malformed;
+        double x;
+        if (v == Py_None) {
+          /* an adopted column's pickle form carries None at nulls (the
+             owned form's NaN float also reads here) */
+          const uint64_t bits = PYMIZU_NA_REAL_BITS;
+          memcpy(&x, &bits, 8);
+        } else {
+          x = PyFloat_AsDouble(v);
+          if (x == -1.0 && PyErr_Occurred()) goto nomem_malformed;
+        }
         memcpy(c->values + 8 * j, &x, 8);
         break;
       }
@@ -1450,11 +1463,144 @@ PyObject *mizu_py_frame_loan(PyObject *obj) {
   return ((MizuFrame *) obj)->loan;
 }
 
+// The from_arrow constructor and the debug surface --------------------------------
+
+PyDoc_STRVAR(frame_from_arrow_doc,
+"from_arrow(obj) -> Frame\n\n\
+Construct a frame from an Arrow producer, adopting its buffers\n\
+wherever a column's frame layout is the Arrow layout (a single-batch\n\
+producer on offset-0 boundaries), so construction copies nothing it\n\
+does not have to — nulls included.\n\n\
+This is the opt-in zero-copy frame path for Python-to-Python\n\
+channels: past the zero-copy floor the frame crosses as one\n\
+shared-memory region and arrives region-backed, where a plain Arrow\n\
+object pickles (container-exact, but a full copy). The frame reads\n\
+back value-exact but type-normalized: a chunked or sliced producer's\n\
+columns concatenate, uints widen, nanosecond timestamps rescale to\n\
+microseconds, and the received value is a Frame, not the producer's\n\
+type.\n\n\
+Parameters\n\
+----------\n\
+obj\n\
+    Any ``__arrow_c_stream__`` producer: a pyarrow ``Table`` or\n\
+    ``RecordBatchReader``, a polars ``DataFrame``, a duckdb relation.\n\
+    ``Table.combine_chunks()`` is the route to the adopt path for a\n\
+    chunked table.\n\n\
+Returns\n\
+-------\n\
+    The frame. An adopted column keeps the producer's buffers alive\n\
+    for the frame's lifetime (numpy-view semantics: a frame from a\n\
+    4 GB table pins it).\n\n\
+Raises\n\
+------\n\
+MizuError\n\
+    The Arrow type has no portable home (the column is named), or\n\
+    the producer's export failed.\n\n\
+Examples\n\
+--------\n\
+>>> import pyarrow as pa\n\
+>>> import pymizu\n\
+>>> with pymizu.Channel.create(\n\
+...     \"\"\"\n\
+... import pymizu\n\
+... while True:\n\
+...     x = ch.recv()\n\
+...     if x is pymizu.CLOSED:\n\
+...         break\n\
+...     ch.send(x)\n\
+... \"\"\"\n\
+... ) as ch:\n\
+...     f = pymizu.Frame.from_arrow(\n\
+...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n\
+...     )\n\
+...     ch.send(f)\n\
+...     echoed = pa.table(ch.recv(timeout=5))\n\
+>>> echoed.column(\"x\").null_count\n\
+100000");
+
+static PyObject *Frame_from_arrow(PyObject *Py_UNUSED(cls),
+                                  PyObject *const *args,
+                                  Py_ssize_t nargs) {
+  if (nargs != 1) {
+    PyErr_Format(PyExc_TypeError,
+                 "from_arrow() takes exactly one argument (%zd given)",
+                 nargs);
+    return NULL;
+  }
+  frame_cols *fc = ixs_frame_cols_build(args[0]);
+  if (fc == NULL) return NULL;
+  MizuFrame *self = (MizuFrame *) MizuFrameType.tp_alloc(&MizuFrameType, 0);
+  if (self == NULL) {
+    frame_cols_decref(fc);
+    return NULL;
+  }
+  self->fc = fc;
+  Py_INCREF(Py_None);
+  self->row_names = Py_None;
+  self->loan = NULL;
+  return (PyObject *) self;
+}
+
+/* The test-only introspection surface (the _ShmView.refcount / .flags
+   precedent): per-column adopted / known-free flags and the shared
+   hold's refcount. */
+static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
+  if (!PyObject_TypeCheck(arg, &MizuFrameType)) {
+    PyErr_SetString(PyExc_TypeError, "pymizu: _frame_debug needs a Frame");
+    return NULL;
+  }
+  frame_cols *fc = ((MizuFrame *) arg)->fc;
+  PyObject *adopted = PyTuple_New(fc->ncols);
+  PyObject *kfree = PyTuple_New(fc->ncols);
+  if (adopted == NULL || kfree == NULL) {
+    Py_XDECREF(adopted);
+    Py_XDECREF(kfree);
+    return NULL;
+  }
+  Py_INCREF(Py_None);
+  PyObject *refs = Py_None;
+  for (int i = 0; i < fc->ncols; i++) {
+    fcol *c = &fc->cols[i];
+    PyObject *b = c->ahold != NULL ? Py_True : Py_False;
+    Py_INCREF(b);
+    PyTuple_SET_ITEM(adopted, i, b);
+    b = c->known_free ? Py_True : Py_False;
+    Py_INCREF(b);
+    PyTuple_SET_ITEM(kfree, i, b);
+    if (c->ahold != NULL && refs == Py_None) {
+      refs = PyLong_FromSize_t(
+        atomic_load_explicit(&c->ahold->refs, memory_order_relaxed));
+      if (refs == NULL) {
+        Py_DECREF(adopted);
+        Py_DECREF(kfree);
+        return NULL;
+      }
+    }
+  }
+  PyObject *out = PyDict_New();
+  if (out == NULL ||
+      PyDict_SetItemString(out, "adopted", adopted) < 0 ||
+      PyDict_SetItemString(out, "known_free", kfree) < 0 ||
+      PyDict_SetItemString(out, "hold_refs", refs) < 0) {
+    Py_XDECREF(out);
+    Py_DECREF(adopted);
+    Py_DECREF(kfree);
+    Py_DECREF(refs);
+    return NULL;
+  }
+  Py_DECREF(adopted);
+  Py_DECREF(kfree);
+  Py_DECREF(refs);
+  return out;
+}
+
 // The Frame type object --------------------------------------------------------------
 
 static PyMethodDef Frame_methods[] = {
   { "to_dict", (PyCFunction) Frame_to_dict, METH_NOARGS,
     frame_to_dict_doc },
+  { "from_arrow", (PyCFunction)(void (*)(void)) Frame_from_arrow,
+    METH_CLASS | METH_FASTCALL, frame_from_arrow_doc },
   { "__arrow_c_stream__", (PyCFunction)(void (*)(void))
     Frame_arrow_c_stream, METH_VARARGS | METH_KEYWORDS,
     frame_arrow_stream_doc },
@@ -1482,12 +1628,18 @@ PyTypeObject MizuFrameType = {
   .tp_flags = Py_TPFLAGS_DEFAULT,
   .tp_doc = "A data.frame's Python home: named columns with a row count.\n"
             "to_dict() gives the column dict without an Arrow library;\n"
-            "__arrow_c_stream__ exports to polars / pyarrow / pandas.",
+            "__arrow_c_stream__ exports to polars / pyarrow / pandas.\n"
+            "from_arrow() constructs one from an Arrow producer (the\n"
+            "opt-in zero-copy path for Python-to-Python channels).",
   .tp_dealloc = (destructor) Frame_dealloc,
   .tp_repr = (reprfunc) Frame_repr,
   .tp_as_sequence = &Frame_as_sequence,
   .tp_methods = Frame_methods,
   .tp_getset = Frame_getset,
+  /* NULL blocks Frame() (a static type on base object never inherits
+     tp_new — type_call raises): instances come from a channel receive,
+     from_arrow(), or _frame_rebuild */
+  .tp_new = NULL,
 };
 
 int mizu_py_frame_register(PyObject *m, PyObject *mizu_error) {
@@ -1496,6 +1648,11 @@ int mizu_py_frame_register(PyObject *m, PyObject *mizu_error) {
     "_frame_rebuild", frame_rebuild, METH_VARARGS,
     "Rebuild a Frame from its pickle state (facade use only)."
   };
+  static PyMethodDef debug_def = {
+    "_frame_debug", frame_debug, METH_O,
+    "Per-column adopted / known-free flags and the hold refcount "
+    "(test-only)."
+  };
   PyObject *fn = PyCFunction_New(&rebuild_def, NULL);
   if (fn == NULL) return -1;
   if (PyModule_AddObject(m, "_frame_rebuild", fn) < 0) {
@@ -1503,6 +1660,12 @@ int mizu_py_frame_register(PyObject *m, PyObject *mizu_error) {
     return -1;
   }
   frame_rebuild_fn = fn;   /* borrowed stash: __reduce__ returns it */
+  fn = PyCFunction_New(&debug_def, NULL);
+  if (fn == NULL) return -1;
+  if (PyModule_AddObject(m, "_frame_debug", fn) < 0) {
+    Py_DECREF(fn);
+    return -1;
+  }
   if (PyType_Ready(&MizuFrameType) < 0) return -1;
   Py_INCREF(&MizuFrameType);
   return PyModule_AddObject(m, "Frame", (PyObject *) &MizuFrameType);

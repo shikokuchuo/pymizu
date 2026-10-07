@@ -120,6 +120,18 @@ size_t mizu_py_blob_date(uint8_t *dst);
 size_t mizu_py_blob_ts(uint8_t *dst, const char *tz);
 size_t mizu_py_blob_difftime(uint8_t *dst);
 
+// The Frame.from_arrow builder (interop.c's; interop_frame.c wraps) -----------
+
+/* Drain an __arrow_c_stream__ producer into a fresh column block: a single
+   batch's columns whose fcol layout IS the Arrow layout adopt the
+   producer's buffers behind one mizu_arrow_hold (nulls included — the
+   validity bitmap adopts with the values); the rest copy per column
+   (multi-batch concat, typed conversions, string gathers). Names from the
+   schema children; nrow the drained row count. NULL with an exception set
+   (MizuError — an unsupported type names its column, a producer/export
+   failure the export's own text). */
+struct frame_cols *ixs_frame_cols_build(PyObject *obj);
+
 // shmframe.c -------------------------------------------------------------------
 
 /* Exception stash, mirroring mizu_py_interop_register. */
