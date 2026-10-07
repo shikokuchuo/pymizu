@@ -1,8 +1,10 @@
 """Task-frame codec tests: the structured (fn, args, kwargs) staging tier
 — fn by reference or pickled, codec scalar / None / container / buffer
-leaves, and the zero-copy BUFREF leaf — over real spawned workers, plus
-parser-level coverage through the ``_read_stream`` hook."""
+leaves, and the zero-copy BUFREF / FRAMEREF leaves — over real spawned
+workers, plus parser-level coverage through the ``_read_stream`` hook."""
 
+import gc
+import math
 import os
 import pickle
 import subprocess
@@ -11,10 +13,18 @@ from functools import partial
 
 import numpy as np
 import pytest
-from tests.helpers import array_sum, echo, is_readonly, square, sum_mixed
+from tests.helpers import (
+    array_sum,
+    echo,
+    frame_and_buffer,
+    frames_report,
+    is_readonly,
+    square,
+    sum_mixed,
+)
 
 import pymizu
-from pymizu._pymizu import _read_stream, _task_frame
+from pymizu._pymizu import _frame_rebuild, _read_stream, _task_frame
 
 
 @pytest.fixture
@@ -127,6 +137,150 @@ def test_vanished_bufref_region_does_not_wedge_pool(pool):
         assert pool.submit(square, 3).collect(timeout=5) == 9
 
 
+# The FRAMEREF leaf: a Frame argument past the zero-copy floor --------------
+
+
+def big_frame(n=20000, with_nulls=True):
+    """A Frame past the 32 KiB zero-copy floor: int32 / float64 / string
+    columns, every tenth value null."""
+
+    def maybe(vals, k):
+        return None if with_nulls and k % 10 == 0 else vals
+
+    return _frame_rebuild(
+        ["i", "x", "s"],
+        [
+            ("i", [maybe(k, k) for k in range(n)]),
+            ("g", [maybe(k * 0.5, k) for k in range(n)]),
+            ("s", [maybe(f"s{k % 100}", k) for k in range(n)]),
+        ],
+        None,
+    )
+
+
+def test_frame_arg_zero_copy_view(pool):
+    # a Frame argument past the zero-copy floor crosses as one MIZL region
+    # (FRAMEREF): the worker's callable receives a region-backed Frame,
+    # values and nulls exact
+    report = pool.submit(frames_report, big_frame()).collect(timeout=10)
+    backing, head = report[0]
+    assert backing == {"i": "_ShmView", "x": "_ShmView", "s": "list"}
+    assert head["i"] == [-(2**31), 1, 2]
+    assert math.isnan(head["x"][0]) and head["x"][1:] == [0.5, 1.0]
+    assert head["s"] == [None, "s1", "s2"]
+    # and again: the region recycled back to the free list
+    report = pool.submit(frames_report, big_frame()).collect(timeout=10)
+    assert report[0][0]["i"] == "_ShmView"
+
+
+def test_small_frame_arg_pickles(pool):
+    # below the floor the whole task tuple pickles: a copy-backed Frame,
+    # values exact
+    report = pool.submit(frames_report, big_frame(100)).collect(timeout=5)
+    backing, head = report[0]
+    assert backing["i"] != "_ShmView" and backing["x"] != "_ShmView"
+    assert math.isnan(head["i"][0]) and head["i"][1:] == [1.0, 2.0]
+    assert math.isnan(head["x"][0]) and head["x"][1:] == [0.5, 1.0]
+    assert head["s"] == [None, "s1", "s2"]
+
+
+def test_frame_args_one_region_budget(pool):
+    # one staging checkout per task: a second region-sized argument (a
+    # second frame, or a big buffer) sends the whole task down the pickle
+    # path — every argument a copy, values exact
+    r1, r2 = pool.submit(frames_report, big_frame(), big_frame()).collect(
+        timeout=10
+    )
+    assert r1[0]["i"] != "_ShmView" and r2[0]["i"] != "_ShmView"
+    assert math.isnan(r1[1]["i"][0]) and r1[1]["i"][1:] == [1.0, 2.0]
+    assert r2[1]["s"] == [None, "s1", "s2"]
+    a = np.arange(1000000, dtype=np.float64)
+    (backing, head), writable, total = pool.submit(
+        frame_and_buffer, big_frame(), a
+    ).collect(timeout=10)
+    assert backing["i"] != "_ShmView" and writable is False
+    assert total == float(a.sum())
+    assert math.isnan(head["i"][0]) and head["i"][1:] == [1.0, 2.0]
+
+
+def test_frame_arg_from_arrow_adopted(pool):
+    # an adopted (Frame.from_arrow) argument needs no special casing: the
+    # export pins its columns through the MIZL write, so the worker's frame
+    # is exact even after the producer table is gone
+    pa = pytest.importorskip("pyarrow")
+    n = 20000
+    tbl = pa.table(
+        {
+            "i": pa.array(
+                [None if k % 10 == 0 else k for k in range(n)],
+                type=pa.int32(),
+            ),
+            "x": pa.array(
+                [None if k % 10 == 0 else k * 0.5 for k in range(n)]
+            ),
+        }
+    )
+    f = pymizu.Frame.from_arrow(tbl)
+    del tbl
+    gc.collect()
+    report = pool.submit(frames_report, f).collect(timeout=10)
+    backing, head = report[0]
+    assert backing == {"i": "_ShmView", "x": "_ShmView"}
+    assert head["i"] == [-(2**31), 1, 2]
+    assert math.isnan(head["x"][0]) and head["x"][1:] == [0.5, 1.0]
+
+
+def test_frame_arg_complex_column_pickles(pool):
+    # a complex column has no Arrow export: the FRAMEREF write declines
+    # and the whole task tuple pickles — a copy-backed Frame, values exact
+    n = 4096  # past the floor at the size gate (64 KiB of complex128)
+    f = _frame_rebuild(
+        ["z", "i"],
+        [("Z", [complex(k, -k) for k in range(n)]), ("i", list(range(n)))],
+        None,
+    )
+    report = pool.submit(frames_report, f).collect(timeout=10)
+    backing, head = report[0]
+    assert backing["z"] != "_ShmView"
+    assert head["z"] == [complex(0, 0), complex(1, -1), complex(2, -2)]
+    assert head["i"] == [0, 1, 2]
+
+
+def test_submit_batch_frame_payload(pool):
+    # a batch item's arguments ride the callable's own pickle: the frame
+    # crosses by value, values exact
+    tasks = pool.submit_batch([partial(frames_report, big_frame())])
+    backing, head = tasks[0].collect(timeout=10)[0]
+    assert backing["i"] != "_ShmView"
+    assert math.isnan(head["i"][0]) and head["i"][1:] == [1.0, 2.0]
+    assert head["s"] == [None, "s1", "s2"]
+
+
+def test_vanished_frameref_region_does_not_wedge_pool(pool):
+    # a submitter stages a FRAMEREF task and dies before the worker
+    # resolves the region: the failed resolve publishes DIED to a slot
+    # nobody collects, and the worker's drain continues
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys\n"
+            "from pymizu import Pool\n"
+            "from pymizu._pymizu import _frame_rebuild\n"
+            "from tests.helpers import frames_report\n"
+            "f = _frame_rebuild(['i'], [('i', list(range(20000)))], None)\n"
+            "p = Pool.attach(sys.argv[1])\n"
+            "p.submit(frames_report, f)\n"
+            "os._exit(0)\n",
+            pool.token,
+        ],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+    )
+    child.wait(timeout=10)
+    for _ in range(3):
+        assert pool.submit(square, 3).collect(timeout=5) == 9
+
+
 # Parser-level coverage through the _read_stream hook -------------------
 
 
@@ -214,6 +368,34 @@ def test_read_stream_corrupt_frames():
         + b"r"
         + bytes([1])
         + (8).to_bytes(8, "little")
+        + bytes([13])
+        + b"/mizu_nonexist"
+    )
+    with pytest.raises(pymizu.MizuError, match="gone"):
+        _read_stream(stream)
+    # a FRAMEREF leaf with a truncated name
+    stream = (
+        b"Pk\x00"
+        + _s("builtins")
+        + _s("pow")
+        + b"t"
+        + (1).to_bytes(4, "little")
+        + b"F"
+        + (19 | (100 << 8)).to_bytes(8, "little")
+        + bytes([12])
+        + b"/mizu_short"
+    )
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(stream)
+    # a FRAMEREF leaf naming a region that does not exist
+    stream = (
+        b"Pk\x00"
+        + _s("builtins")
+        + _s("pow")
+        + b"t"
+        + (1).to_bytes(4, "little")
+        + b"F"
+        + (19 | (100 << 8)).to_bytes(8, "little")
         + bytes([13])
         + b"/mizu_nonexist"
     )

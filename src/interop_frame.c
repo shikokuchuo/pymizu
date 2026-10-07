@@ -82,6 +82,32 @@ int fcol_fixed_size(int kind) {
   return 0;
 }
 
+/* The column-body byte total: the FRAMEREF gate's cheap data-size lower
+   bound (directory, blobs and validity tails excluded — the MIZL write
+   prices those itself). */
+uint64_t frame_data_size(const frame_cols *fc) {
+  uint64_t total = 0;
+  for (int i = 0; i < fc->ncols; i++) {
+    const fcol *c = &fc->cols[i];
+    switch (c->kind) {
+    case FCOL_STR:
+      total += 4 * (uint64_t) (c->n + 1) + (uint64_t) c->bytes_len;
+      break;
+    case FCOL_DICT:
+      total += 4 * (uint64_t) c->n + 4 * (uint64_t) (c->nlev + 1) +
+        (uint64_t) c->bytes_len;
+      break;
+    case FCOL_STR64:
+      total += (uint64_t) c->bytes_len;
+      break;
+    default:
+      total += (uint64_t) c->n * (uint64_t) fcol_fixed_size(c->kind);
+      break;
+    }
+  }
+  return total;
+}
+
 // Frame methods ---------------------------------------------------------------------
 
 static void Frame_dealloc(MizuFrame *self) {

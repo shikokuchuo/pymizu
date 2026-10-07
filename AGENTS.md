@@ -168,9 +168,20 @@ tools/vendor-libmizu.sh` for a local checkout).
      `__main__`) or its own protocol-4 pickle; args/kwargs as codec
      scalars, None, one flat container level, or buffer leaves — inline
      bytes, or past the zc floor a SHM_VEC region named by a BUFREF leaf
-     (at most one per frame, the stream then inline-only: the core's
-     staging seam holds a single spill checkout). A BUFREF argument
-     arrives as a read-only view.
+     (at most one region leaf per frame, the stream then inline-only:
+     the core's staging seam holds a single spill checkout). A BUFREF
+     argument arrives as a read-only view. An exact `Frame` leaf (the
+     same nesting rule) past the zc floor stages as a FRAMEREF leaf
+     (`PYMIZU_TAG_FRAMEREF` 'F': the region's SHM_VEC aux verbatim, then
+     the name) — `pymizu_frame_stage_mizl` writes one MIZL region into
+     the same single checkout (the shared `fp->ref` budget), the size
+     pass gating on `frame_data_size`'s column-body lower bound
+     (interop_frame.c, declared in pyframe.h); a below-floor frame,
+     churn, a declined write (a complex column has no Arrow export), or
+     a second region-sized leaf sends the whole tuple to pickle. The
+     read arm rides `read_shm_vec` (a region-backed Frame, the
+     `ctx->gone` discipline); an adopted (from_arrow) Frame needs no
+     special casing.
   6. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
      defined in the vendored `mizu_ext.h` next to mizu's own
      `MIZU_CODEC_MAGIC` 0x52 'R' — one registry for both bindings): bool,
@@ -183,8 +194,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   `stage_bytes` frames the pickle/codec/task-frame streams over the
   INLINE/ARENA/SHM_RAW tiers; the INLINE frame stamps the keeperless
   claim (`MIZU_AUX_F_KEEPERLESS`) — these streams commit no retain-table
-  entry of their own, and a BUFREF leaf's zc loan rides the claim-side
-  release machinery, not the keeper-drop reap.
+  entry of their own, and a by-reference leaf's zc loan rides the
+  claim-side release machinery, not the keeper-drop reap.
 
   The buffer gate requests `PyBUF_ND | PyBUF_FORMAT` and verifies
   C-contiguity as `strides == NULL` — never `PyBUF_C_CONTIGUOUS`, which
@@ -278,7 +289,10 @@ tools/vendor-libmizu.sh` for a local checkout).
   `collect_any`/`collect_all`, `retire`/`spawn_workers`, submitter
   `attach(token)`, and a trace hook (`mizu_pool_set_trace`: submit-side
   events on the calling thread, removed with None, hook errors
-  unraisable). Module-level `pymizu.prune()` runs the vendored reaper,
+  unraisable). `submit_batch` items are zero-arg callables (bind
+  arguments with `functools.partial`), so their arguments ride the
+  callable's own pickle — a frame bound there crosses by value, never
+  FRAMEREF. Module-level `pymizu.prune()` runs the vendored reaper,
   reclaiming `/mizu_` regions orphaned by dead creators (a hard-killed
   process runs no finalizers).
 - Join tokens: `<pid hex>_<counter hex>`, validated against

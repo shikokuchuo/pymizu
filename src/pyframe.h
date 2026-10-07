@@ -124,6 +124,10 @@ void frame_cols_decref(frame_cols *fc);
 frame_cols *frame_cols_new(int ncols, int64_t nrow);
 int fcol_fixed_size(int kind);
 
+/* The FRAMEREF gate's data-size lower bound (the task codec's size pass):
+   the column-body bytes only. */
+uint64_t frame_data_size(const frame_cols *fc);
+
 /* The __arrow_c_stream__ method body: interop.c's same-language MIZL
    branch drives it directly (pymizu_frame_stage_mizl). */
 PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,

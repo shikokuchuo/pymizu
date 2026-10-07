@@ -33,6 +33,7 @@ PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #include "mizu_ext.h"
 #include "pymap.h"
 #include "pyinterop.h"
+#include "pyframe.h"     /* the Frame type and column block (FRAMEREF) */
 
 #define MIZU_STR_(x) #x
 #define MIZU_STR(x) MIZU_STR_(x)
@@ -1013,7 +1014,8 @@ enum {
   PYMIZU_TAG_NONE = 'n',      /* None inside frames/containers */
   PYMIZU_TAG_TASK = 'k',      /* the (fn, args, kwargs) task frame */
   PYMIZU_TAG_BUFFER = 'Y',    /* a buffer-protocol leaf, inline bytes */
-  PYMIZU_TAG_BUFREF = 'r'     /* a buffer leaf by reference (SHM_VEC name) */
+  PYMIZU_TAG_BUFREF = 'r',    /* a buffer leaf by reference (SHM_VEC name) */
+  PYMIZU_TAG_FRAMEREF = 'F'   /* a Frame by reference (a MIZL region name) */
 };
 
 /* Exact-type checks throughout: a subclass (IntEnum, a str subclass) keeps
@@ -1303,7 +1305,8 @@ typedef struct {
   uint64_t sz;
   uint32_t inline_max;
   int churn;              /* snapshot at stage start: the passes agree */
-  int bufref;             /* a BUFREF leaf is planned (one per frame) */
+  int ref;                /* a by-reference leaf (BUFREF / FRAMEREF) is
+                             planned — one per frame, the single checkout */
   int fn_kind;            /* 0 by reference, 1 pickled */
   PyObject *fn_mod;       /* kind 0 (owned) */
   PyObject *fn_qual;      /* kind 0 (owned) */
@@ -1334,8 +1337,8 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
   size_t zc_gate = (size_t) fp->inline_max > MIZU_ZC_FLOOR ?
     (size_t) fp->inline_max : MIZU_ZC_FLOOR;
   if (!fp->churn && n >= zc_gate) {
-    if (fp->bufref) return -1;   /* one staging checkout per frame */
-    fp->bufref = 1;
+    if (fp->ref) return -1;   /* one staging checkout per frame */
+    fp->ref = 1;
     fp->sz += 11 + MIZU_NAME_MAX;   /* tag, type, count, name_len, name */
   } else {
     fp->sz += 10 + (uint64_t) n;
@@ -1343,10 +1346,31 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
   return 0;
 }
 
-/* A leaf that is not a container: a codec scalar (None included) or a
-   buffer. */
+/* Frame leaf, size pass: a Frame past the zc floor plans a FRAMEREF — one
+   MIZL region written at the write pass, sharing the BUFREF single-checkout
+   budget. The gate is frame_data_size's cheap lower bound (the write's own
+   floor re-check is authoritative; a decline there abandons to the
+   whole-tuple pickle, exactly like frame_buf_write's churn race). Below
+   the floor or under churn the leaf rejects: a Frame has no inline leaf
+   form, so the whole task tuple pickles (the pre-FRAMEREF behavior).
+   0 ok, -1 reject. */
+static int frame_ref_size(PyObject *o, frame_plan *fp) {
+  size_t zc_gate = (size_t) fp->inline_max > MIZU_ZC_FLOOR ?
+    (size_t) fp->inline_max : MIZU_ZC_FLOOR;
+  if (fp->churn ||
+      frame_data_size(((MizuFrame *) o)->fc) < (uint64_t) zc_gate)
+    return -1;
+  if (fp->ref) return -1;   /* one staging checkout per frame */
+  fp->ref = 1;
+  fp->sz += 10 + MIZU_NAME_MAX;   /* tag, aux, name_len, name */
+  return 0;
+}
+
+/* A leaf that is not a container: a codec scalar (None included), a Frame,
+   or a buffer. */
 static int frame_flat_size(PyObject *o, frame_plan *fp) {
   if (codec_scalar_size(o, &fp->sz) == 0) return 0;
+  if (Py_TYPE(o) == &MizuFrameType) return frame_ref_size(o, fp);
   return frame_buf_size(o, fp);
 }
 
@@ -1418,9 +1442,9 @@ static int frame_size(PyObject *frame, frame_plan *fp, uint32_t inline_max,
       if (frame_leaf_size(v, fp) < 0) goto reject;
     }
   }
-  /* a BUFREF leaf holds the stage's single spill checkout, so the stream
-     itself must stay inline (it cannot also spill) */
-  if (fp->bufref && fp->sz > (uint64_t) inline_max) goto reject;
+  /* a by-reference leaf holds the stage's single spill checkout, so the
+     stream itself must stay inline (it cannot also spill) */
+  if (fp->ref && fp->sz > (uint64_t) inline_max) goto reject;
   return 0;
 reject:
   frame_plan_clear(fp);
@@ -1478,12 +1502,36 @@ out:
   return rc;
 }
 
+/* Frame leaf, write pass: the size pass planned the FRAMEREF, so the slot
+   path's own MIZL stage does everything — the export, the ixs pull, the
+   layout write into the seam's one spill checkout, and the zc retain (the
+   producer loan rides the claim-side release machinery, released at
+   collect). The leaf carries the region's SHM_VEC aux verbatim: the
+   decode's tree wrap cross-check rides it. A decline (-1, never an error:
+   a churn race, a region failure, a complex column) abandons the stage,
+   so the whole tuple pickles — an adopted (from_arrow) Frame needs no
+   special casing, the export pins its columns through the write. */
+static int frame_ref_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+                           mizu_handle *h) {
+  mizu_slot_hdr lhdr;
+  uint8_t lname[MIZU_NAME_MAX];
+  if (pymizu_frame_stage_mizl(o, &lhdr, lname, fp->inline_max, h) != 0)
+    return -1;
+  *(*p)++ = PYMIZU_TAG_FRAMEREF;
+  codec_put64(p, lhdr.aux);
+  *(*p)++ = (uint8_t) lhdr.len;
+  memcpy(*p, lname, lhdr.len);
+  *p += lhdr.len;
+  return 0;
+}
+
 static int frame_flat_write(uint8_t **p, PyObject *o, const frame_plan *fp,
                             mizu_handle *h) {
   if (o == Py_None || codec_tag_of(o) != 0) {
     codec_put_scalar(p, o);
     return 0;
   }
+  if (Py_TYPE(o) == &MizuFrameType) return frame_ref_write(p, o, fp, h);
   return frame_buf_write(p, o, fp, h);
 }
 
@@ -1563,7 +1611,7 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
     if (buf == payload) {
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
-      /* keeperless even with a BUFREF leaf: its zc loan rides the
+      /* keeperless even with a by-reference leaf: its zc loan rides the
          claim-side release machinery, not the keeper-drop reap */
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
     } else {
@@ -4079,6 +4127,21 @@ static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
       return NULL;
     /* the SHM_VEC aux shape: the staged type and the exact byte count */
     uint64_t aux = mizu_aux_shm_vec((int) type, MIZU_HEADER_SIZE + n);
+    PyObject *r = read_shm_vec(*p, name_len, aux, ctx);
+    if (r != NULL) *p += name_len;
+    return r;
+  }
+  case PYMIZU_TAG_FRAMEREF: {
+    if ((size_t) (end - *p) < 10) return NULL;
+    (*p)++;
+    uint64_t aux = codec_get64(p);
+    uint32_t name_len = *(*p)++;
+    if (name_len == 0 || name_len >= MIZU_NAME_MAX ||
+        (size_t) (end - *p) < name_len)
+      return NULL;
+    /* a MIZL frame region (the aux carried verbatim from the write): the
+       SHM_VEC dispatch wraps it as a region-backed Frame, the vanished-
+       region case riding ctx->gone — both the BUFREF discipline */
     PyObject *r = read_shm_vec(*p, name_len, aux, ctx);
     if (r != NULL) *p += name_len;
     return r;

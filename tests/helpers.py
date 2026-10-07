@@ -346,6 +346,31 @@ def frame_unpickle(payload):
     return pickle.loads(payload)
 
 
+def frames_report(*frames):
+    """Per Frame argument: the arrival verdict — the backing form
+    ('_ShmView' when region-backed, 'list' for materialized strings) and
+    the head values, nulls included."""
+    out = []
+    for f in frames:
+        d = f.to_dict()
+        backing = {
+            k: "list" if isinstance(v, list) else type(v.base).__name__
+            for k, v in d.items()
+        }
+        head = {
+            k: v[:3] if isinstance(v, list) else v[:3].tolist()
+            for k, v in d.items()
+        }
+        out.append((backing, head))
+    return out
+
+
+def frame_and_buffer(f, a):
+    """A Frame and a buffer argument's arrival forms, with the buffer's
+    sum (the one-checkout budget: both copy on the pickle fallback)."""
+    return frames_report(f)[0], not a.flags.writeable, float(a.sum())
+
+
 def foreign_pair(caps=0):
     """An in-process channel whose host end stages interop: the attach
     side reports (R, caps) as its identity word, so the host reads a

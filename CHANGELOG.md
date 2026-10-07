@@ -17,6 +17,16 @@ Initial pre-release.
 
 ### Added
 
+- Zero-copy frames as pool task arguments: a `pymizu.Frame` argument
+  past the zero-copy floor now stages as one shared-memory region, so
+  the worker's callable receives a region-backed frame instead of a
+  pickled copy — the task-argument leg of the channel path, mirroring
+  the result leg that already rode the region. Below the floor, with a
+  complex column, or with a second region-sized argument (another frame
+  or a large buffer) the whole task pickles as before — one staging
+  checkout per task, the buffer-leaf rule. Raw pyarrow and polars
+  frames keep the pickle path (container-exactness); constructing the
+  `Frame` opts in.
 - `pymizu.Frame.from_arrow()`: the opt-in zero-copy frame path for
   Python-to-Python channels. Constructs a `Frame` from any
   `__arrow_c_stream__` producer (a pyarrow `Table` or
