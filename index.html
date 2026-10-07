@@ -243,7 +243,7 @@ section.level2:first-of-type > h2:first-child,
 </section>
 <section id="community" class="level3">
 <h3 class="anchored" data-anchor-id="community">Community</h3>
-<p><a href="./code-of-conduct.html">Code of conduct</a><br> <a href="./license.html">Full license</a> <span class="gd-spdx-badge" title="MIT License">MIT</span><br></p>
+<p><a href="./contributing.html">Contributing guide</a><br> <a href="./code-of-conduct.html">Code of conduct</a><br> <a href="./license.html">Full license</a> <span class="gd-spdx-badge" title="MIT License">MIT</span><br></p>
 </section>
 <section id="meta" class="level3">
 <h3 class="anchored" data-anchor-id="meta">Meta</h3>
@@ -255,83 +255,212 @@ section.level2:first-of-type > h2:first-child,
     \  /  水   /
      \/_______/</code></pre>
 <p>pymizu makes communication between Python processes cheap enough to divide work at granularities usually reserved for threads.</p>
+<p>Shared memory has always been the fastest IPC transport. A socket round trip costs four system calls and four copies of the data; in shared memory, one process reads the bytes the other wrote — the kernel never touches the data. pymizu handles the synchronization, waiting, and peer crashes for you, so a task round trip drops from around 100 µs over sockets to under a microsecond — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>).</p>
 <p>In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes. Processes also isolate failures: a worker that crashes does not take the host down with it.</p>
 <p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).</p>
-<p>A channel is a two-way message link between a Python process and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves. In both, one process writes data and the other reads it in place, without copying through a socket, pipe, or file.</p>
+<p>A channel is a two-way message link between a Python process and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves.</p>
 <p>The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.</p>
 <p>pymizu is built on <a href="https://github.com/shikokuchuo/libmizu">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/mizu">mizu</a> binds the same core for R, so Python and R processes can share a channel.</p>
-<p>Pre-release. The API is not stable and may change at any time before a release.</p>
-<section id="use-cases" class="level2">
-<h2 class="anchored" data-anchor-id="use-cases">Use cases</h2>
-<p><strong>Parallelize Python at thread granularity.</strong> The stdlib process pools spend around 100 µs per task on pickling and a socket round trip, so anything finer than coarse jobs runs faster serially. pymizu hands off a task in shared memory and wakes one worker — overhead under a microsecond — so functions measured in microseconds parallelize profitably across cores. See <a href="./user-guide/benchmarks.html">Benchmarks</a>.</p>
-<p><strong>Orchestrate R workers from Python.</strong> <a href="./reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">pymizu.r_launcher()</a> and <a href="./reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">pymizu.r_pool_launcher()</a> spawn R processes as channel peers or pool workers, driven by <a href="./reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> specs. Data crosses as shared-memory views rather than serialized copies — a numpy array arrives in R as a vector, and results come back the same way — so a Python program can use R’s package ecosystem as if it were local. See <a href="./user-guide/interop.html">R interop</a>.</p>
-</section>
+<ul>
+<li>Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb).</li>
+<li>Drop-in <code>concurrent.futures.Executor</code> — real <code>Future</code>s, <code>wait</code>, <code>as_completed</code>, <code>asyncio.wrap_future</code>.</li>
+<li>Reproducible parallel randomness (<code>seed=</code>), invariant for any worker count or steal order.</li>
+<li>Sentinels, not exceptions, on hot paths; worker crashes detected at OS latency.</li>
+<li>Typed (<code>py.typed</code> + stubs); Python 3.10+ on Linux, macOS, and Windows.</li>
+</ul>
+<blockquote class="blockquote">
+<p><strong>Pre-release.</strong> The API is not stable and may change at any time before a release.</p>
+</blockquote>
 <section id="installation" class="level2">
 <h2 class="anchored" data-anchor-id="installation">Installation</h2>
 <div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install git+https://github.com/shikokuchuo/pymizu</span></code></pre></div>
 <p>Requires Python 3.10 or later on a 64-bit platform. See <a href="./user-guide/installation.html">Installation</a> for platform notes, optional extras, and deployment on Linux.</p>
 </section>
-<section id="channels" class="level2">
-<h2 class="anchored" data-anchor-id="channels">Channels</h2>
-<p><a href="./reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with <code>ch</code> bound to the peer-side handle:</p>
-<div id="3f9324df" class="cell" data-execution_count="1">
+<section id="quickstart" class="level2">
+<h2 class="anchored" data-anchor-id="quickstart">Quickstart</h2>
+<div id="e5f4043f" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="st">import pymizu</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="st">while True:</span></span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="st">    x = ch.recv()</span></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="st">    if x is pymizu.CLOSED:</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="st">        break</span></span>
-<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="st">    ch.send(x)</span></span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>)</span>
-<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
-<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="1">
-<pre><code>[1, 'a', None]</code></pre>
-</div>
-</div>
-<div id="198b8977" class="cell" data-execution_count="2">
-<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="2">
-<pre><code>True</code></pre>
-</div>
-</div>
-<p>Terminal states come back as sentinel singletons — <code>pymizu.FULL</code>, <code>pymizu.TIMEOUT</code>, <code>pymizu.CLOSED</code>, <code>pymizu.PEER_GONE</code> — tested by identity, never raised. See <a href="./user-guide/channels.html">Channels</a>.</p>
-</section>
-<section id="task-pools" class="level2">
-<h2 class="anchored" data-anchor-id="task-pools">Task pools</h2>
-<p><a href="./reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop. <code>pool.submit()</code> returns a task handle immediately; <code>task.collect()</code> waits for its result:</p>
-<div id="a69feb96" class="cell" data-execution_count="3">
-<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="3">
 <pre><code>65536</code></pre>
 </div>
 </div>
-<p>See <a href="./user-guide/pools.html">Task pools</a>.</p>
+</section>
+<section id="benchmarks" class="level2">
+<h2 class="anchored" data-anchor-id="benchmarks">Benchmarks</h2>
+<p>Communication overhead against the stdlib <code>concurrent.futures</code> pools (Apple M4 Pro, from <code>benchmarks/mizu-stdlib-bench.py</code>).</p>
+<p>Against <code>ProcessPoolExecutor</code> (tasks run in separate processes, with pickled payloads):</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Benchmark</th>
+<th>pymizu</th>
+<th>ProcessPoolExecutor</th>
+<th>Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Trivial task round trip</td>
+<td>0.7 µs</td>
+<td>94.2 µs</td>
+<td>135x</td>
+</tr>
+<tr class="even">
+<td>Pipelined throughput, 1 worker</td>
+<td>2,390,000 tasks/s</td>
+<td>18,500 tasks/s</td>
+<td>129x</td>
+</tr>
+<tr class="odd">
+<td>Parallel map overhead, trivial function, 4 workers</td>
+<td>0.4 µs/elt*</td>
+<td>70.3 µs/elt</td>
+<td>176x</td>
+</tr>
+<tr class="even">
+<td>Parallel map of 2,000 ~5 µs tasks, 4 workers</td>
+<td>4.3 ms</td>
+<td>129 ms</td>
+<td>30x</td>
+</tr>
+</tbody>
+</table>
+<p>Against <code>ThreadPoolExecutor</code> (tasks share one process, so the GIL caps CPU-bound work at a single core):</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Benchmark</th>
+<th>pymizu</th>
+<th>ThreadPoolExecutor</th>
+<th>Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Trivial task round trip</td>
+<td>0.7 µs</td>
+<td>9.5 µs</td>
+<td>14x</td>
+</tr>
+<tr class="even">
+<td>Pipelined throughput, 1 worker</td>
+<td>2,390,000 tasks/s</td>
+<td>405,000 tasks/s</td>
+<td>5.9x</td>
+</tr>
+<tr class="odd">
+<td>Parallel map overhead, trivial function, 4 workers</td>
+<td>0.4 µs/elt*</td>
+<td>2.6 µs/elt</td>
+<td>6.5x</td>
+</tr>
+<tr class="even">
+<td>Parallel map of 2,000 ~5 µs tasks, 4 workers</td>
+<td>4.3 ms</td>
+<td>50 ms</td>
+<td>12x</td>
+</tr>
+</tbody>
+</table>
+<p>Against <code>InterpreterPoolExecutor</code> (Python 3.14+, subinterpreters with per-interpreter GILs): on the trivial-task rows it lands between the thread and process pools — 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07). The map rows it cannot run at all: task payloads must be shareable — builtin scalars, plain containers, or buffer-protocol objects — so numpy arrays and numpy scalars raise <code>NotShareableError</code>.</p>
+<p>* elt = element; microseconds of wall time per map element.</p>
+<p>See <a href="./user-guide/benchmarks.html">Benchmarks</a> for how pymizu compares with other frameworks, and for the benchmark scripts.</p>
+</section>
+<section id="channels" class="level2">
+<h2 class="anchored" data-anchor-id="channels">Channels</h2>
+<p><a href="./reference/Channel.create.html#pymizu.Channel.create" class="gdls-link gdls-code">Channel.create()</a> spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with <code>ch</code> bound to the peer-side handle:</p>
+<div id="1ec26fd0" class="cell" data-execution_count="2">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="st">import pymizu</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="st">while True:</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="st">    x = ch.recv()</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="st">    if x is pymizu.CLOSED:</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="st">        break</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="st">    ch.send(x)</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>)</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="2">
+<pre><code>[1, 'a', None]</code></pre>
+</div>
+</div>
+<div id="584910a0" class="cell" data-execution_count="3">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="3">
+<pre><code>True</code></pre>
+</div>
+</div>
+<p>Sends never block for ring space. Terminal states come back as sentinel singletons — <code>pymizu.FULL</code>, <code>pymizu.TIMEOUT</code>, <code>pymizu.CLOSED</code>, <code>pymizu.PEER_GONE</code> — tested by identity, never raised. See <a href="./user-guide/channels.html">Channels</a>.</p>
+</section>
+<section id="task-pools" class="level2">
+<h2 class="anchored" data-anchor-id="task-pools">Task pools</h2>
+<p><a href="./reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns worker processes that claim tasks from per-submitter injection rings and steal work from each other — no dispatcher in the loop. <code>pool.submit()</code> returns a task handle immediately; <code>task.collect()</code> waits for its result:</p>
+<div id="c5a0f81e" class="cell" data-execution_count="4">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> task.collect(timeout<span class="op">=</span><span class="dv">5</span>)</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="4">
+<pre><code>65536</code></pre>
+</div>
+</div>
+<p>A task error re-raises on collect as <a href="./reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a>; the death of the executing worker raises <a href="./reference/WorkerDiedError.html#pymizu.WorkerDiedError" class="gdls-link gdls-code">pymizu.WorkerDiedError</a>, detected at OS notification latency with no heartbeats or polling. See <a href="./user-guide/pools.html">Task pools</a>.</p>
+</section>
+<section id="drop-in-concurrent.futures" class="level2">
+<h2 class="anchored" data-anchor-id="drop-in-concurrent.futures">Drop-in <code>concurrent.futures</code></h2>
+<p><a href="./reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface — code written against <code>ProcessPoolExecutor</code> drops in, and <code>submit</code> returns real <code>Future</code> objects:</p>
+<div id="f6d7a38a" class="cell" data-execution_count="5">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="5">
+<pre><code>[1, 2, 4, 8]</code></pre>
+</div>
+</div>
+<p>See <a href="./user-guide/pools.html#concurrentfutures-interop">Task pools</a> for wrapping an existing pool and the cancellation semantics.</p>
 </section>
 <section id="parallel-map" class="level2">
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
-<p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:</p>
-<div id="8e198d89" class="cell" data-execution_count="4">
-<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
-<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
-<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="4">
+<p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor. A 1-D numpy array crosses as raw bytes — every worker views the same array in shared memory — and with <code>template=</code>, results are written straight into a shared output array, never serialized. <code>seed=</code> gives every element a deterministic random stream, reproducible for any worker count or steal order:</p>
+<div id="596ed779" class="cell" data-execution_count="6">
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>))</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="6">
 <pre><code>[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]</code></pre>
 </div>
 </div>
 <p>See <a href="./user-guide/map.html">Parallel map</a>.</p>
 </section>
+<section id="r-interop" class="level2">
+<h2 class="anchored" data-anchor-id="r-interop">R interop</h2>
+<p>Pool workers can be R processes that run the <a href="https://github.com/shikokuchuo/mizu">mizu</a> package, the R binding of the same core. <a href="./reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">pymizu.r_pool_launcher()</a> spawns them and <a href="./reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> describes the task — here R’s built-in <code>mtcars</code> summarized by R itself, read back into polars:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> polars <span class="im">as</span> pl</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_pool_launcher()) <span class="im">as</span> pool:</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>        pymizu.call(source<span class="op">=</span><span class="st">"aggregate(mpg ~ cyl, data = mtcars, FUN = mean)"</span>)</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pl.DataFrame(task.collect()))</span></code></pre></div>
+<p>A numpy array arrives in R as a numeric vector and a polars, pyarrow, or pandas frame as a data.frame; a vector or data.frame arrives back as a numpy array or a <a href="./reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">pymizu.Frame</a>. For a channel peer, pass the peer program as R source and set the launcher to <a href="./reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">pymizu.r_launcher()</a>. The launchers need R and the <code>mizu</code> package installed; if either is missing they raise <a href="./reference/MizuError.html#pymizu.MizuError" class="gdls-link gdls-code">MizuError</a> before anything is spawned. See <a href="./user-guide/interop.html">R interop</a>.</p>
+</section>
 <section id="where-next" class="level2">
 <h2 class="anchored" data-anchor-id="where-next">Where next</h2>
 <ul>
-<li><a href="./user-guide/benchmarks.html">Benchmarks</a> — overhead against the stdlib pools.</li>
+<li><a href="./user-guide/benchmarks.html">Benchmarks</a> — overhead against the stdlib pools, and how pymizu compares with other frameworks.</li>
 <li><a href="./user-guide/channels.html">Channels</a> — sending and receiving, batch operations, and what crosses a channel.</li>
 <li><a href="./user-guide/pools.html">Task pools</a> — outcomes, nested tasks, growing and observing a pool.</li>
 <li><a href="./user-guide/map.html">Parallel map</a> — scheduling, reproducible randomness, templates, prepared maps.</li>

@@ -587,14 +587,7 @@
     "href": "index.html",
     "title": "pymizu 水",
     "section": "",
-    "text": "View on PyPI\n\n\n\nSkills llms.txt llms-full.txt\n\n\n\n\n\n\nlibmizu authors\n\n\n\n\n\n\nCode of conduct Full license MIT\n\n\n\nRequires: Python &gt;=3.10 Provides-Extra: numpy, cloudpickle Package Info\npymizu makes communication between Python processes cheap enough to divide work at granularities usually reserved for threads.\nIn the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes. Processes also isolate failures: a worker that crashes does not take the host down with it.\nChannels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).\nA channel is a two-way message link between a Python process and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves. In both, one process writes data and the other reads it in place, without copying through a socket, pipe, or file.\nThe hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.\npymizu is built on libmizu, a C library for lock-free shared-memory IPC. mizu binds the same core for R, so Python and R processes can share a channel.\nPre-release. The API is not stable and may change at any time before a release."
-  },
-  {
-    "objectID": "index.html#use-cases",
-    "href": "index.html#use-cases",
-    "title": "pymizu 水",
-    "section": "Use cases",
-    "text": "Use cases\nParallelize Python at thread granularity. The stdlib process pools spend around 100 µs per task on pickling and a socket round trip, so anything finer than coarse jobs runs faster serially. pymizu hands off a task in shared memory and wakes one worker — overhead under a microsecond — so functions measured in microseconds parallelize profitably across cores. See Benchmarks.\nOrchestrate R workers from Python. pymizu.r_launcher() and pymizu.r_pool_launcher() spawn R processes as channel peers or pool workers, driven by pymizu.call() specs. Data crosses as shared-memory views rather than serialized copies — a numpy array arrives in R as a vector, and results come back the same way — so a Python program can use R’s package ecosystem as if it were local. See R interop."
+    "text": "View on PyPI\n\n\n\nSkills llms.txt llms-full.txt\n\n\n\n\n\n\nlibmizu authors\n\n\n\n\n\n\nContributing guide Code of conduct Full license MIT\n\n\n\nRequires: Python &gt;=3.10 Provides-Extra: numpy, cloudpickle Package Info\npymizu makes communication between Python processes cheap enough to divide work at granularities usually reserved for threads.\nShared memory has always been the fastest IPC transport. A socket round trip costs four system calls and four copies of the data; in shared memory, one process reads the bytes the other wrote — the kernel never touches the data. pymizu handles the synchronization, waiting, and peer crashes for you, so a task round trip drops from around 100 µs over sockets to under a microsecond — two orders of magnitude (see Benchmarks).\nIn the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes. Processes also isolate failures: a worker that crashes does not take the host down with it.\nChannels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).\nA channel is a two-way message link between a Python process and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves.\nThe hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.\npymizu is built on libmizu, a C library for lock-free shared-memory IPC. mizu binds the same core for R, so Python and R processes can share a channel."
   },
   {
     "objectID": "index.html#installation",
@@ -604,32 +597,60 @@
     "text": "Installation\npip install git+https://github.com/shikokuchuo/pymizu\nRequires Python 3.10 or later on a 64-bit platform. See Installation for platform notes, optional extras, and deployment on Linux."
   },
   {
+    "objectID": "index.html#quickstart",
+    "href": "index.html#quickstart",
+    "title": "pymizu 水",
+    "section": "Quickstart",
+    "text": "Quickstart\n\nimport pymizu\n\nwith pymizu.Pool.create(4) as pool:\n    task = pool.submit(pow, 2, 16)\n    result = task.collect(timeout=5)\n\nresult\n\n65536"
+  },
+  {
+    "objectID": "index.html#benchmarks",
+    "href": "index.html#benchmarks",
+    "title": "pymizu 水",
+    "section": "Benchmarks",
+    "text": "Benchmarks\nCommunication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).\nAgainst ProcessPoolExecutor (tasks run in separate processes, with pickled payloads):\n\n\n\n\n\n\n\n\n\nBenchmark\npymizu\nProcessPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n94.2 µs\n135x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n18,500 tasks/s\n129x\n\n\nParallel map overhead, trivial function, 4 workers\n0.4 µs/elt*\n70.3 µs/elt\n176x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n4.3 ms\n129 ms\n30x\n\n\n\nAgainst ThreadPoolExecutor (tasks share one process, so the GIL caps CPU-bound work at a single core):\n\n\n\n\n\n\n\n\n\nBenchmark\npymizu\nThreadPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n9.5 µs\n14x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n405,000 tasks/s\n5.9x\n\n\nParallel map overhead, trivial function, 4 workers\n0.4 µs/elt*\n2.6 µs/elt\n6.5x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n4.3 ms\n50 ms\n12x\n\n\n\nAgainst InterpreterPoolExecutor (Python 3.14+, subinterpreters with per-interpreter GILs): on the trivial-task rows it lands between the thread and process pools — 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07). The map rows it cannot run at all: task payloads must be shareable — builtin scalars, plain containers, or buffer-protocol objects — so numpy arrays and numpy scalars raise NotShareableError.\n* elt = element; microseconds of wall time per map element.\nSee Benchmarks for how pymizu compares with other frameworks, and for the benchmark scripts."
+  },
+  {
     "objectID": "index.html#channels",
     "href": "index.html#channels",
     "title": "pymizu 水",
     "section": "Channels",
-    "text": "Channels\nChannel.create() spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with ch bound to the peer-side handle:\n\nimport pymizu\n\nch = pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\")\nch.send([1, \"a\", None])\nch.recv(timeout=5)\n\n[1, 'a', None]\n\n\n\nch.close()\n\nTrue\n\n\nTerminal states come back as sentinel singletons — pymizu.FULL, pymizu.TIMEOUT, pymizu.CLOSED, pymizu.PEER_GONE — tested by identity, never raised. See Channels."
+    "text": "Channels\nChannel.create() spawns a peer process and connects both ends over a lock-free ring pair. The peer program is a Python source string, evaluated with ch bound to the peer-side handle:\n\nimport pymizu\n\nch = pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\")\nch.send([1, \"a\", None])\nch.recv(timeout=5)\n\n[1, 'a', None]\n\n\n\nch.close()\n\nTrue\n\n\nSends never block for ring space. Terminal states come back as sentinel singletons — pymizu.FULL, pymizu.TIMEOUT, pymizu.CLOSED, pymizu.PEER_GONE — tested by identity, never raised. See Channels."
   },
   {
     "objectID": "index.html#task-pools",
     "href": "index.html#task-pools",
     "title": "pymizu 水",
     "section": "Task pools",
-    "text": "Task pools\nPool.create() spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop. pool.submit() returns a task handle immediately; task.collect() waits for its result:\n\nwith pymizu.Pool.create(4) as pool:\n    task = pool.submit(pow, 2, 16)\n    result = task.collect(timeout=5)\n\nresult\n\n65536\n\n\nSee Task pools."
+    "text": "Task pools\nPool.create() spawns worker processes that claim tasks from per-submitter injection rings and steal work from each other — no dispatcher in the loop. pool.submit() returns a task handle immediately; task.collect() waits for its result:\n\nwith pymizu.Pool.create(4) as pool:\n    task = pool.submit(pow, 2, 16)\n    result = task.collect(timeout=5)\n\nresult\n\n65536\n\n\nA task error re-raises on collect as pymizu.TaskError; the death of the executing worker raises pymizu.WorkerDiedError, detected at OS notification latency with no heartbeats or polling. See Task pools."
+  },
+  {
+    "objectID": "index.html#drop-in-concurrent.futures",
+    "href": "index.html#drop-in-concurrent.futures",
+    "title": "pymizu 水",
+    "section": "Drop-in concurrent.futures",
+    "text": "Drop-in concurrent.futures\nPoolExecutor adapts a pool to the stdlib concurrent.futures.Executor interface — code written against ProcessPoolExecutor drops in, and submit returns real Future objects:\n\nwith pymizu.PoolExecutor.create(4) as ex:\n    futures = [ex.submit(pow, 2, i) for i in range(4)]\n    result = [f.result() for f in futures]\n\nresult\n\n[1, 2, 4, 8]\n\n\nSee Task pools for wrapping an existing pool and the cancellation semantics."
   },
   {
     "objectID": "index.html#parallel-map",
     "href": "index.html#parallel-map",
     "title": "pymizu 水",
     "section": "Parallel map",
-    "text": "Parallel map\nPool.map(fn, x) maps fn over x on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor:\n\nwith pymizu.Pool.create(4) as pool:\n    result = pool.map(abs, range(-5, 5))\n\nresult\n\n[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]\n\n\nSee Parallel map."
+    "text": "Parallel map\nPool.map(fn, x) maps fn over x on the pool and returns a list in input order. The function, its constant arguments, and the data are staged once; runner tasks self-schedule element batches off a shared cursor. A 1-D numpy array crosses as raw bytes — every worker views the same array in shared memory — and with template=, results are written straight into a shared output array, never serialized. seed= gives every element a deterministic random stream, reproducible for any worker count or steal order:\n\nwith pymizu.Pool.create(4) as pool:\n    result = pool.map(abs, range(-5, 5))\n\nresult\n\n[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]\n\n\nSee Parallel map."
+  },
+  {
+    "objectID": "index.html#r-interop",
+    "href": "index.html#r-interop",
+    "title": "pymizu 水",
+    "section": "R interop",
+    "text": "R interop\nPool workers can be R processes that run the mizu package, the R binding of the same core. pymizu.r_pool_launcher() spawns them and pymizu.call() describes the task — here R’s built-in mtcars summarized by R itself, read back into polars:\nimport polars as pl\nimport pymizu\n\nwith pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:\n    task = pool.submit(\n        pymizu.call(source=\"aggregate(mpg ~ cyl, data = mtcars, FUN = mean)\")\n    )\n    print(pl.DataFrame(task.collect()))\nA numpy array arrives in R as a numeric vector and a polars, pyarrow, or pandas frame as a data.frame; a vector or data.frame arrives back as a numpy array or a pymizu.Frame. For a channel peer, pass the peer program as R source and set the launcher to pymizu.r_launcher(). The launchers need R and the mizu package installed; if either is missing they raise MizuError before anything is spawned. See R interop."
   },
   {
     "objectID": "index.html#where-next",
     "href": "index.html#where-next",
     "title": "pymizu 水",
     "section": "Where next",
-    "text": "Where next\n\nBenchmarks — overhead against the stdlib pools.\nChannels — sending and receiving, batch operations, and what crosses a channel.\nTask pools — outcomes, nested tasks, growing and observing a pool.\nParallel map — scheduling, reproducible randomness, templates, prepared maps.\nR interop — R peers and workers, what crosses the language boundary, and the dtype matrix.\nAPI reference — the generated function and class reference."
+    "text": "Where next\n\nBenchmarks — overhead against the stdlib pools, and how pymizu compares with other frameworks.\nChannels — sending and receiving, batch operations, and what crosses a channel.\nTask pools — outcomes, nested tasks, growing and observing a pool.\nParallel map — scheduling, reproducible randomness, templates, prepared maps.\nR interop — R peers and workers, what crosses the language boundary, and the dtype matrix.\nAPI reference — the generated function and class reference."
   },
   {
     "objectID": "code-of-conduct.html",
@@ -665,6 +686,13 @@
     "title": "Code of Conduct",
     "section": "4. Permanent Ban",
     "text": "4. Permanent Ban\nCommunity Impact: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.\nConsequence: A permanent ban from any sort of public interaction within the community."
+  },
+  {
+    "objectID": "contributing.html",
+    "href": "contributing.html",
+    "title": "Contributing",
+    "section": "",
+    "text": "Contributions are welcome — bug reports and pull requests alike. pymizu is pre-release and the API can change at any time, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump() — it is the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module — pickle sends them by reference, so spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
   },
   {
     "objectID": "license.html",
@@ -1146,7 +1174,67 @@
     "href": "user-guide/benchmarks.html",
     "title": "Benchmarks",
     "section": "",
-    "text": "Communication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).\nAgainst ProcessPoolExecutor (tasks run in separate processes, with pickled payloads):\n\n\n\n\n\n\n\n\n\nBenchmark\npymizu\nProcessPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n94.2 µs\n135x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n18,500 tasks/s\n129x\n\n\nParallel map overhead, trivial function, 4 workers\n0.4 µs/elt*\n70.3 µs/elt\n176x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n4.3 ms\n129 ms\n30x\n\n\n\nAgainst ThreadPoolExecutor (tasks share one process, so the GIL caps CPU-bound work at a single core):\n\n\n\n\n\n\n\n\n\nBenchmark\npymizu\nThreadPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n9.5 µs\n14x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n405,000 tasks/s\n5.9x\n\n\nParallel map overhead, trivial function, 4 workers\n0.4 µs/elt*\n2.6 µs/elt\n6.5x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n4.3 ms\n50 ms\n12x\n\n\n\n* elt = element; microseconds of wall time per map element.\nThese rows measure communication overhead — the cost pymizu is built to remove. The stdlib pools remain the general solution: they run anywhere Python runs, with no platform requirements.\nbenchmarks/mizu-bench.py runs the pymizu rows standalone, benchmarks/mizu-stdlib-bench.py the comparison, and benchmarks/crosslang-map-bench.py the cross-language map comparison. The scripts are report-only and assert nothing about the numbers (CI runner timing is too variable); dated records live in benchmarks/notes.md.",
+    "text": "Communication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).\nAgainst ProcessPoolExecutor (tasks run in separate processes, with pickled payloads):\nAgainst ThreadPoolExecutor (tasks share one process, so the GIL caps CPU-bound work at a single core):\nAgainst InterpreterPoolExecutor (Python 3.14+, subinterpreters with per-interpreter GILs): on the trivial-task rows it lands between the thread and process pools — 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07). The map rows it cannot run at all: task payloads must be shareable — builtin scalars, plain containers, or buffer-protocol objects — so numpy arrays and numpy scalars raise NotShareableError.\n* elt = element; microseconds of wall time per map element.\nThese rows measure communication overhead — the cost pymizu is built to remove. The stdlib pools remain the general solution: they run anywhere Python runs, with no platform requirements.",
+    "crumbs": [
+      "User Guide",
+      "Guide",
+      "Benchmarks"
+    ]
+  },
+  {
+    "objectID": "user-guide/benchmarks.html#process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel",
+    "href": "user-guide/benchmarks.html#process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel",
+    "title": "Benchmarks",
+    "section": "Process pools: multiprocessing, concurrent.futures, joblib, ipyparallel",
+    "text": "Process pools: multiprocessing, concurrent.futures, joblib, ipyparallel\nThe stdlib pools are the baseline the tables above measure. joblib’s Parallel/delayed is the long-standing answer for an embarrassingly parallel loop over numpy data, and its loky backend is the closest in spirit to pymizu: a reusable process pool that memmaps arrays past a size threshold to a temp folder instead of pickling them. That removes the pickle copy, but the array still round-trips through the filesystem and a task round trip stays in the millisecond range. ipyparallel answers the same question for Jupyter: a controller process brokers pickled messages over ZeroMQ sockets to engine processes — a controller in the loop and socket copies are the price of its generality. multiprocessing.shared_memory exposes raw shared buffers and leaves synchronization, lifetime tracking, and crash cleanup to you; pymizu is that idea finished — the same pages, with the waiting, framing, and peer-death detection built in.",
+    "crumbs": [
+      "User Guide",
+      "Guide",
+      "Benchmarks"
+    ]
+  },
+  {
+    "objectID": "user-guide/benchmarks.html#distributed-frameworks-ray-and-dask",
+    "href": "user-guide/benchmarks.html#distributed-frameworks-ray-and-dask",
+    "title": "Benchmarks",
+    "section": "Distributed frameworks: Ray and Dask",
+    "text": "Distributed frameworks: Ray and Dask\nRay and Dask answer a bigger question — spreading work across machines — and pay for it on one machine: a local Ray instance still starts a scheduler, object store, and dashboard, and a task round trip costs on the order of a millisecond; Dask’s distributed scheduler is similar, while its process-free threaded scheduler shares memory but is capped by the GIL for Python-level work. Ray’s object store does read numpy arrays without copying on the same node, so the honest difference is not capability but overhead and footprint: for a cluster, actors, or out-of-core dataframes, use them; when the work fits one machine and the tasks are measured in microseconds, the framework overhead dominates the work.",
+    "crumbs": [
+      "User Guide",
+      "Guide",
+      "Benchmarks"
+    ]
+  },
+  {
+    "objectID": "user-guide/benchmarks.html#modern-cpython-free-threading-and-subinterpreters",
+    "href": "user-guide/benchmarks.html#modern-cpython-free-threading-and-subinterpreters",
+    "title": "Benchmarks",
+    "section": "Modern CPython: free-threading and subinterpreters",
+    "text": "Modern CPython: free-threading and subinterpreters\nPython 3.14 officially supports a build with the GIL removed, in which threads share one heap and exchange data with no copies at all. That is the right answer for single-language CPU parallelism when isolation is not needed: a crashing thread takes the process down, C extensions must be built and validated for it, and it does nothing for crossing into R. pymizu targets the standard GIL build and does not yet support the free-threaded one; the two approaches solve different problems — threads trade isolation for sharing, pymizu keeps the isolation and makes the sharing cheap.\nPython 3.14 also added concurrent.interpreters to the stdlib (PEP 734): multiple interpreters in one process, each with its own GIL, so CPU work parallelizes without new processes on the standard build. Objects passed between interpreters must be shareable: builtin scalars and plain containers of them cross as copies, buffer-protocol objects can share their underlying memory (synchronization left to you), and anything else — numpy arrays included — is rejected outright. The isolation is real but not OS-level — a fatal error in one interpreter ends the process — and the surrounding machinery (queues, lifetimes, crash handling) is yours to build. It is also 3.14 and later only; pymizu runs on 3.10 and later.",
+    "crumbs": [
+      "User Guide",
+      "Guide",
+      "Benchmarks"
+    ]
+  },
+  {
+    "objectID": "user-guide/benchmarks.html#messaging-zeromq",
+    "href": "user-guide/benchmarks.html#messaging-zeromq",
+    "title": "Benchmarks",
+    "section": "Messaging: ZeroMQ",
+    "text": "Messaging: ZeroMQ\nZeroMQ is the canonical answer for moving bytes between processes, and pymizu’s channels play in the same space — but the bytes move over sockets, so every message is copied, and the distribution patterns are yours to design: it is a building block (ipyparallel is built on it), not a task pool. A pymizu channel plays the same role with the copies removed — written once, read in place.",
+    "crumbs": [
+      "User Guide",
+      "Guide",
+      "Benchmarks"
+    ]
+  },
+  {
+    "objectID": "user-guide/benchmarks.html#the-one-thing-only-pymizu-does",
+    "href": "user-guide/benchmarks.html#the-one-thing-only-pymizu-does",
+    "title": "Benchmarks",
+    "section": "The one thing only pymizu does",
+    "text": "The one thing only pymizu does\nA pool whose workers are R processes, exchanging numpy arrays and data frames as shared-memory views (R interop). None of the tools above cross the language boundary.\nThe short version: choose pymizu when the work fits one machine, when tasks are fine-grained or arrays large, or when R needs to be in the loop; choose Ray or Dask when you outgrow one machine or need their collections, concurrent.interpreters when you want stdlib-only isolation and can require Python 3.14, and free-threading when one language and shared-everything is acceptable.\nbenchmarks/mizu-bench.py runs the pymizu rows standalone, benchmarks/mizu-stdlib-bench.py the comparison, and benchmarks/crosslang-map-bench.py the cross-language map comparison. The scripts are report-only and assert nothing about the numbers (CI runner timing is too variable); dated records live in benchmarks/notes.md.",
     "crumbs": [
       "User Guide",
       "Guide",
