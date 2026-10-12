@@ -128,6 +128,45 @@ def test_from_arrow_mixed_frame():
     assert [c.null_count for c in out.columns] == [1, 1, 1]
 
 
+def test_from_arrow_masked_columns_foreign_send():
+    """A Frame.from_arrow send on a foreign channel honors the adopted
+    columns' validity bitmaps: every masked kind round-trips its nulls
+    (the 'I' frame emit keyed on the data slots alone before — garbage at
+    nulls)."""
+    from tests.helpers import foreign_pair
+
+    t = pa.table(
+        {
+            "x": pa.array([1.5, None, 3.5]),
+            "i": pa.array([1, None, 3], type=pa.int32()),
+            "l": pa.array([1, None, 3], type=pa.int64()),
+            "s": pa.array(["a", None, "c"]),
+            "f": pa.array(["u", None, "w"]).dictionary_encode(),
+            "d": pa.array([19000, None, 19002], type=pa.date32()),
+            "t": pa.array(
+                [1700000000000000, None, 1700000000000002],
+                type=pa.timestamp("us"),
+            ),
+            "dur": pa.array([1000, None, 1002], type=pa.duration("us")),
+        }
+    )
+    h, p = foreign_pair(
+        caps=7
+    )  # MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL
+    assert h.send(pymizu.Frame.from_arrow(t)) is True
+    d = p.recv(30).to_dict()
+    h.destroy()
+    p.destroy()
+    assert np.isnan(d["x"][1]) and d["x"][0] == 1.5
+    assert np.isnan(d["i"][1]) and d["i"][0] == 1
+    assert d["l"][1] == -(2**63) and d["l"][0] == 1  # the int64 sentinel
+    assert d["s"][1] is None and d["s"][0] == "a"
+    assert d["f"][1] is None and d["f"][0] == "u"
+    assert np.isnat(d["d"][1])
+    assert np.isnat(d["t"][1])
+    assert np.isnat(d["dur"][1])
+
+
 def test_from_arrow_null_count_unknown_and_known_free():
     # a crafted null_count = -1 column adopts and reads by its bitmap
     buf_valid = pa.py_buffer(bytes([0b0101]))

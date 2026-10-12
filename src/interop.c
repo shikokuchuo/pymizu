@@ -349,14 +349,18 @@ static void ixe_class(ixw *w, const char *const *names, Py_ssize_t n) {
 /* A realv value from an int64-count source with a per-unit scale (the
    temporal shapes' value half): out = count * scale, NaT (INT64_MIN) ->
    the NA payload. */
-static void ixe_realv_counts(ixw *w, const int64_t *counts, uint64_t n,
+/* The REALV body off int64 counts: valid NULL keys on the owned sentinel
+   (INT64_MIN); an adopted column's nulls ride the bitmap instead. */
+static void ixe_realv_counts(ixw *w, const int64_t *counts,
+                             const uint8_t *valid, uint64_t n,
                              double scale) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, n));
   if (w->decline) return;
   if (w->dst != NULL && w->total + (size_t) n * 8 <= w->limit) {
     uint8_t *dst = w->dst + w->total;
     for (uint64_t i = 0; i < n; i++) {
-      if (counts[i] == INT64_MIN) {
+      if ((valid != NULL && !bitmap_at(valid, i)) ||
+          counts[i] == INT64_MIN) {
         store_na_r(dst + 8 * i);
       } else {
         double v = (double) counts[i] * scale;
@@ -378,17 +382,17 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts, uint64_t n,
 static void ixe_date(ixw *w, const int64_t *days, uint64_t n, double scale) {
   static const char *cls[1] = { MIZU_IX_CLASS_DATE };
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
-  ixe_realv_counts(w, days, n, scale);
+  ixe_realv_counts(w, days, NULL, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
   ixe_key(w, MIZU_IX_ATTR_CLASS);
   ixe_class(w, cls, 1);
 }
 
-static void ixe_posixct(ixw *w, const int64_t *counts, uint64_t n,
-                        const char *tz, double scale) {
+static void ixe_posixct(ixw *w, const int64_t *counts, const uint8_t *valid,
+                        uint64_t n, const char *tz, double scale) {
   static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
-  ixe_realv_counts(w, counts, n, scale);
+  ixe_realv_counts(w, counts, valid, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
   ixe_key(w, MIZU_IX_ATTR_CLASS);
   ixe_class(w, cls, 2);
@@ -402,11 +406,11 @@ static void ixe_posixct(ixw *w, const int64_t *counts, uint64_t n,
    "secs"}) — counts an int64 span of some time unit, scale the unit in
    seconds. R's five units normalize to seconds on the wire; the R reader
    stamps the value with units = "secs". */
-static void ixe_difftime(ixw *w, const int64_t *counts, uint64_t n,
-                         double scale) {
+static void ixe_difftime(ixw *w, const int64_t *counts,
+                         const uint8_t *valid, uint64_t n, double scale) {
   static const char *cls[1] = { MIZU_IX_CLASS_DIFFTIME };
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
-  ixe_realv_counts(w, counts, n, scale);
+  ixe_realv_counts(w, counts, valid, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
   ixe_key(w, MIZU_IX_ATTR_CLASS);
   ixe_class(w, cls, 1);
@@ -2910,20 +2914,70 @@ PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
 
 // The Frame's wire form (writer) ----------------------------------------------------
 
+/* A fixed-width vector body behind a validity mask: an adopted column's
+   nulls are bitmap-only (garbage in the data slots), so the emit walks
+   per element, sentinel or value. The owned form's single put_vec memcpy
+   handles every other case (its nulls ride the data as sentinels). */
+static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
+                           const uint8_t *valid, uint64_t n) {
+  const size_t elt = wire == MIZU_TYPE_INT || wire == MIZU_TYPE_LGL ? 4 : 8;
+  IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(wire), n));
+  if (w->decline) return;
+  if (w->dst != NULL && w->total + (size_t) n * elt <= w->limit) {
+    uint8_t *dst = w->dst + w->total;
+    for (uint64_t i = 0; i < n; i++) {
+      uint8_t *d = dst + (size_t) i * elt;
+      if (bitmap_at(valid, i)) {
+        memcpy(d, src + (size_t) i * elt, elt);
+      } else if (wire == MIZU_TYPE_REAL) {
+        store_na_r(d);
+      } else if (wire == MIZU_TYPE_INT64) {
+        const int64_t na = MIZU_NA_INT64;
+        memcpy(d, &na, 8);
+      } else {
+        const int32_t na = MIZU_NA_INT32;
+        memcpy(d, &na, 4);
+      }
+    }
+  } else if (w->dst != NULL) {
+    w->overflow = 1;
+    w->dst = NULL;
+  }
+  w->total += (size_t) n * elt;
+}
+
+/* The mask gate for the memcpy arms: a borrowed validity bitmap holding
+   nulls (the owned invariant's sentinels make the memcpy exact as-is). */
+static int fcol_masked(const fcol *c) {
+  return c->valid != NULL && masked_nulls(c->valid, (uint64_t) c->n) != 0;
+}
+
 /* One fcol as a frame column value. */
 static void ixe_fcol(ixw *w, const fcol *c) {
   switch (c->kind) {
   case FCOL_F64:
-    IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_REAL, c->values,
-                               (uint64_t) c->n));
+    if (fcol_masked(c)) {
+      ixe_vec_masked(w, MIZU_TYPE_REAL, c->values, c->valid, (uint64_t) c->n);
+    } else {
+      IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_REAL, c->values,
+                                 (uint64_t) c->n));
+    }
     break;
   case FCOL_I32:
-    IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_INT, c->values,
-                               (uint64_t) c->n));
+    if (fcol_masked(c)) {
+      ixe_vec_masked(w, MIZU_TYPE_INT, c->values, c->valid, (uint64_t) c->n);
+    } else {
+      IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_INT, c->values,
+                                 (uint64_t) c->n));
+    }
     break;
   case FCOL_I64:
-    IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_INT64, c->values,
-                               (uint64_t) c->n));
+    if (fcol_masked(c)) {
+      ixe_vec_masked(w, MIZU_TYPE_INT64, c->values, c->valid, (uint64_t) c->n);
+    } else {
+      IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_INT64, c->values,
+                                 (uint64_t) c->n));
+    }
     break;
   case FCOL_U8:
     IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_RAW, c->values,
@@ -2934,8 +2988,12 @@ static void ixe_fcol(ixw *w, const fcol *c) {
                                (uint64_t) c->n));
     break;
   case FCOL_LGL:
-    IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_LGL, c->values,
-                               (uint64_t) c->n));
+    if (fcol_masked(c)) {
+      ixe_vec_masked(w, MIZU_TYPE_LGL, c->values, c->valid, (uint64_t) c->n);
+    } else {
+      IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_LGL, c->values,
+                                 (uint64_t) c->n));
+    }
     break;
   case FCOL_STR: {
     const int32_t *offs = (const int32_t *) c->values;
@@ -2962,11 +3020,15 @@ static void ixe_fcol(ixw *w, const fcol *c) {
   case FCOL_DICT: {
     static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
     const int32_t *codes = (const int32_t *) c->values;
+    /* an adopted column's codes are 0-based (the wire is 1-based) with
+       bitmap-only nulls; the region's codes1 are already 1-based */
     IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
     if (c->n == 1) {
+      int na = (c->valid != NULL && !bitmap_at(c->valid, 0)) ||
+        codes[0] == MIZU_NA_INT32;
       IXW_PUT(w, mizu_ix_put_int(
                 IXW_DST(w),
-                codes[0] == MIZU_NA_INT32 ? INT64_MIN : codes[0] + 1));
+                na ? INT64_MIN : c->codes1 ? codes[0] : codes[0] + 1));
     } else {
       IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV,
                                (uint64_t) c->n));
@@ -2974,8 +3036,9 @@ static void ixe_fcol(ixw *w, const fcol *c) {
       if (w->dst != NULL && w->total + (size_t) c->n * 4 <= w->limit) {
         uint8_t *dst = w->dst + w->total;
         for (int64_t i = 0; i < c->n; i++) {
-          int32_t v = codes[i] == MIZU_NA_INT32 ? MIZU_NA_INT32 :
-            codes[i] + 1;
+          int32_t v = (c->valid != NULL && !bitmap_at(c->valid, i)) ||
+                      codes[i] == MIZU_NA_INT32 ? MIZU_NA_INT32 :
+                      c->codes1 ? codes[i] : codes[i] + 1;
           memcpy(dst + 4 * i, &v, 4);
         }
       } else if (w->dst != NULL) {
@@ -3009,7 +3072,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
       uint8_t *dst = w->dst + w->total;
       for (int64_t i = 0; i < c->n; i++) {
-        if (days[i] == MIZU_NA_INT32) {
+        if ((c->valid != NULL && !bitmap_at(c->valid, i)) ||
+            days[i] == MIZU_NA_INT32) {
           store_na_r(dst + 8 * i);
         } else {
           double v = (double) days[i];
@@ -3027,11 +3091,12 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     break;
   }
   case FCOL_TS:
-    ixe_posixct(w, (const int64_t *) c->values, (uint64_t) c->n,
+    ixe_posixct(w, (const int64_t *) c->values, c->valid, (uint64_t) c->n,
                 c->tz[0] != '\0' ? c->tz : "UTC", 1e-6);
     break;
   case FCOL_TD:
-    ixe_difftime(w, (const int64_t *) c->values, (uint64_t) c->n, 1e-6);
+    ixe_difftime(w, (const int64_t *) c->values, c->valid, (uint64_t) c->n,
+                1e-6);
     break;
   }
 }
@@ -3368,7 +3433,7 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
       one = PyLong_AsLongLong(i);
       Py_DECREF(i);
     }
-    ixe_difftime(w, counts, n, scale);
+    ixe_difftime(w, counts, NULL, n, scale);
     if (got) PyBuffer_Release(&bv);
     Py_DECREF(view);
     return;
@@ -3424,7 +3489,7 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
   if (unit == TU_DAY || unit == TU_WEEK) {
     ixe_date(w, counts, n, unit == TU_WEEK ? 7.0 : 1.0);
   } else {
-    ixe_posixct(w, counts, n, "UTC", temporal_scale(unit));
+    ixe_posixct(w, counts, NULL, n, "UTC", temporal_scale(unit));
   }
   if (got) PyBuffer_Release(&bv);
   Py_DECREF(view);
@@ -3612,7 +3677,7 @@ static void ixw_stdlib_datetime(ixw *w, PyObject *obj) {
     Py_XDECREF(key);
   }
   Py_XDECREF(tzi);
-  ixe_posixct(w, &instant, 1, tz, 1e-6);
+  ixe_posixct(w, &instant, NULL, 1, tz, 1e-6);
 }
 
 static void ixw_stdlib_date(ixw *w, PyObject *obj) {
@@ -3647,7 +3712,7 @@ static void ixw_stdlib_timedelta(ixw *w, PyObject *obj) {
     return;
   }
   int64_t total = (d * 86400 + s) * 1000000 + us;
-  ixe_difftime(w, &total, 1, 1e-6);
+  ixe_difftime(w, &total, NULL, 1, 1e-6);
 }
 
 /* The plan's SHM_VEC candidate: the frame_buf_write body (one MIZH

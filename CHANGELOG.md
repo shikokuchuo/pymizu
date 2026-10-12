@@ -343,6 +343,13 @@ Initial pre-release.
 
 ### Fixed
 
+- A `pymizu.Frame` sent on a foreign channel now honors its adopted
+  columns' validity bitmaps: the `'I'` frame emit keyed on the data
+  slots alone, so a `Frame.from_arrow()` frame with nulls in a
+  fixed-width or dictionary column sent the garbage slot values (zeros)
+  instead of the nulls, on every tier. Region-backed columns re-sent the
+  same way also pick up their validity sections, and a received factor
+  column keeps its 1-based codes instead of shifting them.
 - A `uint8` column carrying Arrow nulls in a frame is now declined
   (`R raw vectors have no NA`), matching the array front-end — the
   masked convert wrote a 4-byte sentinel into the 1-byte column.
