@@ -36,8 +36,11 @@ package). The governing design document is the ipc plan in the libmizu repo
   interchange codec: the value walk and builder over the core's cursor,
   the pymizu.Frame object (the type, methods, the Arrow export, the
   pickle form — `pyframe.h` carries the structs shared with the wire
-  side), and the MIZL frame writer (`pyshmframe.h`). `pyinterop.h` is
-  their interface to `_pymizu.c`.
+  side), and the export-provenance registry (`shmframe.c`). The Arrow →
+  MIZL frame writer is the vendored core's (`arrow.c`; see
+  Conventions). `pyinterop.h` is their interface to `_pymizu.c`;
+  `pyshmframe.h` carries the pulled-batch stream state shared by the
+  frame paths.
 - `src/vendor/libmizu/` — vendored libmizu core (generated; see Vendoring).
 - `python/pymizu/` — the Python package. `child.py` / `worker.py` are the
   spawned-process entries (`python -m pymizu.child <token>`,
@@ -204,11 +207,12 @@ tools/vendor-libmizu.sh` for a local checkout).
   uint8/float64/int32/int64/complex128 -> RAW/REAL/INT/INT64/CPLX; int64
   is a native wire tag (`MIZU_TYPE_INT64` 32, `INT64_MIN` the missing
   sentinel, no per-element scan), not a conversion. The conversion pass
-  (`cvt_for_buffer`/`cvt_for_arrow`) is channel-scoped and serves only
-  the non-identity dtypes (uint64 past 2^53 warns to `NA_real_`; narrow
-  ints widen; bool byte-expands). Reads dispatch on the first byte
-  across the three magics; R streams get an informative "R payload"
-  error. `_read_stream` exposes the stream parser for tests.
+  (`cvt_for_buffer` / the core's `mizu_cvt_for_arrow`) is channel-scoped
+  and serves only the non-identity dtypes (uint64 past 2^53 warns to
+  `NA_real_`; narrow ints widen; bool byte-expands). Reads dispatch on
+  the first byte across the three magics; R streams get an informative
+  "R payload" error. `_read_stream` exposes the stream parser for
+  tests.
 - Zero-copy views (SHM_VEC/REF reads): `_ShmView`, one exporter per
   view, holds the region's `_ShmOwner` (shared mapping owner) and subs
   the refcount in `tp_dealloc` (a fork guard skips a child's sub). It
@@ -223,13 +227,28 @@ tools/vendor-libmizu.sh` for a local checkout).
   does the counted add (`mizu_zc_ref`) without a fresh open/mmap. Only
   the mapping is cached — MIZH header validation runs per read. An
   evicted owner's mapping closes when its last view is gone.
-- The MIZL frame writer's provenance registry (`src/shmframe.c`): an
-  outgoing frame whose columns all match one registered export stages
-  as the region's REF (Phase 3.8); per column, a matched column
-  crosses as a remote leaf (MIZL directory tag 33, F2.3) — the
-  identifier span, the referenced leaf's attrs size and validity claim
-  as resolved, gated per frame on `MIZU_CAP_MIZL_REF` (bit 4; a peer
-  short of it gets full layout leaves). The reader's frame path
+- The Arrow → MIZL frame writer is the vendored core's `arrow.c`
+  (`mizu_arrow_open` / `_remote` / `_root_blob` / `_tz` / `_stage`, the
+  `mizu_cvt_*` kernels): pymizu keeps only the stream pull (`ixs_pull`),
+  the tier-attempt predicate, the provenance registry and the REF
+  emits. Both frame paths — the foreign `__arrow_c_stream__` front-end
+  and the same-language exact-`Frame` branch — classify/vet through
+  `mizu_arrow_open`; the non-struct `single` path wraps itself as a
+  one-column `+s` struct so the core serves it too. The core's
+  `mizu_arrow` borrows the ArrowArray structs AND the `batches` pointer
+  array — both must outlive the handle until `mizu_arrow_close`
+  (`ixs_arrow_open`'s keep out-params). The capability conjunction and
+  churn check live in the core stage; same-language callers pass the
+  real caps word (a pool worker's `hctx->peer_caps` is 0 — `stage_impl`
+  maps same-language + 0 to `MIZU_PY_CAPS`). The plans copy back out
+  for the kept emitters/builder (`ixs_plans_fill`; the dict levels are
+  owned copies, the `ixs_free` discipline).
+- The provenance registry (`src/shmframe.c`): an outgoing frame whose
+  columns all match one registered export stages as the region's REF
+  (Phase 3.8); per column, a matched column crosses as a remote leaf
+  (MIZL directory tag 33, F2.3) — registered through
+  `mizu_arrow_remote`, gated per frame on `MIZU_CAP_MIZL_REF` (bit 4; a
+  peer short of it gets full layout leaves). The reader's frame path
   (`tree_column_remote` in interop.c) resolves a remote column onto a
   per-column hold — a fresh mapping plus counted loan, released pure-C
   in `fcol_free` (interop_frame.c; the GIL-free export discipline); the
@@ -240,8 +259,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   the 255 cap in the vendored directory read is the ext tier's and may
   change without deprecation.
 - Arrow interop: `Channel.send` accepts any `__arrow_c_array__` producer
-  (pyarrow, polars, duckdb; the `cvt_for_arrow` pass). Arrow nulls become
-  R missing values. A received zero-copy view exports to an Arrow consumer
+  (pyarrow, polars, duckdb; the core's `mizu_cvt_for_arrow` pass). Arrow
+  nulls become R missing values. A received zero-copy view exports to an Arrow consumer
   through its own `__arrow_c_array__` (`pa.array(view)`,
   `pl.from_arrow(view)`); the export release callback is pure C, callable
   from any thread. Without numpy, a received view is the view object
