@@ -1,8 +1,7 @@
-/* pyshmframe.h — the MIZL frame writer's interface to interop.c: the
- * pulled-batch Arrow stream state (shared with the 'I' inline writer, whose
- * driver interop.c keeps), the attribute-blob emitters, and shmframe.c's own
- * entries — the region writer (Phase 3.6) and the export-provenance registry
- * (Phase 3.8). */
+/* pyshmframe.h — the pulled-batch Arrow stream state shared by interop.c's
+ * frame paths (the 'I' inline writer and the core's MIZL writer, which
+ * moved upstream to libmizu's arrow.c), the custom-row_names blob emitter,
+ * and shmframe.c's export-provenance registry (Phase 3.8). */
 
 #ifndef PYMIZU_SHMFRAME_H
 #define PYMIZU_SHMFRAME_H
@@ -106,19 +105,15 @@ static inline int arrow_str_at(const ArrowArray *a, int64_t k, int form,
   return 1;
 }
 
-// The attribute-blob emitters (interop.c's; complete 'I' streams) -------------
+// The root-blob override emitter (interop.c's; a complete 'I' stream) -----------
 
-/* Each emits a complete 'I' stream (the layout attribute blob form) whose
-   value is the attribute dict; dst NULL sizes, a real dst writes behind the
-   size pass's count. 0 with an exception set on failure (blob sizes are
-   never 0). */
+/* The frame dict {names, class = "data.frame", row.names} with a custom
+   (int32 or character) row_names — the override handed to the core
+   writer's mizu_arrow_root_blob. The automatic c(NA, -n) form is the
+   core's. dst NULL sizes, a real dst writes behind the size pass's count.
+   0 with an exception set on a malformed row_names. */
 size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
                           PyObject *row_names);
-size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
-                           const int32_t *offs, int64_t nlev);
-size_t mizu_py_blob_date(uint8_t *dst);
-size_t mizu_py_blob_ts(uint8_t *dst, const char *tz);
-size_t mizu_py_blob_difftime(uint8_t *dst);
 
 // The Frame.from_arrow builder (interop.c's; interop_frame.c wraps) -----------
 
@@ -132,39 +127,30 @@ size_t mizu_py_blob_difftime(uint8_t *dst);
    failure the export's own text). */
 struct frame_cols *ixs_frame_cols_build(PyObject *obj);
 
-// shmframe.c -------------------------------------------------------------------
+// shmframe.c: the export-provenance registry (Phase 3.8) -------------------------
 
 /* Exception stash, mirroring mizu_py_interop_register. */
 void mizu_py_shmframe_register(PyObject *mizu_error,
                                PyObject *declined_error);
 
-/* The MIZL layout write over the pulled frame: one spill region — header,
-   directory, column blobs, the root frame blob, the validity tail — staged
-   SHM_VEC (MIZU_TYPE_VEC). same_lang selects the same-language rules (the
-   tzone string verbatim; the caller's row_names). hits is the per-column
-   provenance map (NULL: every column a layout leaf): a matched column
-   goes out as a remote leaf (tag 33). 0 staged, 1 an exception is set,
-   -1 the region was unavailable (the caller falls back to the copy tiers;
-   no exception). */
-struct pv_entry;   /* shmframe.c's provenance record */
-int pymizu_shmframe_write(ixs *x, char **names, mizu_slot_hdr *hdr,
-                          uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h, int same_lang,
-                          struct pv_entry const **hits);
-
-/* The export-provenance registry (Phase 3.8): a region-backed Frame's Arrow
-   export records what each acquisition handed out; an outgoing frame whose
-   columns all match one acquisition's record stages as the region's REF. */
+/* A region-backed Frame's Arrow export records what each acquisition
+   handed out; an outgoing frame whose columns all match one acquisition's
+   record stages as the region's REF. */
 void pymizu_shmframe_pv_register(mizu_shm *acq, int ncols, char **names,
                                  const ArrowSchema *col_s,
                                  const ArrowArray *col_a, const void *owner);
 void pymizu_shmframe_pv_unregister(const void *owner);
 /* 0 staged (REF), -1 no whole-frame match (the caller writes MIZL). */
+struct pv_entry;   /* shmframe.c's provenance record */
 int pymizu_shmframe_pv_match(ixs *x, char **names, mizu_slot_hdr *hdr,
                              uint8_t *payload, uint32_t inline_max);
 /* The per-column match (F2): hits filled with the matched entries (NULL
    on a miss), the hit count returned. */
 int pymizu_shmframe_pv_match_cols(ixs *x, char **names,
                                   struct pv_entry const **hits);
+
+/* A matched entry's region (mizu_shm_addr / mizu_shm_size inputs to the
+   core writer's mizu_arrow_remote) and its name span. */
+mizu_shm *pymizu_shmframe_pv_acq(struct pv_entry const *e);
 
 #endif

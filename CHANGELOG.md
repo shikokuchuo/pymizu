@@ -10,6 +10,21 @@ Initial pre-release.
 
 ### Changed
 
+- The Arrow → MIZL frame writer moved upstream to libmizu (`arrow.c`):
+  the vendored core now owns the classify/batch-vetting/dictionary
+  validation, the layout write, the fixed-width conversion kernels (now
+  `mizu_cvt_*`) and the attribute-blob emitters, and both frame paths
+  (the foreign `__arrow_c_stream__` front-end and the same-language
+  exact-`Frame` branch) stage through `mizu_arrow_open` /
+  `mizu_arrow_remote` / `mizu_arrow_root_blob` / `mizu_arrow_tz` /
+  `mizu_arrow_stage`. No wire change — the cross-language suite pins the
+  bytes with no test edits. Two visible refinements: the capability
+  conjunction and the churn check now have one home in the core stage
+  (the same-language paths pass the real peer capability word — they
+  previously carried none), and the send-time decline texts name the
+  column up front (e.g. `column 't': an Arrow type with no portable home
+  (format 'tt')`). A malformed string export now declines at staging
+  rather than degrading to NA on the inline tier only.
 - `Pool.map(..., chunks=0)` (or a negative count) on an empty input now
   raises `ValueError` instead of returning an empty result, matching
   `Pool.map_prepare`. The one-shot and prepared map entries now share

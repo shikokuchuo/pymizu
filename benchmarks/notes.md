@@ -808,3 +808,18 @@ Results (first run of the leg, Apple M4 Pro, Python 3.14.8):
 
 Status: ruff clean (benchmarks); full suite not run (benchmark-only
 change).
+
+## 2026-10-12 — the frame writer's promotion to the core (arrow.c)
+
+A/B of the MIZL frame staging path before/after the writer moved to
+libmizu (same machine, back-to-back builds, the `frame 10col relay,
+Python (flat)` probe: a heap-backed 10-col 1e6-row float64 Frame
+same-language). Expect neutral: the foreign front-end already wrote the
+region straight off the Arrow batches (no intermediate Frame to
+remove), and the code moved rather than being rewritten.
+
+Results (best of 3, us/send): before 4,513.9 / 4,510.8; after 4,541.3 /
+4,571.5 — within ~1%; neutral.
+
+Status: full suite 520 pass, 6 skip (pandas/duckdb-absence); ruff +
+ruff format + pyrefly clean.

@@ -860,7 +860,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     }
     s->format = fmt;
     s->name = ex->cname_ptrs[i];
-    s->flags = PYMIZU_ARROW_FLAG_NULLABLE;
+    s->flags = MIZU_ARROW_FLAG_NULLABLE;
     s->n_children = 0;
     s->release = NULL;
     a->length = c->n;

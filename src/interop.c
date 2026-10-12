@@ -431,83 +431,12 @@ static void ixe_names(ixw *w, char **names, int n) {
                                   (int32_t) strlen(names[i])));
 }
 
-/* The factor dict {levels, class = "factor"} — the inline attr shape's
-   form exactly, as a complete stream. */
-size_t mizu_py_blob_factor(uint8_t *dst, const uint8_t *bytes,
-                           const int32_t *offs, int64_t nlev) {
-  ixw w;
-  memset(&w, 0, sizeof(w));
-  w.dst = dst;
-  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
-  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
-  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
-  ixe_key(&w, MIZU_IX_ATTR_LEVELS);
-  if (nlev == 1) {
-    IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), bytes, offs[1] - offs[0]));
-  } else {
-    IXW_PUT(&w, mizu_ix_put_strv_begin(IXW_DST(&w), (uint64_t) nlev));
-    for (int64_t i = 0; i < nlev; i++)
-      IXW_PUT(&w, mizu_ix_put_strelt(IXW_DST(&w), bytes + offs[i],
-                                     offs[i + 1] - offs[i]));
-  }
-  ixe_key(&w, MIZU_IX_ATTR_CLASS);
-  {
-    static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
-    ixe_class(&w, cls, 1);
-  }
-  return w.total;
-}
-
-size_t mizu_py_blob_date(uint8_t *dst) {
-  static const char *cls[1] = { MIZU_IX_CLASS_DATE };
-  ixw w;
-  memset(&w, 0, sizeof(w));
-  w.dst = dst;
-  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
-  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
-  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 1));
-  ixe_key(&w, MIZU_IX_ATTR_CLASS);
-  ixe_class(&w, cls, 1);
-  return w.total;
-}
-
-size_t mizu_py_blob_ts(uint8_t *dst, const char *tz) {
-  static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
-  ixw w;
-  memset(&w, 0, sizeof(w));
-  w.dst = dst;
-  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
-  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
-  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
-  ixe_key(&w, MIZU_IX_ATTR_CLASS);
-  ixe_class(&w, cls, 2);
-  ixe_key(&w, MIZU_IX_ATTR_TZONE);
-  IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), tz, (int32_t) strlen(tz)));
-  return w.total;
-}
-
-/* The difftime dict {class = "difftime", units = "secs"} — the layout
-   column's doubles are seconds, so the blob is unit-fixed. */
-size_t mizu_py_blob_difftime(uint8_t *dst) {
-  static const char *cls[1] = { MIZU_IX_CLASS_DIFFTIME };
-  ixw w;
-  memset(&w, 0, sizeof(w));
-  w.dst = dst;
-  w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
-  IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
-  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 2));
-  ixe_key(&w, MIZU_IX_ATTR_CLASS);
-  ixe_class(&w, cls, 1);
-  ixe_key(&w, MIZU_IX_ATTR_UNITS);
-  IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), MIZU_IX_UNIT_SECS,
-                              (int32_t) (sizeof MIZU_IX_UNIT_SECS - 1)));
-  return w.total;
-}
-
-/* The frame dict {names, class = "data.frame", row.names}: row.names the
-   automatic c(NA, -n), or a same-language Frame's int32 / character form.
-   0 with an exception set on a malformed row_names (never on the size
-   pass's own account). */
+/* The frame dict {names, class = "data.frame", row.names} with a custom
+   row_names (a same-language Frame's int32 or character form; the
+   automatic c(NA, -n) form is the core writer's). 0 with an exception
+   set on a malformed row_names (never on the size pass's own account).
+   The attribute-blob emitters for the layout leaves (factor levels,
+   Date, POSIXct, difftime) moved upstream to libmizu's arrow.c. */
 size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
                           PyObject *row_names) {
   ixw w;
@@ -524,12 +453,6 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
     ixe_class(&w, cls, 1);
   }
   ixe_key(&w, MIZU_IX_ATTR_ROWNAMES);
-  if (row_names == NULL || row_names == Py_None) {
-    int64_t vals[2] = { 0, -rows };
-    int na[2] = { 1, 0 };
-    ixe_intv(&w, 2, vals, na);
-    return w.total;
-  }
   if (PyList_Check(row_names)) {
     Py_ssize_t nr = PyList_GET_SIZE(row_names);
     if (nr != (Py_ssize_t) rows) goto malformed;
@@ -3190,7 +3113,7 @@ static void ixe_scalar_dtype(ixw *w, const char *f, Py_ssize_t itemsize,
      only the output tag, so a new row can never drift from a
      hand-written decode here. */
   uint8_t buf[16];
-  mizu_py_cvt_convert(buf, data, NULL, 0, 1, row, &w->warn);
+  mizu_cvt_convert(buf, data, NULL, 0, 1, row, &w->warn);
   switch (row->wire) {
   case MIZU_TYPE_LGL: {
     int32_t v;
@@ -3237,10 +3160,10 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
   if (w->dst != NULL && w->total + (size_t) n * row->w_out <= w->limit) {
     uint8_t *dst = w->dst + w->total;
     if (stride == 0) {
-      mizu_py_cvt_convert(dst, src, NULL, 0, (size_t) n, row, &w->warn);
+      mizu_cvt_convert(dst, src, NULL, 0, (size_t) n, row, &w->warn);
     } else {
       for (uint64_t i = 0; i < n; i++)
-        mizu_py_cvt_convert(dst + i * row->w_out,
+        mizu_cvt_convert(dst + i * row->w_out,
                             src + (uint64_t) i * (uint64_t) stride, NULL,
                             0, 1, row, &w->warn);
     }
@@ -3281,7 +3204,7 @@ static void ixe_transpose2(uint8_t *dst, const uint8_t *src, uint64_t m,
             default: memcpy(dp, sp, wo); break;
             }
           } else {
-            mizu_py_cvt_convert(dp, sp, NULL, 0, 1, row, warn);
+            mizu_cvt_convert(dp, sp, NULL, 0, 1, row, warn);
           }
           sp += s0;
           dp += wo;
@@ -3314,7 +3237,7 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
       expect *= shape[i];
     }
     if (f_contig) {
-      mizu_py_cvt_convert(dst, src, NULL, 0, (size_t) total, row, &w->warn);
+      mizu_cvt_convert(dst, src, NULL, 0, (size_t) total, row, &w->warn);
     } else if (nd == 2) {
       ixe_transpose2(dst, src, (uint64_t) shape[0], (uint64_t) shape[1],
                      strides[0], strides[1], row, &w->warn);
@@ -3328,7 +3251,7 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
           rem = dim != 0 ? rem / dim : 0;
           off += c * strides[k];
         }
-        mizu_py_cvt_convert(dst + t * row->w_out, src + off, NULL, 0, 1,
+        mizu_cvt_convert(dst + t * row->w_out, src + off, NULL, 0, 1,
                             row, &w->warn);
       }
     }
@@ -4024,101 +3947,6 @@ static void ixs_decline(const char *what) {
                "pymizu: value is not portable to the peer (%s)", what);
 }
 
-/* The dictionary levels of batch 0 (the canonical set later batches must
-   match): read into offsets + bytes. */
-static int ixs_levels_read(ixs *x, int col, int32_t **off_out,
-                           uint8_t **bytes_out, int64_t *nlev_out,
-                           int64_t *blen_out) {
-  if (x->hold.nb == 0) {
-    /* a zero-row stream serves no batch: the canonical levels are empty */
-    int32_t *offs = malloc(4);
-    if (offs == NULL) {
-      PyErr_NoMemory();
-      return -1;
-    }
-    offs[0] = 0;
-    *off_out = offs;
-    *bytes_out = NULL;
-    *nlev_out = 0;
-    *blen_out = 0;
-    return 0;
-  }
-  const ArrowArray *first = x->single ? &x->hold.arrs[0] :
-    x->hold.arrs[0].children[col];
-  const ArrowArray *dict = first->dictionary;
-  if (dict == NULL || dict->n_buffers < 3 || dict->buffers == NULL ||
-      (dict->length > 0 &&
-       (dict->buffers[1] == NULL || dict->buffers[2] == NULL))) {
-    PyErr_SetString(MizuError, "pymizu: invalid Arrow dictionary export");
-    return -1;
-  }
-  int form = x->cols[col].str_form;
-  int64_t nlev = dict->length;
-  int32_t *offs = malloc(((size_t) nlev + 1) * 4);
-  uint8_t *bytes = NULL;
-  size_t blen = 0;
-  if (offs == NULL) goto nomem;
-  offs[0] = 0;
-  for (int64_t i = 0; i < nlev; i++) {
-    const uint8_t *s;
-    int32_t len;
-    if (!arrow_valid(dict, i)) {
-      /* a null level: decline (R factor levels are non-NA) */
-      free(offs);
-      free(bytes);
-      PyErr_SetString(MizuError, "pymizu: a dictionary column with a "
-                      "null level has no portable home");
-      return -1;
-    }
-    if (arrow_str_at(dict, i, form, &s, &len) != 1) {
-      free(offs);
-      free(bytes);
-      PyErr_SetString(MizuError, "pymizu: invalid Arrow dictionary export");
-      return -1;
-    }
-    if (blen + (size_t) len > INT32_MAX) {
-      free(offs);
-      free(bytes);
-      PyErr_SetString(MizuError, "pymizu: dictionary levels past the "
-                      "int32 offset range");
-      return -1;
-    }
-    uint8_t *nb = realloc(bytes, blen + (size_t) len + 1);
-    if (nb == NULL) goto nomem;
-    bytes = nb;
-    memcpy(bytes + blen, s, (size_t) len);
-    blen += (size_t) len;
-    offs[i + 1] = (int32_t) blen;
-  }
-  *off_out = offs;
-  *bytes_out = bytes;
-  *nlev_out = nlev;
-  *blen_out = (int64_t) blen;
-  return 0;
-nomem:
-  free(offs);
-  free(bytes);
-  PyErr_NoMemory();
-  return -1;
-}
-
-/* A later batch's dictionary must equal the canonical set. */
-static int ixs_levels_match(ixs *x, int col, const ArrowArray *dict,
-                            const int32_t *offs, const uint8_t *bytes,
-                            int64_t nlev) {
-  if (dict == NULL || dict->length != nlev) return 0;
-  int form = x->cols[col].str_form;
-  for (int64_t i = 0; i < nlev; i++) {
-    const uint8_t *s;
-    int32_t len;
-    if (arrow_str_at(dict, i, form, &s, &len) != 1) return 0;
-    if (offs[i + 1] - offs[i] != len ||
-        memcmp(bytes + offs[i], s, (size_t) len) != 0)
-      return 0;
-  }
-  return 1;
-}
-
 /* The column emitters: two passes over the held batches (dst NULL sizes).
    All return the byte count; the write pass cannot fail (validation ran
    in the size pass). */
@@ -4146,10 +3974,10 @@ static void ixs_emit_cvt_col(ixe *e, ixs *x, int col) {
       uint64_t off = (uint64_t) a->offset;
       size_t n = (size_t) a->length;
       if (pc->row->cvt == CVT_BIT_LGL) {
-        mizu_py_cvt_convert(dst + out_off, data, valid, off, n, pc->row,
+        mizu_cvt_convert(dst + out_off, data, valid, off, n, pc->row,
                             &x->warn);
       } else {
-        mizu_py_cvt_convert(dst + out_off, data + off * pc->row->w_in,
+        mizu_cvt_convert(dst + out_off, data + off * pc->row->w_in,
                             valid, off, n, pc->row, &x->warn);
       }
       out_off += n * pc->row->w_out;
@@ -4436,143 +4264,9 @@ static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
 
 // The front-end driver -------------------------------------------------------------
 
-/* Classify one schema (a frame's child, or the single non-struct column)
-   into a plan column. top is set for the single column (uint64's lossy
-   row is top-level-only). */
-static int ixs_classify(ixs *x, int col, const ArrowSchema *sc) {
-  ixs_pcol *pc = &x->cols[col];
-  memset(pc, 0, sizeof(*pc));
-  const char *f = sc->format;
-  if (f == NULL) {
-    ixs_decline("an Arrow column with no format");
-    return -1;
-  }
-  if (sc->dictionary != NULL) {
-    if (sc->flags & PYMIZU_ARROW_FLAG_DICTIONARY_ORDERED) {
-      ixs_decline("an ordered dictionary column has no portable home "
-                  "(polars Enum: cast to pl.Categorical)");
-      return -1;
-    }
-    const char *vf = sc->dictionary->format;
-    if (vf == NULL ||
-        (strcmp(vf, "u") != 0 && strcmp(vf, "U") != 0 &&
-         strcmp(vf, "vu") != 0)) {
-      ixs_decline("a dictionary column of non-string values has no "
-                  "portable home");
-      return -1;
-    }
-    pc->str_form = vf[0] == 'v' ? 3 : vf[0] == 'U' ? 2 : 1;
-    if (f[1] != '\0') goto bad_index;
-    switch (f[0]) {
-    case 'c': pc->idx_w = 1; pc->idx_signed = 1; break;
-    case 'C': pc->idx_w = 1; break;
-    case 's': pc->idx_w = 2; pc->idx_signed = 1; break;
-    case 'S': pc->idx_w = 2; break;
-    case 'i': pc->idx_w = 4; pc->idx_signed = 1; break;
-    case 'I': pc->idx_w = 4; break;
-    case 'l': pc->idx_w = 8; pc->idx_signed = 1; break;
-    case 'L': pc->idx_w = 8; break;
-    default:
-    bad_index:
-      ixs_decline("a dictionary column with a non-integer index has no "
-                  "portable home");
-      return -1;
-    }
-    pc->kind = PC_DICT;
-    return 0;
-  }
-  if (strcmp(f, "u") == 0) {
-    pc->kind = PC_STR;
-    pc->str_form = 1;
-    return 0;
-  }
-  if (strcmp(f, "U") == 0) {
-    pc->kind = PC_STR;
-    pc->str_form = 2;
-    return 0;
-  }
-  if (strcmp(f, "vu") == 0) {
-    pc->kind = PC_STR;
-    pc->str_form = 3;
-    return 0;
-  }
-  if (strcmp(f, "tdD") == 0) {
-    pc->kind = PC_DATE;
-    return 0;
-  }
-  if (f[0] == 't' && f[1] == 's' && f[3] == ':' &&
-      (f[2] == 's' || f[2] == 'm' || f[2] == 'u' || f[2] == 'n')) {
-    pc->ts_scale = f[2] == 's' ? 1.0 : f[2] == 'm' ? 1e-3 :
-      f[2] == 'u' ? 1e-6 : 1e-9;
-    const char *tz = f + 4;
-    snprintf(pc->tz, sizeof(pc->tz), "%s", tz[0] != '\0' ? tz : "UTC");
-    pc->kind = PC_TS;
-    return 0;
-  }
-  if (f[0] == 't' && f[1] == 'D' && f[3] == '\0' &&
-      (f[2] == 's' || f[2] == 'm' || f[2] == 'u' || f[2] == 'n')) {
-    pc->ts_scale = f[2] == 's' ? 1.0 : f[2] == 'm' ? 1e-3 :
-      f[2] == 'u' ? 1e-6 : 1e-9;
-    pc->kind = PC_TD;
-    return 0;
-  }
-  const cvt_row *row = mizu_py_cvt_for_arrow(f);
-  if (row != NULL) {
-    pc->kind = PC_CVT;
-    pc->row = row;
-    return 0;
-  }
-  {
-    char msg[160];
-    snprintf(msg, sizeof(msg), "an Arrow type with no portable home "
-             "(format '%s')", f);
-    ixs_decline(msg);
-  }
-  return -1;
-}
-
-/* One batch's shape checks. */
-static int ixs_check_batch(ixs *x, const ArrowArray *a) {
-  for (int i = 0; i < x->ncols; i++) {
-    const ArrowArray *c = x->single ? a : a->children[i];
-    ixs_pcol *pc = &x->cols[i];
-    if (!x->single && c->length != a->length) {
-      ixs_decline("an Arrow batch whose columns differ in length");
-      return -1;
-    }
-    int64_t need = pc->kind == PC_STR ? (pc->str_form == 3 ? 2 : 3) : 2;
-    if (c->n_buffers < need || c->buffers == NULL || c->length < 0 ||
-        c->offset < 0 || c->null_count < -1 ||
-        c->null_count > c->length ||
-        (c->buffers[0] == NULL && c->null_count > 0) ||
-        (c->buffers[1] == NULL && c->length != 0)) {
-      ixs_decline("an invalid Arrow C Data Interface batch");
-      return -1;
-    }
-    if (pc->kind == PC_STR && pc->str_form != 3 &&
-        c->buffers[2] == NULL && c->length != 0) {
-      ixs_decline("an invalid Arrow C Data Interface batch");
-      return -1;
-    }
-    if (pc->kind == PC_DICT && c->dictionary == NULL) {
-      ixs_decline("an invalid Arrow C Data Interface batch");
-      return -1;
-    }
-    /* R raw vectors have no NA: the masked convert would write a 4-byte
-       sentinel into a 1-byte column (the array front-end declines there
-       too) */
-    if (pc->kind == PC_CVT && pc->row->wire == MIZU_TYPE_RAW &&
-        c->buffers[0] != NULL && c->null_count != 0) {
-      ixs_decline("Arrow nulls cannot cross in a uint8 column "
-                  "(R raw vectors have no NA)");
-      return -1;
-    }
-  }
-  return 0;
-}
-
 /* Pull every batch (the size pass holds them; the write pass reads from
-   the hold — the capsule is single-consumption). */
+   the hold — the capsule is single-consumption). The batch vetting is the
+   core's mizu_arrow_open. */
 static int ixs_pull(ixs *x) {
   for (;;) {
     if (x->hold.nb == x->hold.cap) {
@@ -4597,22 +4291,88 @@ static int ixs_pull(ixs *x) {
       return -1;
     }
     if (a->release == NULL) break;   /* the end of the stream */
-    if (!x->single &&
-        (a->n_children != x->ncols || a->children == NULL)) {
-      ixs_decline("an Arrow batch whose column count differs from the "
-                  "schema");
-      return -1;
-    }
-    if (ixs_check_batch(x, a) < 0) return -1;
     x->hold.nb++;
     x->hold.rows += a->length;
   }
   return 0;
 }
 
-/* The dictionary columns' canonical levels (batch 0) and index bounds,
-   validated before any emit. */
-static int ixs_validate_dicts(ixs *x) {
+/* The core's classify + vet + validate over the pulled batches (arrow.c;
+   its thread-local decline re-raised here by the caller). The batches
+   pointer array (and the single path's wrapper arrays) is caller-owned —
+   it must outlive the handle: keep1 / keep2 take the allocations, freed
+   by the caller after mizu_arrow_close. */
+static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep1,
+                                  void **keep2) {
+  *keep1 = NULL;
+  *keep2 = NULL;
+  if (x->single) {
+    /* the single path wrapped as a one-column struct: the same writer
+       serves both (a non-struct child keeps its own schema; the name
+       check wants a non-NULL name, unused on this path). One carved
+       allocation: the wrapper structs, their child pointers, and the
+       batches pointer array (all caller-owned past the open). */
+    ArrowSchema kid = x->schema;
+    if (kid.name == NULL) kid.name = "";
+    ArrowSchema *kids[1] = { &kid };
+    ArrowSchema root;
+    memset(&root, 0, sizeof(root));
+    root.format = "+s";
+    root.n_children = 1;
+    root.children = kids;
+    const size_t nb = x->hold.nb != 0 ? x->hold.nb : 1;
+    uint8_t *blk = malloc(nb * (sizeof(ArrowArray) +
+                                2 * sizeof(ArrowArray *)));
+    if (blk == NULL) {
+      PyErr_NoMemory();
+      return NULL;
+    }
+    ArrowArray *wraps = (ArrowArray *) blk;
+    ArrowArray **wkids = (ArrowArray **) (blk + nb * sizeof(ArrowArray));
+    const ArrowArray **batches = (const ArrowArray **) (wkids + nb);
+    for (size_t b = 0; b < x->hold.nb; b++) {
+      wkids[b] = &x->hold.arrs[b];
+      wraps[b] = x->hold.arrs[b];
+      wraps[b].children = &wkids[b];
+      wraps[b].n_children = 1;
+      batches[b] = &wraps[b];
+    }
+    mizu_arrow *ar = NULL;
+    mizu_status st = mizu_arrow_open(&ar, &root, batches, x->hold.nb,
+                                     peer_caps);
+    if (st != MIZU_OK) {
+      free(blk);
+      return NULL;
+    }
+    *keep1 = blk;
+    return ar;
+  }
+  const ArrowArray **batches = malloc((x->hold.nb != 0 ? x->hold.nb : 1) *
+                                      sizeof(*batches));
+  if (batches == NULL) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+  for (size_t b = 0; b < x->hold.nb; b++) batches[b] = &x->hold.arrs[b];
+  mizu_arrow *ar = NULL;
+  mizu_status st = mizu_arrow_open(&ar, &x->schema, batches, x->hold.nb,
+                                   peer_caps);
+  if (st != MIZU_OK) {
+    free(batches);
+    return NULL;
+  }
+  *keep1 = (void *) batches;
+  return ar;
+}
+
+/* The core's per-column plans into the emitters' form: the kind orders
+   coincide (both registries are append-never); the dictionary levels copy
+   out (the ixs_free discipline owns them). */
+static int ixs_plans_fill(ixs *x, mizu_arrow *ar) {
+  _Static_assert(MIZU_ARROW_CVT == PC_CVT && MIZU_ARROW_STR == PC_STR &&
+                 MIZU_ARROW_DICT == PC_DICT && MIZU_ARROW_DATE == PC_DATE &&
+                 MIZU_ARROW_TS == PC_TS && MIZU_ARROW_TD == PC_TD,
+                 "the column-kind orders coincide");
   x->lev_offs = calloc((size_t) x->ncols, sizeof(int32_t *));
   x->lev_bytes = calloc((size_t) x->ncols, sizeof(uint8_t *));
   x->nlevs = calloc((size_t) x->ncols, sizeof(int64_t));
@@ -4623,50 +4383,189 @@ static int ixs_validate_dicts(ixs *x) {
     return -1;
   }
   for (int i = 0; i < x->ncols; i++) {
+    mizu_arrow_col ci;
+    mizu_arrow_col_info(ar, i, &ci);
     ixs_pcol *pc = &x->cols[i];
-    if (pc->kind != PC_DICT) continue;
-    if (ixs_levels_read(x, i, &x->lev_offs[i], &x->lev_bytes[i],
-                        &x->nlevs[i], &x->lev_blens[i]) < 0)
+    pc->kind = ci.kind;
+    pc->row = ci.row;
+    pc->str_form = ci.str_form;
+    pc->ts_scale = ci.ts_scale;
+    snprintf(pc->tz, sizeof(pc->tz), "%s", ci.tz);
+    pc->idx_w = (char) ci.idx_w;
+    pc->idx_signed = ci.idx_signed;
+    if (ci.kind != PC_DICT) continue;
+    int32_t *offs = malloc(((size_t) ci.nlev + 1) * 4);
+    uint8_t *bytes = malloc((size_t) ci.lev_blen + 1);
+    if (offs == NULL || bytes == NULL) {
+      free(offs);
+      free(bytes);
+      PyErr_NoMemory();
       return -1;
-    for (size_t b = 0; b < x->hold.nb; b++) {
-      ArrowArray *a = x->single ? &x->hold.arrs[b] :
-        x->hold.arrs[b].children[i];
-      if (b != 0 && !ixs_levels_match(x, i, a->dictionary,
-                                      x->lev_offs[i], x->lev_bytes[i],
-                                      x->nlevs[i])) {
-        ixs_decline("a dictionary column whose levels differ across "
-                    "batches");
-        return -1;
-      }
-      const uint8_t *idx = (const uint8_t *) a->buffers[1];
-      for (int64_t k = 0; k < a->length; k++) {
-        if (!arrow_valid(a, k)) continue;
-        int64_t j = a->offset + k, c;
-        switch (pc->idx_w) {
-        case 1:
-          c = pc->idx_signed ? (int64_t) ((const int8_t *) idx)[j] :
-            (int64_t) ((const uint8_t *) idx)[j];
-          break;
-        case 2:
-          c = pc->idx_signed ? (int64_t) ((const int16_t *) idx)[j] :
-            (int64_t) ((const uint16_t *) idx)[j];
-          break;
-        case 4:
-          c = pc->idx_signed ? (int64_t) ((const int32_t *) idx)[j] :
-            (int64_t) ((const uint32_t *) idx)[j];
-          break;
-        default:
-          c = ((const int64_t *) idx)[j];
-          break;
-        }
-        if (c < 0 || c >= x->nlevs[i]) {
-          ixs_decline("a dictionary index outside the levels");
-          return -1;
-        }
-      }
     }
+    memcpy(offs, ci.lev_offs, ((size_t) ci.nlev + 1) * 4);
+    memcpy(bytes, ci.lev_bytes, (size_t) ci.lev_blen);
+    x->lev_offs[i] = offs;
+    x->lev_bytes[i] = bytes;
+    x->nlevs[i] = ci.nlev;
+    x->lev_blens[i] = ci.lev_blen;
   }
   return 0;
+}
+
+/* The names array: the core's open already vetted present-and-unique. */
+static char **ixs_names_collect(ixs *x) {
+  char **names = calloc((size_t) x->ncols, sizeof(char *));
+  if (names == NULL) {
+    PyErr_NoMemory();
+    return NULL;
+  }
+  for (int i = 0; i < x->ncols; i++)
+    names[i] = (char *) x->schema.children[i]->name;
+  return names;
+}
+
+static void ixs_emit_frame(ixe *e, ixs *x, char **names);
+
+static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
+                         uint32_t inline_max, mizu_handle *h) {
+  x->ncols = (int) x->schema.n_children;
+  if (x->ncols < 1 || x->schema.children == NULL) {
+    ixs_decline("a zero-column Arrow frame has no portable home");
+    return 1;
+  }
+  x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
+  if (x->cols == NULL) {
+    PyErr_NoMemory();
+    return 1;
+  }
+  if (ixs_pull(x) < 0) return 1;
+  /* the classification, batch vetting and dictionary validation are the
+     core's (arrow.c), the TLS decline re-raised as this front-end's */
+  void *keep1, *keep2;
+  mizu_arrow *ar = ixs_arrow_open(x, x->caps, &keep1, &keep2);
+  if (ar == NULL) {
+    if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
+    return 1;
+  }
+  int rc = 1;
+  char **names = NULL;
+  if (ixs_plans_fill(x, ar) < 0 ||
+      (names = ixs_names_collect(x)) == NULL)
+    goto done;
+  {
+    ixe e = { NULL, 0 };
+    e.total += mizu_ix_put_header(NULL);
+    ixs_emit_frame(&e, x, names);
+    size_t n = e.total;
+    ixe w = { NULL, 0 };
+    if (n <= (size_t) inline_max) {
+      w.dst = payload;
+      w.total += mizu_ix_put_header(payload);
+      ixs_emit_frame(&w, x, names);
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
+      rc = 0;
+    } else {
+      /* the MIZL tier (3.6/3.8): past the zero-copy gate, no churn, and
+         the peer passing the frame conjunction (the binding's tier-attempt
+         predicate; the core writer's stage enforces the same conjunction
+         internally now — one home for the rule) — the provenance REF of an
+         unmodified round trip first, else the core writer's layout stage;
+         anything less falls to the copy tiers */
+      const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
+        (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
+      if (n > zc_gate && !mizu_handle_churn(h)) {
+        int any_str = 0;
+        for (int i = 0; i < x->ncols; i++)
+          any_str |= x->cols[i].kind == PC_STR;
+        const uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL |
+          (any_str ? MIZU_CAP_MIZS : 0u);
+        if ((x->caps & need) == need) {
+          rc = pymizu_shmframe_pv_match(x, names, hdr, payload,
+                                        inline_max);
+          if (rc == 0) goto done;
+          /* the per-column REF (F2): the whole-frame path behind, any
+             matched column registers as a remote leaf — the conditional
+             conjunction: a peer short of the bit gets full layout leaves
+             for every column, never a partial-remote tree */
+          struct pv_entry const **hits =
+            calloc((size_t) x->ncols, sizeof(*hits));
+          if (hits == NULL) {
+            PyErr_NoMemory();
+            goto done;
+          }
+          int nremote = pymizu_shmframe_pv_match_cols(x, names, hits);
+          if (nremote != 0 &&
+              (x->caps & (need | MIZU_CAP_MIZL_REF)) ==
+                (need | MIZU_CAP_MIZL_REF)) {
+            for (int i = 0; i < x->ncols; i++) {
+              if (hits[i] == NULL) continue;
+              mizu_shm *acq = pymizu_shmframe_pv_acq(hits[i]);
+              /* a torn referenced tree: the column stays local */
+              (void) mizu_arrow_remote(ar, i, acq->name,
+                                       (size_t) acq->name_len,
+                                       mizu_shm_addr(acq),
+                                       mizu_shm_size(acq), i);
+            }
+          }
+          free(hits);
+          mizu_arrow_warn warn;
+          if (mizu_arrow_stage(h, ar, hdr, payload, &warn) == MIZU_OK) {
+            /* staged: the conversion warnings raise after the write half
+               completed (a raise-as-error rolls the unpublished
+               reservation back) */
+            rc = mizu_py_cvt_warn(&warn) != 0 ? 1 : 0;
+            goto done;
+          }
+        }
+      }
+      uint8_t *buf = malloc(n);
+      if (buf == NULL) {
+        PyErr_NoMemory();
+        goto done;
+      }
+      w.dst = buf;
+      w.total += mizu_ix_put_header(buf);
+      ixs_emit_frame(&w, x, names);
+      rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
+      free(buf);
+    }
+  }
+done:
+  free(names);
+  mizu_arrow_close(ar);
+  free(keep1);
+  free(keep2);
+  /* the write half completed: raise the accumulated conversion warnings
+     (the MIZL paths raised their own and carry none here) */
+  return rc == 0 && mizu_py_cvt_warn(&x->warn) != 0 ? 1 : rc;
+}
+
+/* The single (Series / ChunkedArray) paths: the conversion table onto the
+   bare-bytes tiers, 0x0b for strings, the factor and temporal shapes. */
+static void ixs_single_str_emit(ixe *e, ixs *x) {
+  ixs_emit_str_col(e, x, 0);
+}
+
+static void ixs_single_dict_emit(ixe *e, ixs *x) {
+  ixs_emit_dict_col(e, x, 0, x->lev_offs[0], x->lev_bytes[0], x->nlevs[0]);
+}
+
+static void ixs_single_date_emit(ixe *e, ixs *x) {
+  ixs_emit_date_col(e, x, 0);
+}
+
+static void ixs_single_ts_emit(ixe *e, ixs *x) {
+  ixs_emit_ts_col(e, x, 0);
+}
+
+static void ixs_single_td_emit(ixe *e, ixs *x) {
+  ixs_emit_td_col(e, x, 0);
+}
+
+static void ixs_single_cvt_emit(ixe *e, ixs *x) {
+  ixs_emit_cvt_col(e, x, 0);
 }
 
 /* Stage a finished stream: inline within the budget, else the bytes
@@ -4701,151 +4600,6 @@ static int ixs_stage_emit(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   return rc;
 }
 
-static char **ixs_names(ixs *x) {
-  char **names = calloc((size_t) x->ncols, sizeof(char *));
-  if (names == NULL) {
-    PyErr_NoMemory();
-    return NULL;
-  }
-  for (int i = 0; i < x->ncols; i++) {
-    const char *nm = x->schema.children[i]->name;
-    if (nm == NULL) {
-      ixs_decline("an unnamed Arrow column has no portable home "
-                  "(an R data.frame needs names)");
-      goto fail;
-    }
-    for (int j = 0; j < i; j++)
-      if (strcmp(names[j], nm) == 0) {
-        ixs_decline("an Arrow frame with duplicate column names");
-        goto fail;
-      }
-    names[i] = (char *) nm;
-  }
-  return names;
-fail:
-  free(names);
-  return NULL;
-}
-
-static void ixs_emit_frame(ixe *e, ixs *x, char **names);
-
-static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
-                         uint32_t inline_max, mizu_handle *h) {
-  x->ncols = (int) x->schema.n_children;
-  if (x->ncols < 1 || x->schema.children == NULL) {
-    ixs_decline("a zero-column Arrow frame has no portable home");
-    return 1;
-  }
-  x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
-  if (x->cols == NULL) {
-    PyErr_NoMemory();
-    return 1;
-  }
-  char **names = ixs_names(x);
-  if (names == NULL) return 1;
-  int rc = 1;
-  for (int i = 0; i < x->ncols; i++)
-    if (ixs_classify(x, i, x->schema.children[i]) < 0) goto done;
-  if (ixs_pull(x) < 0 || ixs_validate_dicts(x) < 0) goto done;
-  {
-    ixe e = { NULL, 0 };
-    e.total += mizu_ix_put_header(NULL);
-    ixs_emit_frame(&e, x, names);
-    size_t n = e.total;
-    ixe w = { NULL, 0 };
-    if (n <= (size_t) inline_max) {
-      w.dst = payload;
-      w.total += mizu_ix_put_header(payload);
-      ixs_emit_frame(&w, x, names);
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) n;
-      hdr->aux = MIZU_AUX_F_KEEPERLESS;
-      rc = 0;
-    } else {
-      /* the MIZL tier (3.6/3.8): past the zero-copy gate, no churn, and
-         the peer passing the frame conjunction — the provenance REF of an
-         unmodified round trip first, else the layout write; anything less
-         falls to the copy tiers */
-      const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-        (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
-      if (n > zc_gate && !mizu_handle_churn(h)) {
-        int any_str = 0;
-        for (int i = 0; i < x->ncols; i++)
-          any_str |= x->cols[i].kind == PC_STR;
-        const uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL |
-          (any_str ? MIZU_CAP_MIZS : 0u);
-        if ((x->caps & need) == need) {
-          rc = pymizu_shmframe_pv_match(x, names, hdr, payload,
-                                        inline_max);
-          if (rc == 0) goto done;
-          /* the per-column REF (F2): the whole-frame path behind, any
-             matched column goes out as a remote leaf — the conditional
-             conjunction: a peer short of the bit gets full layout leaves
-             for every column, never a partial-remote tree */
-          struct pv_entry const **hits =
-            calloc((size_t) x->ncols, sizeof(*hits));
-          if (hits == NULL) {
-            PyErr_NoMemory();
-            goto done;
-          }
-          int nremote = pymizu_shmframe_pv_match_cols(x, names, hits);
-          if (nremote == 0 ||
-              (x->caps & (need | MIZU_CAP_MIZL_REF)) !=
-                (need | MIZU_CAP_MIZL_REF)) {
-            free(hits);
-            hits = NULL;
-          }
-          rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max,
-                                     h, 0, hits);
-          free(hits);
-          if (rc >= 0) goto done;
-        }
-      }
-      uint8_t *buf = malloc(n);
-      if (buf == NULL) {
-        PyErr_NoMemory();
-        goto done;
-      }
-      w.dst = buf;
-      w.total += mizu_ix_put_header(buf);
-      ixs_emit_frame(&w, x, names);
-      rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
-      free(buf);
-    }
-  }
-done:
-  free(names);
-  /* the write half completed: raise the accumulated conversion warnings
-     (the MIZL paths raised their own and carry none here) */
-  return rc == 0 && mizu_py_cvt_warn(&x->warn) != 0 ? 1 : rc;
-}
-
-/* The single (Series / ChunkedArray) paths: the conversion table onto the
-   bare-bytes tiers, 0x0b for strings, the factor and temporal shapes. */
-static void ixs_single_str_emit(ixe *e, ixs *x) {
-  ixs_emit_str_col(e, x, 0);
-}
-
-static void ixs_single_dict_emit(ixe *e, ixs *x) {
-  ixs_emit_dict_col(e, x, 0, x->lev_offs[0], x->lev_bytes[0], x->nlevs[0]);
-}
-
-static void ixs_single_date_emit(ixe *e, ixs *x) {
-  ixs_emit_date_col(e, x, 0);
-}
-
-static void ixs_single_ts_emit(ixe *e, ixs *x) {
-  ixs_emit_ts_col(e, x, 0);
-}
-
-static void ixs_single_td_emit(ixe *e, ixs *x) {
-  ixs_emit_td_col(e, x, 0);
-}
-
-static void ixs_single_cvt_emit(ixe *e, ixs *x) {
-  ixs_emit_cvt_col(e, x, 0);
-}
-
 static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
                           uint32_t inline_max, mizu_handle *h) {
   x->ncols = 1;
@@ -4855,9 +4609,20 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     PyErr_NoMemory();
     return 1;
   }
-  if (ixs_classify(x, 0, &x->schema) < 0) return 1;
   if (!x->borrowed_hold && ixs_pull(x) < 0) return 1;
-  if (ixs_validate_dicts(x) < 0) return 1;
+  /* the classification and validation are the core's (the single column
+     wrapped as a one-column struct), the TLS decline re-raised here */
+  void *keep1, *keep2;
+  mizu_arrow *ar = ixs_arrow_open(x, 0, &keep1, &keep2);
+  if (ar == NULL) {
+    if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
+    return 1;
+  }
+  int prc = ixs_plans_fill(x, ar);
+  mizu_arrow_close(ar);
+  free(keep1);
+  free(keep2);
+  if (prc < 0) return 1;
   ixs_pcol *pc = &x->cols[0];
   if (pc->kind == PC_CVT) {
     /* the bare-bytes tiers first: one reservation, converted per batch */
@@ -4874,10 +4639,10 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
         uint64_t off2 = (uint64_t) a->offset;
         size_t n = (size_t) a->length;
         if (pc->row->cvt == CVT_BIT_LGL) {
-          mizu_py_cvt_convert(dst + off, data, valid, off2, n, pc->row,
+          mizu_cvt_convert(dst + off, data, valid, off2, n, pc->row,
                               &warn);
         } else {
-          mizu_py_cvt_convert(dst + off, data + off2 * pc->row->w_in,
+          mizu_cvt_convert(dst + off, data + off2 * pc->row->w_in,
                               valid, off2, n, pc->row, &warn);
         }
         off += n * pc->row->w_out;
@@ -5025,11 +4790,17 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
    floor stages as one MIZL region on same-language handles — the true
    mirror of R's MIZL, container-exact (it reads back as a region-backed
    Frame), while pandas, polars and pyarrow frames keep pickle. Below the
-   floor, under churn, or on any decline (a complex column) it falls back
-   to pickle: -1 with the error cleared. */
+   floor or on any decline (a complex column; the churn check is the core
+   stage's now) it falls back to pickle: -1 with the error cleared. The
+   same-language rules ride the overrides: the tzone verbatim off the
+   format, the caller's row_names as the root blob. */
 static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
-                              uint32_t inline_max, mizu_handle *h) {
+                              uint32_t inline_max, mizu_handle *h,
+                              uint32_t peer_caps) {
   char **names = NULL;
+  uint8_t *blob = NULL;
+  mizu_arrow *ar = NULL;
+  void *keep1 = NULL, *keep2 = NULL;
   int rc = -1;
   memset(&x->schema, 0, sizeof(x->schema));
   if (x->st->get_schema(x->st, &x->schema) != 0) goto out;
@@ -5041,23 +4812,47 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   if (x->ncols < 1 || x->schema.children == NULL) goto out;
   x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
   if (x->cols == NULL) goto out;
-  names = ixs_names(x);
-  if (names == NULL) goto out;
-  for (int i = 0; i < x->ncols; i++)
-    if (ixs_classify(x, i, x->schema.children[i]) < 0) goto out;
-  if (ixs_pull(x) < 0 || ixs_validate_dicts(x) < 0) goto out;
+  if (ixs_pull(x) < 0) goto out;
+  /* the real peer caps word: the core stage's conjunction needs it (the
+     same-language paths used to carry 0 — the drift dies here) */
+  ar = ixs_arrow_open(x, peer_caps, &keep1, &keep2);
+  if (ar == NULL) goto out;
+  if (ixs_plans_fill(x, ar) < 0 ||
+      (names = ixs_names_collect(x)) == NULL)
+    goto out;
   {
     ixe e = { NULL, 0 };
     e.total += mizu_ix_put_header(NULL);
     ixs_emit_frame(&e, x, names);
     const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
       (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
-    if (e.total <= zc_gate || mizu_handle_churn(h)) goto out;
+    if (e.total <= zc_gate) goto out;
   }
-  rc = pymizu_shmframe_write(x, names, hdr, payload, inline_max, h, 1,
-                             NULL);
+  /* the tzone verbatim (the naivety-preserving form) */
+  for (int i = 0; i < x->ncols; i++)
+    if (x->cols[i].kind == PC_TS)
+      mizu_arrow_tz(ar, i, x->schema.children[i]->format + 4);
+  /* a custom row_names rides the root-blob override */
+  if (x->row_names != NULL && x->row_names != Py_None) {
+    size_t bn = mizu_py_blob_frame(NULL, names, x->ncols, x->hold.rows,
+                                   x->row_names);
+    if (bn == 0) goto out;
+    blob = malloc(bn);
+    if (blob == NULL) goto out;
+    mizu_py_blob_frame(blob, names, x->ncols, x->hold.rows, x->row_names);
+    mizu_arrow_root_blob(ar, blob, bn);
+  }
+  {
+    mizu_arrow_warn warn;
+    if (mizu_arrow_stage(h, ar, hdr, payload, &warn) != MIZU_OK) goto out;
+    rc = mizu_py_cvt_warn(&warn) != 0 ? 1 : 0;
+  }
 out:
+  free(blob);
   free(names);
+  if (ar != NULL) mizu_arrow_close(ar);
+  free(keep1);
+  free(keep2);
   if (rc != 0) {
     PyErr_Clear();
     rc = -1;
@@ -5069,7 +4864,7 @@ out:
    to pickle. */
 int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
                             uint8_t *payload, uint32_t inline_max,
-                            mizu_handle *h) {
+                            mizu_handle *h, uint32_t peer_caps) {
   if (Py_TYPE(obj) != &MizuFrameType) return -1;
   MizuFrame *f = (MizuFrame *) obj;
   PyObject *args = PyTuple_New(0);
@@ -5095,7 +4890,7 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
   x.st = st;
   x.cap = cap;
   x.row_names = f->row_names;
-  int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h);
+  int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h, peer_caps);
   ixs_free(&x);
   return rc;
 }
@@ -5201,9 +4996,9 @@ static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
     uint64_t aoff = (uint64_t) a->offset;
     size_t alen = (size_t) a->length;
     if (row->cvt == CVT_BIT_LGL) {
-      mizu_py_cvt_convert(buf + off, data, valid, aoff, alen, row, warn);
+      mizu_cvt_convert(buf + off, data, valid, aoff, alen, row, warn);
     } else {
-      mizu_py_cvt_convert(buf + off, data + aoff * row->w_in, valid, aoff,
+      mizu_cvt_convert(buf + off, data + aoff * row->w_in, valid, aoff,
                           alen, row, warn);
     }
     off += alen * row->w_out;
@@ -5396,7 +5191,7 @@ static int fcol_build_rescale(ixs *x, int col, fcol *c, char **names) {
 /* One adopted column: borrow the producer's buffers and stamp the
    null-free / advisory-nulls state. The batch still sits in the pull slot
    (the hold move happens only after every column built). */
-static void fcol_adopt(ixs *x, int col, fcol *c, mizu_arrow_hold *hold) {
+static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
   const ixs_pcol *pc = &x->cols[col];
   const ArrowArray *a = x->hold.arrs[0].children[col];
   switch (pc->kind) {
@@ -5501,7 +5296,7 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
   x.cap = cap;
   frame_cols *fc = NULL;
   char **names = NULL;
-  mizu_arrow_hold *hold = NULL;
+  mizu_py_arrow_hold *hold = NULL;
   int *adopt = NULL;
   memset(&x.schema, 0, sizeof(x.schema));
   if (x.st->get_schema(x.st, &x.schema) != 0) {
@@ -5526,20 +5321,29 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
     PyErr_NoMemory();
     goto done;
   }
-  names = ixs_names(&x);
-  if (names == NULL) {
+  if (ixs_pull(&x) < 0) {
     fc_err_reraise(NULL);
     goto done;
   }
-  for (int i = 0; i < x.ncols; i++)
-    if (ixs_classify(&x, i, x.schema.children[i]) < 0) {
-      fc_err_reraise(names[i]);
+  /* the classification, batch vetting and dictionary validation are the
+     core's (arrow.c); its TLS decline already names the column */
+  {
+    void *keep1, *keep2;
+    mizu_arrow *ar = ixs_arrow_open(&x, 0, &keep1, &keep2);
+    if (ar == NULL) {
+      if (PyErr_Occurred() == NULL)
+        PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",
+                     mizu_last_error_message());
       goto done;
     }
-  if (ixs_pull(&x) < 0 || ixs_validate_dicts(&x) < 0) {
-    fc_err_reraise(NULL);
-    goto done;
+    int prc = ixs_plans_fill(&x, ar);
+    mizu_arrow_close(ar);
+    free(keep1);
+    free(keep2);
+    if (prc < 0) goto done;
   }
+  names = ixs_names_collect(&x);
+  if (names == NULL) goto done;
   /* the dispositions: one struct batch on offset-0 boundaries adopts per
      column (with or without nulls); anything else copies per column */
   {
@@ -5613,7 +5417,7 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         goto done;
       }
     }
-    /* names into the block's packed store (ixs_names already proved them
+    /* names into the block's packed store (the core's open already proved them
        present and unique) */
     {
       size_t name_len = 0;

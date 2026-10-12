@@ -20,48 +20,10 @@
 
 // Arrow C Data Interface ---------------------------------------------------------
 
-/* The stable C ABI structs, defined locally per the spec (the layout is
-   frozen; no headers, no dependency). The import front-ends (a producer's
-   __arrow_c_array__ / __arrow_c_stream__) and the view's and Frame's export
-   dunders use them. */
-#ifndef PYMIZU_ARROW_SCHEMA_DEFINED
-#define PYMIZU_ARROW_SCHEMA_DEFINED
-typedef struct ArrowSchema {
-  const char *format;
-  const char *name;
-  const char *metadata;
-  int64_t flags;
-  int64_t n_children;
-  struct ArrowSchema **children;
-  struct ArrowSchema *dictionary;
-  void (*release)(struct ArrowSchema *);
-  void *private_data;
-} ArrowSchema;
-
-typedef struct ArrowArray {
-  int64_t length;
-  int64_t null_count;
-  int64_t offset;
-  int64_t n_buffers;
-  int64_t n_children;
-  const void **buffers;
-  struct ArrowArray **children;
-  struct ArrowArray *dictionary;
-  void (*release)(struct ArrowArray *);
-  void *private_data;
-} ArrowArray;
-
-typedef struct ArrowArrayStream {
-  int (*get_schema)(struct ArrowArrayStream *, struct ArrowSchema *out);
-  int (*get_next)(struct ArrowArrayStream *, struct ArrowArray *out);
-  const char *(*get_last_error)(struct ArrowArrayStream *);
-  void (*release)(struct ArrowArrayStream *);
-  void *private_data;
-} ArrowArrayStream;
-#endif
-
-#define PYMIZU_ARROW_FLAG_NULLABLE 2
-#define PYMIZU_ARROW_FLAG_DICTIONARY_ORDERED 1
+/* The stable C ABI structs are the vendored core's (mizu_ext.h, under the
+   spec's two include guards): the import front-ends (a producer's
+   __arrow_c_array__ / __arrow_c_stream__) and the view's and Frame's
+   export dunders use them. */
 
 // The Arrow export (shared by _pymizu.c's views and map.c's _MapOutView) -------
 
@@ -113,32 +75,22 @@ int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
 
 // The conversion table (shared with _pymizu.c's conversion pass) ---------------
 
-enum {
-  CVT_COPY = 0,   /* identity: one memcpy per run */
-  CVT_I8_INT,     /* sign-widen */
-  CVT_I16_INT,
-  CVT_U16_INT,    /* zero-widen */
-  CVT_U32_REAL,   /* exact */
-  CVT_U64_REAL,
-  CVT_F16_REAL,   /* exact (half decodes into double's wider fields) */
-  CVT_F32_REAL,   /* exact */
-  CVT_BOOL8_LGL,  /* one byte per source lane (numpy '?') -> int32 0/1 */
-  CVT_BIT_LGL,    /* one bit per source lane (Arrow 'b') -> int32 0/1 */
-  CVT_C64_CPLX    /* float re/im -> double re/im */
-};
-
-typedef struct {
-  int wire;         /* the MIZU_TYPE_* the row produces */
-  int cvt;
-  uint8_t w_in;     /* source element bytes (0: bit-packed, CVT_BIT_LGL) */
-  uint8_t w_out;
-} cvt_row;
-
-/* The warning counts, emitted only after the write half completes. */
-typedef struct {
-  uint64_t n_range;   /* uint64 past 2^53 -> NA_real_ */
-  uint64_t n_intmin;  /* masked int32 only: a genuine INT_MIN reads as NA */
-} cvt_warn;
+/* The rows, the kernels and the warning counts are the core's
+   (mizu_ext.h's mizu_cvt_row / MIZU_CVT_* / mizu_arrow_warn and
+   arrow.c's mizu_cvt_convert); these aliases keep the local spellings. */
+typedef mizu_cvt_row cvt_row;
+typedef mizu_arrow_warn cvt_warn;
+#define CVT_COPY      MIZU_CVT_COPY
+#define CVT_I8_INT    MIZU_CVT_I8_INT
+#define CVT_I16_INT   MIZU_CVT_I16_INT
+#define CVT_U16_INT   MIZU_CVT_U16_INT
+#define CVT_U32_REAL  MIZU_CVT_U32_REAL
+#define CVT_U64_REAL  MIZU_CVT_U64_REAL
+#define CVT_F16_REAL  MIZU_CVT_F16_REAL
+#define CVT_F32_REAL  MIZU_CVT_F32_REAL
+#define CVT_BOOL8_LGL MIZU_CVT_BOOL8_LGL
+#define CVT_BIT_LGL   MIZU_CVT_BIT_LGL
+#define CVT_C64_CPLX  MIZU_CVT_C64_CPLX
 
 // What interop.c calls in _pymizu.c -------------------------------------------
 
@@ -153,12 +105,8 @@ int mizu_py_np_kind(PyObject *obj);
 int mizu_py_np_temporal(PyObject *obj);
 int mizu_py_wire_type_of(const Py_buffer *v);
 const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize);
-const cvt_row *mizu_py_cvt_for_arrow(const char *f);
-/* One batch's convert into a reserved destination: the BIT_LGL / masked /
-   plain dispatch of _pymizu.c's stage_convert. */
-void mizu_py_cvt_convert(uint8_t *dst, const uint8_t *src,
-                         const uint8_t *valid, uint64_t off, size_t n,
-                         const cvt_row *row, cvt_warn *warn);
+/* The conversion kernels are the core's mizu_cvt_convert (mizu_ext.h);
+   the Arrow keying its mizu_cvt_for_arrow. */
 /* The conversion warnings, raised after the write half completes (never
    mid-write). 0 ok, 1 a warning raised as an error. */
 int mizu_py_cvt_warn(const cvt_warn *warn);
@@ -171,10 +119,12 @@ int mizu_py_cvt_warn(const cvt_warn *warn);
 int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                     uint32_t inline_max, mizu_handle *h);
 
-/* This binding's identity word, the one binding fill (channel and pool). */
-#define MIZU_PY_IDENT \
-  MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_CAP_MIZS | MIZU_CAP_ATTRS | \
-             MIZU_CAP_MIZL | MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF)
+/* This binding's capability mask and identity word, the one binding fill
+   (channel and pool). */
+#define MIZU_PY_CAPS \
+  (MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL | MIZU_CAP_TASKREF | \
+   MIZU_CAP_MIZL_REF)
+#define MIZU_PY_IDENT MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_PY_CAPS)
 
 /* The MIZL remote-leaf directory tag (F2): the column lives in another
    region and crosses by reference — the entry's data span is the view
@@ -247,10 +197,12 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
 
 /* The same-language MIZL branch (stage_impl's, ahead of pickle): an exact
    pymizu.Frame past the zero-copy floor stages as one MIZL region
-   (container-exact). 0 staged, -1 fall back to pickle (never an error). */
+   (container-exact). 0 staged, -1 fall back to pickle (never an error).
+   peer_caps is the real capability word (the core stage's conjunction
+   keys off it): the peer's on a channel, this build's on a pool. */
 int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
                             uint8_t *payload, uint32_t inline_max,
-                            mizu_handle *h);
+                            mizu_handle *h, uint32_t peer_caps);
 
 /* The REF emit shared by the whole-view re-sends and the 3.8 provenance
    match: REFHELD OR'd, the region name the payload. 0 staged, -1 the name

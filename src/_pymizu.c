@@ -548,7 +548,6 @@ static const cvt_row CVT_ROW_F16 = { MIZU_TYPE_REAL, CVT_F16_REAL, 2, 8 };
 static const cvt_row CVT_ROW_F32 = { MIZU_TYPE_REAL, CVT_F32_REAL, 4, 8 };
 static const cvt_row CVT_ROW_F64 = { MIZU_TYPE_REAL, CVT_COPY, 8, 8 };
 static const cvt_row CVT_ROW_BOOL8 = { MIZU_TYPE_LGL, CVT_BOOL8_LGL, 1, 4 };
-static const cvt_row CVT_ROW_BOOLBIT = { MIZU_TYPE_LGL, CVT_BIT_LGL, 0, 4 };
 static const cvt_row CVT_ROW_C64 = { MIZU_TYPE_CPLX, CVT_C64_CPLX, 8, 16 };
 static const cvt_row CVT_ROW_C128 = { MIZU_TYPE_CPLX, CVT_COPY, 16, 16 };
 
@@ -589,271 +588,8 @@ static const cvt_row *cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
   return NULL;
 }
 
-/* Key the table by an Arrow C Data Interface format string (every
-   supported row is a single character). */
-static const cvt_row *cvt_for_arrow(const char *f) {
-  if (f[1] != '\0') return NULL;
-  switch (f[0]) {
-  case 'C': return &CVT_ROW_U8;
-  case 'c': return &CVT_ROW_I8;
-  case 's': return &CVT_ROW_I16;
-  case 'S': return &CVT_ROW_U16;
-  case 'i': return &CVT_ROW_I32;
-  case 'I': return &CVT_ROW_U32;
-  case 'l': return &CVT_ROW_I64;
-  case 'L': return &CVT_ROW_U64;
-  case 'e': return &CVT_ROW_F16;
-  case 'f': return &CVT_ROW_F32;
-  case 'g': return &CVT_ROW_F64;
-  case 'b': return &CVT_ROW_BOOLBIT;
-  }
-  return NULL;
-}
-
-
-/* IEEE 754 half -> double, exact: half's 5-bit exponent / 10-bit
-   mantissa decode into float's wider same-shaped fields (the subnormal
-   branch normalizes), the float widens losslessly. */
-static double half_to_double(uint16_t h) {
-  const uint32_t sign = (uint32_t) (h >> 15) << 31;
-  uint32_t exp = (h >> 10) & 0x1F, mant = h & 0x3FF;
-  uint32_t f;
-  if (exp == 0x1F) {
-    f = sign | 0x7F800000u | (mant << 13);       /* inf/nan */
-  } else if (exp == 0) {
-    if (mant == 0) {
-      f = sign;                                  /* ±0 */
-    } else {
-      int e = 0;
-      do {
-        mant <<= 1;
-        e--;
-      } while (!(mant & 0x400));
-      mant &= 0x3FF;
-      f = sign | (uint32_t) (113 + e) << 23 | (mant << 13);
-    }
-  } else {
-    f = sign | ((exp + 112) << 23) | (mant << 13);
-  }
-  float fv;
-  memcpy(&fv, &f, 4);
-  return (double) fv;
-}
-
-/* Convert a run of n valid elements. Per-element memcpy keeps every
-   access alignment-safe (a contiguous buffer can still be
-   element-misaligned — np.frombuffer with a byte offset); fixed-size
-   memcpys compile to single load/store pairs. */
-static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
-                    const cvt_row *row, cvt_warn *warn) {
-  switch (row->cvt) {
-  case CVT_COPY:
-    memcpy(dst, src, n * row->w_out);
-    break;
-  case CVT_I8_INT:
-    for (size_t i = 0; i < n; i++) {
-      int8_t v;
-      memcpy(&v, src + i, 1);
-      int32_t o = v;
-      memcpy(dst + 4 * i, &o, 4);
-    }
-    break;
-  case CVT_I16_INT:
-    for (size_t i = 0; i < n; i++) {
-      int16_t v;
-      memcpy(&v, src + 2 * i, 2);
-      int32_t o = v;
-      memcpy(dst + 4 * i, &o, 4);
-    }
-    break;
-  case CVT_U16_INT:
-    for (size_t i = 0; i < n; i++) {
-      uint16_t v;
-      memcpy(&v, src + 2 * i, 2);
-      int32_t o = v;
-      memcpy(dst + 4 * i, &o, 4);
-    }
-    break;
-  case CVT_U32_REAL:
-    for (size_t i = 0; i < n; i++) {
-      uint32_t v;
-      memcpy(&v, src + 4 * i, 4);
-      double o = (double) v;
-      memcpy(dst + 8 * i, &o, 8);
-    }
-    break;
-  case CVT_U64_REAL:
-    for (size_t i = 0; i < n; i++) {
-      uint64_t v;
-      memcpy(&v, src + 8 * i, 8);
-      if (v > 9007199254740992ULL) {
-        mizu_store_na_real(dst + 8 * i);
-        warn->n_range++;
-      } else {
-        double o = (double) v;
-        memcpy(dst + 8 * i, &o, 8);
-      }
-    }
-    break;
-  case CVT_F16_REAL:
-    for (size_t i = 0; i < n; i++) {
-      uint16_t v;
-      memcpy(&v, src + 2 * i, 2);
-      double o = half_to_double(v);
-      memcpy(dst + 8 * i, &o, 8);
-    }
-    break;
-  case CVT_F32_REAL:
-    for (size_t i = 0; i < n; i++) {
-      float v;
-      memcpy(&v, src + 4 * i, 4);
-      double o = v;
-      memcpy(dst + 8 * i, &o, 8);
-    }
-    break;
-  case CVT_BOOL8_LGL:
-    for (size_t i = 0; i < n; i++) {
-      int32_t o = src[i] != 0;
-      memcpy(dst + 4 * i, &o, 4);
-    }
-    break;
-  case CVT_C64_CPLX:
-    for (size_t i = 0; i < n; i++) {
-      float re, im;
-      memcpy(&re, src + 8 * i, 4);
-      memcpy(&im, src + 8 * i + 4, 4);
-      double o[2] = { re, im };
-      memcpy(dst + 16 * i, o, 16);
-    }
-    break;
-  }
-}
-
-/* Fill n lanes with the wire type's missing sentinel. */
-static void cvt_fill_na(uint8_t *dst, size_t n, int wire) {
-  if (wire == MIZU_TYPE_REAL) {
-    for (size_t i = 0; i < n; i++) mizu_store_na_real(dst + 8 * i);
-  } else if (wire == MIZU_TYPE_INT64) {
-    const int64_t na = MIZU_NA_INT64;   /* reads as NA_integer64_ in R */
-    for (size_t i = 0; i < n; i++) memcpy(dst + 8 * i, &na, 8);
-  } else {
-    const int32_t na = MIZU_NA_INT32;   /* INT and LGL share the sentinel */
-    for (size_t i = 0; i < n; i++) memcpy(dst + 4 * i, &na, 4);
-  }
-}
-
-/* Load lanes (<= 64) validity bits starting at bit position pos (Arrow
-   LSB-first bit order), reading only the bytes that cover them. */
-static uint64_t bitmap_word(const uint8_t *bm, uint64_t pos, size_t lanes) {
-  const uint8_t *p = bm + (pos >> 3);
-  unsigned sh = (unsigned) (pos & 7);
-  if (sh == 0 && lanes == 64) {
-    uint64_t w;
-    memcpy(&w, p, 8);
-    return w;
-  }
-  size_t nbytes = (sh + lanes + 7) >> 3;
-  uint64_t lo = 0, hi = 0;
-  for (size_t j = 0; j < nbytes; j++) {
-    if (j < 8) lo |= (uint64_t) p[j] << (8 * j);
-    else hi = p[j];   /* j == 8: only when sh > 0 and lanes == 64 */
-  }
-  uint64_t w = sh != 0 ? (lo >> sh) | (hi << (64 - sh)) : lo;
-  if (lanes < 64) w &= ((uint64_t) 1 << lanes) - 1;
-  return w;
-}
-
-/* The masked variant (Arrow nulls): word-wise over the validity bitmap —
-   an all-ones word a 64-lane convert, a zero word a 64-sentinel fill,
-   mixed the per-lane select. off is the element offset: a bit offset
-   into the bitmap (the word reads absorb it). Genuine INT_MIN values are
-   counted on the int32 identity row (they read as NA_integer_ in R); the
-   other rows cannot produce one. */
-static void convert_masked(uint8_t *dst, const uint8_t *src,
-                           const uint8_t *valid, uint64_t off, size_t n,
-                           const cvt_row *row, cvt_warn *warn) {
-  const size_t wo = row->w_out, wi = row->w_in;
-  const int count_min = row->wire == MIZU_TYPE_INT && row->cvt == CVT_COPY;
-  size_t i = 0;
-  while (i < n) {
-    size_t lanes = n - i < 64 ? n - i : 64;
-    uint64_t w = bitmap_word(valid, off + i, lanes);
-    uint64_t full = lanes == 64 ? UINT64_MAX : ((uint64_t) 1 << lanes) - 1;
-    if (w == full) {
-      if (count_min) {
-        /* copy, then scan the destination (dst is int32-aligned on every
-           tier: the inline payload is 16-byte aligned, arena chunks and
-           region data areas 64). The count rides a local — a warn->
-           store per lane would alias-block vectorization */
-        cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
-        const int32_t *d = (const int32_t *) (dst + i * wo);
-        uint64_t cnt = 0;
-        for (size_t j = 0; j < lanes; j++) cnt += d[j] == INT32_MIN;
-        warn->n_intmin += cnt;
-      } else {
-        cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
-      }
-    } else if (w == 0) {
-      cvt_fill_na(dst + i * wo, lanes, row->wire);
-    } else {
-      for (size_t j = 0; j < lanes; j++) {
-        if ((w >> j) & 1) {
-          cvt_run(dst + (i + j) * wo, src + (i + j) * wi, 1, row, warn);
-          if (count_min) {
-            int32_t v;
-            memcpy(&v, dst + (i + j) * wo, 4);
-            warn->n_intmin += v == INT32_MIN;
-          }
-        } else {
-          cvt_fill_na(dst + (i + j) * wo, 1, row->wire);
-        }
-      }
-    }
-    i += lanes;
-  }
-}
-
-/* Arrow bool: the data buffer is bit-packed too, so off is a bit offset
-   into both bitmaps; a lane's value is its data bit ANDed with validity. */
-static void convert_bit_lgl(uint8_t *dst, const uint8_t *data,
-                            const uint8_t *valid, uint64_t off, size_t n) {
-  size_t i = 0;
-  while (i < n) {
-    size_t lanes = n - i < 64 ? n - i : 64;
-    uint64_t dbits = bitmap_word(data, off + i, lanes);
-    uint64_t vbits = valid != NULL ? bitmap_word(valid, off + i, lanes) :
-      (lanes == 64 ? UINT64_MAX : ((uint64_t) 1 << lanes) - 1);
-    uint64_t vals = dbits & vbits;
-    for (size_t j = 0; j < lanes; j++) {
-      int32_t o = (vbits >> j) & 1 ? (int32_t) ((vals >> j) & 1) : INT32_MIN;
-      memcpy(dst + 4 * (i + j), &o, 4);
-    }
-    i += lanes;
-  }
-}
-
 const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
   return cvt_for_buffer(f, itemsize);
-}
-
-const cvt_row *mizu_py_cvt_for_arrow(const char *f) {
-  return cvt_for_arrow(f);
-}
-
-/* One batch's convert into a reserved destination (interop.c's batch
-   loops ride this too): the BIT_LGL / masked / plain dispatch. The
-   warning counts ride warn; mizu_py_cvt_warn raises them after the
-   write half completes (never mid-write). */
-void mizu_py_cvt_convert(uint8_t *dst, const uint8_t *src,
-                         const uint8_t *valid, uint64_t off, size_t n,
-                         const cvt_row *row, cvt_warn *warn) {
-  if (row->cvt == CVT_BIT_LGL) {
-    convert_bit_lgl(dst, src, valid, off, n);
-  } else if (valid != NULL) {
-    convert_masked(dst, src, valid, off, n, row, warn);
-  } else {
-    cvt_run(dst, src, n, row, warn);
-  }
 }
 
 /* The conversion warnings, raised after the write half completes (never
@@ -890,7 +626,7 @@ static int stage_convert(const uint8_t *src, size_t nelts,
                                row->wire, hdr, payload, inline_max);
   if (dst == NULL) return -1;
   cvt_warn warn = { 0, 0 };
-  mizu_py_cvt_convert(dst, src, valid, off, nelts, row, &warn);
+  mizu_cvt_convert(dst, src, valid, off, nelts, row, &warn);
   return mizu_py_cvt_warn(&warn);
 }
 
@@ -933,7 +669,7 @@ static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
   }
   if (schema->dictionary != NULL) return -1;   /* the stream front-end
                                                   writes the factor shape */
-  const cvt_row *row = cvt_for_arrow(schema->format);
+  const cvt_row *row = mizu_cvt_for_arrow(schema->format);
   if (row == NULL) return -1;   /* strings, temporals: the front-end's */
   /* a zero-length array short-circuits without touching the buffers:
      they may all be NULL, and memcpy(dst, NULL, 0) is UB */
@@ -1515,7 +1251,10 @@ static int frame_ref_write(uint8_t **p, PyObject *o, const frame_plan *fp,
                            mizu_handle *h) {
   mizu_slot_hdr lhdr;
   uint8_t lname[MIZU_NAME_MAX];
-  if (pymizu_frame_stage_mizl(o, &lhdr, lname, fp->inline_max, h) != 0)
+  /* a task frame is same-language by construction: this build's caps is
+     the real word */
+  if (pymizu_frame_stage_mizl(o, &lhdr, lname, fp->inline_max, h,
+                              MIZU_PY_CAPS) != 0)
     return -1;
   *(*p)++ = PYMIZU_TAG_FRAMEREF;
   codec_put64(p, lhdr.aux);
@@ -1806,8 +1545,12 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   }
   /* a Frame past the zc floor stages MIZL on same-language handles too
      (container-exact: it reads back as a region-backed Frame); below the
-     floor or on a decline it pickles (3.6) */
-  if (pymizu_frame_stage_mizl(obj, hdr, payload, inline_max, h) == 0)
+     floor or on a decline it pickles (3.6). The caps word: same-language
+     and 0 (a pool worker, whose ctx carries none) means this build. */
+  const uint32_t mizl_caps = foreign ? peer_caps :
+    peer_caps != 0 ? peer_caps : MIZU_PY_CAPS;
+  if (pymizu_frame_stage_mizl(obj, hdr, payload, inline_max, h,
+                              mizl_caps) == 0)
     return 0;
   int crc = stage_codec(obj, hdr, payload, inline_max, h);
   if (crc >= 0) return crc;

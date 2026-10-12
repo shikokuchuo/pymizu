@@ -33,9 +33,9 @@ enum {
 typedef struct {
   ArrowArray arr;
   _Atomic size_t refs;
-} mizu_arrow_hold;
+} mizu_py_arrow_hold;
 
-static inline void ahold_decref(mizu_arrow_hold *h) {
+static inline void ahold_decref(mizu_py_arrow_hold *h) {
   if (atomic_fetch_sub_explicit(&h->refs, 1, memory_order_acq_rel) != 1)
     return;
   if (h->arr.release != NULL) h->arr.release(&h->arr);
@@ -69,7 +69,7 @@ typedef struct {
                          counted loan is released here, the frame_export
                          acquisition's pure-C discipline */
   long hold_pid;      /* the fork guard */
-  mizu_arrow_hold *ahold;  /* a Frame.from_arrow adopted column: values,
+  mizu_py_arrow_hold *ahold;  /* a Frame.from_arrow adopted column: values,
                               valid, bytes and lev_off borrow the producer's
                               batch buffers (freed by the hold's release,
                               never here); borrowed stays 0, so the region
