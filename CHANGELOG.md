@@ -10,6 +10,18 @@ Initial pre-release.
 
 ### Changed
 
+- Frame read/export savings on the remote-leaf path. A received frame
+  whose K remote columns reference one region (the provenance re-send
+  shape) now takes one mapping and one counted loan for it, not K — the
+  column block owns a name-deduped holds vector and the per-column holds
+  borrow, easing Linux `vm.max_map_count` pressure on wide provenance
+  frames. Repeat Arrow exports of one frame no longer re-walk validity
+  bitmaps: every bitmap producer records the null count once (the region
+  read, the buffer adoption, the copy builds, the first string-block
+  check, the scan-built bitmap) and later exports serve it. And the
+  NUL-terminated column-name store an Arrow export needs is built once
+  per frame and borrowed by every export, instead of copied per export.
+  No wire or ABI change.
 - The Arrow → MIZL frame writer moved upstream to libmizu (`arrow.c`):
   the vendored core now owns the classify/batch-vetting/dictionary
   validation, the layout write, the fixed-width conversion kernels (now

@@ -823,3 +823,21 @@ Results (best of 3, us/send): before 4,513.9 / 4,510.8; after 4,541.3 /
 
 Status: full suite 520 pass, 6 skip (pandas/duckdb-absence); ruff +
 ruff format + pyrefly clean.
+
+## 2026-10-12 — the frame read/export savings (Phase 2 follow-up)
+
+A/B of the remote-leaf frame read before/after the deduped holds, the
+recorded null counts and the shared NUL name store (same machine,
+back-to-back builds). Read probe: a 16-col 20k-row f64 frame whose 15
+unmodified columns cross as remote leaves over ONE region (the
+provenance re-send shape), received in-process — 15 opens + loans
+become 1. Export probe: repeat `pa.table()` on a received 16-col
+null-heavy frame — the borrowed bitmaps' re-popcounts and the per-export
+name-store copy collapse to serves.
+
+Results (min of 300 / 100 reps, two runs, us): remote read before
+44.6 / 47.0, after 4.8 / 4.8 (~9x); repeat export before 46.0 / 45.9,
+after 11.9 / 12.1 (~4x). One-off probe, log only — no table row.
+
+Status: full suite 524 pass, 6 skip (pandas/duckdb-absence); crosslang
+legs 97 pass; ruff + ruff format + pyrefly clean.

@@ -72,6 +72,25 @@ def test_from_arrow_adopts_single_batch():
     assert dbg["hold_refs"] == len(big_table().column_names)
 
 
+def test_from_arrow_repeated_exports():
+    # repeat exports serve the recorded null counts — the producer's for
+    # adopted columns, the build's for copied ones — and the cached NUL
+    # name store, never re-walking a bitmap; exact every time
+    f = pymizu.Frame.from_arrow(big_table())
+    f2 = pymizu.Frame.from_arrow(
+        pa.Table.from_batches(big_table().to_batches(max_chunksize=10000))
+    )
+    names = big_table().column_names
+    for _ in range(3):
+        for src in (f, f2):
+            t = pa.table(src)
+            assert t.schema.names == names
+            for c in names:
+                assert t.column(c).null_count == (0 if c == "u" else 2000)
+            assert t.column("i").slice(0, 3).to_pylist() == [None, 1, 2]
+            assert t.column("s").slice(0, 3).to_pylist() == [None, "s1", "s2"]
+
+
 def test_from_arrow_null_fidelity_readers():
     f = pymizu.Frame.from_arrow(big_table())
     # to_dict: None / NaN / NaT at null slots, never garbage or a sentinel

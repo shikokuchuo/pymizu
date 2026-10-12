@@ -249,9 +249,11 @@ tools/vendor-libmizu.sh` for a local checkout).
   (MIZL directory tag 33, F2.3) — registered through
   `mizu_arrow_remote`, gated per frame on `MIZU_CAP_MIZL_REF` (bit 4; a
   peer short of it gets full layout leaves). The reader's frame path
-  (`tree_column_remote` in interop.c) resolves a remote column onto a
-  per-column hold — a fresh mapping plus counted loan, released pure-C
-  in `fcol_free` (interop_frame.c; the GIL-free export discipline); the
+  (`tree_column_remote` in interop.c) resolves a remote column onto the
+  column block's holds, deduped by region name — one fresh mapping plus
+  counted loan per distinct referenced region, released pure-C in
+  `frame_cols_decref` (interop_frame.c; the GIL-free export discipline),
+  the fcol's `hold` borrowing; the
   generic tree
   walk resolves through `mizu_py_view_resolve_checked`. Both
   remote-leaf decode sites (`tree_column_remote` and `tree_walk`'s REF

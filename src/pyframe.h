@@ -53,7 +53,9 @@ typedef struct {
   char tz[48];        /* TS: the tzone name ("" is naive) */
   uint8_t *valid;     /* validity bitmap: the region's section (borrowed)
                          or built lazily at export (owned) */
-  int64_t vnulls;     /* a borrowed valid's null count */
+  int64_t vnulls;     /* valid's null count, recorded at the read or the
+                         bitmap build — the export serves it, never
+                         re-counts */
   uint8_t *bits;      /* LGL: the bit-packed values, built at export */
   int32_t *codes0;    /* DICT codes1: the 0-based shift, built at export */
   uint8_t borrowed;   /* the tree wrap's: values/valid point into the
@@ -64,11 +66,9 @@ typedef struct {
   uint8_t codes1;     /* DICT: the region's 1-based R codes — the export
                          shifts to 0-based into codes0 */
   uint8_t enc_ok;     /* STR64: the encoding check ran (once, at export) */
-  mizu_shm *hold;     /* a remote column's own mapping of the referenced
-                         region (the frame's loan does not cover it) — its
-                         counted loan is released here, the frame_export
-                         acquisition's pure-C discipline */
-  long hold_pid;      /* the fork guard */
+  mizu_shm *hold;     /* a remote column's referenced-region mapping,
+                         borrowed from the column block's deduped holds —
+                         the frame's loan does not cover it */
   mizu_py_arrow_hold *ahold;  /* a Frame.from_arrow adopted column: values,
                               valid, bytes and lev_off borrow the producer's
                               batch buffers (freed by the hold's release,
@@ -86,6 +86,18 @@ typedef struct frame_cols {
   fcol *cols;
   char *names;        /* the packed column names (utf8) */
   int32_t *name_off;  /* ncols + 1 offsets into names */
+  mizu_shm **holds;   /* the remote columns' referenced regions, deduped by
+                         name at the read: one mapping + counted loan per
+                         distinct region, however many columns borrow it */
+  char (*hold_names)[MIZU_NAME_MAX];
+  size_t nholds, holds_cap;
+  long holds_pid;     /* the holds' fork guard (all acquisitions are
+                         same-process) */
+  char *cnames;       /* the NUL-terminated name store, built lazily at the
+                         first Arrow export and borrowed by every later one
+                         (ArrowSchema.name wants C strings; names is
+                         packed) */
+  char **cname_ptrs;  /* [ncols] */
 } frame_cols;
 
 /* The f64 NA test, payload-aware: a NaN whose low word is R's 1954

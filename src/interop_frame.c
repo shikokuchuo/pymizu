@@ -39,16 +39,22 @@ void fcol_free(fcol *c) {
   free(c->lev_off);
   free(c->bits);
   free(c->codes0);
-  if (c->hold != NULL) {
-    if (c->hold_pid == mizu_self_pid()) mizu_zc_unref(c->hold);
-    mizu_shm_close(c->hold, 0);
-  }
+  /* c->hold borrows the block's deduped holds — released below, once per
+     distinct region */
 }
 
 void frame_cols_decref(frame_cols *fc) {
   if (atomic_fetch_sub_explicit(&fc->refs, 1, memory_order_acq_rel) != 1)
     return;
   for (int i = 0; i < fc->ncols; i++) fcol_free(&fc->cols[i]);
+  for (size_t i = 0; i < fc->nholds; i++) {
+    if (fc->holds_pid == mizu_self_pid()) mizu_zc_unref(fc->holds[i]);
+    mizu_shm_close(fc->holds[i], 0);
+  }
+  free(fc->holds);
+  free(fc->hold_names);
+  free(fc->cnames);
+  free(fc->cname_ptrs);
   free(fc->cols);
   free(fc->names);
   free(fc->name_off);
@@ -433,7 +439,10 @@ static int64_t fcol_str64_check(fcol *c) {
 
 /* The validity bitmap + (for LGL) the bit-packed values + (for a
    region-borrowed DICT) the 0-based codes, built lazily at the export.
-   Returns the null count, -1 on OOM. */
+   Null counts are never re-walked: a recorded vnulls serves (every bitmap
+   producer stores it — the region read, the adoption, the copy builds,
+   the first STR64 check and the scan below). Returns the null count, -1
+   on OOM. */
 static int64_t fcol_ensure_export(fcol *c) {
   int64_t n = c->n, nulls = 0;
   if (c->kind == FCOL_U8) return 0;
@@ -441,13 +450,13 @@ static int64_t fcol_ensure_export(fcol *c) {
     if (!c->enc_ok) {
       int64_t nn = fcol_str64_check(c);
       if (nn < 0) return -1;
-      nulls = nn;
-    } else if (c->valid != NULL) {
-      for (int64_t i = 0; i < n; i++) nulls += !bitmap_at(c->valid, i);
+      c->vnulls = nn;   /* the block's validity is borrowed */
     }
-    return nulls;
+    return c->vnulls;
   }
-  if (c->valid == NULL && !c->known_free) {
+  if (c->valid != NULL) {
+    nulls = c->vnulls;
+  } else if (!c->known_free) {
     uint8_t *valid = calloc(((size_t) n + 7) / 8, 1);
     if (valid == NULL) return -1;
     int any = 0;
@@ -492,11 +501,8 @@ static int64_t fcol_ensure_export(fcol *c) {
     } else {
       c->valid = valid;
       c->valid_owned = 1;
+      c->vnulls = nulls;
     }
-  } else if (c->valid != NULL) {
-    /* a pre-existing bitmap (a region's): counted once here — a bitmap
-       the scan just built already contributed its count above */
-    for (int64_t i = 0; i < n; i++) nulls += !bitmap_at(c->valid, i);
   }
   /* the bit-packed values build at export, nulls or not */
   if (c->kind == FCOL_LGL && c->bits == NULL) {
@@ -558,8 +564,6 @@ typedef struct frame_export {
   const void **dict_bufs;     /* [3 * ncols] */
   const void *root_buf[1];
   char (*fmts)[64];           /* [ncols] */
-  char *cnames;               /* the NUL-terminated column names */
-  char **cname_ptrs;          /* [ncols] */
 } frame_export;
 
 /* The exported capsule holds a bare ArrowArrayStream whose private_data
@@ -589,8 +593,6 @@ static void frame_export_decref(frame_export *ex) {
   free(ex->bufs);
   free(ex->dict_bufs);
   free(ex->fmts);
-  free(ex->cnames);
-  free(ex->cname_ptrs);
   free(ex);
 }
 
@@ -712,6 +714,33 @@ The Arrow C Stream Interface export: the frame as one struct batch.\n\
 Consumers take it in one line: pl.from_arrow(f), pa.table(f), or\n\
 pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).");
 
+/* The NUL-terminated name store, built once at the first export: the
+   packed store is not NUL-terminated and ArrowSchema.name wants C
+   strings. Later exports borrow it; the block's decref frees it. Runs
+   under the GIL (the export entry), so the lazy check needs no lock. */
+static int frame_cols_cnames(frame_cols *fc) {
+  if (fc->cname_ptrs != NULL) return 0;
+  const int ncols = fc->ncols;
+  char *store = malloc((size_t) fc->name_off[ncols] + (size_t) ncols);
+  char **ptrs = calloc((size_t) ncols, sizeof(char *));
+  if (store == NULL || ptrs == NULL) {
+    free(store);
+    free(ptrs);
+    return -1;
+  }
+  char *p = store;
+  for (int i = 0; i < ncols; i++) {
+    int32_t len = fc->name_off[i + 1] - fc->name_off[i];
+    memcpy(p, fc->names + fc->name_off[i], (size_t) len);
+    p[len] = '\0';
+    ptrs[i] = p;
+    p += len + 1;
+  }
+  fc->cnames = store;
+  fc->cname_ptrs = ptrs;
+  return 0;
+}
+
 PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
                                       PyObject *kw) {
   static char *kwlist[] = { "requested_schema", NULL };
@@ -785,37 +814,21 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
   ex->bufs = calloc((size_t) ncols * 3, sizeof(void *));
   ex->dict_bufs = calloc((size_t) ncols * 3, sizeof(void *));
   ex->fmts = calloc((size_t) ncols, 64);
-  ex->cname_ptrs = calloc((size_t) ncols, sizeof(char *));
   if (ex->col_s == NULL || ex->col_s_ptr == NULL || ex->dict_s == NULL ||
       ex->col_a == NULL || ex->col_a_ptr == NULL || ex->dict_a == NULL ||
-      ex->bufs == NULL || ex->dict_bufs == NULL || ex->fmts == NULL ||
-      ex->cname_ptrs == NULL) {
+      ex->bufs == NULL || ex->dict_bufs == NULL || ex->fmts == NULL) {
     free(nulls);
     frame_export_decref(ex);
     frame_export_decref(ex);
     free(st);
     return PyErr_NoMemory();
   }
-  /* ArrowSchema.name is a C string: the packed store is not NUL-
-     terminated, so the export copies the names out */
-  {
-    size_t total = (size_t) fc->name_off[ncols] + (size_t) ncols;
-    ex->cnames = malloc(total);
-    if (ex->cnames == NULL) {
-      free(nulls);
-      frame_export_decref(ex);
-      frame_export_decref(ex);
-      free(st);
-      return PyErr_NoMemory();
-    }
-    char *p = ex->cnames;
-    for (int i = 0; i < ncols; i++) {
-      int32_t len = fc->name_off[i + 1] - fc->name_off[i];
-      memcpy(p, fc->names + fc->name_off[i], (size_t) len);
-      p[len] = '\0';
-      ex->cname_ptrs[i] = p;
-      p += len + 1;
-    }
+  if (frame_cols_cnames(fc) < 0) {
+    free(nulls);
+    frame_export_decref(ex);
+    frame_export_decref(ex);
+    free(st);
+    return PyErr_NoMemory();
   }
   /* the root: a struct of ncols children */
   ex->root_s.format = "+s";
@@ -859,7 +872,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     default: fmt = "g"; break;
     }
     s->format = fmt;
-    s->name = ex->cname_ptrs[i];
+    s->name = fc->cname_ptrs[i];
     s->flags = MIZU_ARROW_FLAG_NULLABLE;
     s->n_children = 0;
     s->release = NULL;
@@ -939,7 +952,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
   /* the export-provenance record (3.8): what this acquisition hands out,
      so an unmodified round trip of the frame stages as REF */
   if (ex->acq != NULL)
-    pymizu_shmframe_pv_register(ex->acq, ncols, ex->cname_ptrs, ex->col_s,
+    pymizu_shmframe_pv_register(ex->acq, ncols, fc->cname_ptrs, ex->col_s,
                                 ex->col_a, ex);
   PyObject *cap = PyCapsule_New(st, "arrow_array_stream", fx_capsule_free);
   if (cap == NULL) {
@@ -1213,11 +1226,13 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       int32_t *offs = malloc(((size_t) n + 1) * 4);
       uint8_t *bytes = NULL, *valid = NULL;
       size_t blen = 0;
+      int64_t nulls = 0;
       if (offs == NULL) goto nomem;
       offs[0] = 0;
       for (Py_ssize_t j = 0; j < n; j++) {
         PyObject *s = PyList_GET_ITEM(payload, j);
         if (s == Py_None) {
+          nulls++;
           if (valid == NULL) {
             valid = calloc(((size_t) n + 7) / 8, 1);
             if (valid == NULL) goto str_nomem;
@@ -1241,6 +1256,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       c->bytes = bytes;
       c->bytes_len = (int64_t) blen;
       c->valid = valid;
+      c->vnulls = nulls;
       goto next_col;
     str_nomem:
       free(offs);

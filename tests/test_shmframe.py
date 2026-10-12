@@ -111,6 +111,26 @@ def test_mizl_frame_nulls_and_validity():
     h.destroy()
 
 
+def test_mizl_frame_repeated_exports():
+    # repeat exports serve the recorded null counts (the STR64 check, the
+    # borrowed bitmaps and the scan-built bitmaps all count once) and the
+    # cached NUL name store: schema and values are exact every time
+    h, p = foreign_pair(caps=CAPS_R)
+    h.send(big_table().select(["i", "x", "l", "b", "s", "f", "d", "t"]))
+    f = p.recv(10)
+    names = ["i", "x", "l", "b", "s", "f", "d", "t"]
+    for _ in range(3):
+        t = pa.table(f)
+        assert t.schema.names == names
+        for c in names:
+            assert t.column(c).null_count == 2000
+        assert t.column("i").slice(0, 3).to_pylist() == [None, 1, 2]
+        assert t.column("s").slice(0, 3).to_pylist() == [None, "s1", "s2"]
+        assert t.column("f").slice(1, 1).to_pylist() == ["v"]
+    p.destroy()
+    h.destroy()
+
+
 def test_mizl_frame_string_forms():
     h, p = foreign_pair(caps=CAPS_R)
     n = 20000
@@ -489,8 +509,9 @@ def test_provenance_remote_leaf_one_computed():
     h2, p2 = foreign_pair(caps=CAPS_R33)
     h2.send(df)
     got = p2.recv(10)
-    # the two holds' counted loans, one per remote column, and REFHELD
-    assert src.refcount == rc0 + 2
+    # one deduped hold's counted loan for both remote columns (one open,
+    # one loan per distinct referenced region), and REFHELD
+    assert src.refcount == rc0 + 1
     assert src.flags & 1 == 1
     d = got.to_dict()
     # the remote columns: views whose refcount word is the source
@@ -503,7 +524,40 @@ def test_provenance_remote_leaf_one_computed():
     assert d["x"][1:4].tolist() == [1.0, 2.0, 3.0]
     del d, got
     gc.collect()
-    assert src.refcount == rc0  # the holds and view loans released
+    assert src.refcount == rc0  # the hold and view loans released
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_remote_leaf_deduped_hold():
+    # K matched columns over ONE referenced region: the read takes one
+    # open and one counted loan however wide the match — the region's
+    # refcount word is the proof (mirroring mizu's rc_of)
+    pl = pytest.importorskip("polars")
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(big_table(with_nulls=False).select(["i", "x", "l", "s"]))
+    f = p1.recv(10)
+    df = pl.DataFrame(f).with_columns((pl.col("x") * 2).alias("x"))
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(df)
+    got = p2.recv(10)
+    # i, l and s all remote over the one region: a single hold
+    assert src.refcount == rc0 + 1
+    assert src.flags & 1 == 1
+    d = got.to_dict()
+    assert d["i"].base.refcount == src.refcount
+    assert d["l"].base.refcount == src.refcount
+    assert d["i"][1:4].tolist() == [1, 2, 3]
+    assert d["l"][1] == 1
+    assert d["s"][:3] == ["s0", "s1", "s2"]
+    assert d["x"][1:4].tolist() == [1.0, 2.0, 3.0]  # the computed column
+    del d, got
+    gc.collect()
+    assert src.refcount == rc0  # the hold and view loans released
     h2.destroy()
     p2.destroy()
     p1.destroy()
@@ -528,7 +582,7 @@ def test_provenance_remote_leaf_two_exports():
     h2, p2 = foreign_pair(caps=CAPS_R33)
     h2.send(mod)
     got = p2.recv(10)
-    assert src1.refcount == rc1 + 2  # columns i, x
+    assert src1.refcount == rc1 + 1  # columns i, x: one deduped hold
     assert src2.refcount == rc2 + 1  # column l
     assert src1.flags & 1 == 1 and src2.flags & 1 == 1
     d = got.to_dict()
@@ -878,7 +932,7 @@ def test_provenance_polars_short_strings_by_value():
     h2, p2 = foreign_pair(caps=CAPS_R33)
     h2.send(df)
     got = p2.recv(10)
-    assert src.refcount == rc0 + 2  # i and s both remote
+    assert src.refcount == rc0 + 1  # i and s both remote, one deduped hold
     assert src.flags & 1 == 1
     d = got.to_dict()
     assert d["s"] == vals
