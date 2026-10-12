@@ -144,12 +144,12 @@ Values cross exactly, but types normalize. A column also copies -- never decline
 | `bool` | `bool` (copies: bit-packed) |
 | int8 / int16 / uint16 | int32 (copies) |
 | uint32 / uint64 / half_float / float32 | float64 (copies) |
-| timestamp\[s / ms / ns\] | timestamp\[us\] (copies: rescaled) |
-| duration\[s / ms / ns\] | duration\[us\] (copies: rescaled) |
+| timestamp\[s / ms / us / ns\] | timestamp\[s / ms / us / ns\] (adopts) |
+| duration\[s / ms / us / ns\] | duration\[s / ms / us / ns\] (adopts) |
 | dictionary\<i32, utf8\> | dictionary\<i32, string\> (adopts; other index widths copy) |
 | chunked or sliced columns | concatenated or rebased (copies) |
 
-Chunked pyarrow tables adopt after `table.combine_chunks()`.
+Chunked pyarrow tables adopt after `table.combine_chunks()`. Timestamps and durations keep their counts and unit verbatim -- a `timestamp[ns]` round trip is exact to the nanosecond, tz included. Nanosecond fidelity needs pymizu on both ends from this version: a peer without the capability (an older pymizu, or R) receives the microsecond form instead -- values rounded to the double-second wire's precision, never an error.
 
 Adopted buffers stay alive for the frame's lifetime (numpy-view semantics: a frame from a 4 GB table pins it), and [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a [Frame](../reference/Frame.md#pymizu.Frame) task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.md#frames-as-task-arguments)). [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not take a frame as its element source.
 
