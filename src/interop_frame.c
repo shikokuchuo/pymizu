@@ -155,6 +155,11 @@ static PyObject *Frame_row_names_get(MizuFrame *self,
   return self->row_names;
 }
 
+/* Arrow unit -> numpy datetime64/timedelta64 unit code (u/n widen). */
+static const char *np_tunit(char unit) {
+  return unit == 's' ? "s" : unit == 'm' ? "ms" : unit == 'n' ? "ns" : "us";
+}
+
 /* A column's list form for to_dict: str/dict columns and the no-numpy
    fallbacks live here. */
 static PyObject *fcol_to_list(const fcol *c) {
@@ -345,7 +350,9 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                       "for to_dict() (install it)");
       return NULL;
     }
-    return ixr_masked_us("datetime64[us]", c->values, c->valid, n);
+    char dt[24];
+    snprintf(dt, sizeof dt, "datetime64[%s]", np_tunit(c->unit));
+    return ixr_masked_us(dt, c->values, c->valid, n);
   }
   case FCOL_TD: {
     PyObject *np = mizu_py_numpy_module();
@@ -354,7 +361,9 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                       "for to_dict() (install it)");
       return NULL;
     }
-    return ixr_masked_us("timedelta64[us]", c->values, c->valid, n);
+    char dt[24];
+    snprintf(dt, sizeof dt, "timedelta64[%s]", np_tunit(c->unit));
+    return ixr_masked_us(dt, c->values, c->valid, n);
   }
   }
   PyErr_SetString(MizuError, "pymizu: unknown frame column kind");
@@ -864,10 +873,13 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     case FCOL_STR64: fmt = "U"; break;
     case FCOL_DICT: fmt = "i"; break;
     case FCOL_DATE: fmt = "tdD"; break;
-    case FCOL_TD: fmt = "tDu"; break;
+    case FCOL_TD:
+      fmt = ex->fmts[i];
+      snprintf(ex->fmts[i], 64, "tD%c", c->unit);
+      break;
     case FCOL_TS:
       fmt = ex->fmts[i];
-      snprintf(ex->fmts[i], 64, "tsu:%s", c->tz);
+      snprintf(ex->fmts[i], 64, "ts%c:%s", c->unit, c->tz);
       break;
     default: fmt = "g"; break;
     }
@@ -1125,8 +1137,15 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
       Py_DECREF(levels);
     } else if (c->kind == FCOL_TS) {
       PyObject *tzobj = PyUnicode_FromString(c->tz);
-      tuple = tzobj != NULL ? PyTuple_Pack(3, kobj, payload, tzobj) : NULL;
+      PyObject *uobj = PyUnicode_FromStringAndSize(&c->unit, 1);
+      tuple = tzobj != NULL && uobj != NULL ?
+        PyTuple_Pack(4, kobj, payload, tzobj, uobj) : NULL;
       Py_XDECREF(tzobj);
+      Py_XDECREF(uobj);
+    } else if (c->kind == FCOL_TD) {
+      PyObject *uobj = PyUnicode_FromStringAndSize(&c->unit, 1);
+      tuple = uobj != NULL ? PyTuple_Pack(3, kobj, payload, uobj) : NULL;
+      Py_XDECREF(uobj);
     } else {
       tuple = PyTuple_Pack(2, kobj, payload);
     }
@@ -1395,11 +1414,24 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       }
       }
     }
-    if (c->kind == FCOL_TS) {
-      PyObject *tz = PyTuple_GET_SIZE(t) >= 3 ? PyTuple_GET_ITEM(t, 2) :
-        NULL;
-      if (tz != NULL && PyUnicode_Check(tz))
-        snprintf(c->tz, sizeof(c->tz), "%s", PyUnicode_AsUTF8(tz));
+    if (c->kind == FCOL_TS || c->kind == FCOL_TD) {
+      /* (kind, payload[, tz][, unit]): a pre-unit pickle restores as µs */
+      const Py_ssize_t tn = PyTuple_GET_SIZE(t);
+      const int ui = c->kind == FCOL_TS ? 3 : 2;
+      c->unit = 'u';
+      if (c->kind == FCOL_TS && tn >= 3) {
+        PyObject *tz = PyTuple_GET_ITEM(t, 2);
+        if (tz != NULL && PyUnicode_Check(tz))
+          snprintf(c->tz, sizeof(c->tz), "%s", PyUnicode_AsUTF8(tz));
+      }
+      if (tn > ui) {
+        PyObject *un = PyTuple_GET_ITEM(t, ui);
+        const char *us = PyUnicode_Check(un) ? PyUnicode_AsUTF8(un) : NULL;
+        if (us == NULL || us[1] != '\0' ||
+            (us[0] != 's' && us[0] != 'm' && us[0] != 'u' && us[0] != 'n'))
+          goto malformed;
+        c->unit = us[0];
+      }
     }
     goto next_col;
   nomem_malformed:
@@ -1584,8 +1616,8 @@ static PyObject *Frame_from_arrow(PyObject *Py_UNUSED(cls),
 }
 
 /* The test-only introspection surface (the _ShmView.refcount / .flags
-   precedent): per-column adopted / known-free flags and the shared
-   hold's refcount. */
+   precedent): per-column adopted / known-free flags, the temporal
+   columns' units, and the shared hold's refcount. */
 static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
   if (!PyObject_TypeCheck(arg, &MizuFrameType)) {
     PyErr_SetString(PyExc_TypeError, "pymizu: _frame_debug needs a Frame");
@@ -1594,9 +1626,11 @@ static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
   frame_cols *fc = ((MizuFrame *) arg)->fc;
   PyObject *adopted = PyTuple_New(fc->ncols);
   PyObject *kfree = PyTuple_New(fc->ncols);
-  if (adopted == NULL || kfree == NULL) {
+  PyObject *units = PyTuple_New(fc->ncols);
+  if (adopted == NULL || kfree == NULL || units == NULL) {
     Py_XDECREF(adopted);
     Py_XDECREF(kfree);
+    Py_XDECREF(units);
     return NULL;
   }
   Py_INCREF(Py_None);
@@ -1609,12 +1643,27 @@ static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
     b = c->known_free ? Py_True : Py_False;
     Py_INCREF(b);
     PyTuple_SET_ITEM(kfree, i, b);
+    if (c->kind == FCOL_TS || c->kind == FCOL_TD) {
+      PyObject *u = PyUnicode_FromStringAndSize(&c->unit, 1);
+      if (u == NULL) {
+        Py_DECREF(adopted);
+        Py_DECREF(kfree);
+        Py_DECREF(units);
+        Py_DECREF(refs);
+        return NULL;
+      }
+      PyTuple_SET_ITEM(units, i, u);
+    } else {
+      Py_INCREF(Py_None);
+      PyTuple_SET_ITEM(units, i, Py_None);
+    }
     if (c->ahold != NULL && refs == Py_None) {
       refs = PyLong_FromSize_t(
         atomic_load_explicit(&c->ahold->refs, memory_order_relaxed));
       if (refs == NULL) {
         Py_DECREF(adopted);
         Py_DECREF(kfree);
+        Py_DECREF(units);
         return NULL;
       }
     }
@@ -1623,15 +1672,18 @@ static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
   if (out == NULL ||
       PyDict_SetItemString(out, "adopted", adopted) < 0 ||
       PyDict_SetItemString(out, "known_free", kfree) < 0 ||
+      PyDict_SetItemString(out, "units", units) < 0 ||
       PyDict_SetItemString(out, "hold_refs", refs) < 0) {
     Py_XDECREF(out);
     Py_DECREF(adopted);
     Py_DECREF(kfree);
+    Py_DECREF(units);
     Py_DECREF(refs);
     return NULL;
   }
   Py_DECREF(adopted);
   Py_DECREF(kfree);
+  Py_DECREF(units);
   Py_DECREF(refs);
   return out;
 }
@@ -1692,8 +1744,8 @@ int mizu_py_frame_register(PyObject *m, PyObject *mizu_error) {
   };
   static PyMethodDef debug_def = {
     "_frame_debug", frame_debug, METH_O,
-    "Per-column adopted / known-free flags and the hold refcount "
-    "(test-only)."
+    "Per-column adopted / known-free flags, the temporal columns' units, "
+    "and the hold refcount (test-only)."
   };
   PyObject *fn = PyCFunction_New(&rebuild_def, NULL);
   if (fn == NULL) return -1;

@@ -123,7 +123,7 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
    (channel and pool). */
 #define MIZU_PY_CAPS \
   (MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL | MIZU_CAP_TASKREF | \
-   MIZU_CAP_MIZL_REF)
+   MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN)
 #define MIZU_PY_IDENT MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_PY_CAPS)
 
 /* The MIZL remote-leaf directory tag (F2): the column lives in another

@@ -173,12 +173,18 @@ A column also copies — never declines — where its type forces it:
 | `bool` | `bool` (copies: bit-packed) |
 | int8 / int16 / uint16 | int32 (copies) |
 | uint32 / uint64 / half_float / float32 | float64 (copies) |
-| timestamp[s / ms / ns] | timestamp[us] (copies: rescaled) |
-| duration[s / ms / ns] | duration[us] (copies: rescaled) |
+| timestamp[s / ms / us / ns] | timestamp[s / ms / us / ns] (adopts) |
+| duration[s / ms / us / ns] | duration[s / ms / us / ns] (adopts) |
 | dictionary\<i32, utf8\> | dictionary\<i32, string\> (adopts; other index widths copy) |
 | chunked or sliced columns | concatenated or rebased (copies) |
 
 Chunked pyarrow tables adopt after `table.combine_chunks()`.
+Timestamps and durations keep their counts and unit verbatim — a
+`timestamp[ns]` round trip is exact to the nanosecond, tz included.
+Nanosecond fidelity needs pymizu on both ends from this version: a peer
+without the capability (an older pymizu, or R) receives the microsecond
+form instead — values rounded to the double-second wire's precision, never
+an error.
 
 Adopted buffers stay alive for the frame's lifetime (numpy-view semantics:
 a frame from a 4 GB table pins it), and `to_dict()`'s masked reads copy

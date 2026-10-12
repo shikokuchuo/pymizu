@@ -1086,6 +1086,12 @@ static int class_is(attr_ent *e, const char *a, const char *b) {
     str_obj_eq(PyList_GET_ITEM(lst, 1), b);
 }
 
+/* The tscale attr's verbatim-ns verdict (the MIZU_CAP_MIZL_TSN leaf form). */
+static int tscale_ns(const attr_ent *e) {
+  return e != NULL && e->kind == AV_STR && e->val.count == 2 &&
+    memcmp(e->val.ptr, "ns", 2) == 0;
+}
+
 /* The no-home error, naming the attribute names and the class. */
 static void ixr_no_home(attr_ent *ents, int n, const char *what) {
   char msg[512];
@@ -1666,6 +1672,7 @@ static int fcol_ts_fill(const double *src, uint64_t vn, const char *tz,
   c->kind = FCOL_TS;
   c->n = (int64_t) vn;
   c->values = (uint8_t *) us;
+  c->unit = 'u';
   if (tz_len > 0 && tz_len < sizeof(c->tz))
     snprintf(c->tz, sizeof(c->tz), "%.*s", (int) tz_len, tz);
   return 0;
@@ -1698,6 +1705,7 @@ static int fcol_difftime_fill(const double *src, uint64_t vn,
   c->kind = FCOL_TD;
   c->n = (int64_t) vn;
   c->values = (uint8_t *) us;
+  c->unit = 'u';
   return 0;
 }
 
@@ -2431,6 +2439,7 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
   attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
+  attr_ent *ts = attr_find(ents, nent, MIZU_IX_ATTR_TSCALE);
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && tag == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -2455,6 +2464,22 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
                         (const char *) tz->val.ptr : "",
                       tz != NULL && tz->kind == AV_STR ?
                         (size_t) tz->val.count : 0, c);
+  } else if (cls != NULL && nent == 3 && tz != NULL && tscale_ns(ts) &&
+             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
+             tag == MIZU_TYPE_INT64) {
+    /* the verbatim ns leaf: the attr-free fixed-width fill shape plus
+       the unit and the tzone */
+    c->kind = FCOL_TS;
+    c->n = e->length;
+    c->values = (uint8_t *) data;
+    c->unit = 'n';
+    if (tz->kind == AV_STR && tz->val.count > 0 &&
+        tz->val.count < sizeof(c->tz))
+      snprintf(c->tz, sizeof(c->tz), "%.*s", (int) tz->val.count,
+               (const char *) tz->val.ptr);
+    c->borrowed = 1;
+    tree_valid(c, base, e->valid);
+    rc = 0;
   } else if (cls != NULL && nent == 2 && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
              tag == MIZU_TYPE_REAL) {
     attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
@@ -2466,6 +2491,17 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
                               us, c);
     else
       ixr_no_home(ents, nent, "an attributed frame column");
+  } else if (cls != NULL && nent == 3 && tscale_ns(ts) &&
+             class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
+             tag == MIZU_TYPE_INT64) {
+    /* the verbatim ns difftime: no conversion walk, no range decline */
+    c->kind = FCOL_TD;
+    c->n = e->length;
+    c->values = (uint8_t *) data;
+    c->unit = 'n';
+    c->borrowed = 1;
+    tree_valid(c, base, e->valid);
+    rc = 0;
   } else {
     ixr_no_home(ents, nent, "an attributed frame column");
   }
@@ -2988,6 +3024,12 @@ static int fcol_masked(const fcol *c) {
   return c->valid != NULL && masked_nulls(c->valid, (uint64_t) c->n) != 0;
 }
 
+/* The temporal column's unit in seconds (the 'I' REAL form's scale). */
+static double unit_scale(char unit) {
+  return unit == 's' ? 1.0 : unit == 'm' ? 1e-3 : unit == 'n' ? 1e-9 :
+    1e-6;
+}
+
 /* One fcol as a frame column value. */
 static void ixe_fcol(ixw *w, const fcol *c) {
   switch (c->kind) {
@@ -3128,11 +3170,11 @@ static void ixe_fcol(ixw *w, const fcol *c) {
   }
   case FCOL_TS:
     ixe_posixct(w, (const int64_t *) c->values, c->valid, (uint64_t) c->n,
-                c->tz[0] != '\0' ? c->tz : "UTC", 1e-6);
+                c->tz[0] != '\0' ? c->tz : "UTC", unit_scale(c->unit));
     break;
   case FCOL_TD:
     ixe_difftime(w, (const int64_t *) c->values, c->valid, (uint64_t) c->n,
-                1e-6);
+                unit_scale(c->unit));
     break;
   }
 }
@@ -5072,8 +5114,8 @@ static int fc_adopt_gate(ixs *x, int col, char **names) {
   }
   case PC_DATE: return 1;
   case PC_TS: case PC_TD:
-    /* µs is the fcol unit; other units rescale (copy) */
-    return sc->format[2] == 'u';
+    /* i64 counts at any unit: the fcol layout IS the Arrow layout */
+    return 1;
   }
   return 0;
 }
@@ -5252,40 +5294,29 @@ static int fcol_build_date(ixs *x, int col, fcol *c) {
   return 0;
 }
 
-/* The temporal copy: i64 counts of a non-µs unit rescaled to µs, masked
-   (the fcol unit is µs; a value past the i64 µs budget declines). */
-static int fcol_build_rescale(ixs *x, int col, fcol *c, char **names) {
+/* The temporal copy: i64 counts verbatim at the column's unit, masked
+   (NaT the INT64 sentinel; the unit rides the column, never a rescale). */
+static int fcol_build_counts(ixs *x, int col, fcol *c) {
   const ixs_pcol *pc = &x->cols[col];
   int64_t n = x->hold.rows;
-  int64_t *us = malloc((size_t) (n != 0 ? n : 1) * 8);
-  if (us == NULL) {
+  int64_t *counts = malloc((size_t) (n != 0 ? n : 1) * 8);
+  if (counts == NULL) {
     PyErr_NoMemory();
     return -1;
   }
-  const double factor = pc->ts_scale * 1e6;
   int64_t done = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
-    const int64_t *counts = (const int64_t *) a->buffers[1];
-    for (int64_t k = 0; k < a->length; k++) {
-      if (!arrow_valid(a, k)) {
-        us[done + k] = MIZU_NA_INT64;
-        continue;
-      }
-      double v = (double) counts[a->offset + k] * factor;
-      if (!isfinite(v) || fabs(v) > 9.0e18) {
-        free(us);
-        PyErr_Format(MizuError, "pymizu: Frame.from_arrow: column '%s' has "
-                     "a value outside the microsecond range", names[col]);
-        return -1;
-      }
-      us[done + k] = (int64_t) llround(v);
-    }
+    const int64_t *src = (const int64_t *) a->buffers[1];
+    for (int64_t k = 0; k < a->length; k++)
+      counts[done + k] = arrow_valid(a, k) ? src[a->offset + k] :
+        MIZU_NA_INT64;
     done += a->length;
   }
   c->kind = pc->kind == PC_TS ? FCOL_TS : FCOL_TD;
   c->n = n;
-  c->values = (uint8_t *) us;
+  c->values = (uint8_t *) counts;
+  c->unit = x->schema.children[col]->format[2];
   if (pc->kind == PC_TS) {
     const char *tz = x->schema.children[col]->format + 4;
     snprintf(c->tz, sizeof(c->tz), "%s", tz);
@@ -5330,6 +5361,7 @@ static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
   case PC_TS: case PC_TD:
     c->kind = pc->kind == PC_TS ? FCOL_TS : FCOL_TD;
     c->values = (uint8_t *) a->buffers[1];
+    c->unit = x->schema.children[col]->format[2];
     if (pc->kind == PC_TS) {
       const char *tz = x->schema.children[col]->format + 4;
       snprintf(c->tz, sizeof(c->tz), "%s", tz);
@@ -5509,7 +5541,7 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         case PC_STR: rc = fcol_build_str(&x, i, c, names); break;
         case PC_DICT: rc = fcol_build_dict(&x, i, c); break;
         case PC_DATE: rc = fcol_build_date(&x, i, c); break;
-        default: rc = fcol_build_rescale(&x, i, c, names); break;
+        default: rc = fcol_build_counts(&x, i, c); break;
         }
         if (rc < 0) {
           frame_cols_decref(fc);

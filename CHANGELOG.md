@@ -10,6 +10,24 @@ Initial pre-release.
 
 ### Changed
 
+- Nanosecond Arrow datetime fidelity. `timestamp[ns]` and `duration[ns]`
+  columns now keep their counts and unit verbatim end to end:
+  `Frame.from_arrow()` adopts them unchanged (previously it rescaled to
+  microseconds — and erroneously declined `timestamp[s]` values past the
+  microsecond range), `to_dict()` surfaces `datetime64[ns]` /
+  `timedelta64[ns]`, and the Arrow export re-derives `timestamp[ns][,tz]`
+  / `duration[ns]`. On the wire, a nanosecond column stages as a verbatim
+  INT64 MIZL leaf carrying a `tscale = "ns"` attribute when the peer
+  advertises the new `MIZU_CAP_MIZL_TSN` capability bit, and falls back
+  to the double-second POSIXct/difftime form otherwise — an older pymizu
+  or R peer reads microsecond-rounded values, never an error. Second and
+  millisecond columns adopt verbatim too and now surface as
+  `datetime64[s]` / `datetime64[ms]` instead of coerced microseconds (a
+  unit-naive consumer reading raw counts off `to_dict()` sees counts at
+  the column's own unit). The frame pickle form carries the unit: pickles
+  written by an older pymizu restore as microseconds, and an older pymizu
+  restoring a new pickle may mislabel the unit — the pickle form is a
+  staging fallback, not a compatibility surface.
 - Frame read/export savings on the remote-leaf path. A received frame
   whose K remote columns reference one region (the provenance re-send
   shape) now takes one mapping and one counted loan for it, not K — the

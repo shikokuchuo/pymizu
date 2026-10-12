@@ -8,6 +8,7 @@ geometry is never silently trusted)."""
 import gc
 import pickle
 import struct
+import warnings
 
 import pytest
 
@@ -249,16 +250,18 @@ def test_from_arrow_midstream_failure_releases():
 
 
 def test_from_arrow_build_failure_releases_both_arms():
-    # column 0 adopts (owned: none), column 1 declines mid-build
+    # column 0 adopts, column 1's conversion warning errors mid-build
     base = pa.total_allocated_bytes()
     t = pa.table(
         {
             "x": pa.array([1.5] * 100000),
-            "t": pa.array([1 << 60, 0] * 50000, type=pa.timestamp("s")),
+            "u": pa.array([2**53 + 1] * 100000, type=pa.uint64()),
         }
     )
-    with pytest.raises(pymizu.MizuError, match="column 't'.*microsecond"):
-        pymizu.Frame.from_arrow(t)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(RuntimeWarning, match=r"2\^53"):
+            pymizu.Frame.from_arrow(t)
     del t
     gc.collect()
     assert pa.total_allocated_bytes() <= base + 4096
@@ -444,7 +447,9 @@ def test_from_arrow_conversions_not_declines():
         }
     )
     f = pymizu.Frame.from_arrow(t)
-    assert not any(_pymizu._frame_debug(f)["adopted"])
+    # the conversions copy; the duration[ns] column adopts verbatim
+    dbg = _pymizu._frame_debug(f)
+    assert dbg["adopted"] == (False, False, False, False, False, False, True)
     d = f.to_dict()
     assert d["u"].dtype == np.float64 and d["u"].tolist() == [1.0, 2.0, 3.0]
     assert d["e"].dtype == np.float64 and d["e"].tolist() == [1.5, 2.5, 3.5]
@@ -452,14 +457,228 @@ def test_from_arrow_conversions_not_declines():
     assert d["I"].dtype == np.float64 and np.isnan(d["I"][1])
     assert d["c"].tolist() == [1, 2, 3]
     assert d["U"] == ["a", None, "c"]
-    # duration[ns] rescales to µs with NaT at the null
-    assert d["n"].dtype == np.dtype("timedelta64[us]")
-    assert d["n"][0] == np.timedelta64(1, "us")
+    # duration[ns] keeps its counts verbatim, NaT at the null
+    assert dbg["units"][-1] == "n"
+    assert d["n"].dtype == np.dtype("timedelta64[ns]")
+    assert d["n"][0] == np.timedelta64(1000, "ns")
     assert np.isnat(d["n"][1])
-    assert d["n"][2] == np.timedelta64(250, "us")
+    assert d["n"][2] == np.timedelta64(250000, "ns")
     out = pa.table(f)
     assert out.schema.field("u").type == pa.float64()
     assert out.schema.field("v").type == pa.string()
+    assert out.schema.field("n").type == pa.duration("ns")
+
+
+def ns_table(n=20000):
+    """Sub-µs-fraction ns columns past the zero-copy floor."""
+    return pa.table(
+        {
+            "t": pa.array(
+                [1700000000123456789, None, -3600000000001]
+                + [1700000000000000000 + k for k in range(3, n)],
+                type=pa.timestamp("ns", tz="America/New_York"),
+            ),
+            "u": pa.array(
+                [90, None, 86400000000000] + list(range(3, n)),
+                type=pa.duration("ns"),
+            ),
+            "x": pa.array([k * 0.5 for k in range(n)]),
+        }
+    )
+
+
+def test_from_arrow_ns_verbatim_construction():
+    # timestamp[ns]/duration[ns] adopt verbatim: the counts, the unit and
+    # the tzone ride the column — no double-second rescale anywhere
+    f = pymizu.Frame.from_arrow(ns_table())
+    dbg = _pymizu._frame_debug(f)
+    assert dbg["adopted"] == (True, True, True)
+    assert dbg["units"] == ("n", "n", None)
+    d = f.to_dict()
+    assert d["t"].dtype == np.dtype("datetime64[ns]")
+    assert d["t"][0] == np.datetime64(1700000000123456789, "ns")
+    assert np.isnat(d["t"][1])
+    assert d["t"][2] == np.datetime64(-3600000000001, "ns")
+    assert d["u"].dtype == np.dtype("timedelta64[ns]")
+    assert d["u"][0] == np.timedelta64(90, "ns")
+    assert np.isnat(d["u"][1])
+    assert d["u"][2] == np.timedelta64(86400000000000, "ns")
+    out = pa.table(f)
+    assert out.schema.field("t").type == pa.timestamp(
+        "ns", tz="America/New_York"
+    )
+    assert out.schema.field("u").type == pa.duration("ns")
+    src = ns_table()
+    for c in src.column_names:
+        assert out.column(c).null_count == src.column(c).null_count
+
+
+def test_from_arrow_ns_wire_verbatim():
+    # past the zero-copy floor the ns columns cross as INT64+tscale MIZL
+    # leaves and read back verbatim (the debug surface's units are the
+    # leaf-form proof: 'n' arrives only off an INT64+tscale leaf)
+    f = pymizu.Frame.from_arrow(ns_table())
+    h, p = same_pair()
+    h.send(f)
+    g = p.recv(10)
+    assert _pymizu._frame_debug(g)["units"] == ("n", "n", None)
+    d = g.to_dict()
+    assert type(d["x"].base).__name__ == "_ShmView"  # region-backed
+    assert d["t"].dtype == np.dtype("datetime64[ns]")
+    assert d["t"][0] == np.datetime64(1700000000123456789, "ns")
+    assert d["u"][2] == np.timedelta64(86400000000000, "ns")
+    out = pa.table(g)
+    assert out.schema.field("t").type == pa.timestamp(
+        "ns", tz="America/New_York"
+    )
+    assert out.schema.field("u").type == pa.duration("ns")
+    assert out.column("t").null_count == 1
+    p.destroy()
+    h.destroy()
+
+
+def test_from_arrow_ns_echo_peer():
+    # the spawned-peer harness: the region handoff between real processes
+    peer = """
+import pymizu
+while True:
+    x = ch.recv()
+    if x is pymizu.CLOSED or x is pymizu.PEER_GONE:
+        break
+    ch.send(x)
+"""
+    f = pymizu.Frame.from_arrow(ns_table())
+    with pymizu.Channel.create(peer) as ch:
+        ch.send(f)
+        g = ch.recv(timeout=10)
+        assert _pymizu._frame_debug(g)["units"][:2] == ("n", "n")
+        d = g.to_dict()
+        assert d["t"][0] == np.datetime64(1700000000123456789, "ns")
+        assert pa.table(g).column("t").null_count == 1
+
+
+def test_from_arrow_ns_skew_fallback():
+    # a peer ident without MIZU_CAP_MIZL_TSN (the test-only _ident
+    # override): the write takes the REAL-seconds fallback — the peer reads
+    # µs-rounded values, no error
+    f = pymizu.Frame.from_arrow(ns_table())
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(3, 31))
+    p.ready_set()
+    assert h.ready_wait(10)
+    assert h.send(f) is True
+    g = p.recv(10)
+    assert _pymizu._frame_debug(g)["units"] == ("u", "u", None)
+    d = g.to_dict()
+    assert d["t"].dtype == np.dtype("datetime64[us]")
+    assert d["t"][0] == np.datetime64(round(1700000000123456789 * 1e-3), "us")
+    assert np.isnat(d["t"][1])
+    assert d["u"].dtype == np.dtype("timedelta64[us]")
+    out = pa.table(g)
+    assert out.schema.field("t").type == pa.timestamp(
+        "us", tz="America/New_York"
+    )
+    assert out.schema.field("u").type == pa.duration("us")
+    p.destroy()
+    h.destroy()
+
+
+def test_from_arrow_sm_verbatim():
+    # the s/m corollary: second/millisecond columns adopt verbatim and
+    # surface at their own unit (no coerced µs); a far-future timestamp[s]
+    # past the old 9e18 µs decline round-trips exactly, copy arm included
+    t = pa.table(
+        {
+            "s": pa.array([1 << 60, None, 1700000000], type=pa.timestamp("s")),
+            "m": pa.array([1700000000000, None, 60], type=pa.timestamp("ms")),
+        }
+    )
+    f = pymizu.Frame.from_arrow(t)
+    dbg = _pymizu._frame_debug(f)
+    assert dbg["adopted"] == (True, True)
+    assert dbg["units"] == ("s", "m")
+    d = f.to_dict()
+    assert d["s"].dtype == np.dtype("datetime64[s]")
+    assert d["s"][0] == np.datetime64(1 << 60, "s")
+    assert np.isnat(d["s"][1])
+    assert d["m"].dtype == np.dtype("datetime64[ms]")
+    assert d["m"][0] == np.datetime64(1700000000000, "ms")
+    out = pa.table(f)
+    assert out.schema.field("s").type == pa.timestamp("s")
+    assert out.schema.field("m").type == pa.timestamp("ms")
+    # the copy arm (a chunked reader) is verbatim too
+    b1 = pa.record_batch(
+        [pa.array([1 << 60, None], type=pa.timestamp("s"))], names=["s"]
+    )
+    b2 = pa.record_batch([pa.array([0], type=pa.timestamp("s"))], names=["s"])
+    reader = pa.RecordBatchReader.from_batches(
+        pa.schema([("s", pa.timestamp("s"))]), [b1, b2]
+    )
+    f2 = pymizu.Frame.from_arrow(reader)
+    dbg2 = _pymizu._frame_debug(f2)
+    assert not any(dbg2["adopted"]) and dbg2["units"] == ("s",)
+    d2 = f2.to_dict()
+    assert d2["s"][0] == np.datetime64(1 << 60, "s")
+    assert np.isnat(d2["s"][1])
+    # the malformed-utf8-offsets gate still declines a hand-rolled column
+    offs = pa.py_buffer(struct.pack("<4i", 0, 4, 2, 8))
+    data = pa.py_buffer(b"abcdefgh")
+    arr = pa.Array.from_buffers(pa.string(), 3, [None, offs, data])
+    with pytest.raises(pymizu.MizuError, match="column 's'.*malformed"):
+        pymizu.Frame.from_arrow(pa.table({"s": arr}))
+
+
+def test_from_arrow_ns_pickle():
+    # below the zero-copy floor the pickle form carries the unit; an
+    # old-form pickle (no unit element) restores as µs
+    f = pymizu.Frame.from_arrow(
+        pa.table(
+            {
+                "t": pa.array(
+                    [1700000000123456789, None], type=pa.timestamp("ns")
+                ),
+                "u": pa.array([90, None], type=pa.duration("ns")),
+            }
+        )
+    )
+    h, p = same_pair()
+    h.send(f)
+    g = p.recv(10)
+    d = g.to_dict()
+    assert d["t"].dtype == np.dtype("datetime64[ns]")
+    assert d["t"][0] == np.datetime64(1700000000123456789, "ns")
+    assert d["u"][0] == np.timedelta64(90, "ns")
+    p.destroy()
+    h.destroy()
+    f2 = pickle.loads(pickle.dumps(f))
+    assert _pymizu._frame_debug(f2)["units"] == ("n", "n")
+    d = f2.to_dict()
+    assert d["t"][0] == np.datetime64(1700000000123456789, "ns")
+    assert np.isnat(d["u"][1])
+    old_ts = _pymizu._frame_rebuild(
+        ["t"], [("t", [1700000000000000, None], "UTC")], None
+    )
+    assert _pymizu._frame_debug(old_ts)["units"] == ("u",)
+    assert old_ts.to_dict()["t"].dtype == np.dtype("datetime64[us]")
+    old_td = _pymizu._frame_rebuild(["u"], [("T", [1000, None])], None)
+    assert old_td.to_dict()["u"].dtype == np.dtype("timedelta64[us]")
+
+
+def test_from_arrow_ns_edge_cases():
+    # an all-null ns column adopts its bitmap; a zero-row column keeps its
+    # dtype
+    f = pymizu.Frame.from_arrow(
+        pa.table({"t": pa.array([None, None, None], type=pa.timestamp("ns"))})
+    )
+    assert _pymizu._frame_debug(f)["adopted"] == (True,)
+    assert all(np.isnat(v) for v in f.to_dict()["t"])
+    assert pa.table(f).column("t").null_count == 3
+    f = pymizu.Frame.from_arrow(
+        pa.table({"t": pa.array([], type=pa.timestamp("ns"))})
+    )
+    assert len(f) == 0
+    assert f.to_dict()["t"].dtype == np.dtype("datetime64[ns]")
+    assert pa.table(f).schema.field("t").type == pa.timestamp("ns")
 
 
 def test_from_arrow_uint64_past_2_to_53_warns():

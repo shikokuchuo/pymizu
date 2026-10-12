@@ -18,8 +18,8 @@ enum {
   FCOL_STR,   /* values = i32 offsets (n+1); bytes packed */
   FCOL_DICT,  /* values = i32 codes 0-based (MIZU_NA_INT32 null) + levels */
   FCOL_DATE,  /* i32 days, MIZU_NA_INT32 null — Arrow date32 */
-  FCOL_TS,    /* i64 us, MIZU_NA_INT64 null — Arrow timestamp[us] */
-  FCOL_TD,    /* i64 us, MIZU_NA_INT64 null — Arrow duration[us] */
+  FCOL_TS,    /* i64 counts of unit, MIZU_NA_INT64 null — Arrow timestamp */
+  FCOL_TD,    /* i64 counts of unit, MIZU_NA_INT64 null — Arrow duration */
   FCOL_STR64  /* a region MIZS block (the tree wrap): values = the block,
                  validity/i64 offsets/bytes in place — Arrow large_utf8 */
 };
@@ -51,6 +51,7 @@ typedef struct {
   int32_t *lev_off;   /* DICT: level offsets, nlev + 1 */
   int64_t nlev;       /* DICT */
   char tz[48];        /* TS: the tzone name ("" is naive) */
+  char unit;          /* TS/TD: the Arrow unit s/m/u/n */
   uint8_t *valid;     /* validity bitmap: the region's section (borrowed)
                          or built lazily at export (owned) */
   int64_t vnulls;     /* valid's null count, recorded at the read or the

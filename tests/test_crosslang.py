@@ -1485,6 +1485,56 @@ mizu::mizu_send(ch, inherits(df$u, "difftime") &&
         ch.close()
 
 
+def test_crosslang_arrow_ns_temporal_to_r(r_mizu):
+    # a nanosecond Arrow column reaches R in the double-second POSIXct /
+    # difftime form (R declares no MIZU_CAP_MIZL_TSN — the documented
+    # structural cap), the values the writer's exact double rescale
+    src = r"""
+df <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, inherits(df$t, "POSIXct") &&
+  identical(attr(df$t, "tzone"), "America/New_York"))
+mizu::mizu_send(ch, as.numeric(df$t))
+df <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, inherits(df$u, "difftime"))
+mizu::mizu_send(ch, as.double(df$u))
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        np = pytest.importorskip("numpy")
+        pa = pytest.importorskip("pyarrow")
+        ch.send(
+            pa.table(
+                {
+                    "t": pa.array(
+                        [1700000000123456789, None, -3600000000001],
+                        type=pa.timestamp("ns", tz="America/New_York"),
+                    ),
+                }
+            )
+        )
+        assert ch.recv(30) is True
+        got = ch.recv(30)
+        assert got[0] == 1700000000123456789 * 1e-9
+        assert np.isnan(got[1])
+        assert got[2] == -3600000000001 * 1e-9
+        ch.send(
+            pa.table(
+                {
+                    "u": pa.array(
+                        [90, None, 86400000000000], type=pa.duration("ns")
+                    ),
+                }
+            )
+        )
+        assert ch.recv(30) is True
+        got = ch.recv(30)
+        assert got[0] == 90 * 1e-9
+        assert np.isnan(got[1])
+        assert got[2] == 86400000000000 * 1e-9
+    finally:
+        ch.close()
+
+
 def test_crosslang_altrep_and_large_attributed(r_mizu):
     np = pytest.importorskip("numpy")
     # compact sequences cross value-exact, the sender staying compact;
