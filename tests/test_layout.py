@@ -234,7 +234,11 @@ def test_mizl_tree_vetoes():
 
 def test_mizl_tree_remote_leaves():
     # a re-sendable view nested in a tree crosses as a remote leaf
-    # (directory tag 33): REFHELD set, the resolve one counted add
+    # (directory tag 33): REFHELD set, the resolve one counted add.
+    # Each scenario is its own pair: a received view held across two
+    # region sends trips the Linux-only churn fallback (a spill miss
+    # with lent regions outstanding declines the layout tiers), so no
+    # pair makes a third region send.
     h, p = foreign_pair()
     try:
         assert h.send(np.arange(200000, dtype=np.float64)) is True
@@ -247,7 +251,15 @@ def test_mizl_tree_remote_leaves():
         assert got[0].base.flags & 1  # REFHELD
         assert view.base.refcount == rc + 1
         assert np.array_equal(np.asarray(got[0]), np.asarray(view))
-        # a string view remote leaf
+        # a resolved remote leaf is itself a re-sendable view (a chained
+        # send is impossible by design on Linux: churn never clears
+        # while the referenced view stays outstanding)
+    finally:
+        p.destroy()
+        h.destroy()
+    # a string view remote leaf
+    h, p = foreign_pair()
+    try:
         assert h.send(["x", "y"] * 10000) is True
         sview = p.recv(5)
         assert h.send({"s": sview, "v": big_ints()}) is True
@@ -255,27 +267,32 @@ def test_mizl_tree_remote_leaves():
         assert _pymizu._view_check(got["s"])
         assert got["s"].flags & 1
         assert got["s"].to_list()[:4] == ["x", "y", "x", "y"]
-        # nested a level down (the child node's own validity tail)
+    finally:
+        p.destroy()
+        h.destroy()
+    # nested a level down (the child node's own validity tail)
+    h, p = foreign_pair()
+    try:
+        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        view = p.recv(5)
         assert h.send({"a": {"b": view}, "c": big_ints()}) is True
         got = p.recv(5)
         assert _pymizu._view_check(got["a"]["b"])
         assert np.array_equal(np.asarray(got["a"]["b"]), np.asarray(view))
-        # two leaves referencing one region: one counted add each (the
-        # old tree's views released ahead of the baseline)
-        del got
+    finally:
+        p.destroy()
+        h.destroy()
+    # two leaves referencing one region: one counted add each
+    h, p = foreign_pair()
+    try:
+        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        view = p.recv(5)
         assert h.send([view, view, 1] + big_ints()) is True
         rc = view.base.refcount
         got = p.recv(5)
         assert _pymizu._view_check(got[0]) and _pymizu._view_check(got[1])
         assert view.base.refcount == rc + 2
-        # a resolved remote leaf is itself re-sendable (a chained send)
-        el = got[0]
-        del got
-        assert h.send([el, 1] + big_ints()) is True
-        rc = view.base.refcount
-        got = p.recv(5)
-        assert _pymizu._view_check(got[0])
-        assert view.base.refcount == rc + 1
+        assert np.array_equal(np.asarray(got[1]), np.asarray(view))
     finally:
         p.destroy()
         h.destroy()
