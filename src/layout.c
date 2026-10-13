@@ -455,22 +455,430 @@ static int mizh_root(PyObject *obj, pymizu_leaf *lf, mizu_slot_hdr *hdr,
   return 0;
 }
 
+// The MIZL tree ------------------------------------------------------------------
+
+/* The 32-byte directory entry (mizu.h's map; the reader's
+   mizu_mizl_entry carries the validity pair separately). */
+typedef struct {
+  int64_t data_offset;
+  int64_t data_size;
+  int32_t sexptype;
+  int32_t attrs_size;
+  int64_t length;
+} pymizu_mizl_ent;
+
+/* A dict node's names blob: a complete 'I' stream whose value is the
+   one-key dict, the strv form scalar at length 1 (ixe_names' shape).
+   The keys were UTF-8-validated by the size pass. */
+static uint64_t names_blob_size(PyObject *obj) {
+  const Py_ssize_t n = PyDict_Size(obj);
+  uint64_t sz = mizu_ix_put_header(NULL) +
+    mizu_ix_put_dict_begin(NULL, 1) +
+    mizu_ix_put_key(NULL, MIZU_IX_ATTR_NAMES,
+                    IX_KEYLEN(MIZU_IX_ATTR_NAMES));
+  PyObject *k, *v;
+  Py_ssize_t pos = 0;
+  if (n == 1) {
+    PyDict_Next(obj, &pos, &k, &v);
+    Py_ssize_t len;
+    PyUnicode_AsUTF8AndSize(k, &len);
+    sz += mizu_ix_put_str(NULL, NULL, (int32_t) len);
+    return sz;
+  }
+  sz += mizu_ix_put_strv_begin(NULL, (uint64_t) n);
+  while (PyDict_Next(obj, &pos, &k, &v)) {
+    Py_ssize_t len;
+    PyUnicode_AsUTF8AndSize(k, &len);
+    sz += mizu_ix_put_strelt(NULL, NULL, (int32_t) len);
+  }
+  return sz;
+}
+
+static void names_blob_write(uint8_t *dst, PyObject *obj) {
+  const Py_ssize_t n = PyDict_Size(obj);
+  dst += mizu_ix_put_header(dst);
+  dst += mizu_ix_put_dict_begin(dst, 1);
+  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_NAMES,
+                         IX_KEYLEN(MIZU_IX_ATTR_NAMES));
+  PyObject *k, *v;
+  Py_ssize_t pos = 0;
+  if (n == 1) {
+    PyDict_Next(obj, &pos, &k, &v);
+    Py_ssize_t len;
+    const char *s = PyUnicode_AsUTF8AndSize(k, &len);
+    mizu_ix_put_str(dst, s, (int32_t) len);
+    return;
+  }
+  dst += mizu_ix_put_strv_begin(dst, (uint64_t) n);
+  while (PyDict_Next(obj, &pos, &k, &v)) {
+    Py_ssize_t len;
+    const char *s = PyUnicode_AsUTF8AndSize(k, &len);
+    dst += mizu_ix_put_strelt(dst, s, (int32_t) len);
+  }
+}
+
+/* A dict's keys are tree material: every key an exact str, UTF-8
+   encodable (a lone surrogate vetoes). */
+static int tree_dict_keys_ok(PyObject *obj) {
+  PyObject *k, *v;
+  Py_ssize_t pos = 0;
+  while (PyDict_Next(obj, &pos, &k, &v)) {
+    if (!PyUnicode_CheckExact(k)) return 0;
+    if (PyUnicode_AsUTF8AndSize(k, NULL) == NULL) {
+      PyErr_Clear();
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* The element veto/size walk: 1 tree material (size takes the exact
+   data span, caps the capability conjunction), 0 the whole tree
+   declines to the 'I' copy. Veto before sum — a decline costs the walk
+   prefix, never a data pass. */
+static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
+                          uint32_t *caps);
+
+static int tree_elt_size(PyObject *elt, unsigned depth, uint64_t *size,
+                         uint32_t *caps) {
+  if (PyBool_Check(elt)) {
+    *size = 4;
+    return 1;
+  }
+  if (PyLong_CheckExact(elt)) {
+    const long long v = PyLong_AsLongLong(elt);
+    if (v == -1 && PyErr_Occurred()) {
+      PyErr_Clear();
+      return 0;   /* past int64: no portable home */
+    }
+    /* INT in the R-safe int32 range — INT32_MIN is NA_integer_, so a
+       leaf carrying exactly -2^31 would read back NA — else INT64 (the
+       'I' reader widens the same values to a class-only integer64;
+       INT64_MIN mirrors its NA handling) */
+    *size = v > INT32_MIN && v <= INT32_MAX ? 4 : 8;
+    return 1;
+  }
+  if (PyFloat_CheckExact(elt)) {
+    *size = 8;
+    return 1;
+  }
+  if (PyComplex_CheckExact(elt)) {
+    *size = 16;
+    return 1;
+  }
+  if (PyUnicode_CheckExact(elt)) {
+    Py_ssize_t len;
+    if (PyUnicode_AsUTF8AndSize(elt, &len) == NULL) {
+      PyErr_Clear();   /* a lone surrogate vetoes */
+      return 0;
+    }
+    *size = (uint64_t) (mizu_mizs_geometry(1).data + (int64_t) len);
+    *caps |= MIZU_CAP_MIZS;
+    return 1;
+  }
+  if (PyBytes_CheckExact(elt)) {
+    *size = (uint64_t) PyBytes_GET_SIZE(elt);
+    return 1;
+  }
+  if (PyList_CheckExact(elt)) {
+    uint64_t block = 0;
+    if (mizs_leaf_size(elt, &block)) {
+      *size = block;
+      *caps |= MIZU_CAP_MIZS;
+      return 1;
+    }
+    return tree_node_size(elt, depth + 1, size, caps);
+  }
+  if (PyTuple_CheckExact(elt) || PyDict_CheckExact(elt))
+    return tree_node_size(elt, depth + 1, size, caps);
+  /* a re-sendable view nested in a tree vetoes it until the remote-leaf
+     phase (the 'I' copy carries it by value today, so nothing regresses) */
+  {
+    mizu_shm *shm = NULL;
+    PyObject *view = NULL;
+    uint32_t need = 0;
+    if (mizu_py_view_ref_probe(elt, &shm, &view, &need)) {
+      Py_DECREF(view);
+      return 0;
+    }
+  }
+  pymizu_leaf lf;
+  if (leaf_classify(elt, &lf)) {
+    const uint64_t blob = mizh_leaf_blob_size(&lf);
+    *size = mizh_leaf_body_size(&lf) + blob;
+    if (blob != 0) *caps |= MIZU_CAP_ATTRS;
+    leaf_release(&lf);
+    return 1;
+  }
+  return 0;   /* None, non-exact types, conversion dtypes: veto */
+}
+
+static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
+                          uint32_t *caps) {
+  if (depth > MIZU_IX_DEPTH_MAX) return 0;
+  const int dict = PyDict_CheckExact(obj);
+  if (dict && !tree_dict_keys_ok(obj)) return 0;
+  const Py_ssize_t n = dict ? PyDict_Size(obj) :
+    PyList_CheckExact(obj) ? PyList_GET_SIZE(obj) : PyTuple_GET_SIZE(obj);
+  uint64_t total = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (uint64_t) n);
+  uint32_t my_caps = 0;
+  if (dict) {
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(obj, &pos, &k, &v)) {
+      uint64_t elt_size = 0;
+      if (!tree_elt_size(v, depth, &elt_size, &my_caps)) return 0;
+      total += MIZU_ALIGN64(elt_size);
+    }
+    total += MIZU_ALIGN64(names_blob_size(obj));
+    my_caps |= MIZU_CAP_ATTRS;
+  } else {
+    for (Py_ssize_t i = 0; i < n; i++) {
+      PyObject *elt = PyList_CheckExact(obj) ? PyList_GET_ITEM(obj, i) :
+        PyTuple_GET_ITEM(obj, i);
+      uint64_t elt_size = 0;
+      if (!tree_elt_size(elt, depth, &elt_size, &my_caps)) return 0;
+      total += MIZU_ALIGN64(elt_size);
+    }
+  }
+  *size = total;
+  *caps |= my_caps;
+  return 1;
+}
+
+/* A bare str as a 1-element MIZS block (the string list's fill
+   specialized; the UTF-8 form is the size pass's cached one). */
+static void mizs_str1_write(uint8_t *dst, const char *s, Py_ssize_t len) {
+  const mizu_mizs_geom g = mizu_mizs_geometry(1);
+  memset(dst + g.validity, 0xFF, 1);
+  memset(dst + g.encoding, MIZU_CE_UTF8, 1);
+  int64_t *offs = (int64_t *) (dst + g.offsets);
+  offs[0] = 0;
+  offs[1] = (int64_t) len;
+  memcpy(dst + g.data, s, (size_t) len);
+}
+
+/* The element write at base + ent->data_offset, the directory entry
+   filled. 0 written, 1 with MizuError set (the defensive re-encode
+   check — the size pass validated, so a failure here is a caller bug). */
+static int tree_elt_write(uint8_t *base, pymizu_mizl_ent *ent,
+                          PyObject *elt);
+
+/* returns the subtree's total bytes (never < 64), 0 with MizuError set */
+static uint64_t tree_node_write(uint8_t *base, PyObject *obj);
+
+static int tree_elt_write(uint8_t *base, pymizu_mizl_ent *ent,
+                          PyObject *elt) {
+  uint8_t *dst = base + ent->data_offset;
+  if (PyBool_Check(elt)) {
+    const int32_t v = elt == Py_True;
+    memcpy(dst, &v, 4);
+    ent->sexptype = MIZU_TYPE_LGL;
+    ent->attrs_size = 0;
+    ent->length = 1;
+    ent->data_size = 4;
+    return 0;
+  }
+  if (PyLong_CheckExact(elt)) {
+    const long long v = PyLong_AsLongLong(elt);
+    if (v > INT32_MIN && v <= INT32_MAX) {
+      const int32_t v32 = (int32_t) v;
+      memcpy(dst, &v32, 4);
+      ent->sexptype = MIZU_TYPE_INT;
+      ent->length = 1;
+      ent->data_size = 4;
+    } else {
+      memcpy(dst, &v, 8);
+      ent->sexptype = MIZU_TYPE_INT64;
+      ent->length = 1;
+      ent->data_size = 8;
+    }
+    ent->attrs_size = 0;
+    return 0;
+  }
+  if (PyFloat_CheckExact(elt)) {
+    const double v = PyFloat_AS_DOUBLE(elt);
+    memcpy(dst, &v, 8);
+    ent->sexptype = MIZU_TYPE_REAL;
+    ent->attrs_size = 0;
+    ent->length = 1;
+    ent->data_size = 8;
+    return 0;
+  }
+  if (PyComplex_CheckExact(elt)) {
+    const double re = PyComplex_RealAsDouble(elt);
+    const double im = PyComplex_ImagAsDouble(elt);
+    memcpy(dst, &re, 8);
+    memcpy(dst + 8, &im, 8);
+    ent->sexptype = MIZU_TYPE_CPLX;
+    ent->attrs_size = 0;
+    ent->length = 1;
+    ent->data_size = 16;
+    return 0;
+  }
+  if (PyUnicode_CheckExact(elt)) {
+    Py_ssize_t len;
+    const char *s = PyUnicode_AsUTF8AndSize(elt, &len);
+    if (s == NULL) {
+      PyErr_SetString(MizuErr, "pymizu: string staging failed");
+      return 1;
+    }
+    mizs_str1_write(dst, s, len);
+    ent->sexptype = MIZU_TYPE_STR;
+    ent->attrs_size = 0;
+    ent->length = 1;
+    ent->data_size = mizu_mizs_geometry(1).data + (int64_t) len;
+    return 0;
+  }
+  if (PyBytes_CheckExact(elt)) {
+    const Py_ssize_t n = PyBytes_GET_SIZE(elt);
+    memcpy(dst, PyBytes_AS_STRING(elt), (size_t) n);
+    ent->sexptype = MIZU_TYPE_RAW;
+    ent->attrs_size = 0;
+    ent->length = n;
+    ent->data_size = (int64_t) n;
+    return 0;
+  }
+  if (PyList_CheckExact(elt)) {
+    uint64_t block = 0;
+    if (mizs_leaf_size(elt, &block)) {
+      if (mizs_leaf_write(dst, elt) != 0) return 1;
+      ent->sexptype = MIZU_TYPE_STR;
+      ent->attrs_size = 0;
+      ent->length = PyList_GET_SIZE(elt);
+      ent->data_size = (int64_t) block;
+      return 0;
+    }
+  }
+  if (PyList_CheckExact(elt) || PyTuple_CheckExact(elt) ||
+      PyDict_CheckExact(elt)) {
+    const uint64_t written = tree_node_write(dst, elt);
+    if (written == 0) return 1;
+    ent->sexptype = MIZU_TYPE_VEC;
+    ent->attrs_size = 0;
+    ent->length = PyDict_CheckExact(elt) ? PyDict_Size(elt) :
+      PyList_CheckExact(elt) ? PyList_GET_SIZE(elt) : PyTuple_GET_SIZE(elt);
+    ent->data_size = (int64_t) written;
+    return 0;
+  }
+  pymizu_leaf lf;
+  /* the size pass classified it already — a mismatch is a caller bug */
+  if (!leaf_classify(elt, &lf)) {
+    PyErr_SetString(MizuErr,
+                    "pymizu: the recorded layout leaf is no longer eligible");
+    return 1;
+  }
+  mizh_leaf_body_write(dst, &lf);
+  const uint64_t blob = mizh_leaf_blob_size(&lf);
+  if (blob != 0)
+    mizh_leaf_blob_write(dst + mizh_leaf_body_size(&lf), &lf);
+  ent->sexptype = lf.temporal ? MIZU_TYPE_REAL : lf.type;
+  ent->attrs_size = (int32_t) blob;
+  ent->length = (int64_t) lf.total;
+  ent->data_size = (int64_t) (mizh_leaf_body_size(&lf) + blob);
+  leaf_release(&lf);
+  return 0;
+}
+
+static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
+  const int dict = PyDict_CheckExact(obj);
+  const Py_ssize_t n = dict ? PyDict_Size(obj) :
+    PyList_CheckExact(obj) ? PyList_GET_SIZE(obj) : PyTuple_GET_SIZE(obj);
+  /* the reserved band zeroed (a recycled region carries stale bytes):
+     refcount / flags (S4 never set) / the validity pair — {0, 0} absent,
+     the tree's leaves carrying NA in-band — / reserved */
+  memset(base + 24, 0, MIZU_HEADER_SIZE - 24);
+  uint64_t cur = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (uint64_t) n);
+  Py_ssize_t i = 0;
+  if (dict) {
+    PyObject *k, *v;
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(obj, &pos, &k, &v)) {
+      pymizu_mizl_ent ent;
+      ent.data_offset = (int64_t) cur;
+      if (tree_elt_write(base, &ent, v) != 0) return 0;
+      memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &ent, sizeof ent);
+      cur += MIZU_ALIGN64((uint64_t) ent.data_size);
+      i++;
+    }
+  } else {
+    for (; i < n; i++) {
+      PyObject *elt = PyList_CheckExact(obj) ? PyList_GET_ITEM(obj, i) :
+        PyTuple_GET_ITEM(obj, i);
+      pymizu_mizl_ent ent;
+      ent.data_offset = (int64_t) cur;
+      if (tree_elt_write(base, &ent, elt) != 0) return 0;
+      memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &ent, sizeof ent);
+      cur += MIZU_ALIGN64((uint64_t) ent.data_size);
+    }
+  }
+  const int64_t attrs_off = (int64_t) cur;
+  int64_t attrs_size = 0;
+  if (dict) {
+    attrs_size = (int64_t) names_blob_size(obj);
+    names_blob_write(base + cur, obj);
+    cur += MIZU_ALIGN64((uint64_t) attrs_size);
+  }
+  uint32_t magic = MIZU_MAGIC_LIST;
+  const int32_t n32 = (int32_t) n;
+  memcpy(base, &magic, 4);
+  memcpy(base + 4, &n32, 4);
+  memcpy(base + 8, &attrs_off, 8);
+  memcpy(base + 16, &attrs_size, 8);
+  return cur;
+}
+
+/* A top-level list / tuple / dict staged as SHM_VEC: one MIZL tree
+   write into a spill region, the peer wrapping an ALTLIST view. -1
+   declines to the 'I' writer's value-exact copy (the whitelist veto, a
+   below-floor tree, a short peer, churn, a region failure); 0 staged; 1
+   the defensive raise past the checkout. */
+static int mizl_root(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
+                     uint32_t inline_max, mizu_handle *h,
+                     uint32_t peer_caps) {
+  uint64_t total = 0;
+  uint32_t caps = MIZU_CAP_MIZL;
+  if (!tree_node_size(obj, 0, &total, &caps)) return -1;
+  if ((peer_caps & caps) != caps) return -1;
+  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
+    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
+  /* the churn read behind the size gate (the single-read discipline) */
+  if (total < zc_gate || mizu_handle_churn(h)) return -1;
+  mizu_shm *shm;
+  if (mizu_stage_spill_get(h, (size_t) total, &shm) != MIZU_OK)
+    return -1;   /* the copy tier is the fallback (the BUFREF precedent) */
+  uint8_t *base = (uint8_t *) shm->addr;
+  if (tree_node_write(base, obj) == 0) return 1;
+  hdr->kind = MIZU_KIND_SHM_VEC;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_VEC, total);
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain_zc(h, shm);
+  return 0;
+}
+
 /* The top-level layout dispatch (stage_impl's foreign order, after the
    Arrow front-ends, before the 'I' writer): a list[str | None] -> the
    MIZS root; a buffer (any strides) or temporal array -> the MIZH root
    — nd >= 2 in any order, a 1-D strided view, a temporal 1-D array; a
-   1-D contiguous identity buffer already took stage_raw. Every decline
-   decision returns -1 ahead of the checkout (nothing to roll back); past
-   the checkout the only exit is a raised MizuError. */
+   1-D contiguous identity buffer already took stage_raw; a list / tuple
+   / dict -> the MIZL tree. Every decline decision returns -1 ahead of
+   the checkout (nothing to roll back); past the checkout the only exit
+   is a raised MizuError. */
 int pymizu_stage_layout(PyObject *obj, mizu_slot_hdr *hdr,
                         uint8_t *payload, uint32_t inline_max,
                         mizu_handle *h, uint32_t peer_caps) {
   if (PyList_CheckExact(obj)) {
     uint64_t block = 0;
-    if ((peer_caps & MIZU_CAP_MIZS) != 0 && mizs_leaf_size(obj, &block))
-      return mizs_root(obj, block, hdr, payload, inline_max, h);
-    return -1;
+    if (mizs_leaf_size(obj, &block)) {
+      if ((peer_caps & MIZU_CAP_MIZS) != 0)
+        return mizs_root(obj, block, hdr, payload, inline_max, h);
+      return -1;   /* a no-cap peer takes the 0x0b copy */
+    }
+    return mizl_root(obj, hdr, payload, inline_max, h, peer_caps);
   }
+  if (PyTuple_CheckExact(obj) || PyDict_CheckExact(obj))
+    return mizl_root(obj, hdr, payload, inline_max, h, peer_caps);
   if (!PyObject_CheckBuffer(obj) && mizu_py_np_kind(obj) == 0) return -1;
   pymizu_leaf lf;
   if (!leaf_classify(obj, &lf)) return -1;

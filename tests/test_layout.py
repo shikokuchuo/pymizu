@@ -10,10 +10,21 @@ import textwrap
 
 import numpy as np
 
+import pymizu
 from pymizu import _pymizu
 
 leaf = _pymizu._layout_leaf
 write = _pymizu._write_stream
+
+CAPS_R = 7  # MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL
+
+
+def foreign_pair(caps=CAPS_R):
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, caps))
+    p.ready_set()
+    assert h.ready_wait(10)
+    return h, p
 
 
 def stream_body_blob(s, body_bytes):
@@ -127,6 +138,143 @@ def test_mizh_leaf_temporal_scalars():
     assert len(body) == 8
     body, blob = leaf(np.timedelta64(90, "s"))
     assert len(body) == 8
+
+
+def big_ints(n=20000):
+    return list(range(n))
+
+
+def test_mizl_tree_roundtrip():
+    # a nested tree crosses as one MIZL region: string leaves wrap as
+    # views, scalars read as the 'I' codec's values
+    h, p = foreign_pair()
+    try:
+        x = {"a": big_ints(), "b": ["x", "y", None, ""], "c": {"d": 1.5}}
+        assert h.send(x) is True
+        got = p.recv(5)
+        assert type(got) is dict
+        assert [v.item() for v in got["a"][:3]] == [0, 1, 2]
+        assert got["b"].to_list() == ["x", "y", None, ""]
+        assert got["c"]["d"].item() == 1.5
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_scalar_wire_types():
+    # int32-range ints land INT, wider INT64; -2^63 keeps its int64 value
+    # here (R reads the sentinel as NA_integer64_ — the crosslang pin)
+    h, p = foreign_pair()
+    try:
+        assert h.send([2**40, -(2**31), 5, -(2**63)] + big_ints()) is True
+        got = p.recv(5)
+        assert got[0].item() == 2**40
+        assert got[1].item() == -(2**31)
+        assert got[2].item() == 5
+        assert got[3].item() == -(2**63)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_buffer_and_temporal_leaves():
+    h, p = foreign_pair()
+    try:
+        m = np.arange(200000, dtype=np.float64).reshape(400, 500)
+        d = np.arange(
+            np.datetime64(1700000000, "s"), np.datetime64(1700100000, "s")
+        )
+        assert h.send([m, d, "tail"]) is True
+        got = p.recv(5)
+        assert np.array_equal(np.asarray(got[0]), m)
+        assert np.asarray(got[0]).shape == (400, 500)
+        assert np.asarray(got[1])[0] == np.datetime64(1700000000, "s")
+        assert got[2].to_list() == ["tail"]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_vetoes():
+    h, p = foreign_pair()
+    try:
+        # a None outside a string list vetoes: the whole tree takes 'I'
+        assert h.send([True, None] + big_ints()) is True
+        got = p.recv(5)
+        assert got[:2] == [True, None]
+        # a conversion dtype vetoes (conversion stays 'I'-only)
+        assert h.send([np.arange(200000, dtype=np.uint64)]) is True
+        got = p.recv(5)
+        assert isinstance(got[0], np.ndarray)
+        # a nested view vetoes (until the remote-leaf phase)
+        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        view = p.recv(5)
+        assert _pymizu._view_check(view)
+        assert h.send([view, 1] + big_ints()) is True
+        got = p.recv(5)
+        assert not _pymizu._view_check(got[0])
+        assert np.array_equal(np.asarray(got[0]), np.asarray(view))
+        # a past-int64 int has no home in either tier: DeclinedError
+        import pytest
+
+        with pytest.raises(pymizu.DeclinedError, match="int64"):
+            h.send([2**90] + big_ints())
+        # a non-str dict key has no home in either tier
+        with pytest.raises(pymizu.DeclinedError, match="non-str dict key"):
+            h.send({1: big_ints()})
+        # a lone-surrogate str has no home in either tier
+        with pytest.raises(pymizu.DeclinedError, match="UTF-8"):
+            h.send(["\ud800"] + big_ints())
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_caps_decline():
+    # a peer short of MIZL takes the 'I' copy (a short-cap strlist too)
+    h, p = foreign_pair(caps=3)  # MIZS | ATTRS, no MIZL
+    try:
+        assert h.send(big_ints()) is True
+        got = p.recv(5)
+        assert type(got) is list and got[:3] == [0, 1, 2]
+    finally:
+        p.destroy()
+        h.destroy()
+    h, p = foreign_pair(caps=6)  # ATTRS | MIZL, no MIZS
+    try:
+        assert h.send(["x"] * 20000) is True
+        assert p.recv(5) == ["x"] * 20000
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_below_floor_copies():
+    h, p = foreign_pair()
+    try:
+        assert h.send({"k": [1, 2, 3]}) is True
+        got = p.recv(5)
+        assert got == {"k": [1, 2, 3]}
+        assert not _pymizu._view_check(got["k"][0])
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_depth_cap():
+    deep = []
+    for _ in range(65):
+        deep = [deep]
+    h, p = foreign_pair()
+    try:
+        # past the cap both tiers decline: the send raises DeclinedError
+        import pytest
+
+        with pytest.raises(pymizu.DeclinedError, match="depth"):
+            h.send(deep)
+    finally:
+        p.destroy()
+        h.destroy()
 
 
 def test_np_type_probe_reprobes_after_numpy_import(tmp_path):

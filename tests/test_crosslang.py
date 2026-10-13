@@ -613,6 +613,69 @@ def test_py_peer_temporal_below_floor_copies(r_mizu):
         ch.close()
 
 
+R_MIZL_TREE = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+  identical(x, list(
+    a = as.list(0:9999),
+    b = c("x", "y", NA, ""),
+    c = list(d = 1.5),
+    e = t(matrix((1:60000) * 1.0 - 1, 300, 200)),
+    f = .POSIXct(as.double(1700000000:1700099999), tz = "UTC"),
+    g = list(TRUE, 1L, 2.5, 1 + 2i, as.raw(0x2a), "s",
+             bit64::as.integer64(1099511627776),
+             bit64::as.integer64(NA))
+  ))))
+"""
+
+
+def test_py_peer_tree_zero_copy(r_mizu):
+    # a nested dict/list tree past the floor crosses as one MIZL region:
+    # R wraps an ALTLIST view, value-identical after materialization —
+    # string vectors as MIZS leaves (None as NA), scalar leaves in the
+    # 'I' codec's wire types (int64 past the int32 range, -2^63 as the
+    # integer64 NA), buffers and temporals as attributed MIZH leaves
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZL_TREE, launcher=r_mizu)
+    try:
+        assert (
+            ch.send(
+                {
+                    "a": list(range(10000)),
+                    "b": ["x", "y", None, ""],
+                    "c": {"d": 1.5},
+                    "e": np.arange(60000, dtype=np.float64).reshape(200, 300),
+                    "f": np.arange(
+                        np.datetime64(1700000000, "s"),
+                        np.datetime64(1700100000, "s"),
+                    ),
+                    "g": [True, 1, 2.5, 1 + 2j, b"\x2a", "s", 2**40, -(2**63)],
+                }
+            )
+            is True
+        )
+        assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZL_TREE_SMALL = r"""
+x <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, list(k = list(1L, 2L, 3L)))))
+"""
+
+
+def test_py_peer_tree_below_floor_copies(r_mizu):
+    # below the zc floor the 'I' copy still serves: no view, values exact
+    ch = pymizu.Channel.create(R_MIZL_TREE_SMALL, launcher=r_mizu)
+    try:
+        assert ch.send({"k": [1, 2, 3]}) is True
+        assert ch.recv(30).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
 R_MIZH_3D = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
