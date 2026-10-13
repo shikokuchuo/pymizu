@@ -105,6 +105,11 @@ int mizu_py_np_kind(PyObject *obj);
 int mizu_py_np_temporal(PyObject *obj);
 int mizu_py_wire_type_of(const Py_buffer *v);
 const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize);
+/* The list[str | None] predicate (interop.c's, the one home of the rule):
+   an exact list, every element an exact str or None with at least one
+   str, every str UTF-8 encodable. 1 hit (str_bytes takes the UTF-8 byte
+   sum), 0 not. */
+int mizu_py_strlist_probe(PyObject *obj, int64_t *str_bytes);
 /* The conversion kernels are the core's mizu_cvt_convert (mizu_ext.h);
    the Arrow keying its mizu_cvt_for_arrow. */
 /* The conversion warnings, raised after the write half completes (never

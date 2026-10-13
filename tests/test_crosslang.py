@@ -272,13 +272,14 @@ def test_py_peer_str_list_na_mapping(r_mizu):
 R_MIZS_COPY = r"""
 x <- mizu::mizu_recv(ch, timeout = 30)
 mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
-                      identical(x, list("a", "b", NULL, ""))))
+                      identical(x, c("a", "b", NA_character_, ""))))
 """
 
 
 def test_py_peer_str_list_below_floor_copies(r_mizu):
-    # below the zc floor the 0x0b value copy still serves: R receives a
-    # plain list (no view, None as NULL — today's copy form), values intact
+    # below the zc floor the 0x0b value copy serves: R receives a plain
+    # character vector (no view, None as NA_character_), values intact —
+    # the same home the MIZS tier picks past the floor
     np = pytest.importorskip("numpy")
     ch = pymizu.Channel.create(R_MIZS_COPY, launcher=r_mizu)
     try:
@@ -1225,7 +1226,7 @@ report(im4)
 lx <- iconv(c("héllo", "wörld"), from = "UTF-8", to = "latin1")
 mizu::mizu_send(ch, lx)
 y <- mizu::mizu_recv(ch, timeout = 30)
-mizu::mizu_send(ch, identical(y, as.list(lx)))   # the strv shift: a list
+mizu::mizu_send(ch, identical(y, lx))   # the strv round-trips a strv
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
@@ -1238,7 +1239,7 @@ mizu::mizu_send(ch, identical(y, as.list(lx)))   # the strv shift: a list
         lx = ch.recv(30)
         assert lx == ["héllo", "wörld"]
         assert ch.send(lx) is True
-        # the strv shift: a length != 1 string vector returns as a list
+        # a length != 1 string vector round-trips a string vector
         assert ch.recv(30) is True
     finally:
         ch.close()
@@ -1252,8 +1253,8 @@ report2 <- function(x, expect) {
   y <- mizu::mizu_recv(ch, timeout = 30)
   mizu::mizu_send(ch, identical(y, expect))
 }
-report2(c("a", "bc"), list("a", "bc"))        # strv len != 1 -> a list
-report2(factor(c("b", "a"), levels = c("a", "b")), list("b", "a"))
+report2(c("a", "bc"), c("a", "bc"))           # a strv round-trips a strv
+report2(factor(c("b", "a"), levels = c("a", "b")), c("b", "a"))
 report2(NA, NULL)                              # the NA scalars -> NULL
 report2(NA_integer_, NULL)
 report2(NA_character_, NULL)

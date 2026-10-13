@@ -373,6 +373,17 @@ Initial pre-release.
 
 ### Fixed
 
+- A `list[str | None]` sent to an R peer now arrives as a character
+  vector at every size. Below the zero-copy floor the interchange writer
+  emitted the generic list form (R received a `list`), while past it the
+  MIZS tier delivered a character vector — a silent type change chosen
+  by payload size. The writer and the MIZS tier now share one probe: a
+  list of exact `str` / `None` elements with at least one string crosses
+  as the string vector (`None` as `NA_character_`, a length-1 list as
+  the scalar form), an all-`None` list stays a list of `NULL`s, and
+  tuples remain lists. The rule reaches task arguments and map
+  descriptors through the shared writer, so an R worker sees the same
+  types as a channel peer.
 - A `pymizu.Frame` sent on a foreign channel now honors its adopted
   columns' validity bitmaps: the `'I'` frame emit keyed on the data
   slots alone, so a `Frame.from_arrow()` frame with nulls in a

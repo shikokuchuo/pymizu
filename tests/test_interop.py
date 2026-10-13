@@ -115,6 +115,26 @@ def test_golden_corpus():
             raise AssertionError(f"unknown kind {kind}")
 
 
+def test_str_list_writes_strv():
+    # a list[str | None] crosses as the 0x0b string vector at every size —
+    # the home the MIZS tier picks past the zc floor (tier choice by size
+    # never changes the type R receives)
+    assert _write(["a", "bc"]) == CORPUS["py-strv-plain"]
+    assert _write(["a", None, "c"]) == CORPUS["py-strv"]
+    # length 1 pins the 0x04 scalar form (R's character(1))
+    assert _write(["a"]) == "4901040100000061"
+    assert _write(["a"]) == _write("a")
+    # an all-None list is not a string vector: the 0x0c list of nils (R's
+    # list(NULL), the depth-64 pin) at every size
+    assert _write([None]) == "49010c010000000000000000"
+    assert _write([None, None]) == "49010c02000000000000000000"
+    # an empty list and a tuple keep the 0x0c list form
+    assert _write([]) == CORPUS["list-empty"]
+    assert _write(("a", "b")) == (
+        "49010c0200000000000000040100000061040100000062"
+    )
+
+
 def test_scalar_and_container_roundtrips():
     h, p = foreign_pair()
     for x in [

@@ -289,6 +289,76 @@ static void ixe_strv(ixw *w, Py_ssize_t n, const char **strs,
     IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), strs[i], (int32_t) lens[i]));
 }
 
+/* The list[str | None] predicate, the one home of the rule: an exact
+   list, every element an exact str or None with at least one str, every
+   str UTF-8 encodable (a lone surrogate fails the probe). An all-None
+   list is not a string vector: [None] crosses as a 0x0c list of nil (R's
+   list(NULL), the depth-64 corpus pin) at every size. The 'I' writer's
+   list branch and the MIZS tiers (stage_mizs_list, layout.c's leaf) gate
+   on it, so tier choice by size never changes the type the value crosses
+   as. 1 hit (str_bytes takes the UTF-8 byte sum), 0 not. */
+int mizu_py_strlist_probe(PyObject *obj, int64_t *str_bytes) {
+  if (!PyList_CheckExact(obj)) return 0;
+  const Py_ssize_t n = PyList_GET_SIZE(obj);
+  int64_t bytes = 0;
+  int any_str = 0;
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *elt = PyList_GET_ITEM(obj, i);
+    if (elt == Py_None) continue;
+    if (!PyUnicode_CheckExact(elt)) return 0;
+    Py_ssize_t len;
+    if (PyUnicode_AsUTF8AndSize(elt, &len) == NULL) {
+      PyErr_Clear();   /* lone surrogates decline */
+      return 0;
+    }
+    any_str = 1;
+    bytes += (int64_t) len;
+  }
+  if (!any_str) return 0;
+  *str_bytes = bytes;
+  return 1;
+}
+
+/* A probed list[str | None] as the strv value (the ixe_strv shape: the
+   0x04 scalar at length 1, None the NA element). The probe cached the
+   UTF-8 forms, so the re-encode cannot fail — check anyway: a decline is
+   transactional, a write past NULL is not. */
+static void ixe_strlist(ixw *w, PyObject *obj) {
+  const Py_ssize_t n = PyList_GET_SIZE(obj);
+  if (n == 1) {
+    PyObject *elt = PyList_GET_ITEM(obj, 0);
+    if (elt == Py_None) {
+      IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), NULL, -1));
+      return;
+    }
+    Py_ssize_t len;
+    const char *s = PyUnicode_AsUTF8AndSize(elt, &len);
+    if (s == NULL) {
+      PyErr_Clear();
+      ixw_decline(w, "a string is not writable as UTF-8 (a lone surrogate)");
+      return;
+    }
+    IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), s, (int32_t) len));
+    return;
+  }
+  IXW_PUT(w, mizu_ix_put_strv_begin(IXW_DST(w), (uint64_t) n));
+  for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
+    PyObject *elt = PyList_GET_ITEM(obj, i);
+    if (elt == Py_None) {
+      IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), NULL, -1));
+      continue;
+    }
+    Py_ssize_t len;
+    const char *s = PyUnicode_AsUTF8AndSize(elt, &len);
+    if (s == NULL) {
+      PyErr_Clear();
+      ixw_decline(w, "a string is not writable as UTF-8 (a lone surrogate)");
+      return;
+    }
+    IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), s, (int32_t) len));
+  }
+}
+
 /* An intv value, or the 0x02 scalar at length 1. Vector elements must fit
    int32 (the callers' contract); the scalar form keeps the full i64. */
 static void ixe_intv(ixw *w, Py_ssize_t n, const int64_t *vals,
@@ -3984,6 +4054,16 @@ static void ixw_value(ixw *w, PyObject *obj) {
   if (PyList_CheckExact(obj) || PyTuple_CheckExact(obj)) {
     int is_list = PyList_CheckExact(obj) != 0;
     Py_ssize_t n = is_list ? PyList_GET_SIZE(obj) : PyTuple_GET_SIZE(obj);
+    if (is_list) {
+      /* a list[str | None] crosses as the 0x0b string vector — the home
+         the MIZS tier picks past the zc floor, at every size (tuples keep
+         the list tag: a tuple is a list on the wire, never a strv) */
+      int64_t str_bytes = 0;
+      if (mizu_py_strlist_probe(obj, &str_bytes)) {
+        ixe_strlist(w, obj);
+        return;
+      }
+    }
     IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) n));
     w->depth++;
     for (Py_ssize_t i = 0; i < n && !w->decline; i++) {

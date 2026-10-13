@@ -2135,28 +2135,22 @@ static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 
 /* A top-level list[str | None] staged as SHM_VEC: one MIZS layout write
    into a spill region (the mirror of mizu's mizs_write), the region name
-   as the payload. Two walks of the list — the first validates (exact
-   strs or None only; a subclass keeps the 'I' writer's semantics) and
-   sums the UTF-8 bytes with no writes, the second fills the block's four
-   sections. The gate runs on the whole block, not str_bytes alone: 1M
-   empty strings are a ~9 MB block of offsets. -1 declines to the 'I'
-   writer's 0x0b copy; 0 staged. */
+   as the payload. Two walks of the list — the first (the shared probe:
+   at least one exact str, every element an exact str or None; a subclass
+   keeps the 'I' writer's semantics) validates and sums the UTF-8 bytes
+   with no writes, the second fills the block's four sections. The gate
+   runs on the whole block, not str_bytes alone: 1M empty strings are a
+   ~9 MB block of offsets. -1 declines to the 'I' writer's 0x0b copy; 0
+   staged. */
 static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
                            uint8_t *payload, uint32_t inline_max,
                            mizu_handle *h) {
-  const Py_ssize_t n = PyList_GET_SIZE(obj);
+  /* the first walk is the shared probe (pyinterop.h): the 'I' writer's
+     0x0b list branch gates on the same predicate, so a string list is a
+     string vector at every size */
   int64_t str_bytes = 0;
-  for (Py_ssize_t i = 0; i < n; i++) {
-    PyObject *elt = PyList_GET_ITEM(obj, i);
-    if (elt == Py_None) continue;
-    if (!PyUnicode_CheckExact(elt)) return -1;
-    Py_ssize_t len;
-    if (PyUnicode_AsUTF8AndSize(elt, &len) == NULL) {
-      PyErr_Clear();   /* lone surrogates take the 0x0b path */
-      return -1;
-    }
-    str_bytes += (int64_t) len;
-  }
+  if (!mizu_py_strlist_probe(obj, &str_bytes)) return -1;
+  const Py_ssize_t n = PyList_GET_SIZE(obj);
   const mizu_mizs_geom g = mizu_mizs_geometry((int64_t) n);
   const uint64_t block = (uint64_t) (g.data + str_bytes);
   const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
