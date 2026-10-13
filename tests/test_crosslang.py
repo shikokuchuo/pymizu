@@ -1279,7 +1279,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 31)  # R: all five caps
+        assert ch._h._peer_ident() == (2, 63)  # R: all six caps
     finally:
         ch.close()
 
@@ -1725,8 +1725,8 @@ mizu::mizu_send(ch, inherits(df$u, "difftime") &&
 
 def test_crosslang_arrow_ns_temporal_to_r(r_mizu):
     # a nanosecond Arrow column reaches R in the double-second POSIXct /
-    # difftime form (R declares no MIZU_CAP_MIZL_TSN — the documented
-    # structural cap), the values the writer's exact double rescale
+    # difftime form (mizu declares MIZU_CAP_MIZL_TSN and lands the verbatim
+    # counts with the fallback's own double rescale — byte-identical values)
     src = r"""
 df <- mizu::mizu_recv(ch, timeout = 30)
 mizu::mizu_send(ch, inherits(df$t, "POSIXct") &&
