@@ -166,7 +166,7 @@ def test_stream_submit_ring_full_timeout():
 
 def _stage_stream_region(fn, n):
     desc = pickle.dumps((fn, (), {}), 4)
-    return pymizu._pymizu._map_stage(desc, None, n, 1, None)
+    return pymizu._pymizu._map_stage(desc, None, n, 1, None, False, 3)
 
 
 def test_stream_window_expired_at_collect(pool):
@@ -336,9 +336,61 @@ def test_stream_fail_collect_failure_stays_fatal():
         _map_mod._stream_fail(pymizu, handles, [0], [(0, 2)], first)
 
 
-def test_stream_spec_fn_raises(pool):
+def test_stream_spec_fn_view_collect_raises(pool):
+    # a spec f streams (per-chunk regions + kind-2 runners); only
+    # collect="view" stays impossible — per-chunk output areas cannot
+    # compose into one view
+    with pytest.raises(TypeError, match="cannot compose a streaming spec"):
+        pool.map(
+            pymizu.call("math.sqrt"),
+            [1.0, 4.0],
+            stream=True,
+            template=memoryview(b"\0" * 8),
+            collect="view",
+        )
     with pytest.raises(TypeError, match="cannot stream"):
-        pool.map(pymizu.call("math.sqrt"), [1, 4], stream=True)
+        pool.map_prepare(pymizu.call("math.sqrt"), [1.0, 4.0], stream=True)
+
+
+def test_stream_spec_fn_own_shape(pool):
+    # a spec stream over Python workers: the runner results arrive in this
+    # binding's own (ranges, values) shape
+    out = pool.map(pymizu.call("math.sqrt"), [1.0, 4.0, 9.0], stream=True)
+    assert out == [1.0, 2.0, 3.0]
+    x = list(range(60))
+    want = pool.map(pymizu.call("math.floor"), x)
+    for chunks in (None, 1, 7, 60):
+        got = pool.map(
+            pymizu.call("math.floor"), x, stream=True, n_chunks=chunks
+        )
+        assert got == want
+
+
+def test_stream_spec_fn_seed_invariance(pool):
+    fn = pymizu.call(source="import random\nrandom.random()")
+    want = pool.map(fn, list(range(40)), seed=42)
+    for chunks in (None, 1, 7, 40):
+        got = pool.map(
+            fn, list(range(40)), stream=True, seed=42, n_chunks=chunks
+        )
+        assert got == want
+
+
+def test_stream_spec_fn_error_index():
+    fn = pymizu.call(source="if x in (3, 5):\n    raise ValueError('boom')\nx")
+    # one worker: chunk 1 fails at 3 strictly before chunk 2 at 5 — the
+    # first error's global index wins the minimum whether or not the
+    # sibling's drains (its own chunk-base offset applied)
+    p = pymizu.Pool.create(1)
+    try:
+        with pytest.raises(pymizu.TaskError) as exc_info:
+            p.map(fn, list(range(8)), stream=True, n_chunks=4)
+        # the global element index: collect_any's `position` names the
+        # chunk, the envelope's index offsets by its base
+        assert exc_info.value.index == 3
+        assert exc_info.value.remote_type == "ValueError"
+    finally:
+        p.stop()
 
 
 def test_stream_buffer_x_forms(pool):

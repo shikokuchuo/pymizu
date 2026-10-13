@@ -160,8 +160,15 @@ Two trade-offs come with fixed chunks: the adaptive batch sizing is lost
 (raise `n_chunks=` to mitigate skew), and slices cross via the serialized
 tiers, so per-chunk staging costs an ordinary submit's serialization rather
 than the raw section's zero-copy slicing.
-A streaming map always stages its descriptor region and needs same-language
-workers: a `pymizu.call` spec as `fn` raises `TypeError`.
+A streaming map with Python workers shares one description of the map with
+every worker, each read at most once. A `pymizu.call` spec as `fn` streams
+too, over workers of any language: each chunk in the window stages a small
+shared region of its own (the slice plus the task that runs on it, one
+runner task per chunk), removed as soon as the chunk completes.
+Shared-memory use stays bounded by the window plus a small per-worker cache
+rather than by `sizeof(x)`. Each chunk also writes its results separately,
+so they cannot combine into one view: `collect="view"` raises `TypeError`
+on a streaming spec map, as does preparing one with `pool.map_prepare()`.
 
 ## Prepared maps
 

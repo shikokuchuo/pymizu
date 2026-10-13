@@ -706,3 +706,67 @@ def test_map_spec_error_index(pool):
         )
     assert exc_info.value.index == 5
     assert exc_info.value.remote_type == "ValueError"
+
+
+def test_map_probe_x_convert_flag():
+    # the conversion gate's probe: a 1-D non-identity buffer probes as its
+    # conversion row (tag, n, converted bytes) only under the flag
+    import numpy as np
+
+    rows = {
+        np.int8: (13, 4),  # -> INT
+        np.int16: (13, 4),
+        np.uint16: (13, 4),
+        np.uint32: (14, 8),  # -> REAL
+        np.uint64: (14, 8),
+        np.float16: (14, 8),
+        np.float32: (14, 8),
+        np.bool_: (10, 4),  # -> LGL
+        np.complex64: (15, 16),  # -> CPLX
+    }
+    for dt, (tag, w_out) in rows.items():
+        a = np.arange(6).astype(dt)
+        assert pymizu._pymizu._map_probe_x(a, False) is None
+        assert pymizu._pymizu._map_probe_x(a, True) == (tag, 6, 6 * w_out)
+    # identity dtypes probe identically with and without the flag
+    a = np.arange(6, dtype=np.float64)
+    assert pymizu._pymizu._map_probe_x(a, True) == (14, 6, 48)
+    # a 2-D non-identity buffer stays on the descriptor fallback
+    m = np.arange(6, dtype=np.int8).reshape(2, 3)
+    assert pymizu._pymizu._map_probe_x(m, True) is None
+    # and a strided view too
+    assert pymizu._pymizu._map_probe_x(a[::2], True) is None
+
+
+def test_map_swap_x_convert_flag():
+    # the prepared-map swap under the conversion gate: a same-dtype
+    # non-identity replacement converts in place; a different dtype
+    # rejects (the Python side restages)
+    import pickle
+
+    import numpy as np
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = pymizu._pymizu._map_stage(
+        desc, np.arange(6, dtype=np.float32), 6, 1, None, True, 2
+    )
+    try:
+        hdr = pymizu._pymizu._map_header(capsule)
+        assert hdr["x_tag"] == 14  # REAL after the float32 conversion
+        view = pymizu._pymizu._map_x_view(capsule)
+        assert list(memoryview(view).cast("d")) == [float(v) for v in range(6)]
+        pymizu._pymizu._map_swap_x(
+            capsule, np.full(6, 3.0, dtype=np.float32), True, 2
+        )
+        assert list(memoryview(view).cast("d")) == [3.0] * 6
+        with pytest.raises(pymizu.MizuError, match="must match the staged"):
+            pymizu._pymizu._map_swap_x(
+                capsule, np.arange(6, dtype=np.int16), True, 2
+            )
+        # without the flag the same-dtype replacement rejects too
+        with pytest.raises(pymizu.MizuError, match="must match the staged"):
+            pymizu._pymizu._map_swap_x(
+                capsule, np.full(6, 4.0, dtype=np.float32), False, 2
+            )
+    finally:
+        pymizu._pymizu._map_close(capsule)

@@ -15,6 +15,7 @@ from functools import partial
 import pytest
 from tests.helpers import (
     busy,
+    fail_indexed,
     fanout,
     fanout_with_thread,
     identity,
@@ -609,3 +610,27 @@ def test_shm_vec_argument(pool):
     a = np.arange(100000, dtype=np.float64)  # 800 KB there as a view
     t = pool.submit(array_sum, a)
     assert t.collect(timeout=5) == float(a.sum())
+
+
+def test_collect_any_position_stamp(pool):
+    # an error already carrying a map-style element index keeps it as
+    # `index` (the documented Pool.map contract) and gains the 0-based
+    # `position` alongside — a streaming spec map's window finds the
+    # chunk through it
+    bad = pool.submit(fail_indexed)
+    slow = pool.submit(time.sleep, 1.5)
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.collect_any([slow, bad], timeout=10)
+    assert exc_info.value.index == 7
+    assert exc_info.value.position == 1
+    assert slow.collect(timeout=10) is None
+
+
+def test_collect_all_position_stamp(pool):
+    bad = pool.submit(fail_indexed)
+    ok = pool.submit(len, [1, 2])
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.collect_all([bad, ok], timeout=10)
+    assert exc_info.value.index == 7
+    assert exc_info.value.position == 0
+    assert ok.collect(timeout=10) == 2

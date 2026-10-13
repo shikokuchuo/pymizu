@@ -602,3 +602,11 @@ class RawArrowStream:
 
     def __arrow_c_stream__(self):
         return self._capsule
+
+
+def fail_indexed():
+    """A map-style error envelope: the worker reads the element index off
+    `_pymizu_map_index` as the outcome tuple's fourth element."""
+    e = ValueError("indexed failure")
+    e._pymizu_map_index = 7
+    raise e

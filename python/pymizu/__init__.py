@@ -918,9 +918,17 @@ class Pool:
         ``n_chunks``), and slices cross via the serialized tiers, so
         per-chunk staging costs an ordinary submit's serialization
         rather than the raw section's zero-copy slicing. A streaming map
-        always stages its descriptor region and needs same-language
-        workers: a [`call`](`pymizu.call`) spec as ``fn`` raises
-        TypeError.
+        with Python workers shares one description of the map with every
+        worker, each read at most once. A [`call`](`pymizu.call`) spec
+        as ``fn`` streams too, over workers of any language: each chunk
+        in the window stages a small shared region of its own (the slice
+        plus the task that runs on it, one runner task per chunk),
+        removed as soon as the chunk completes. Shared-memory use stays
+        bounded by the window plus a small per-worker cache rather than
+        by ``sizeof(x)``. Each chunk also writes its results separately,
+        so they cannot combine into one view: ``collect="view"`` raises
+        ``TypeError`` on a streaming spec map, as does preparing one
+        with [`map_prepare()`](`pymizu.Pool.map_prepare`).
 
         On ``timeout`` expiry the outstanding work is cancelled and the
         `TIMEOUT` sentinel is returned, never raised.

@@ -8,7 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial pre-release.
 
+### Added
+
+- Cross-language streaming maps: `Pool.map()` with `stream=True` and a
+  `pymizu.call` spec as `fn` now runs over workers of any language
+  (previously a `TypeError`). Each chunk in the sliding window stages a
+  small shared region of its own — the slice plus the task, one runner
+  task per chunk — removed as soon as its chunk completes, so
+  shared-memory use stays bounded by the window plus a small per-worker
+  cache. Result order, `seed=` invariance, the element-indexed error
+  taxonomy, and `template=` (gathered a chunk at a time) are exactly the
+  non-streaming spec map's. `collect="view"` stays a `TypeError`
+  (per-chunk results cannot combine into one view), as does preparing a
+  streaming spec map (`pool.map_prepare()`).
+- `Pool.collect_any()` and `Pool.collect_all()` errors now always carry
+  a `position` attribute (the 0-based list position). A task error that
+  already carries an `index` — a map error's element index, the
+  documented `Pool.map` contract — keeps it as before, so both are now
+  present.
+
 ### Changed
+
+- Spec maps to R workers now convert fixed-width non-identity numpy
+  dtypes once at stage time, through the same table channel sends use:
+  int8/16, uint16/32/64, float16/32, bool, and complex64 `x` buffers
+  ride the map region's byte section as converted values (uint64 past
+  2^53 warns and lands `NA` on the R side) instead of pickling every
+  element through the descriptor, so each worker slices bare bytes
+  rather than unpickling all of `x`. Same-language maps keep the
+  lossless pickle semantics, and `template=` still takes the exemplar
+  dtypes (`float64`/`int32`/`int64`/`complex128`/`uint8`) — declare the
+  widened type the workers produce.
 
 - A received double view's Arrow export now honors the region's validity
   section: `NA_real_` exports as an Arrow null and a genuine NaN stays a

@@ -5419,23 +5419,34 @@ static void pool_trace_cb(mizu_trace_event event, uint64_t task_id,
 
 /* A collected value is either the task's result or a _Caught box carrying
    the outcome's exception. Unwrap and raise; with_index attributes the
-   0-based position (collect_any / collect_all) — unless the exception
-   already carries an index: a map error's element index (the envelope's
-   fourth element) is the documented Pool.map contract and wins over the
-   position stamp. */
+   0-based position (collect_any / collect_all) twice: `position`
+   unconditionally, and `index` unless the exception already carries one —
+   a map error's element index (the envelope's fourth element) is the
+   documented Pool.map contract and wins over the position stamp there,
+   while a streaming spec map's window still finds its chunk through
+   `position`. */
 static PyObject *caught_or_value(PyObject *v, size_t index, int with_index) {
   if (Py_TYPE(v) != &MizuCaughtType) return v;
   PyObject *exc = ((MizuCaught *) v)->exc;
   Py_INCREF(exc);
   Py_DECREF(v);
-  if (with_index && PyObject_HasAttrString(exc, "index") == 0) {
-    PyObject *i = PyLong_FromSize_t(index);
-    if (i == NULL || PyObject_SetAttrString(exc, "index", i) < 0) {
-      Py_XDECREF(i);
+  if (with_index) {
+    PyObject *pos = PyLong_FromSize_t(index);
+    if (pos == NULL || PyObject_SetAttrString(exc, "position", pos) < 0) {
+      Py_XDECREF(pos);
       Py_DECREF(exc);
       return NULL;
     }
-    Py_DECREF(i);
+    Py_DECREF(pos);
+    if (PyObject_HasAttrString(exc, "index") == 0) {
+      PyObject *i = PyLong_FromSize_t(index);
+      if (i == NULL || PyObject_SetAttrString(exc, "index", i) < 0) {
+        Py_XDECREF(i);
+        Py_DECREF(exc);
+        return NULL;
+      }
+      Py_DECREF(i);
+    }
   }
   PyErr_SetObject((PyObject *) Py_TYPE(exc), exc);
   Py_DECREF(exc);

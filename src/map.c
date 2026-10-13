@@ -94,11 +94,14 @@ static int pymap_ordinal(mizu_pymap *mh, PyObject *ord, uint32_t *out) {
 // Staging (submitter side) -------------------------------------------------------
 
 PyDoc_STRVAR(map_stage_doc,
-"_map_stage(desc_bytes, x, n, morsel_size, template) -> \\\n\
+"_map_stage(desc_bytes, x, n, morsel_size, template, convert, lang) -> \\\n\
 (region_name, capsule)\n\n\
 Stage one map call into a fresh region. `desc_bytes` is the pickled\n\
 descriptor stream; `x` a C-contiguous buffer of a supported dtype for the\n\
-bare-bytes x section, or None when x rides the descriptor. `template` is\n\
+bare-bytes x section, or None when x rides the descriptor. With `convert`\n\
+(a spec map on R workers) a 1-D non-identity buffer converts once into\n\
+the section through the channel's conversion table, `lang` the worker\n\
+language byte for the conversion warnings. `template` is\n\
 None or a C-contiguous buffer of a supported dtype whose element count is\n\
 the per-element result length m: the region then carries an n x m output\n\
 area the runners write in place. The returned\n\
@@ -110,9 +113,10 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   Py_buffer desc, xbuf, tbuf;
   unsigned long long n_ll, ms_ll;
   PyObject *x_obj, *t_obj;
-  int have_x, have_t;
-  if (!PyArg_ParseTuple(args, "y*OKKO:_map_stage", &desc, &x_obj, &n_ll,
-                        &ms_ll, &t_obj))
+  int have_x, have_t, convert;
+  unsigned int lang;
+  if (!PyArg_ParseTuple(args, "y*OKKOiI:_map_stage", &desc, &x_obj, &n_ll,
+                        &ms_ll, &t_obj, &convert, &lang))
     return NULL;
   if (n_ll < 1 || n_ll > ((uint64_t) 1 << 48)) {
     PyBuffer_Release(&desc);
@@ -131,6 +135,7 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   }
   have_x = x_obj != Py_None;
   int x_tag = 0;
+  const cvt_row *x_row = NULL;
   if (have_x) {
     /* PyBUF_ND, not C_CONTIGUOUS (which implies WRITABLE): a read-only
        x (a zero-copy view) is eligible; strides != NULL is not */
@@ -139,11 +144,20 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
     x_tag = xbuf.strides == NULL ? mizu_py_wire_type_of(&xbuf) : 0;
     size_t elt = mizu_type_elt_size(x_tag);
     if (x_tag == 0 || elt == 0 || (uint64_t) xbuf.len != n_ll * elt) {
-      PyBuffer_Release(&xbuf);
-      PyBuffer_Release(&desc);
-      PyErr_SetString(MizuErr,
-                      "pymizu: x is not eligible for the map raw section");
-      return NULL;
+      /* identity failed: the conversion gate, the channel's in full —
+         1-D and unstrided ahead of the row lookup */
+      x_tag = 0;
+      if (convert && xbuf.strides == NULL && xbuf.ndim <= 1)
+        x_row = mizu_py_cvt_for_buffer(xbuf.format, xbuf.itemsize);
+      if (x_row == NULL ||
+          (uint64_t) xbuf.len != n_ll * (uint64_t) x_row->w_in) {
+        PyBuffer_Release(&xbuf);
+        PyBuffer_Release(&desc);
+        PyErr_SetString(MizuErr,
+                        "pymizu: x is not eligible for the map raw section");
+        return NULL;
+      }
+      x_tag = x_row->wire;
     }
   }
   have_t = t_obj != Py_None;
@@ -172,7 +186,9 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   uint64_t size = mizu_morsel_layout(&h, (uint64_t) n_ll,
                                     (uint64_t) ms_ll, (uint64_t) desc.len,
                                     have_x ? (uint32_t) x_tag : 0,
-                                    have_x ? (uint64_t) xbuf.len : 0,
+                                    have_x ? (x_row != NULL ?
+                                      n_ll * (uint64_t) x_row->w_out :
+                                      (uint64_t) xbuf.len) : 0,
                                     have_t ? (uint32_t) t_tag : 0, t_m,
                                     MIZU_MAX_WORKERS);
   if (size == 0) {
@@ -192,8 +208,25 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
   unsigned char *b = (unsigned char *) shm->addr;
   memcpy(b, &h, sizeof(h));
   memcpy(b + h.desc_off, desc.buf, (size_t) h.desc_len);
-  if (have_x)
-    memcpy(b + h.x_off, xbuf.buf, (size_t) h.x_len);
+  if (have_x) {
+    if (x_row != NULL) {
+      /* the conversion stage: one fused convert straight into the region
+         (the channel's no-temp discipline); the write half cannot fail,
+         so a warning raised as an error never leaves a half-written
+         section — but the fresh region must not leak */
+      cvt_warn warn = { 0, 0, 0 };
+      mizu_cvt_convert(b + h.x_off, (const uint8_t *) xbuf.buf, NULL, 0,
+                       (size_t) n_ll, x_row, &warn);
+      if (mizu_py_cvt_warn(&warn, (uint32_t) lang)) {
+        PyBuffer_Release(&desc);
+        PyBuffer_Release(&xbuf);
+        mizu_shm_close(shm, 1);
+        return NULL;
+      }
+    } else {
+      memcpy(b + h.x_off, xbuf.buf, (size_t) h.x_len);
+    }
+  }
   PyBuffer_Release(&desc);
   if (have_x) PyBuffer_Release(&xbuf);
 
@@ -849,16 +882,22 @@ static PyObject *py_map_reset(PyObject *Py_UNUSED(module), PyObject *caps) {
 }
 
 PyDoc_STRVAR(map_swap_x_doc,
-"_map_swap_x(capsule, x) -> None\n\n\
+"_map_swap_x(capsule, x, convert, lang) -> None\n\n\
 Prepared-map in-place x swap: memcpy a raw-buffer replacement of the\n\
 staged wire type and byte length over the region's x section (the owner\n\
-mapping is writable). Safe because a raw-buffer x is sliced from the\n\
-mapping per batch and never cached worker-side. Errors on any mismatch —\n\
-the Python side restages instead of swapping.");
+mapping is writable). With `convert` (a spec map on R workers), a 1-D\n\
+non-identity replacement whose conversion row lands on the staged wire\n\
+type and length converts in place instead. Safe because a raw-buffer x\n\
+is sliced from the mapping per batch and never cached worker-side. Errors\n\
+on any mismatch — the Python side restages instead of swapping.");
 
 static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
   PyObject *caps, *x_obj;
-  if (!PyArg_ParseTuple(args, "OO:_map_swap_x", &caps, &x_obj)) return NULL;
+  int convert;
+  unsigned int lang;
+  if (!PyArg_ParseTuple(args, "OOiI:_map_swap_x", &caps, &x_obj, &convert,
+                        &lang))
+    return NULL;
   mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (mh->h.x_kind != MIZU_MORSEL_X_RAW) {
@@ -870,18 +909,34 @@ static PyObject *py_map_swap_x(PyObject *Py_UNUSED(module), PyObject *args) {
                          PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0)
     return NULL;
   int tag = mizu_py_wire_type_of(&xbuf);
-  if (tag == 0 || (uint32_t) tag != mh->h.x_type ||
-      (uint64_t) xbuf.len != mh->h.x_len) {
+  if (tag != 0 && (uint32_t) tag == mh->h.x_type &&
+      (uint64_t) xbuf.len == mh->h.x_len) {
+    memcpy((unsigned char *) mh->shm->addr + mh->h.x_off, xbuf.buf,
+           (size_t) mh->h.x_len);
     PyBuffer_Release(&xbuf);
-    PyErr_SetString(MizuErr,
-                    "pymizu: replacement x must match the staged type and "
-                    "length");
-    return NULL;
+    Py_RETURN_NONE;
   }
-  memcpy((unsigned char *) mh->shm->addr + mh->h.x_off, xbuf.buf,
-         (size_t) mh->h.x_len);
+  if (convert && xbuf.ndim <= 1) {
+    const cvt_row *row = mizu_py_cvt_for_buffer(xbuf.format, xbuf.itemsize);
+    if (row != NULL && (uint32_t) row->wire == mh->h.x_type &&
+        (uint64_t) xbuf.len == mh->h.n * (uint64_t) row->w_in) {
+      /* as the stage: the fused convert completes before a warning can
+         raise, so a warn-as-error leaves the new x fully written (the
+         Python side drops the staged state and restages) */
+      cvt_warn warn = { 0, 0, 0 };
+      mizu_cvt_convert((uint8_t *) mh->shm->addr + mh->h.x_off,
+                       (const uint8_t *) xbuf.buf, NULL, 0,
+                       (size_t) mh->h.n, row, &warn);
+      PyBuffer_Release(&xbuf);
+      if (mizu_py_cvt_warn(&warn, (uint32_t) lang)) return NULL;
+      Py_RETURN_NONE;
+    }
+  }
   PyBuffer_Release(&xbuf);
-  Py_RETURN_NONE;
+  PyErr_SetString(MizuErr,
+                  "pymizu: replacement x must match the staged type and "
+                  "length");
+  return NULL;
 }
 
 /* Worker-death lost set, in element space: issued = [0, cursor) clamped to
@@ -988,12 +1043,17 @@ fail_seq:
 }
 
 PyDoc_STRVAR(map_probe_x_doc,
-"_map_probe_x(x) -> (tag, n_elts, n_bytes) | None\n\n\
+"_map_probe_x(x, convert) -> (tag, n_elts, n_bytes) | None\n\n\
 The raw-x gate: a C-contiguous buffer of a supported dtype (the channel's\n\
-dtype map) rides the region as bare bytes; anything else returns None and\n\
-x rides the descriptor.");
+dtype map) rides the region as bare bytes; with `convert` (a spec map on\n\
+R workers) a 1-D non-identity buffer probes as its conversion row — the\n\
+converted wire tag, n_elts the source element count, n_bytes the\n\
+converted size. Anything else returns None and x rides the descriptor.");
 
-static PyObject *py_map_probe_x(PyObject *Py_UNUSED(module), PyObject *arg) {
+static PyObject *py_map_probe_x(PyObject *Py_UNUSED(module), PyObject *args) {
+  PyObject *arg;
+  int convert;
+  if (!PyArg_ParseTuple(args, "Oi:_map_probe_x", &arg, &convert)) return NULL;
   if (!PyObject_CheckBuffer(arg)) Py_RETURN_NONE;
   Py_buffer v;
   if (PyObject_GetBuffer(arg, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
@@ -1001,14 +1061,25 @@ static PyObject *py_map_probe_x(PyObject *Py_UNUSED(module), PyObject *arg) {
     Py_RETURN_NONE;
   }
   int type = v.strides == NULL ? mizu_py_wire_type_of(&v) : 0;
-  if (type == 0) {
+  unsigned long long n_elts, n_bytes;
+  if (type != 0) {
+    size_t elt = mizu_type_elt_size(type);
+    n_elts = (unsigned long long) ((size_t) v.len / elt);
+    n_bytes = (unsigned long long) v.len;
+  } else if (convert && v.strides == NULL && v.ndim <= 1) {
+    const cvt_row *row = mizu_py_cvt_for_buffer(v.format, v.itemsize);
+    if (row == NULL) {
+      PyBuffer_Release(&v);
+      Py_RETURN_NONE;
+    }
+    type = row->wire;
+    n_elts = (unsigned long long) ((size_t) v.len / row->w_in);
+    n_bytes = (unsigned long long) n_elts * row->w_out;
+  } else {
     PyBuffer_Release(&v);
     Py_RETURN_NONE;
   }
-  size_t elt = mizu_type_elt_size(type);
-  PyObject *out = Py_BuildValue("(iKK)", type,
-                                (unsigned long long) ((size_t) v.len / elt),
-                                (unsigned long long) v.len);
+  PyObject *out = Py_BuildValue("(iKK)", type, n_elts, n_bytes);
   PyBuffer_Release(&v);
   return out;
 }
@@ -1032,7 +1103,8 @@ static PyMethodDef pymap_methods[] = {
   {"_map_reset", (PyCFunction) py_map_reset, METH_O, map_reset_doc},
   {"_map_swap_x", (PyCFunction) py_map_swap_x, METH_VARARGS, map_swap_x_doc},
   {"_map_lost", (PyCFunction) py_map_lost, METH_VARARGS, map_lost_doc},
-  {"_map_probe_x", (PyCFunction) py_map_probe_x, METH_O, map_probe_x_doc},
+  {"_map_probe_x", (PyCFunction) py_map_probe_x, METH_VARARGS,
+   map_probe_x_doc},
   {"_map_write", (PyCFunction) py_map_write, METH_VARARGS, map_write_doc},
   {"_map_gather", (PyCFunction) py_map_gather, METH_O, map_gather_doc},
   {"_map_gather_view", (PyCFunction) py_map_gather_view, METH_O,

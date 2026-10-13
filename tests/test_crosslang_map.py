@@ -171,3 +171,154 @@ def test_a_dead_r_workers_lost_set_scan():
         assert lo == 0 and hi <= 40
     finally:
         p.stop()
+
+
+def test_map_spec_converted_dtypes(r_pool):
+    # non-identity dtypes convert once at stage time into the region's raw
+    # x section (the channel's conversion table), not the list fallback
+    import numpy as np
+
+    cases = {
+        np.int8: [1, 2, 3],
+        np.int16: [1, 2, 3],
+        np.uint16: [1, 2, 3],
+        np.uint32: [1, 2, 3],
+        np.float16: [1, 2, 3],
+        np.float32: [1, 2, 3],
+        np.bool_: [True, False, True],
+        np.complex64: [1 + 2j, 3 + 4j],
+    }
+    for dt, vals in cases.items():
+        a = np.array(vals, dtype=dt)
+        out = r_pool.map(pymizu.call(source="x * 2"), a)
+        assert [complex(v) for v in out] == [complex(v) * 2 for v in a]
+
+
+def test_map_spec_uint64_past_2p53_warns(r_pool):
+    import numpy as np
+
+    a = np.array([2**63 - 1, 1], dtype=np.uint64)
+    with pytest.warns(RuntimeWarning, match=r"beyond \+/-2\^53"):
+        out = r_pool.map(pymizu.call(source="x"), a)
+    # the out-of-range value lands NA_real_ on the R side and crosses back
+    # as an NA-payload NaN; the in-range value survives
+    assert np.isnan(out[0]) and out[1] == 1
+
+
+def test_prepared_spec_map_converted_swap(r_pool):
+    import numpy as np
+
+    pm = r_pool.map_prepare(
+        pymizu.call(source="x * 2"), np.arange(6, dtype=np.float32)
+    )
+    try:
+        assert pm.run() == [float(v) * 2 for v in range(6)]
+        # a same-dtype replacement swaps in place: no restage
+        name = pm._name
+        assert pm.run(np.full(6, 3.0, dtype=np.float32)) == [6.0] * 6
+        assert pm._name == name
+        # a wire-compatible float64 swaps in place too (the gate is the
+        # staged wire type, not the source dtype); a different wire type
+        # restages transparently
+        assert pm.run(np.arange(6, dtype=np.int16)) == [
+            int(v) * 2 for v in range(6)
+        ]
+        assert pm._name != name
+    finally:
+        pm.close()
+
+
+def test_stream_spec_map(r_pool):
+    # the cross-language stream: per-chunk regions + kind-2 runners — the
+    # results are the non-streaming spec map's
+    fn = pymizu.call(source="x * 2")
+    x = list(range(60))
+    want = r_pool.map(fn, x)
+    for chunks in (None, 1, 7, 60):
+        assert r_pool.map(fn, x, stream=True, n_chunks=chunks) == want
+
+
+def test_stream_spec_map_raw_x(r_pool):
+    # a numpy x slices through the per-chunk raw sections — an identity
+    # dtype directly, a non-identity one after the conversion
+    import numpy as np
+
+    a = np.arange(100, dtype=np.float64)
+    out = r_pool.map(pymizu.call(source="x * 2"), a, stream=True, n_chunks=6)
+    assert out == [float(v) * 2 for v in a]
+    b = np.arange(100, dtype=np.float32)
+    out = r_pool.map(pymizu.call(source="x * 2"), b, stream=True, n_chunks=6)
+    assert out == pytest.approx([float(v) * 2 for v in b])
+
+
+def test_stream_spec_map_seed_invariance(r_pool):
+    fn = pymizu.call(source="runif(1)")
+    want = r_pool.map(fn, list(range(40)), seed=42)
+    for chunks in (None, 1, 7, 40):
+        got = r_pool.map(
+            fn, list(range(40)), stream=True, seed=42, n_chunks=chunks
+        )
+        assert got == want
+
+
+def test_stream_spec_map_error_index(r_pool):
+    fn = pymizu.call(source='if (x == 3) stop("boom") else x')
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        r_pool.map(fn, list(range(10)), stream=True, n_chunks=5)
+    # the global element index (0-based here): collect_any's `position`
+    # names the chunk, the envelope's index offsets by its base
+    assert exc_info.value.index == 3
+    assert "boom" in str(exc_info.value)
+
+
+def test_stream_spec_map_error_index_min():
+    # sibling errors drained into the minimum selection, offset by each
+    # chunk's base — the same-language min-index discipline over R workers
+    try:
+        launcher = pymizu.r_pool_launcher(
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except pymizu.MizuError:
+        pytest.skip("Rscript with the mizu package not available")
+    p = pymizu.Pool.create(1, launcher=launcher)
+    try:
+        fn = pymizu.call(source='if (x %in% c(3, 5)) stop("boom") else x')
+        with pytest.raises(pymizu.TaskError) as exc_info:
+            p.map(fn, list(range(8)), stream=True, n_chunks=4)
+        assert exc_info.value.index == 3
+    finally:
+        p.stop()
+
+
+def test_stream_spec_map_template(r_pool):
+    import numpy as np
+
+    out = r_pool.map(
+        pymizu.call(source="x * 2"),
+        list(range(50)),
+        template=np.empty(1),
+        stream=True,
+        n_chunks=7,
+    )
+    np.testing.assert_array_equal(out, np.arange(50) * 2.0)
+    out2 = r_pool.map(
+        pymizu.call("base::c", 2),
+        [1.0, 2.0, 3.0],
+        template=np.empty(2),
+        stream=True,
+        n_chunks=2,
+    )
+    assert out2.shape == (3, 2)
+
+
+def test_stream_spec_map_view_collect_raises(r_pool):
+    import numpy as np
+
+    with pytest.raises(TypeError, match="cannot compose a streaming spec"):
+        r_pool.map(
+            pymizu.call("base::log"),
+            [1.0, 2.0],
+            template=np.empty(1),
+            collect="view",
+            stream=True,
+        )

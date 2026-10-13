@@ -583,7 +583,7 @@ def _template_probe(template: _Any) -> tuple:
     """The template gate: an exemplar buffer of a supported dtype carries
     the output area's wire type and per-element length m together (the
     mirror of mizu's `.template` exemplar)."""
-    probe = _pymizu._map_probe_x(template)
+    probe = _pymizu._map_probe_x(template, False)
     if probe is None or probe[1] < 1:
         raise TypeError(
             "pymizu: template must be a C-contiguous buffer of a supported "
@@ -606,20 +606,24 @@ def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
     return mv.cast(fmt, [n, m]) if m > 1 else mv
 
 
-def _probe_x(spec: bool, x: _Any) -> tuple[tuple | None, _Any, int]:
+def _probe_x(
+    spec: bool, x: _Any, convert: bool = False, stream: bool = False
+) -> tuple[tuple | None, _Any, int]:
     """The raw-x gate, shared by the one-shot entry and the prepared
     handle: a received view x on a spec map crosses as one ref leaf (F1's
-    D6 — the workers read the resolved view off the shared pages);
-    otherwise a C-contiguous buffer of a supported dtype rides the region
-    as bare bytes (complex needs numpy's frombuffer); anything else
+    D6 — the workers read the resolved view off the shared pages), or
+    slices as the buffer it is when streaming; otherwise a C-contiguous
+    buffer of a supported dtype rides the region as bare bytes (complex
+    needs numpy's frombuffer) — with `convert` (a spec map on R workers)
+    a 1-D non-identity buffer after one conversion; anything else
     pickles into the descriptor as a list.
 
     Returns
     -------
         The `(probe, x, n)` triple.
     """
-    view_x = spec and _pymizu._view_check(x)
-    probe = None if view_x else _pymizu._map_probe_x(x)
+    view_x = spec and not stream and _pymizu._view_check(x)
+    probe = None if view_x else _pymizu._map_probe_x(x, convert)
     if probe is not None and probe[0] == 15 and _np is None:
         probe = None
     if probe is None:
@@ -667,7 +671,9 @@ class _Plan:
     [`PreparedMap`](`pymizu.PreparedMap`): the spec/language verdict,
     normalized args/kwargs, the carried seed form (the wire pair on a
     spec map, `(seed_bytes, offset)` otherwise), the template probe, the
-    resolved collect mode, n_chunks, and the streaming verdict."""
+    resolved collect mode, n_chunks, the streaming verdict, and the
+    conversion gate (a spec map on R workers converts non-identity
+    buffers at stage time, the channel's policy)."""
 
     __slots__ = (
         "spec",
@@ -679,6 +685,7 @@ class _Plan:
         "collect",
         "n_chunks",
         "stream",
+        "convert",
     )
 
     def __init__(
@@ -703,15 +710,12 @@ class _Plan:
                 "pymizu: constant arguments ride the pymizu.call() spec — "
                 "'args' and 'kwargs' must be empty with a spec 'fn'"
             )
-        if spec and stream:
-            raise TypeError(
-                "pymizu: a pymizu.call() spec as 'fn' cannot stream — "
-                "chunk slices cross as same-language task payloads"
-            )
         self.spec = spec
         self.lang = lang
         self.args = args
         self.kwargs = kwargs
+        # the convert gate is the worker language, never 'spec' alone
+        self.convert = spec and lang == 2  # 2 = R
         self.seed = _seed_wire(seed, lang) if spec else _seed_spec(seed)
         self.tprobe = None if template is None else _template_probe(template)
         if self.tprobe is None:
@@ -725,6 +729,11 @@ class _Plan:
                 collect = "copy"
             if collect not in ("copy", "view"):
                 raise ValueError("pymizu: collect must be 'copy' or 'view'")
+        if spec and stream and collect == "view":
+            raise TypeError(
+                "pymizu: collect='view' cannot compose a streaming spec "
+                "map — per-chunk output areas cannot compose into one view"
+            )
         self.collect = collect
         if n_chunks is not None and n_chunks < 1:
             raise ValueError("pymizu: n_chunks must be a positive number")
@@ -755,7 +764,7 @@ def pool_map(
     plan = _Plan(
         pool, fn, args, kwargs, n_chunks, seed, template, collect, stream
     )
-    probe, x, n = _probe_x(plan.spec, x)
+    probe, x, n = _probe_x(plan.spec, x, plan.convert, plan.stream)
     if n == 0:
         if plan.tprobe is None:
             return []
@@ -790,7 +799,9 @@ def pool_map(
             blob = cand
 
     handles = []
-    box = {"capsule": None}  # _map_region hands its region back through
+    # _map_region hands its region back through "capsule"; a spec stream's
+    # per-chunk regions through "capsules"
+    box: dict[str, _Any] = {"capsule": None, "capsules": None}
     try:  # here for the finally's cancel + unlink
         if plan.stream:
             return _map_stream(
@@ -846,13 +857,20 @@ def pool_map(
         # the interrupt/error/timeout backstop (a clean collect consumed
         # every handle: this is then a no-op), then the explicit unlink
         capsule = box["capsule"]
+        capsules = box["capsules"]
         if capsule is not None:
             _pymizu._map_cancel_set(capsule)
+        for cap in capsules or ():
+            if cap is not None:
+                _pymizu._map_cancel_set(cap)
         for h in handles:
             if h is not None:
                 h.cancel()
         if capsule is not None:
             _pymizu._map_close(capsule)
+        for cap in capsules or ():
+            if cap is not None:
+                _pymizu._map_close(cap)
 
 
 def _map_blob(
@@ -1075,6 +1093,193 @@ def _stream_window(
     return out
 
 
+def _stream_fail_spec(
+    pymizu,
+    handles: list,
+    capsules: list,
+    oi: list,
+    ranges: list,
+    first: _Any,
+) -> _NoReturn:
+    """The spec streaming window's fail path, NORET: `_stream_fail`'s
+    drain discipline plus the per-chunk regions' cancel words. `first`
+    carries its chunk in `position` (collect_any's unconditional stamp)
+    and the chunk-local element in `index`; both it and the drained
+    siblings (collected per handle, their chunk known) are offset to the
+    global element index before the minimum raises."""
+    first.index += ranges[oi[first.position]][0]
+    errs = [first]
+    died = None
+    lost = []
+    for k in oi:
+        cap = capsules[k]
+        if cap is not None:
+            _pymizu._map_cancel_set(cap)
+        h = handles[k]
+        if h is not None:
+            h.cancel()
+    for k in oi:
+        h = handles[k]
+        if h is None:
+            continue
+        handles[k] = None
+        if h.state not in ("ok", "err", "died"):
+            continue
+        try:
+            h.collect(timeout=0)
+        except pymizu.WorkerDiedError as e:
+            if died is None:
+                died = e
+            lost.append(ranges[k])
+        except pymizu.TaskError as e:
+            if not hasattr(e, "index"):
+                raise
+            e.index += ranges[k][0]
+            errs.append(e)
+    if died is not None:
+        died.lost = lost
+        raise died
+    raise min(errs, key=lambda e: e.index)
+
+
+def _stream_window_spec(
+    pool: pymizu.Pool,
+    pymizu,
+    ranges: list,
+    w: int,
+    plan: _Plan,
+    fn: _Any,
+    x: _Any,
+    probe: tuple | None,
+    template: _Any,
+    capsules: list,
+    remaining: _Callable[[], float | None],
+    expired: _Callable[[], bool],
+    handles: list,
+) -> list | _pymizu.Sentinel | None:
+    """The spec streaming window: a foreign worker cannot run a
+    same-language chunk task, so each in-flight chunk stages its own
+    small map region ('I' descriptor, one-morsel geometry) with exactly
+    one kind-2 runner (ordinal 0, generation 0). Parallelism is
+    unchanged: W chunks in flight, one worker each. Each chunk's region
+    unlinks at its own turn, so submitter residency stays at W regions.
+    The runner result arrives in the worker language's shape: R workers'
+    triples normalize through `_runs_to_spans` (chunk-local ms = n_k),
+    Python workers' (ranges, values) pairs splice as they are — spans
+    offset by the chunk base either way. Template chunks gather their
+    per-chunk output area at the turn (gathering at the end would break
+    the residency bound)."""
+    c = len(ranges)
+    n = ranges[-1][1]
+    oi: list[int] = []
+    next_k = 0
+    tprobe = plan.tprobe
+    if tprobe is not None:
+        # the final accumulator, filled a chunk's rows at its turn
+        out: _Any = _wrap_out(
+            bytearray(n * tprobe[2]), tprobe[0], n, tprobe[1]
+        )
+    else:
+        out = [None] * n
+    # x-free when the slices ride the raw section: build the 'I'
+    # descriptor once; a descriptor-riding x rebuilds it per chunk
+    desc0 = None
+    if probe is not None:
+        desc0 = _write_desc(
+            True, fn, plan.args, plan.kwargs, None, probe, plan.lang
+        )
+    slicer = _stream_slicer(x, probe)
+
+    def refill() -> bool:
+        nonlocal next_k
+        while next_k < c and len(oi) < w:
+            # the deadline pre-check, as the same-language refill's
+            if expired():
+                return False
+            lo, hi = ranges[next_k]
+            n_k = hi - lo
+            if probe is not None:
+                desc = desc0
+                x_sec = slicer(lo, hi)
+            else:
+                desc = _write_desc(
+                    True,
+                    fn,
+                    plan.args,
+                    plan.kwargs,
+                    x[lo:hi],
+                    None,
+                    plan.lang,
+                )
+                x_sec = None
+            name, capsule = _pymizu._map_stage(
+                desc, x_sec, n_k, n_k, template, plan.convert, plan.lang
+            )
+            # the chunk's element streams offset by its base, exactly
+            # the same-language slice's global-index seeding
+            seed_pair = (
+                None
+                if plan.seed is None
+                else (plan.seed[0], plan.seed[1] + lo)
+            )
+            scratch: list = []
+            if _submit_runners(
+                pool,
+                name,
+                1,
+                0,
+                seed_pair,
+                remaining,
+                expired,
+                scratch,
+                True,
+            ):
+                _pymizu._map_cancel_set(capsule)
+                _pymizu._map_close(capsule)
+                return False
+            capsules[next_k] = capsule
+            handles[next_k] = scratch[0]
+            oi.append(next_k)
+            next_k += 1
+        return True
+
+    if not refill():
+        return pymizu.TIMEOUT
+    while oi:
+        if expired():
+            return pymizu.TIMEOUT
+        try:
+            got = pool._h.collect_any([handles[k] for k in oi], remaining())
+        except pymizu.WorkerDiedError as e:
+            # the position stamp names the dead chunk; its lost set is
+            # the chunk's fixed range — the blob-path precedent
+            e.lost = [ranges[oi[e.index]]]
+            raise
+        except pymizu.TaskError as e:
+            _stream_fail_spec(pymizu, handles, capsules, oi, ranges, e)
+        if got is pymizu.TIMEOUT:
+            return pymizu.TIMEOUT
+        idx, v = got
+        k = oi.pop(idx)
+        handles[k] = None
+        capsule, capsules[k] = capsules[k], None
+        lo, hi = ranges[k]
+        if tprobe is not None:
+            chunk, _ = _gather_out(capsule, tprobe, hi - lo, "copy")
+            out[lo:hi] = chunk
+        else:
+            run = v
+            if plan.lang == 2:  # R workers' morsel pairs -> element spans
+                run = _runs_to_spans([v], hi - lo, hi - lo)[0]
+            hist, vals = run
+            for (blo, bhi), batch in zip(hist, vals, strict=True):
+                out[lo + blo : lo + bhi] = batch
+        _pymizu._map_close(capsule)
+        if not refill():
+            return pymizu.TIMEOUT
+    return out
+
+
 def _map_stream(
     pool: pymizu.Pool,
     pymizu,
@@ -1097,8 +1302,10 @@ def _map_stream(
     — min(n, 32 x live workers) chunks by default, n_chunks= overriding
     outright (bounded only by n: the window paces outstanding work, so no
     slot/ring clamp, unlike the blob path). Shared-memory residency is
-    bounded by window x slice instead of sizeof(x). The region is
-    descriptor-only — fn, args, kwargs through the existing
+    bounded by window x slice instead of sizeof(x). A spec fn stages one
+    small map region per in-flight chunk instead (see
+    `_stream_window_spec`). Otherwise the region is descriptor-only — fn,
+    args, kwargs through the existing
     `_pymizu._map_stage(desc, None, n, 1, template)`, the template
     output area included (it sizes off the explicit n) — one code path
     and the workers' ctx cache. The morsel geometry rides inert
@@ -1110,11 +1317,32 @@ def _map_stream(
     c = max(1, c)
     w = max(1, min(c, 2 * max(1, live), free_rs))
     ranges = _stream_geometry(n, c)
+    handles.extend([None] * c)
+    if plan.spec:
+        capsules: list = [None] * c
+        # hand the chunk regions to pool_map's finally backstop
+        box["capsules"] = capsules
+        return _stream_window_spec(
+            pool,
+            pymizu,
+            ranges,
+            w,
+            plan,
+            fn,
+            x,
+            probe,
+            template,
+            capsules,
+            remaining,
+            expired,
+            handles,
+        )
     desc = _pickle.dumps((fn, plan.args, plan.kwargs), 4)
-    name, capsule = _pymizu._map_stage(desc, None, n, 1, template)
+    name, capsule = _pymizu._map_stage(
+        desc, None, n, 1, template, plan.convert, plan.lang
+    )
     # hand the region to pool_map's finally backstop (cancel + unlink)
     box["capsule"] = capsule
-    handles.extend([None] * c)
     tmpl = plan.tprobe is not None
     out = _stream_window(
         pool,
@@ -1203,7 +1431,13 @@ def _map_region(
         plan.spec, fn, plan.args, plan.kwargs, x, probe, plan.lang
     )
     name, capsule = _pymizu._map_stage(
-        desc, x if probe is not None else None, n, morsel, template
+        desc,
+        x if probe is not None else None,
+        n,
+        morsel,
+        template,
+        plan.convert,
+        plan.lang,
     )
     # hand the region to pool_map's finally backstop (cancel + unlink)
     box["capsule"] = capsule
@@ -1486,10 +1720,17 @@ class PreparedMap:
         plan = _Plan(
             pool, fn, args, kwargs, n_chunks, seed, template, collect, stream
         )
+        if plan.spec and plan.stream:
+            raise TypeError(
+                "pymizu: a prepared map with a pymizu.call() spec as 'fn' "
+                "cannot stream — a spec stream stages its chunk regions at "
+                "run time, so there is nothing to prepare"
+            )
         self._pymizu = pymizu
         self._pool = pool
         self._spec = plan.spec
         self._lang = plan.lang
+        self._convert = plan.convert
         self._seed_spec = plan.seed
         self._tprobe = plan.tprobe
         self._collect_mode = plan.collect
@@ -1514,7 +1755,7 @@ class PreparedMap:
         current caps (the morsel geometry, or a streaming map's fixed
         chunk ranges — whose descriptor is x-independent: fn, args,
         kwargs)."""
-        probe, x, n = _probe_x(self._spec, x)
+        probe, x, n = _probe_x(self._spec, x, self._convert, self._stream)
         self._probe = probe
         self._x = x
         self._n = n
@@ -1564,7 +1805,7 @@ class PreparedMap:
                 self._capsule = None
                 self._name = None
             return
-        probe = _pymizu._map_probe_x(x)
+        probe = _pymizu._map_probe_x(x, self._convert)
         if probe is not None and probe[0] == 15 and _np is None:
             probe = None
         if (
@@ -1574,7 +1815,18 @@ class PreparedMap:
             and probe[0] == self._probe[0]
             and probe[1] == self._n
         ):
-            _pymizu._map_swap_x(self._capsule, x)
+            try:
+                _pymizu._map_swap_x(
+                    self._capsule, x, self._convert, self._lang
+                )
+            except Exception:
+                # a conversion warning escalated after the write completed:
+                # the section holds the new x but the staged state is
+                # distrusted — drop it so the next run restages
+                self._capsule = None
+                self._name = None
+                self._x = x
+                raise
             self._x = x
             return
         self._set_x(x)
@@ -1586,7 +1838,13 @@ class PreparedMap:
     def _stage(self) -> None:
         if self._stream:
             name, capsule = _pymizu._map_stage(
-                self._desc, None, self._n, 1, self._template
+                self._desc,
+                None,
+                self._n,
+                1,
+                self._template,
+                self._convert,
+                self._lang,
             )
         else:
             name, capsule = _pymizu._map_stage(
@@ -1595,6 +1853,8 @@ class PreparedMap:
                 self._n,
                 self._morsel,
                 self._template,
+                self._convert,
+                self._lang,
             )
         self._name, self._capsule, self._gen = name, capsule, 0
 
