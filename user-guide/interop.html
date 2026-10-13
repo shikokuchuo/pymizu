@@ -407,8 +407,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td>uint64</td>
-<td>double</td>
-<td>exact to ±2^53; past it, <code>NA</code> plus one warning</td>
+<td>double + <code>NA</code> past 2^53, warned at the read</td>
+<td>the frame column crosses exact; <code>mizu_as_arrow()</code> is bit-exact</td>
 </tr>
 <tr class="odd">
 <td>float16 / float32 / float64</td>
@@ -475,9 +475,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li>Copied reads (<code>list(...)</code>, <a href="../reference/Frame.to_dict.html#pymizu.Frame.to_dict" class="gdls-link gdls-code">Frame.to_dict()</a>) give honest dtypes: a logical arrives as <code>bool_</code> when it has no <code>NA</code>, else int32; an integer arrives as int32 when <code>NA</code>-free, else float64 with NaN (every int32 value is exact in float64).</li>
 <li>Zero-copy views keep the sentinel values in the buffer. <code>.to_numpy()</code> applies the same rule, reading NA-freeness off the region’s validity section before any data scan.</li>
 <li>int64 keeps its dtype in every numpy form and warns when an <code>NA</code> is detected on a copied read or <code>.to_numpy()</code>. Use <code>.to_arrow()</code> for an NA-honest read. A genuine Python <code>-2^63</code> value round-trips without a warning.</li>
-<li>Every Arrow export of a logical is Arrow <code>bool</code> with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap.</li>
+<li>Every Arrow export of a logical is Arrow <code>bool</code> with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap; a double exports as float64 with <code>NA_real_</code> slots as Arrow nulls (a genuine NaN stays a valid value).</li>
 </ul></li>
-<li>A genuine int32 value of <code>-2147483648</code> collides with the <code>NA</code> sentinel and reads as <code>NA</code> in R. Likewise an int64 value of <code>-9223372036854775808</code> reads as <code>NA_integer64_</code>. numpy sends stay silent. An Arrow int32 send with a validity bitmap warns once.</li>
+<li>A genuine int32 value of <code>-2147483648</code> collides with the <code>NA</code> sentinel and reads as <code>NA</code> in R. Likewise an int64 value of <code>-9223372036854775808</code> reads as <code>NA_integer64_</code>. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once — to an R peer; a Python peer reads the identical columns exactly and stays silent.</li>
 <li>Python compute treats <code>NA_real_</code> as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent — do not rely on it.</li>
 </ul>
 <p>Round trips are stable after the first hop, and a pass-through echo is bit-exact: an untouched received view sent back crosses as a reference to its region — no data moves — so even the <code>NA_real_</code> value survives a relay. A slice or a dtype view of a received view crosses by value.</p>
@@ -522,48 +522,42 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>exact</td>
 </tr>
 <tr class="even">
-<td>uint64, ≤ ±2^53</td>
-<td>double</td>
-<td>float64</td>
-<td>dtype lost, values exact</td>
+<td>uint64</td>
+<td>double + <code>NA</code> past 2^53, warned at the read</td>
+<td>uint64</td>
+<td>the column crosses exact; R’s Arrow export is bit-exact</td>
 </tr>
 <tr class="odd">
-<td>uint64, past ±2^53</td>
-<td><code>NA</code></td>
-<td>NaN</td>
-<td>lost on the first hop</td>
-</tr>
-<tr class="even">
 <td>float16</td>
 <td>double</td>
 <td>float64</td>
 <td>widened, values exact</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>float32</td>
 <td>double</td>
 <td>float64</td>
 <td>widened, values exact</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>float64</td>
 <td>double</td>
 <td>float64</td>
 <td>exact</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>bool</td>
 <td>logical</td>
 <td><code>bool_</code> (int32 with NAs)</td>
 <td>dtype lost</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>complex64 / complex128</td>
 <td>complex</td>
 <td>complex128</td>
 <td>exact</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>timedelta64</td>
 <td><code>difftime</code></td>
 <td>timedelta64[us]</td>

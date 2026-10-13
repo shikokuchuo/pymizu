@@ -123,7 +123,7 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | int32 | integer |  |
 | uint32 | double | widened, exact |
 | int64 | integer64 (bit64's layout) | bit-exact; `INT64_MIN` reads as `NA` |
-| uint64 | double | exact to ±2^53; past it, `NA` plus one warning |
+| uint64 | double + `NA` past 2^53, warned at the read | the frame column crosses exact; `mizu_as_arrow()` is bit-exact |
 | float16 / float32 / float64 | double | float16 and float32 widened, exact |
 | bool | logical |  |
 | complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
@@ -143,8 +143,8 @@ Missing values:
   - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)) give honest dtypes: a logical arrives as `bool_` when it has no `NA`, else int32; an integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
   - Zero-copy views keep the sentinel values in the buffer. `.to_numpy()` applies the same rule, reading NA-freeness off the region's validity section before any data scan.
   - int64 keeps its dtype in every numpy form and warns when an `NA` is detected on a copied read or `.to_numpy()`. Use `.to_arrow()` for an NA-honest read. A genuine Python `-2^63` value round-trips without a warning.
-  - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap.
-- A genuine int32 value of `-2147483648` collides with the `NA` sentinel and reads as `NA` in R. Likewise an int64 value of `-9223372036854775808` reads as `NA_integer64_`. numpy sends stay silent. An Arrow int32 send with a validity bitmap warns once.
+  - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap; a double exports as float64 with `NA_real_` slots as Arrow nulls (a genuine NaN stays a valid value).
+- A genuine int32 value of `-2147483648` collides with the `NA` sentinel and reads as `NA` in R. Likewise an int64 value of `-9223372036854775808` reads as `NA_integer64_`. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once -- to an R peer; a Python peer reads the identical columns exactly and stays silent.
 - Python compute treats `NA_real_` as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent -- do not rely on it.
 
 Round trips are stable after the first hop, and a pass-through echo is bit-exact: an untouched received view sent back crosses as a reference to its region -- no data moves -- so even the `NA_real_` value survives a relay. A slice or a dtype view of a received view crosses by value.
@@ -156,8 +156,7 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | int32 | integer | int32 | exact |
 | uint32 | double | float64 | exact |
 | int64 | integer64 | int64 | exact |
-| uint64, ≤ ±2^53 | double | float64 | dtype lost, values exact |
-| uint64, past ±2^53 | `NA` | NaN | lost on the first hop |
+| uint64 | double + `NA` past 2^53, warned at the read | uint64 | the column crosses exact; R's Arrow export is bit-exact |
 | float16 | double | float64 | widened, values exact |
 | float32 | double | float64 | widened, values exact |
 | float64 | double | float64 | exact |
