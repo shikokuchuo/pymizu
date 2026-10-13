@@ -104,6 +104,7 @@ int mizu_py_buffer_subclass_reject(PyObject *obj);
 int mizu_py_np_kind(PyObject *obj);
 int mizu_py_np_temporal(PyObject *obj);
 int mizu_py_wire_type_of(const Py_buffer *v);
+int mizu_py_wire_type_of_fmt(const char *f, Py_ssize_t itemsize);
 const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize);
 /* The list[str | None] predicate (interop.c's, the one home of the rule):
    an exact list, every element an exact str or None with at least one
@@ -115,6 +116,64 @@ int mizu_py_strlist_probe(PyObject *obj, int64_t *str_bytes);
 /* The conversion warnings, raised after the write half completes (never
    mid-write). 0 ok, 1 a warning raised as an error. */
 int mizu_py_cvt_warn(const cvt_warn *warn);
+
+// The temporal vocabulary (the 'I' writer's and layout.c's) ---------------------
+
+/* The temporal dtype units. */
+enum { TU_DAY, TU_WEEK, TU_HOUR, TU_MIN, TU_SEC, TU_MS, TU_US, TU_NS,
+       TU_CAL, TU_SUB, TU_NONE };
+
+/* The per-unit scale to seconds (a day/week unit is the caller's: the
+   Date form wants days, the difftime form seconds). */
+static inline double mizu_py_temporal_scale(int unit) {
+  switch (unit) {
+  case TU_WEEK: return 7.0;
+  case TU_HOUR: return 3600.0;
+  case TU_MIN: return 60.0;
+  case TU_SEC: return 1.0;
+  case TU_MS: return 1e-3;
+  case TU_US: return 1e-6;
+  case TU_NS: return 1e-9;
+  }
+  return 1.0;
+}
+
+/* The temporal dtype probe off .dtype.str, ahead of any buffer
+   acquisition (numpy refuses the buffer protocol for temporal dtypes):
+   1 datetime64 / 2 timedelta64 with the TU_* unit and the delta flag,
+   0 not a temporal numpy object. */
+int mizu_py_np_temporal_unit(PyObject *obj, int *unit, int *delta);
+
+/* The F-order gather shared by the 'I' writer's dim bodies and the
+   layout leaves: the contiguous convert (a memcpy for identity rows)
+   when the F-order verdict holds — axes of length <= 1 exempt their
+   stride, numpy's own rule — the 32x32 tiled transpose for 2-D, the
+   div/mod walk past it (negative strides fall out of the signed walk).
+   shape and strides are the buffer's (strides in bytes). */
+void mizu_py_nd_gather(uint8_t *dst, const uint8_t *src, int nd,
+                       const int64_t *shape, const int64_t *strides,
+                       const cvt_row *row, cvt_warn *warn);
+
+// What _pymizu.c calls in layout.c -------------------------------------------
+
+/* The top-level layout roots (stage_impl's foreign order): a
+   list[str | None] past the zc floor as one MIZS region, an
+   F-contiguous dim array past the zc floor as one MIZH region plus the
+   {dim} blob. 0 staged, -1 decline to the 'I' writer (the copy tier is
+   the fallback), 1 a raised MizuError past the checkout. */
+int pymizu_stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
+                           uint8_t *payload, uint32_t inline_max,
+                           mizu_handle *h);
+int pymizu_stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
+                          uint8_t *payload, uint32_t inline_max,
+                          mizu_handle *h);
+
+/* The _layout_leaf test hook: the leaf emitters' (body, blob) bytes for
+   a value, None on a decline. */
+PyObject *pymizu_layout_test_leaf(PyObject *obj);
+
+/* Module init: stash the shared MizuError, add _layout_leaf. */
+int mizu_py_layout_register(PyObject *m, PyObject *mizu_error);
 
 // What _pymizu.c calls in interop.c -------------------------------------------
 

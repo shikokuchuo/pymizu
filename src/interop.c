@@ -3427,9 +3427,50 @@ static void ixe_transpose2(uint8_t *dst, const uint8_t *src, uint64_t m,
   }
 }
 
-/* A multi-dimensional array's body: the F-order memcpy when contiguous,
-   the transpose gather otherwise — tiled for 2-D, the generic div/mod
-   walk past it (each inside the one stage copy). */
+/* The F-order gather (pyinterop.h's, shared with layout.c's leaves): the
+   contiguous convert when the F-order verdict holds — axes of length
+   <= 1 exempt their stride (numpy's own rule; the elements are laid out
+   F-contiguously regardless of the exempt stride) — the tiled transpose
+   for 2-D, the generic div/mod walk past it. */
+void mizu_py_nd_gather(uint8_t *dst, const uint8_t *src, int nd,
+                       const int64_t *shape, const int64_t *strides,
+                       const cvt_row *row, cvt_warn *warn) {
+  uint64_t total = 1;
+  for (int i = 0; i < nd; i++) total *= (uint64_t) shape[i];
+  int64_t expect = row->w_in;
+  int f_contig = 1;
+  for (int i = 0; i < nd; i++) {
+    if (shape[i] > 1 && strides[i] != expect) {
+      f_contig = 0;
+      break;
+    }
+    expect *= shape[i];
+  }
+  if (f_contig) {
+    mizu_cvt_convert(dst, src, NULL, 0, (size_t) total, row, warn);
+    return;
+  }
+  if (nd == 2) {
+    ixe_transpose2(dst, src, (uint64_t) shape[0], (uint64_t) shape[1],
+                   strides[0], strides[1], row, warn);
+    return;
+  }
+  for (uint64_t t = 0; t < total; t++) {
+    uint64_t rem = t;
+    int64_t off = 0;
+    for (int k = 0; k < nd; k++) {
+      uint64_t dim = (uint64_t) shape[k];
+      int64_t c = dim != 0 ? (int64_t) (rem % dim) : 0;
+      rem = dim != 0 ? rem / dim : 0;
+      off += c * strides[k];
+    }
+    mizu_cvt_convert(dst + t * row->w_out, src + off, NULL, 0, 1, row,
+                        warn);
+  }
+}
+
+/* A multi-dimensional array's body: the vec header, then the F-order
+   gather (each inside the one stage copy). */
 static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
                         const int64_t *shape, const int64_t *strides,
                         const cvt_row *row) {
@@ -3439,35 +3480,8 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
   if (w->decline) return;
   if (w->dst != NULL &&
       w->total + (size_t) total * row->w_out <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
-    int64_t expect = row->w_in;
-    int f_contig = 1;
-    for (int i = 0; i < nd; i++) {
-      if (strides[i] != expect) {
-        f_contig = 0;
-        break;
-      }
-      expect *= shape[i];
-    }
-    if (f_contig) {
-      mizu_cvt_convert(dst, src, NULL, 0, (size_t) total, row, &w->warn);
-    } else if (nd == 2) {
-      ixe_transpose2(dst, src, (uint64_t) shape[0], (uint64_t) shape[1],
-                     strides[0], strides[1], row, &w->warn);
-    } else {
-      for (uint64_t t = 0; t < total; t++) {
-        uint64_t rem = t;
-        int64_t off = 0;
-        for (int k = 0; k < nd; k++) {
-          uint64_t dim = (uint64_t) shape[k];
-          int64_t c = dim != 0 ? (int64_t) (rem % dim) : 0;
-          rem = dim != 0 ? rem / dim : 0;
-          off += c * strides[k];
-        }
-        mizu_cvt_convert(dst + t * row->w_out, src + off, NULL, 0, 1,
-                            row, &w->warn);
-      }
-    }
+    mizu_py_nd_gather(w->dst + w->total, src, nd, shape, strides, row,
+                      &w->warn);
   } else if (w->dst != NULL) {
     w->overflow = 1;
     w->dst = NULL;
@@ -3488,10 +3502,7 @@ static void ixe_dim(ixw *w, const uint8_t *src, int nd,
   ixe_intv(w, nd, dims, NULL);
 }
 
-/* The temporal dtype units. */
-enum { TU_DAY, TU_WEEK, TU_HOUR, TU_MIN, TU_SEC, TU_MS, TU_US, TU_NS,
-       TU_CAL, TU_SUB, TU_NONE };
-
+/* The temporal dtype units are pyinterop.h's (shared with layout.c). */
 static int temporal_unit(const char *s, size_t n) {
   if (n == 1) {
     switch (s[0]) {
@@ -3513,17 +3524,34 @@ static int temporal_unit(const char *s, size_t n) {
   return TU_NONE;
 }
 
-static double temporal_scale(int unit) {
-  switch (unit) {
-  case TU_WEEK: return 7.0;
-  case TU_HOUR: return 3600.0;
-  case TU_MIN: return 60.0;
-  case TU_SEC: return 1.0;
-  case TU_MS: return 1e-3;
-  case TU_US: return 1e-6;
-  case TU_NS: return 1e-9;
+/* The temporal dtype probe off .dtype.str, ahead of any buffer
+   acquisition: the unit parsed between the brackets, the kind out.
+   mizu_py_np_temporal's 1 datetime64 / 2 timedelta64, 0 not temporal. */
+int mizu_py_np_temporal_unit(PyObject *obj, int *unit, int *delta) {
+  if (mizu_py_np_kind(obj) == 0) return 0;
+  int out = 0;
+  PyObject *dt = PyObject_GetAttrString(obj, "dtype");
+  PyObject *ds = dt != NULL ? PyObject_GetAttrString(dt, "str") : NULL;
+  if (ds != NULL && PyUnicode_Check(ds)) {
+    const char *s = PyUnicode_AsUTF8(ds);
+    if (s != NULL) {
+      const char *p = s;
+      if (*p == '=' || *p == '<' || *p == '>' || *p == '|') p++;
+      if ((p[0] == 'M' || p[0] == 'm') && p[1] == '8' && p[2] == '[') {
+        const char *close = strchr(p + 3, ']');
+        if (close != NULL) {
+          if (unit != NULL)
+            *unit = temporal_unit(p + 3, (size_t) (close - (p + 3)));
+          if (delta != NULL) *delta = p[0] == 'm';
+          out = p[0] == 'm' ? 2 : 1;
+        }
+      }
+    }
   }
-  return 1.0;
+  Py_XDECREF(ds);
+  Py_XDECREF(dt);
+  if (PyErr_Occurred()) PyErr_Clear();
+  return out;
 }
 
 /* A numpy datetime64/timedelta64 array or scalar (both refuse the buffer
@@ -3544,7 +3572,7 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
     /* int64 counts to seconds: a day/week unit first, then the sub-day
        scales; a double second carries ns resolution to ~104 days */
     const double scale = unit == TU_DAY ? 86400.0 :
-      unit == TU_WEEK ? 604800.0 : temporal_scale(unit);
+      unit == TU_WEEK ? 604800.0 : mizu_py_temporal_scale(unit);
     PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
     if (view == NULL) {
       PyErr_Clear();
@@ -3637,7 +3665,7 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
   if (unit == TU_DAY || unit == TU_WEEK) {
     ixe_date(w, counts, n, unit == TU_WEEK ? 7.0 : 1.0);
   } else {
-    ixe_posixct(w, counts, NULL, n, "UTC", temporal_scale(unit));
+    ixe_posixct(w, counts, NULL, n, "UTC", mizu_py_temporal_scale(unit));
   }
   if (got) PyBuffer_Release(&bv);
   Py_DECREF(view);
@@ -3649,24 +3677,7 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
    otherwise claim as a byte vector — the gate skips the raw tier for
    these so the 'I' writer (or pickle) sees the value. */
 int mizu_py_np_temporal(PyObject *obj) {
-  const int nk = mizu_py_np_kind(obj);
-  if (nk == 0) return 0;
-  PyObject *dt = PyObject_GetAttrString(obj, "dtype");
-  PyObject *ds = dt != NULL ? PyObject_GetAttrString(dt, "str") : NULL;
-  int out = 0;
-  if (ds != NULL && PyUnicode_Check(ds)) {
-    const char *s = PyUnicode_AsUTF8(ds);
-    if (s != NULL) {
-      const char *p = s;
-      if (*p == '=' || *p == '<' || *p == '>' || *p == '|') p++;
-      if (p[0] == 'M' && p[1] == '8' && p[2] == '[') out = 1;
-      else if (p[0] == 'm' && p[1] == '8' && p[2] == '[') out = 2;
-    }
-  }
-  Py_XDECREF(ds);
-  Py_XDECREF(dt);
-  if (PyErr_Occurred()) PyErr_Clear();
-  return out;
+  return mizu_py_np_temporal_unit(obj, NULL, NULL);
 }
 
 /* The buffer-protocol leaf (and numpy scalar) walk. */
@@ -3677,33 +3688,10 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
     return;
   }
   /* temporal dtypes refuse the buffer protocol: probe .dtype.str first */
-  int npk = mizu_py_np_kind(obj);
-  if (npk != 0) {
-    PyObject *dt = PyObject_GetAttrString(obj, "dtype");
-    PyObject *ds = dt != NULL ? PyObject_GetAttrString(dt, "str") : NULL;
-    if (ds != NULL && PyUnicode_Check(ds)) {
-      const char *s = PyUnicode_AsUTF8(ds);
-      if (s != NULL) {
-        const char *p = s;
-        if (*p == '=' || *p == '<' || *p == '>' || *p == '|') p++;
-        if ((p[0] == 'M' || p[0] == 'm') && p[1] == '8' && p[2] == '[') {
-          const char *close = strchr(p + 3, ']');
-          if (close != NULL) {
-            int unit = temporal_unit(p + 3, (size_t) (close - (p + 3)));
-            /* p points into ds's UTF-8 buffer — read the kind out before
-               the decrefs free it */
-            int delta = p[0] == 'm';
-            Py_DECREF(ds);
-            Py_DECREF(dt);
-            ixw_numpy_temporal(w, obj, unit, delta);
-            return;
-          }
-        }
-      }
-    }
-    Py_XDECREF(ds);
-    Py_XDECREF(dt);
-    if (PyErr_Occurred()) PyErr_Clear();
+  int unit = TU_NONE, delta = 0;
+  if (mizu_py_np_temporal_unit(obj, &unit, &delta) != 0) {
+    ixw_numpy_temporal(w, obj, unit, delta);
+    return;
   }
   Py_buffer v;
   int strided = 0;

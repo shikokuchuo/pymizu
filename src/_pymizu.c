@@ -374,6 +374,11 @@ int mizu_py_wire_type_of(const Py_buffer *v) {
   return wire_type_of(v);
 }
 
+/* layout.c's identity gate rides the format half (no ndim rule). */
+int mizu_py_wire_type_of_fmt(const char *f, Py_ssize_t itemsize) {
+  return wire_type_of_fmt(f, itemsize);
+}
+
 
 
 /* The buffer gates' subclass rejection: an object whose type is a strict
@@ -1474,7 +1479,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
        0x0b value copy stays the decline form (a no-cap peer, a small
        list, churn, a non-str element, a region failure) */
     if ((peer_caps & MIZU_CAP_MIZS) && PyList_CheckExact(obj)) {
-      int mrc = stage_mizs_list(obj, hdr, payload, inline_max, h);
+      int mrc = pymizu_stage_mizs_list(obj, hdr, payload, inline_max, h);
       if (mrc == 0) return 0;
       if (mrc > 0) return 1;   /* the defensive raise, never a decline */
     }
@@ -1487,7 +1492,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
        export never reaches the tier */
     if ((peer_caps & MIZU_CAP_ATTRS) && PyObject_CheckBuffer(obj) &&
         !buffer_subclass_reject(obj) &&
-        stage_mizh_dim(obj, hdr, payload, inline_max, h) == 0)
+        pymizu_stage_mizh_dim(obj, hdr, payload, inline_max, h) == 0)
       return 0;
     return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
   }
@@ -2131,189 +2136,6 @@ static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   if (sv->loan != NULL) return -1;   /* a tree leaf goes by value */
   return ref_emit(sv->owner != NULL ? sv->owner->shm : NULL, hdr, payload,
                   inline_max);
-}
-
-/* A top-level list[str | None] staged as SHM_VEC: one MIZS layout write
-   into a spill region (the mirror of mizu's mizs_write), the region name
-   as the payload. Two walks of the list — the first (the shared probe:
-   at least one exact str, every element an exact str or None; a subclass
-   keeps the 'I' writer's semantics) validates and sums the UTF-8 bytes
-   with no writes, the second fills the block's four sections. The gate
-   runs on the whole block, not str_bytes alone: 1M empty strings are a
-   ~9 MB block of offsets. -1 declines to the 'I' writer's 0x0b copy; 0
-   staged. */
-static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
-                           uint8_t *payload, uint32_t inline_max,
-                           mizu_handle *h) {
-  /* the first walk is the shared probe (pyinterop.h): the 'I' writer's
-     0x0b list branch gates on the same predicate, so a string list is a
-     string vector at every size */
-  int64_t str_bytes = 0;
-  if (!mizu_py_strlist_probe(obj, &str_bytes)) return -1;
-  const Py_ssize_t n = PyList_GET_SIZE(obj);
-  const mizu_mizs_geom g = mizu_mizs_geometry((int64_t) n);
-  const uint64_t block = (uint64_t) (g.data + str_bytes);
-  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
-    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
-  /* the churn read behind the size gate (the single-read discipline) */
-  if (block < zc_gate || mizu_handle_churn(h)) return -1;
-  mizu_shm *shm;
-  if (mizu_stage_spill_get(h, (size_t) (MIZU_HEADER_SIZE + block),
-                           &shm) != MIZU_OK)
-    return -1;   /* the copy tier is the fallback (the BUFREF precedent) */
-  uint8_t *base = (uint8_t *) shm->addr;
-  uint8_t *blk = base + MIZU_HEADER_SIZE;
-  uint8_t *validity = blk + g.validity;
-  int64_t *offs = (int64_t *) (blk + g.offsets);
-  uint8_t *enc = blk + g.encoding;
-  uint8_t *data = blk + g.data;
-  memset(validity, 0xFF, (size_t) (n + 7) / 8);
-  memset(enc, MIZU_CE_UTF8, (size_t) n);
-  offs[0] = 0;
-  int64_t run = 0;
-  for (Py_ssize_t i = 0; i < n; i++) {
-    PyObject *elt = PyList_GET_ITEM(obj, i);
-    if (elt == Py_None) {
-      validity[i >> 3] &= (uint8_t) ~(1u << (i & 7));
-      enc[i] = 0;
-    } else {
-      Py_ssize_t len;
-      /* pass 1 cached the UTF-8 form, so this cannot fail — check anyway:
-         a failed stage is transactional (the checkout rolls back at the
-         next verb entry), a write past NULL is not */
-      const char *s = PyUnicode_AsUTF8AndSize(elt, &len);
-      if (s == NULL) {
-        PyErr_SetString(MizuError, "pymizu: string staging failed");
-        return 1;
-      }
-      memcpy(data + run, s, (size_t) len);
-      run += (int64_t) len;
-    }
-    offs[i + 1] = run;
-  }
-  /* the header last, mizs_write's discipline: the full 64 bytes zeroed
-     first (a recycled region carries stale bytes), the fields over it —
-     attrs_size / flags / reserved stay zero — then retain_zc stores the
-     producer loan over the zeroed refcount word */
-  memset(base, 0, MIZU_HEADER_SIZE);
-  const uint32_t magic = MIZU_MAGIC_STR;
-  const int64_t n64 = (int64_t) n;
-  const int64_t sd = (int64_t) block;
-  memcpy(base, &magic, 4);
-  memcpy(base + 8, &n64, 8);
-  memcpy(base + 16, &sd, 8);
-  hdr->kind = MIZU_KIND_SHM_VEC;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_STR, MIZU_HEADER_SIZE + block);
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain_zc(h, shm);
-  return 0;
-}
-
-/* The {dim} attribute blob of an attributed MIZH root (§3.5): a complete
-   'I' stream whose value is the one-key dict, byte-identical to the 'I'
-   writer's dict portion (the corpus's mat-2x3 form) by construction —
-   sized and written through the same put helpers, the INTV body one
-   mizu_ix_put_vec call (the impl's INT -> INTV map: tag + u64 count +
-   int32 memcpy). */
-static size_t mizh_dim_blob_size(int nd) {
-  return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 1) +
-    mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM)) +
-    mizu_ix_put_vec(NULL, MIZU_TYPE_INT, NULL, (uint64_t) nd);
-}
-
-static void mizh_dim_blob_write(uint8_t *dst, const int32_t *dims, int nd) {
-  dst += mizu_ix_put_header(dst);
-  dst += mizu_ix_put_dict_begin(dst, 1);
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
-  mizu_ix_put_vec(dst, MIZU_TYPE_INT, dims, (uint64_t) nd);
-}
-
-/* A top-level F-contiguous dim array staged as SHM_VEC: one flat MIZH
-   layout write plus the {dim} blob tail — the peer wraps a matrix view,
-   no copy, no transpose. The F-contiguity walk is the value-exactness
-   gate: the tier memcpys the buffer, so the region must hold the F-order
-   flat the 'I' writer emits (a C-order matrix's bytes stamped dim would
-   arrive the transpose — a silent semantics change chosen by size). The
-   explicit walk is deliberate over PyBUF_F_CONTIGUOUS: a wire gate must
-   not trust a third-party exporter to honour contiguity flags. -1
-   declines to the 'I' writer's value-exact reordering copy; 0 staged
-   (no raise path — nothing past the acquisition calls Python API). */
-static int stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
-                          uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h) {
-  Py_buffer v;
-  /* FULL_RO fills strides always (the ixw_buffer precedent); the
-     strides == NULL clause is defence against a non-conforming exporter */
-  if (PyObject_GetBuffer(obj, &v, PyBUF_FULL_RO) < 0) {
-    PyErr_Clear();
-    return -1;
-  }
-  int rc = -1;
-  const int nd = v.ndim;
-  const int type = wire_type_of_fmt(v.format, v.itemsize);
-  if (v.suboffsets != NULL || nd < 2 || nd > 32 || type == 0 || v.len < 0)
-    goto out;
-  const uint64_t elt = (uint64_t) mizu_type_elt_size(type);
-  if ((uint64_t) v.len % elt != 0) goto out;   /* exotic exporter padding */
-  int32_t dims[32];
-  uint64_t total = 1;
-  for (int i = 0; i < nd; i++) {
-    if (v.shape[i] < 0 || v.shape[i] > INT32_MAX) goto out;   /* intv width */
-    const uint64_t d = (uint64_t) v.shape[i];
-    if (d != 0 && total > UINT64_MAX / d) goto out;
-    total *= d;
-    dims[i] = (int32_t) v.shape[i];
-  }
-  if (total != (uint64_t) v.len / elt) goto out;
-  int f_contig = 1;
-  if (v.strides != NULL) {
-    uint64_t prefix = 1;
-    for (int i = 0; i < nd && f_contig; i++) {
-      /* axis i's F stride is itemsize * prod(shape[0..i-1]); axes of
-         length <= 1 exempt their stride (numpy's own rule) */
-      if (v.shape[i] > 1 &&
-          (prefix > (uint64_t) PY_SSIZE_T_MAX / (uint64_t) v.itemsize ||
-           v.strides[i] != (Py_ssize_t) (prefix * (uint64_t) v.itemsize)))
-        f_contig = 0;
-      prefix *= (uint64_t) v.shape[i];
-    }
-  } else {
-    /* C-contiguous per the protocol: the C and F flats coincide only
-       with at most one axis longer than 1 (e.g. shape (n, 1)) */
-    int long_axes = 0;
-    for (int i = 0; i < nd; i++)
-      if (v.shape[i] > 1) long_axes++;
-    f_contig = long_axes <= 1;
-  }
-  if (!f_contig) goto out;
-  const uint64_t n_bytes = (uint64_t) v.len;   /* == total * elt */
-  const uint64_t blob = (uint64_t) mizh_dim_blob_size(nd);
-  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
-    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
-  /* the churn read behind the size gate (the single-read discipline) */
-  if (n_bytes + blob < zc_gate || mizu_handle_churn(h)) goto out;
-  mizu_shm *shm;
-  if (mizu_stage_spill_get(h, (size_t) (MIZU_HEADER_SIZE + n_bytes + blob),
-                           &shm) != MIZU_OK)
-    goto out;   /* the copy tier is the fallback (the BUFREF precedent) */
-  uint8_t *base = (uint8_t *) shm->addr;
-  mizu_mizh_write(base, type, (int64_t) total);
-  /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp) */
-  mizu_mizh_validity_set(base, 0, -1);
-  memcpy(base + MIZU_HEADER_SIZE, v.buf, (size_t) n_bytes);
-  mizh_dim_blob_write(base + MIZU_HEADER_SIZE + n_bytes, dims, nd);
-  const int64_t asz = (int64_t) blob;   /* attrs_size, over the zeroed word */
-  memcpy(base + 16, &asz, 8);
-  hdr->kind = MIZU_KIND_SHM_VEC;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = mizu_aux_shm_vec(type, MIZU_HEADER_SIZE + n_bytes + blob);
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain_zc(h, shm);
-  rc = 0;
-out:
-  PyBuffer_Release(&v);
-  return rc;
 }
 
 // The live export acquisitions' mapping spans (test-only) -------------------------
@@ -7548,7 +7370,8 @@ PyInit__pymizu(void)
       PyModule_AddStringConstant(m, "__core_version__",
                                  MIZU_VERSION_STRING) < 0 ||
       mizu_py_map_register(m, MizuError, MizuShmError) < 0 ||
-      mizu_py_interop_register(m, MizuError, MizuDeclinedError) < 0) {
+      mizu_py_interop_register(m, MizuError, MizuDeclinedError) < 0 ||
+      mizu_py_layout_register(m, MizuError) < 0) {
     Py_DECREF(m);
     return NULL;
   }
