@@ -70,11 +70,8 @@ static int mizs_leaf_write(uint8_t *dst, PyObject *obj) {
    into a spill region, the region name as the payload. -1 declines to
    the 'I' writer's 0x0b copy; 0 staged; 1 the defensive raise past the
    checkout (the abandoned checkout rolls back at the next verb entry). */
-int pymizu_stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
-                           uint8_t *payload, uint32_t inline_max,
-                           mizu_handle *h) {
-  uint64_t block = 0;
-  if (!mizs_leaf_size(obj, &block)) return -1;
+static int mizs_root(PyObject *obj, uint64_t block, mizu_slot_hdr *hdr,
+                     uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
   const Py_ssize_t n = PyList_GET_SIZE(obj);
   const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
     (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
@@ -417,46 +414,73 @@ static void mizh_leaf_blob_write(uint8_t *dst, const pymizu_leaf *lf) {
   if (lf->nd >= 2) blob_dim_write(dst, lf->dims, lf->nd);
 }
 
-/* A top-level F-contiguous dim array staged as SHM_VEC: one flat MIZH
-   layout write plus the {dim} blob tail — the peer wraps a matrix view,
-   no copy, no transpose. The F-contiguity verdict is the value-exactness
-   gate: the tier memcpys the buffer, so the region must hold the F-order
-   flat the 'I' writer emits (a C-order matrix's bytes stamped dim would
-   arrive the transpose — a silent semantics change chosen by size). -1
-   declines to the 'I' writer's value-exact reordering copy; 0 staged. */
-int pymizu_stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
-                          uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h) {
-  pymizu_leaf lf;
-  if (!leaf_classify(obj, &lf)) return -1;
-  int rc = -1;
-  if (lf.temporal || lf.nd < 2 || !lf.f_contig) goto out;
-  const uint64_t body = mizh_leaf_body_size(&lf);
-  const uint64_t blob = mizh_leaf_blob_size(&lf);
+/* A top-level buffer or temporal array staged as SHM_VEC: one MIZH
+   layout write plus the attrs blob tail — the peer wraps a matrix view
+   (no copy, no transpose) or a POSIXct / Date / difftime view. The
+   F-order flat the region holds is byte-identical to the 'I' writer's
+   vector body for the same value, so tier choice by size never changes
+   semantics (the stage_mizh_dim doctrine, generalized past F-contiguity
+   by the shared gather). -1 declines to the 'I' writer's value-exact
+   copy; 0 staged. */
+static int mizh_root(PyObject *obj, pymizu_leaf *lf, mizu_slot_hdr *hdr,
+                     uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
+  const uint64_t body = mizh_leaf_body_size(lf);
+  const uint64_t blob = mizh_leaf_blob_size(lf);
   const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
     (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
   /* the churn read behind the size gate (the single-read discipline) */
-  if (body + blob < zc_gate || mizu_handle_churn(h)) goto out;
+  if (body + blob < zc_gate || mizu_handle_churn(h)) return -1;
   mizu_shm *shm;
   if (mizu_stage_spill_get(h, (size_t) (MIZU_HEADER_SIZE + body + blob),
                            &shm) != MIZU_OK)
-    goto out;   /* the copy tier is the fallback (the BUFREF precedent) */
+    return -1;   /* the copy tier is the fallback (the BUFREF precedent) */
   uint8_t *base = (uint8_t *) shm->addr;
-  mizu_mizh_write(base, lf.type, (int64_t) lf.total);
-  /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp;
-     mizu's type != RAWSXP exclusion) */
-  if (lf.type != MIZU_TYPE_RAW) mizu_mizh_validity_set(base, 0, -1);
-  mizh_leaf_body_write(base + MIZU_HEADER_SIZE, &lf);
-  mizh_leaf_blob_write(base + MIZU_HEADER_SIZE + body, &lf);
+  const int type = lf->temporal ? MIZU_TYPE_REAL : lf->type;
+  mizu_mizh_write(base, type, (int64_t) lf->total);
+  mizh_leaf_body_write(base + MIZU_HEADER_SIZE, lf);
+  /* the validity stamp (roots only): an identity buffer carries no NAs
+     (stage_raw's stamp, mizu's type != RAWSXP exclusion); a temporal
+     array claims known-NA-free only when the scaling loop saw no NaT —
+     otherwise the pair stays absent and R reads the in-band NA payload */
+  if (lf->temporal ? lf->nat == 0 : type != MIZU_TYPE_RAW)
+    mizu_mizh_validity_set(base, 0, -1);
+  mizh_leaf_blob_write(base + MIZU_HEADER_SIZE + body, lf);
   const int64_t asz = (int64_t) blob;   /* attrs_size, over the zeroed word */
   memcpy(base + 16, &asz, 8);
   hdr->kind = MIZU_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = mizu_aux_shm_vec(lf.type, MIZU_HEADER_SIZE + body + blob);
+  hdr->aux = mizu_aux_shm_vec(type, MIZU_HEADER_SIZE + body + blob);
   memcpy(payload, shm->name, shm->name_len);
   mizu_stage_retain_zc(h, shm);
-  rc = 0;
-out:
+  return 0;
+}
+
+/* The top-level layout dispatch (stage_impl's foreign order, after the
+   Arrow front-ends, before the 'I' writer): a list[str | None] -> the
+   MIZS root; a buffer (any strides) or temporal array -> the MIZH root
+   — nd >= 2 in any order, a 1-D strided view, a temporal 1-D array; a
+   1-D contiguous identity buffer already took stage_raw. Every decline
+   decision returns -1 ahead of the checkout (nothing to roll back); past
+   the checkout the only exit is a raised MizuError. */
+int pymizu_stage_layout(PyObject *obj, mizu_slot_hdr *hdr,
+                        uint8_t *payload, uint32_t inline_max,
+                        mizu_handle *h, uint32_t peer_caps) {
+  if (PyList_CheckExact(obj)) {
+    uint64_t block = 0;
+    if ((peer_caps & MIZU_CAP_MIZS) != 0 && mizs_leaf_size(obj, &block))
+      return mizs_root(obj, block, hdr, payload, inline_max, h);
+    return -1;
+  }
+  if (!PyObject_CheckBuffer(obj) && mizu_py_np_kind(obj) == 0) return -1;
+  pymizu_leaf lf;
+  if (!leaf_classify(obj, &lf)) return -1;
+  int rc = -1;
+  /* the root shapes (a 1-D contiguous identity buffer is stage_raw's) */
+  if (lf.temporal || lf.nd >= 2 || !lf.f_contig) {
+    const uint64_t blob = mizh_leaf_blob_size(&lf);
+    if (blob == 0 || (peer_caps & MIZU_CAP_ATTRS) != 0)
+      rc = mizh_root(obj, &lf, hdr, payload, inline_max, h);
+  }
   leaf_release(&lf);
   return rc;
 }

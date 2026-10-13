@@ -446,29 +446,35 @@ def test_py_peer_dim_array_dtypes(r_mizu):
         ch.close()
 
 
-R_MIZH_DECLINE = r"""
+R_MIZH_GATHER = r"""
+# rm/gc ahead of each reply: the next send must not stage while this
+# view's loan is outstanding, or a spill miss trips the Linux-only churn
+# fallback and the payload copy-tiers (values exact, view check fails)
 x <- mizu::mizu_recv(ch, timeout = 60)
-mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
-                      identical(x, t(matrix((1:(600*800)) * 1.0 - 1,
-                                            800, 600)))))
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, t(matrix((1:(600*800)) * 1.0 - 1, 800, 600))))
+rm(x); gc()
+mizu::mizu_send(ch, out)
 x <- mizu::mizu_recv(ch, timeout = 60)
-mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
-                      identical(x, matrix((1:(600*800)) * 1.0 - 1,
-                                          800, 600))))
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, matrix((1:(600*800)) * 1.0 - 1, 800, 600)))
+rm(x); gc()
+mizu::mizu_send(ch, out)
 x <- mizu::mizu_recv(ch, timeout = 60)
-mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
                       identical(x, t(matrix((1:(1200*1600)) * 1.0 - 1,
                                             1600, 1200))[
                                         seq(1, 1200, 2), seq(1, 1600, 2)])))
 """
 
 
-def test_py_peer_dim_array_c_order_copies(r_mizu):
-    # a C-contiguous array past the floor keeps the 'I' copy: the region
-    # would hold the source's byte order, arriving the transpose — the
-    # gate declines, R receives the value-exact matrix, no view
+def test_py_peer_dim_array_gather_zero_copy(r_mizu):
+    # a C-order or strided array past the floor crosses as one MIZH layout
+    # write: the shared gather writes the F-order flat the 'I' writer
+    # would emit, so R wraps a matrix view (no copy, no transpose) and
+    # the value is exact
     np = pytest.importorskip("numpy")
-    ch = pymizu.Channel.create(R_MIZH_DECLINE, launcher=r_mizu)
+    ch = pymizu.Channel.create(R_MIZH_GATHER, launcher=r_mizu)
     try:
         assert (
             ch.send(np.arange(600 * 800, dtype=np.float64).reshape(600, 800))
@@ -495,6 +501,114 @@ def test_py_peer_dim_array_c_order_copies(r_mizu):
             is True
         )  # strided slice
         assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZH_1D_STRIDED = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, bit64::as.integer64(seq(0, 199998, 2)))))
+"""
+
+
+def test_py_peer_1d_strided_zero_copy(r_mizu):
+    # a 1-D strided view past the floor: a bare MIZH root (no blob), the
+    # gather writing the elements in order — R wraps an integer64 view
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_1D_STRIDED, launcher=r_mizu)
+    try:
+        assert ch.send(np.arange(200000, dtype=np.int64)[::2]) is True
+        assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZH_TEMPORAL = r"""
+# rm/gc ahead of each reply: the churn discipline (see R_MIZH_DTYPES)
+x <- mizu::mizu_recv(ch, timeout = 60)
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, .POSIXct(as.double(1700000000:1700099999),
+                               tz = "UTC")))
+rm(x); gc()
+mizu::mizu_send(ch, out)
+x <- mizu::mizu_recv(ch, timeout = 60)
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, { v <- as.double(1700000000:1700099999)
+                        v[seq(8, 100000, 13)] <- NA
+                       .POSIXct(v, tz = "UTC") }))
+rm(x); gc()
+mizu::mizu_send(ch, out)
+x <- mizu::mizu_recv(ch, timeout = 60)
+out <- c(.Call(mizu:::mizu_zc_view_check, x),
+         identical(x, as.Date("2022-03-21") + 0:99999))
+rm(x); gc()
+mizu::mizu_send(ch, out)
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, as.difftime(as.double(90:100089),
+                                               units = "secs"))))
+"""
+
+
+def test_py_peer_temporal_zero_copy(r_mizu):
+    # a datetime64 / timedelta64 array past the floor: one MIZH REAL
+    # layout write plus the class blob — R wraps a POSIXct / Date /
+    # difftime view, value-identical to the 'I' copy (NaT as NA)
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_TEMPORAL, launcher=r_mizu)
+    try:
+        assert (
+            ch.send(
+                np.arange(
+                    np.datetime64(1700000000, "s"),
+                    np.datetime64(1700100000, "s"),
+                )
+            )
+            is True
+        )
+        assert ch.recv(60).tolist() == [1, 1]
+        p = np.arange(
+            np.datetime64(1700000000, "s"), np.datetime64(1700100000, "s")
+        )
+        p[7::13] = "NaT"
+        assert ch.send(p) is True
+        assert ch.recv(60).tolist() == [1, 1]
+        d = np.arange(
+            np.datetime64("2022-03-21"),
+            np.datetime64("2022-03-21") + 100000,
+            dtype="datetime64[D]",
+        )
+        assert ch.send(d) is True
+        assert ch.recv(60).tolist() == [1, 1]
+        assert (
+            ch.send(
+                np.arange(np.timedelta64(90, "s"), np.timedelta64(100090, "s"))
+            )
+            is True
+        )
+        assert ch.recv(60).tolist() == [1, 1]
+    finally:
+        ch.close()
+
+
+R_MIZH_TEMPORAL_SMALL = r"""
+x <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, c(!.Call(mizu:::mizu_zc_view_check, x),
+                      identical(x, .POSIXct(c(1700000000, NA), tz = "UTC"))))
+"""
+
+
+def test_py_peer_temporal_below_floor_copies(r_mizu):
+    # below the zc floor the 'I' copy still serves: no view, values exact
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_MIZH_TEMPORAL_SMALL, launcher=r_mizu)
+    try:
+        assert (
+            ch.send(np.array([1700000000, "NaT"], dtype="datetime64[s]"))
+            is True
+        )
+        assert ch.recv(30).tolist() == [1, 1]
     finally:
         ch.close()
 

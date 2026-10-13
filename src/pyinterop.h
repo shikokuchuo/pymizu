@@ -156,21 +156,15 @@ void mizu_py_nd_gather(uint8_t *dst, const uint8_t *src, int nd,
 
 // What _pymizu.c calls in layout.c -------------------------------------------
 
-/* The top-level layout roots (stage_impl's foreign order): a
-   list[str | None] past the zc floor as one MIZS region, an
-   F-contiguous dim array past the zc floor as one MIZH region plus the
-   {dim} blob. 0 staged, -1 decline to the 'I' writer (the copy tier is
-   the fallback), 1 a raised MizuError past the checkout. */
-int pymizu_stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
-                           uint8_t *payload, uint32_t inline_max,
-                           mizu_handle *h);
-int pymizu_stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
-                          uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h);
-
-/* The _layout_leaf test hook: the leaf emitters' (body, blob) bytes for
-   a value, None on a decline. */
-PyObject *pymizu_layout_test_leaf(PyObject *obj);
+/* The top-level layout dispatch (stage_impl's foreign order, after the
+   Arrow front-ends, before the 'I' writer): a list[str | None] past the
+   zc floor as one MIZS region, a buffer (any strides) or temporal array
+   past the zc floor as one MIZH region plus the attrs blob. 0 staged,
+   -1 decline to the 'I' writer (the copy tier is the fallback), 1 a
+   raised MizuError past the checkout. */
+int pymizu_stage_layout(PyObject *obj, mizu_slot_hdr *hdr,
+                        uint8_t *payload, uint32_t inline_max,
+                        mizu_handle *h, uint32_t peer_caps);
 
 /* Module init: stash the shared MizuError, add _layout_leaf. */
 int mizu_py_layout_register(PyObject *m, PyObject *mizu_error);

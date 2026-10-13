@@ -406,47 +406,56 @@ static PyTypeObject *buffer_type_attr(PyObject *mod, const char *name) {
   return NULL;
 }
 
+/* The verdicts cache per module, not per probe: a module missing at
+   first sight leaves its verdict open and a later call re-probes —
+   numpy arrives lazily (the reader's first vector), so a probe that
+   ran on a pre-numpy scalar must not cache "no numpy" forever. */
 static void buffer_types_probe(void) {
   if (mizu_buf_types_probed) return;
-  mizu_buf_types_probed = 1;
   PyObject *mods = PyImport_GetModuleDict();
-  PyObject *ar = PyMapping_GetItemString(mods, "array");
-  if (ar == NULL) {
-    PyErr_Clear();
-  } else {
-    if (ar != Py_None)   /* sys.modules["array"] = None blocks imports */
-      mizu_array_type = buffer_type_attr(ar, "array");
-    Py_DECREF(ar);
-  }
-  PyObject *np = PyMapping_GetItemString(mods, "numpy");
-  if (np == NULL) {
-    PyErr_Clear();
-    return;
-  }
-  if (np != Py_None) {   /* sys.modules["numpy"] = None blocks imports */
-    mizu_np_ndarray = buffer_type_attr(np, "ndarray");
-    mizu_np_generic = buffer_type_attr(np, "generic");
-    if (mizu_np_generic != NULL) {
-      /* numpy's own scalar types: the np.generic subtypes in its
-         namespace (the abstract intermediates are harmless members —
-         never an object's type) */
-      PyObject *set = PyFrozenSet_New(NULL);
-      if (set != NULL) {
-        PyObject *d = PyModule_GetDict(np);   /* borrowed */
-        PyObject *k, *v;
-        Py_ssize_t pos = 0;
-        int rc = 0;
-        while (rc == 0 && PyDict_Next(d, &pos, &k, &v))
-          if (PyType_Check(v) &&
-              PyType_IsSubtype((PyTypeObject *) v, mizu_np_generic))
-            rc = PySet_Add(set, v);
-        if (rc != 0) Py_CLEAR(set);
-      }
-      if (set == NULL) PyErr_Clear();
-      mizu_np_scalars = set;
+  if (mizu_array_type == NULL) {
+    PyObject *ar = PyMapping_GetItemString(mods, "array");
+    if (ar == NULL) {
+      PyErr_Clear();
+    } else {
+      if (ar != Py_None)   /* sys.modules["array"] = None blocks imports */
+        mizu_array_type = buffer_type_attr(ar, "array");
+      Py_DECREF(ar);
     }
   }
-  Py_DECREF(np);
+  if (mizu_np_ndarray == NULL) {
+    PyObject *np = PyMapping_GetItemString(mods, "numpy");
+    if (np == NULL) {
+      PyErr_Clear();
+    } else {
+      if (np != Py_None) {   /* sys.modules["numpy"] = None blocks imports */
+        mizu_np_ndarray = buffer_type_attr(np, "ndarray");
+        mizu_np_generic = buffer_type_attr(np, "generic");
+        if (mizu_np_generic != NULL) {
+          /* numpy's own scalar types: the np.generic subtypes in its
+             namespace (the abstract intermediates are harmless members —
+             never an object's type) */
+          PyObject *set = PyFrozenSet_New(NULL);
+          if (set != NULL) {
+            PyObject *d = PyModule_GetDict(np);   /* borrowed */
+            PyObject *k, *v;
+            Py_ssize_t pos = 0;
+            int rc = 0;
+            while (rc == 0 && PyDict_Next(d, &pos, &k, &v))
+              if (PyType_Check(v) &&
+                  PyType_IsSubtype((PyTypeObject *) v, mizu_np_generic))
+                rc = PySet_Add(set, v);
+            if (rc != 0) Py_CLEAR(set);
+          }
+          if (set == NULL) PyErr_Clear();
+          mizu_np_scalars = set;
+        }
+      }
+      Py_DECREF(np);
+    }
+  }
+  mizu_buf_types_probed =
+    mizu_array_type != NULL && mizu_np_ndarray != NULL;
 }
 
 static int buffer_subclass_reject(PyObject *obj) {
@@ -1474,26 +1483,18 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
                                            inline_max, h, peer_caps);
     if (src >= 0) return src;
-    /* a list[str | None] past the zc floor: one MIZS layout write, the
-       peer wrapping a string-vector view — ahead of the 'I' writer, whose
-       0x0b value copy stays the decline form (a no-cap peer, a small
-       list, churn, a non-str element, a region failure) */
-    if ((peer_caps & MIZU_CAP_MIZS) && PyList_CheckExact(obj)) {
-      int mrc = pymizu_stage_mizs_list(obj, hdr, payload, inline_max, h);
-      if (mrc == 0) return 0;
-      if (mrc > 0) return 1;   /* the defensive raise, never a decline */
-    }
-    /* an F-contiguous dim array past the zc floor: one flat MIZH layout
-       write plus the {dim} blob — the peer wraps a matrix view, no copy,
-       no transpose. A decline falls into the 'I' writer's value-exact
-       copy: a no-cap peer, a C-order or strided array, a below-floor
-       array, churn, a non-exact dtype, or a region failure. The subclass
-       guard mirrors the buffer gate: a masked array's maskless buffer
-       export never reaches the tier */
-    if ((peer_caps & MIZU_CAP_ATTRS) && PyObject_CheckBuffer(obj) &&
-        !buffer_subclass_reject(obj) &&
-        pymizu_stage_mizh_dim(obj, hdr, payload, inline_max, h) == 0)
-      return 0;
+    /* the layout tiers past the zc floor: one layout write into a spill
+       region, the peer wrapping a view — a list[str | None] as MIZS, a
+       buffer (any strides) or temporal array as MIZH plus the attrs
+       blob — ahead of the 'I' writer, whose value-exact copy stays the
+       decline form (a no-cap peer, a below-floor value, churn, a
+       non-exact dtype, a region failure). The subclass guard rides the
+       leaf classification: a masked array's maskless buffer export never
+       reaches the tier */
+    int lrc = pymizu_stage_layout(obj, hdr, payload, inline_max, h,
+                                  peer_caps);
+    if (lrc == 0) return 0;
+    if (lrc > 0) return 1;   /* the defensive raise, never a decline */
     return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
   }
   if (Py_TYPE(obj) == &MizuCallFrameType) {

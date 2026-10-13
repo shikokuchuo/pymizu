@@ -3,6 +3,11 @@ the 'I' writer's vector body for the same value, an attrs blob equals
 the 'I' writer's dict portion, an MIZS block carries the string bytes —
 value-exactness by construction, pinned here."""
 
+import pathlib
+import subprocess
+import sys
+import textwrap
+
 import numpy as np
 
 from pymizu import _pymizu
@@ -122,3 +127,43 @@ def test_mizh_leaf_temporal_scalars():
     assert len(body) == 8
     body, blob = leaf(np.timedelta64(90, "s"))
     assert len(body) == 8
+
+
+def test_np_type_probe_reprobes_after_numpy_import(tmp_path):
+    # a stage that ran the buffer-type probes before numpy was importable
+    # (an early scalar send) must not cache "no numpy" forever — the
+    # reader's first vector imports numpy, and a datetime64 array must
+    # still find its temporal home
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                """
+                import sys
+
+                from pymizu import _pymizu
+
+                assert "numpy" not in sys.modules
+                h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+                p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
+                p.ready_set()
+                assert h.ready_wait(10)
+                assert h.send(True) is True   # the probes run pre-numpy
+                assert p.recv(5) is True
+                import numpy as np
+
+                d = np.array(["2022-03-21"], dtype="datetime64[D]")
+                assert h.send(d) is True
+                got = p.recv(5)
+                assert np.asarray(got) == d
+                p.destroy()
+                h.destroy()
+                """
+            ),
+        ],
+        cwd=pathlib.Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
