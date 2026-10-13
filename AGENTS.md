@@ -164,7 +164,24 @@ tools/vendor-libmizu.sh` for a local checkout).
      zero payload bytes) after `MIZU_ZC_FLAG_REFHELD` is OR'd into the
      region's flags word. A slice, reshape or dtype view goes by value;
      writable buffers never pay the `.base` walk.
-  5. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
+  5. Foreign handles (an R peer), the pinned order ahead of the codec
+     and pickle: the Arrow front-ends (`__arrow_c_array__`, then
+     `__arrow_c_stream__`), then the layout tiers past the zc floor
+     (`pymizu_stage_layout`, `src/layout.c`): a `list[str | None]` as
+     one MIZS region, a buffer (any strides, identity dtypes) or a
+     temporal array as one MIZH region plus the attrs blob (`dim`,
+     `POSIXct`, `Date`, `difftime`), a `list` / `tuple` / `dict` tree
+     as one MIZL region — buffers and temporals as attributed MIZH
+     leaves, string lists and bare strings as MIZS leaves, scalars in
+     the 'I' codec's wire types, and a re-sendable view element as a
+     remote leaf (directory tag 33: the identifier span, REFHELD OR'd,
+     the referenced column's length / attrs_size / NA claim resolved
+     off the live region, gated per tree on `MIZU_CAP_MIZL_REF`, the
+     node then spending its `63 + 16*n` validity-table tail). The
+     value-exactness whitelist gates every tier — anything outside it
+     declines to the 'I' writer's copy, whose own decline is the
+     send-time DeclinedError.
+  6. `_TaskFrame` (the `Pool.submit` payload marker, a tuple subclass
      built only through the `_task_frame` factory) -> the structured
      frame codec (`PYMIZU_TAG_TASK`): fn by module+qualname reference
      (exact function/builtin, no `<` in the qualname, module not
@@ -185,14 +202,14 @@ tools/vendor-libmizu.sh` for a local checkout).
      read arm rides `read_shm_vec` (a region-backed Frame, the
      `ctx->gone` discipline); an adopted (from_arrow) Frame needs no
      special casing.
-  6. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
+  7. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
      defined in the vendored `mizu_ext.h` next to mizu's own
      `MIZU_CODEC_MAGIC` 0x52 'R' — one registry for both bindings): bool,
      int64-bounded int, float, str, bytes, None, and one flat
      list/tuple/dict level of those, capped at 64 elements. Exact-type
      checks throughout, so subclasses keep their pickle semantics;
      anything else falls back.
-  7. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
+  8. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
 
   `stage_bytes` frames the pickle/codec/task-frame streams over the
   INLINE/ARENA/SHM_RAW tiers; the INLINE frame stamps the keeperless

@@ -62,6 +62,26 @@ Initial pre-release.
 
 ### Added
 
+- Reverse layout writers, Python → R: nested trees, strided arrays, and
+  `datetime64` now cross zero-copy where only frames did. A `list` /
+  `tuple` / `dict` (string keys) past the zero-copy floor sent on a
+  foreign (R) channel stages as one MIZL region — R wraps a list view
+  instead of an interchange copy — with buffers (any memory order) and
+  `datetime64` / `timedelta64` arrays as attributed MIZH leaves (`dim`,
+  `POSIXct`, `Date`, `difftime`), `list[str | None]` and bare strings as
+  MIZS leaves, and scalars in the interchange codec's own wire types; a
+  C-order or strided array stages through the shared gather, emitting
+  the F-order flat the interop writer would have copied. Every element
+  outside the value-exact whitelist — a `None` outside a string list, a
+  conversion dtype, a non-exact type, a lone-surrogate key — declines
+  the whole tree to the interop copy, so tier choice by size never
+  changes semantics, and a temporal leaf's `NaT` rides in-band as `NA`.
+  A received `_ShmView` / `_ShmStrView` nested in a tree crosses as a
+  remote leaf (directory tag 33): only the region's identifier moves,
+  REFHELD set at the write, R resolving a view over the original region
+  — gated per tree on the peer's `MIZU_CAP_MIZL_REF`, a short peer
+  getting the by-value copy. No wire change (both bindings read every
+  layout involved, and the remote-leaf tag, since the frame paths).
 - Zero-copy frames as pool task arguments: a `pymizu.Frame` argument
   past the zero-copy floor now stages as one shared-memory region, so
   the worker's callable receives a region-backed frame instead of a

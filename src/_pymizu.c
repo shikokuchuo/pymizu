@@ -1486,11 +1486,12 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     /* the layout tiers past the zc floor: one layout write into a spill
        region, the peer wrapping a view — a list[str | None] as MIZS, a
        buffer (any strides) or temporal array as MIZH plus the attrs
-       blob — ahead of the 'I' writer, whose value-exact copy stays the
-       decline form (a no-cap peer, a below-floor value, churn, a
-       non-exact dtype, a region failure). The subclass guard rides the
-       leaf classification: a masked array's maskless buffer export never
-       reaches the tier */
+       blob, a list / tuple / dict tree as MIZL (a re-sendable view
+       element a remote leaf under the peer's MIZU_CAP_MIZL_REF) — ahead
+       of the 'I' writer, whose value-exact copy stays the decline form
+       (a no-cap peer, a below-floor value, churn, a non-exact dtype, a
+       region failure). The subclass guard rides the leaf classification:
+       a masked array's maskless buffer export never reaches the tier */
     int lrc = pymizu_stage_layout(obj, hdr, payload, inline_max, h,
                                   peer_caps);
     if (lrc == 0) return 0;

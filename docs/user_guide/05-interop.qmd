@@ -142,10 +142,11 @@ A portable subset of values crosses in both directions:
 - A multi-dimensional numpy array arrives as an R array with `dim` set (a
   matrix is the 2-D case) — C order, F order, strided, it crosses
   value-exact.
-  A large Fortran-order array also crosses without copying — R reads a matrix
-  view over the shared pages; C-order and strided arrays cross by copy.
+  A large array also crosses without copying in any memory order — F order,
+  C order, or strided: R reads a matrix view over the shared pages.
   `datetime64` arrays with day or week units arrive as `Date`, and finer
-  units arrive as `POSIXct`.
+  units arrive as `POSIXct`; past the zero-copy floor these cross without
+  copying too.
   `datetime.date` and `datetime.datetime` scalars arrive as the length-1
   forms.
 - An Arrow array arrives as an R vector, with Arrow nulls as R missing
@@ -166,6 +167,11 @@ A portable subset of values crosses in both directions:
   `list[str | None]`.
   A large `list[str | None]` sent to R also crosses without copying — R reads
   a character vector over the shared pages, with `None` as `NA_character_`.
+- A large nested tree of lists, dicts, arrays, and strings sent to R crosses
+  as one shared-memory region: R reads a list view over the shared pages
+  instead of a copy (dict keys become the list's names).
+  A received view nested inside such a tree crosses by reference — only its
+  region's name moves, and R resolves it to a view of the original region.
 - A value outside the portable subset raises `pymizu.DeclinedError` (a
   subclass of `TypeError`) at send time, with `path` and `reason` attributes
   naming what was rejected and why.

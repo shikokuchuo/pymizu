@@ -104,6 +104,12 @@ payloads = [
     ("8 KB float64", np.random.default_rng(0).random(1000)),
     ("800 KB float64", np.random.default_rng(1).random(100_000)),
     ("8 MB float64", np.random.default_rng(2).random(1_000_000)),
+    # the C-order dim array: the shared gather writes the F-order flat
+    # off strided source pages (the MIZH {dim} layout write)
+    (
+        "C-order 600x800 f64",
+        np.arange(600 * 800, dtype=np.float64).reshape(600, 800),
+    ),
 ]
 
 for name, x in payloads:
@@ -135,6 +141,15 @@ typed = [
         "100k timedelta64[us]",
         np.arange(100_000, dtype="timedelta64[us]"),
     ),
+    # the POSIXct shape: the temporal MIZH writer's scaled-double body
+    # plus the class blob (the 'I' µs copy below the floor)
+    (
+        "100k datetime64[s]",
+        np.arange(
+            np.datetime64(1700000000, "s"),
+            np.datetime64(1700000000, "s") + np.timedelta64(100_000, "s"),
+        ),
+    ),
 ]
 
 for name, x in typed:
@@ -162,6 +177,35 @@ for name, x in [
         note(name, "sink", rt_us(ch, x), "us/send")
     finally:
         ch.close()
+
+# the layout writers' send-side rows: the C-order gather, the MIZL tree
+# (buffers + a string leaf + a nested dict off one region write), and
+# the remote-leaf pair — a tree carrying a received view stages the
+# ~25-byte identifier where the by-value tree memcpys the 1.6 MB leaf
+c_order = np.arange(600 * 800, dtype=np.float64).reshape(600, 800)
+mizl_tree = {
+    "a": np.arange(100_000, dtype=np.float64),
+    "b": [f"s-{i:05d}" for i in range(10_000)],
+    "c": {"d": np.arange(50_000, dtype=np.int32)},
+}
+big = np.arange(200_000, dtype=np.float64)
+ch_setup = pymizu.Channel.create(R_ECHO, launcher=launcher)
+try:
+    ch_setup.send(big)
+    view = ch_setup.recv(30)  # the relay REFs it back: a re-sendable view
+    for name, x in [
+        ("C-order 600x800 f64", c_order),
+        ("MIZL tree 1.2 MB", mizl_tree),
+        ("tree 2x 1.6 MB copy", [big, big.copy()]),
+        ("tree copy + remote", [big, view]),
+    ]:
+        ch = pymizu.Channel.create(R_SINK, launcher=launcher)
+        try:
+            note(name, "sink", rt_us(ch, x), "us/send")
+        finally:
+            ch.close()
+finally:
+    ch_setup.close()
 
 print("\n== 4. pipelined throughput (10k x 8 KB float64 in flight) ==\n")
 

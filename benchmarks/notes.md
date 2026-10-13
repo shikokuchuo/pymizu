@@ -841,3 +841,27 @@ after 11.9 / 12.1 (~4x). One-off probe, log only — no table row.
 
 Status: full suite 524 pass, 6 skip (pandas/duckdb-absence); crosslang
 legs 97 pass; ruff + ruff format + pyrefly clean.
+
+## 2026-10-13 — layout-writer rows for the cross-language channel bench
+
+First records for the reverse layout writers' rows in
+benchmarks/crosslang-channel-bench.py (new: a C-order dim payload in
+the round-trip section, a 100k datetime64[s] typed row, and the
+send-only rows: the C-order gather, an MIZL tree of buffers + strings
+off one region write, and the remote-leaf pair — a tree carrying a
+received 1.6 MB view stages the ~25-byte identifier where the by-value
+tree memcpys the leaf). Log-only rows. Two full runs back-to-back —
+the spread is host drift (the bands, not a regression read).
+
+Results (median, run 1 / run 2): C-order 600x800 f64 echo 117.0 /
+105.4 us/rt (copy echo 248.4 / 268.4); 100k datetime64[s] echo 163.6 /
+223.8; C-order sink 95.7 / 314.6 us/send (page-fault-sensitive — the
+gather touches freshly mapped pages per send); MIZL tree 1.2 MB sink
+42.1 / 133.6; tree 2x 1.6 MB copy sink 85.2 / 110.0 vs tree copy +
+remote 73.1 / 105.2 — the remote leaf's send-side saving (the skipped
+1.6 MB memcpy) is real but inside the run-to-run band at this size;
+the structural win is the receive side (R wraps, never copies) and
+residency, not the send number.
+
+Status: full suite 562 pass, 6 skip (pandas/duckdb-absence); ruff +
+ruff format + pyrefly clean.
