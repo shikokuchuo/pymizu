@@ -278,6 +278,13 @@ int mizu_py_ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
 int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
                            PyObject **out_view, uint32_t *out_caps);
 
+/* The referenced root's descriptor for a remote-leaf (tag 33) write:
+   length / attrs_size / the known-NA-free claim off the live region's
+   header (a pymizu view names a whole region, never a path — the
+   bare-name half of the resolve-side descriptor). 0 ok, -1 corrupt. */
+int mizu_py_root_descriptor(mizu_shm *shm, int64_t *length,
+                            int64_t *attrs, int *na_free);
+
 /* The 'I' ref leaf's resolve: the identifier (name, optionally
    name[i,j,...]) to a view — the counted add riding the open (the
    handle's view cache serves repeats when ctx is non-NULL). Returns the

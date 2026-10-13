@@ -13,6 +13,7 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "pyinterop.h"
@@ -533,14 +534,15 @@ static int tree_dict_keys_ok(PyObject *obj) {
 }
 
 /* The element veto/size walk: 1 tree material (size takes the exact
-   data span, caps the capability conjunction), 0 the whole tree
-   declines to the 'I' copy. Veto before sum — a decline costs the walk
-   prefix, never a data pass. */
+   data span, caps the capability conjunction, remote a direct remote
+   leaf — the node's validity-table reserve keys on it), 0 the whole
+   tree declines to the 'I' copy. Veto before sum — a decline costs the
+   walk prefix, never a data pass. */
 static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
                           uint32_t *caps);
 
 static int tree_elt_size(PyObject *elt, unsigned depth, uint64_t *size,
-                         uint32_t *caps) {
+                         uint32_t *caps, int *remote) {
   if (PyBool_Check(elt)) {
     *size = 4;
     return 1;
@@ -591,15 +593,21 @@ static int tree_elt_size(PyObject *elt, unsigned depth, uint64_t *size,
   }
   if (PyTuple_CheckExact(elt) || PyDict_CheckExact(elt))
     return tree_node_size(elt, depth + 1, size, caps);
-  /* a re-sendable view nested in a tree vetoes it until the remote-leaf
-     phase (the 'I' copy carries it by value today, so nothing regresses) */
+  /* a re-sendable view crosses as a remote leaf (directory tag 33): the
+     identifier span as the data, no local bytes — the referenced
+     column's claims resolve at the write. The span's reader bound is
+     255 bytes: a longer name vetoes to the by-value copy. */
   {
     mizu_shm *shm = NULL;
     PyObject *view = NULL;
     uint32_t need = 0;
     if (mizu_py_view_ref_probe(elt, &shm, &view, &need)) {
       Py_DECREF(view);
-      return 0;
+      if (shm->name_len < 1 || shm->name_len > 255) return 0;
+      *size = (uint64_t) shm->name_len;
+      *caps |= MIZU_CAP_MIZL_REF | need;
+      *remote = 1;
+      return 1;
     }
   }
   pymizu_leaf lf;
@@ -622,12 +630,16 @@ static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
     PyList_CheckExact(obj) ? PyList_GET_SIZE(obj) : PyTuple_GET_SIZE(obj);
   uint64_t total = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (uint64_t) n);
   uint32_t my_caps = 0;
+  int any_remote = 0;
   if (dict) {
     PyObject *k, *v;
     Py_ssize_t pos = 0;
     while (PyDict_Next(obj, &pos, &k, &v)) {
       uint64_t elt_size = 0;
-      if (!tree_elt_size(v, depth, &elt_size, &my_caps)) return 0;
+      int elt_remote = 0;
+      if (!tree_elt_size(v, depth, &elt_size, &my_caps, &elt_remote))
+        return 0;
+      any_remote |= elt_remote;
       total += MIZU_ALIGN64(elt_size);
     }
     total += MIZU_ALIGN64(names_blob_size(obj));
@@ -637,10 +649,17 @@ static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
       PyObject *elt = PyList_CheckExact(obj) ? PyList_GET_ITEM(obj, i) :
         PyTuple_GET_ITEM(obj, i);
       uint64_t elt_size = 0;
-      if (!tree_elt_size(elt, depth, &elt_size, &my_caps)) return 0;
+      int elt_remote = 0;
+      if (!tree_elt_size(elt, depth, &elt_size, &my_caps, &elt_remote))
+        return 0;
+      any_remote |= elt_remote;
       total += MIZU_ALIGN64(elt_size);
     }
   }
+  /* the validity-table reserve: a remote leaf's claim rides the node's
+     n-entry tail (the 63 the alignment slack). The local leaves carry NA
+     in-band, so only the remote arm of mizu's reserve ever trips here */
+  if (any_remote) total += 63 + 16 * (uint64_t) n;
   *size = total;
   *caps |= my_caps;
   return 1;
@@ -761,6 +780,37 @@ static int tree_elt_write(uint8_t *base, pymizu_mizl_ent *ent,
     ent->data_size = (int64_t) written;
     return 0;
   }
+  /* the remote leaf (directory tag 33): the identifier span as the data,
+     the referenced column's length / attrs_size resolved off the live
+     region, REFHELD OR'd (the holder set widens beyond the direct peer);
+     the NA claim lands in the node's validity tail. The size pass
+     committed to the span when it counted the identifier, so a
+     descriptor that no longer resolves is an error, never a silent
+     downgrade to a copy (mizu's discipline). */
+  {
+    mizu_shm *shm = NULL;
+    PyObject *view = NULL;
+    uint32_t need = 0;
+    if (mizu_py_view_ref_probe(elt, &shm, &view, &need)) {
+      int64_t rlength = 0, rattrs = 0;
+      int rfree = 0;
+      if (mizu_py_root_descriptor(shm, &rlength, &rattrs, &rfree) != 0) {
+        Py_DECREF(view);
+        PyErr_SetString(MizuErr, "pymizu: a view's identifier no longer "
+                        "resolves its region");
+        return 1;
+      }
+      memcpy(dst, shm->name, (size_t) shm->name_len);
+      atomic_fetch_or_explicit(mizu_zc_flags_(mizu_shm_addr(shm)),
+                               MIZU_ZC_FLAG_REFHELD, memory_order_acq_rel);
+      ent->sexptype = PYMIZU_MIZL_TAG_REF;
+      ent->attrs_size = (int32_t) rattrs;
+      ent->length = rlength;
+      ent->data_size = (int64_t) shm->name_len;
+      Py_DECREF(view);
+      return 0;
+    }
+  }
   pymizu_leaf lf;
   /* the size pass classified it already — a mismatch is a caller bug */
   if (!leaf_classify(elt, &lf)) {
@@ -780,6 +830,31 @@ static int tree_elt_write(uint8_t *base, pymizu_mizl_ent *ent,
   return 0;
 }
 
+/* The validity row's claim for one written element: {0, -1} when the
+   element wrote a remote leaf whose referenced column resolves
+   known-NA-free off the live region, {0, 0} otherwise (the local leaves
+   carry NA in-band — no claim). A descriptor failure keeps the no-claim,
+   never an error (mizu's tail tolerance). */
+static int64_t tree_remote_claim(const uint8_t *base, Py_ssize_t i,
+                                 PyObject *elt) {
+  int32_t tag;
+  memcpy(&tag, base + MIZU_HEADER_SIZE + 32 * (size_t) i + 16, 4);
+  if (tag != PYMIZU_MIZL_TAG_REF) return 0;
+  mizu_shm *shm = NULL;
+  PyObject *view = NULL;
+  uint32_t need = 0;
+  int64_t claim = 0;
+  if (mizu_py_view_ref_probe(elt, &shm, &view, &need)) {
+    int64_t rlength = 0, rattrs = 0;
+    int rfree = 0;
+    if (mizu_py_root_descriptor(shm, &rlength, &rattrs, &rfree) == 0 &&
+        rfree)
+      claim = -1;
+    Py_DECREF(view);
+  }
+  return claim;
+}
+
 static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
   const int dict = PyDict_CheckExact(obj);
   const Py_ssize_t n = dict ? PyDict_Size(obj) :
@@ -789,6 +864,7 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
      the tree's leaves carrying NA in-band — / reserved */
   memset(base + 24, 0, MIZU_HEADER_SIZE - 24);
   uint64_t cur = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (uint64_t) n);
+  int wrote_remote = 0;
   Py_ssize_t i = 0;
   if (dict) {
     PyObject *k, *v;
@@ -797,6 +873,7 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
       pymizu_mizl_ent ent;
       ent.data_offset = (int64_t) cur;
       if (tree_elt_write(base, &ent, v) != 0) return 0;
+      wrote_remote |= ent.sexptype == PYMIZU_MIZL_TAG_REF;
       memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &ent, sizeof ent);
       cur += MIZU_ALIGN64((uint64_t) ent.data_size);
       i++;
@@ -808,6 +885,7 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
       pymizu_mizl_ent ent;
       ent.data_offset = (int64_t) cur;
       if (tree_elt_write(base, &ent, elt) != 0) return 0;
+      wrote_remote |= ent.sexptype == PYMIZU_MIZL_TAG_REF;
       memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &ent, sizeof ent);
       cur += MIZU_ALIGN64((uint64_t) ent.data_size);
     }
@@ -819,6 +897,38 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
     names_blob_write(base + cur, obj);
     cur += MIZU_ALIGN64((uint64_t) attrs_size);
   }
+  if (wrote_remote) {
+    /* the validity tail: every row the {0, 0} no-claim but a remote
+       leaf's {0, -1} upgrade — the table always spent, the header pair
+       never speaking for a remote column. */
+    int64_t *tab = (int64_t *) malloc(16 * (size_t) n);
+    if (tab == NULL) {
+      PyErr_NoMemory();
+      return 0;
+    }
+    i = 0;
+    if (dict) {
+      PyObject *k, *v;
+      Py_ssize_t pos = 0;
+      while (PyDict_Next(obj, &pos, &k, &v)) {
+        tab[2 * i] = 0;
+        tab[2 * i + 1] = tree_remote_claim(base, i, v);
+        i++;
+      }
+    } else {
+      for (; i < n; i++) {
+        PyObject *elt = PyList_CheckExact(obj) ? PyList_GET_ITEM(obj, i) :
+          PyTuple_GET_ITEM(obj, i);
+        tab[2 * i] = 0;
+        tab[2 * i + 1] = tree_remote_claim(base, i, elt);
+      }
+    }
+    const uint64_t tab_off = MIZU_ALIGN64(cur);
+    memcpy(base + tab_off, tab, 16 * (size_t) n);
+    free(tab);
+    mizu_mizh_validity_set(base, (int64_t) tab_off, 0);
+    cur = tab_off + 16 * (uint64_t) n;
+  }
   uint32_t magic = MIZU_MAGIC_LIST;
   const int32_t n32 = (int32_t) n;
   memcpy(base, &magic, 4);
@@ -829,10 +939,12 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
 }
 
 /* A top-level list / tuple / dict staged as SHM_VEC: one MIZL tree
-   write into a spill region, the peer wrapping an ALTLIST view. -1
-   declines to the 'I' writer's value-exact copy (the whitelist veto, a
-   below-floor tree, a short peer, churn, a region failure); 0 staged; 1
-   the defensive raise past the checkout. */
+   write into a spill region, the peer wrapping an ALTLIST view — a
+   re-sendable view element crossing as a remote leaf (directory tag 33)
+   under the peer's MIZU_CAP_MIZL_REF. -1 declines to the 'I' writer's
+   value-exact copy (the whitelist veto, a below-floor tree, a short
+   peer, churn, a region failure); 0 staged; 1 the defensive raise past
+   the checkout. */
 static int mizl_root(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                      uint32_t inline_max, mizu_handle *h,
                      uint32_t peer_caps) {
@@ -848,10 +960,13 @@ static int mizl_root(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   if (mizu_stage_spill_get(h, (size_t) total, &shm) != MIZU_OK)
     return -1;   /* the copy tier is the fallback (the BUFREF precedent) */
   uint8_t *base = (uint8_t *) shm->addr;
-  if (tree_node_write(base, obj) == 0) return 1;
+  const uint64_t used = tree_node_write(base, obj);
+  if (used == 0) return 1;
   hdr->kind = MIZU_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_VEC, total);
+  /* aux carries the write's actual total — the size pass's reserve
+     counts the remote leaves' table slack */
+  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_VEC, used);
   memcpy(payload, shm->name, shm->name_len);
   mizu_stage_retain_zc(h, shm);
   return 0;

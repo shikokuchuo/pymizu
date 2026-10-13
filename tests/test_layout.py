@@ -16,7 +16,7 @@ from pymizu import _pymizu
 leaf = _pymizu._layout_leaf
 write = _pymizu._write_stream
 
-CAPS_R = 7  # MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL
+CAPS_R = 31  # R's mask: MIZS | ATTRS | MIZL | TASKREF | MIZL_REF
 
 
 def foreign_pair(caps=CAPS_R):
@@ -206,14 +206,16 @@ def test_mizl_tree_vetoes():
         assert h.send([np.arange(200000, dtype=np.uint64)]) is True
         got = p.recv(5)
         assert isinstance(got[0], np.ndarray)
-        # a nested view vetoes (until the remote-leaf phase)
-        assert h.send(np.arange(200000, dtype=np.float64)) is True
-        view = p.recv(5)
-        assert _pymizu._view_check(view)
-        assert h.send([view, 1] + big_ints()) is True
+        # a tree-borrowed leaf view (a local leaf's element, loan != NULL)
+        # never names its region: the tree stages, the leaf by value
+        assert h.send({"k": big_ints()}) is True
+        tree = p.recv(5)
+        borrowed = tree["k"]
+        assert not _pymizu._view_check(borrowed)
+        assert h.send([borrowed, 1] + big_ints()) is True
         got = p.recv(5)
         assert not _pymizu._view_check(got[0])
-        assert np.array_equal(np.asarray(got[0]), np.asarray(view))
+        assert np.array_equal(np.asarray(got[0]), np.asarray(borrowed))
         # a past-int64 int has no home in either tier: DeclinedError
         import pytest
 
@@ -225,6 +227,71 @@ def test_mizl_tree_vetoes():
         # a lone-surrogate str has no home in either tier
         with pytest.raises(pymizu.DeclinedError, match="UTF-8"):
             h.send(["\ud800"] + big_ints())
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_remote_leaves():
+    # a re-sendable view nested in a tree crosses as a remote leaf
+    # (directory tag 33): REFHELD set, the resolve one counted add
+    h, p = foreign_pair()
+    try:
+        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        view = p.recv(5)
+        assert _pymizu._view_check(view)
+        assert h.send([view, 1] + big_ints()) is True
+        rc = view.base.refcount
+        got = p.recv(5)
+        assert _pymizu._view_check(got[0])
+        assert got[0].base.flags & 1  # REFHELD
+        assert view.base.refcount == rc + 1
+        assert np.array_equal(np.asarray(got[0]), np.asarray(view))
+        # a string view remote leaf
+        assert h.send(["x", "y"] * 10000) is True
+        sview = p.recv(5)
+        assert h.send({"s": sview, "v": big_ints()}) is True
+        got = p.recv(5)
+        assert _pymizu._view_check(got["s"])
+        assert got["s"].flags & 1
+        assert got["s"].to_list()[:4] == ["x", "y", "x", "y"]
+        # nested a level down (the child node's own validity tail)
+        assert h.send({"a": {"b": view}, "c": big_ints()}) is True
+        got = p.recv(5)
+        assert _pymizu._view_check(got["a"]["b"])
+        assert np.array_equal(np.asarray(got["a"]["b"]), np.asarray(view))
+        # two leaves referencing one region: one counted add each (the
+        # old tree's views released ahead of the baseline)
+        del got
+        assert h.send([view, view, 1] + big_ints()) is True
+        rc = view.base.refcount
+        got = p.recv(5)
+        assert _pymizu._view_check(got[0]) and _pymizu._view_check(got[1])
+        assert view.base.refcount == rc + 2
+        # a resolved remote leaf is itself re-sendable (a chained send)
+        el = got[0]
+        del got
+        assert h.send([el, 1] + big_ints()) is True
+        rc = view.base.refcount
+        got = p.recv(5)
+        assert _pymizu._view_check(got[0])
+        assert view.base.refcount == rc + 1
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_remote_leaf_caps_decline():
+    # a peer short of MIZU_CAP_MIZL_REF gets the 'I' by-value copy
+    h, p = foreign_pair(caps=15)  # all but MIZL_REF (bit 4)
+    try:
+        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        view = p.recv(5)
+        assert _pymizu._view_check(view)
+        assert h.send([view, 1] + big_ints()) is True
+        got = p.recv(5)
+        assert not _pymizu._view_check(got[0])
+        assert np.array_equal(np.asarray(got[0]), np.asarray(view))
     finally:
         p.destroy()
         h.destroy()

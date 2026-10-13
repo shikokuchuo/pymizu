@@ -676,6 +676,66 @@ def test_py_peer_tree_below_floor_copies(r_mizu):
         ch.close()
 
 
+R_MIZL_REMOTE_LEAF = r"""
+x <- as.numeric(seq_len(200000))
+mizu::mizu_send(ch, x)
+s <- rep(c("alpha", "beta"), 10000)
+mizu::mizu_send(ch, s)
+y <- mizu::mizu_recv(ch, timeout = 60)
+el <- y[["k"]]
+sv <- y[["s"]]
+mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, y),
+  .Call(mizu:::mizu_zc_view_check, el),
+  .Call(mizu:::mizu_zc_view_check, sv),
+  .Call(mizu:::mizu_zc_refcount, el)[[2L]] %% 2L == 1L,
+  .Call(mizu:::mizu_zc_refcount, sv)[[2L]] %% 2L == 1L,
+  identical(el, x),
+  identical(sv, s),
+  identical(y[["v"]], as.list(0:9999))))
+"""
+
+
+def test_py_peer_tree_remote_leaf(r_mizu):
+    # a received view nested in a tree crosses as a remote leaf
+    # (directory tag 33): R resolves a view over its own region, the
+    # write having set REFHELD — an atomic and a string reference, the
+    # tree's local leaves alongside
+    ch = pymizu.Channel.create(R_MIZL_REMOTE_LEAF, launcher=r_mizu)
+    try:
+        x = ch.recv(60)
+        s = ch.recv(60)
+        assert pymizu._pymizu._view_check(x)
+        assert type(s).__name__ == "_ShmStrView"
+        assert ch.send({"k": x, "s": s, "v": list(range(10000))}) is True
+        assert ch.recv(60).tolist() == [1] * 8
+    finally:
+        ch.close()
+
+
+R_MIZL_VIEW_TREE_COPIES = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, list(x, seq_len(20000) + 0L))
+"""
+
+
+def test_r_peer_view_tree_copies(r_mizu):
+    # mizu's foreign tree gate rejects a view element (its remote leaves
+    # are the frame gate's, covered there): the tree takes the 'I' copy,
+    # values exact — pymizu's writer has no such restriction
+    np = pytest.importorskip("numpy")
+    big = np.arange(200000, dtype=np.float64)
+    ch = pymizu.Channel.create(R_MIZL_VIEW_TREE_COPIES, launcher=r_mizu)
+    try:
+        assert ch.send(big) is True
+        got = ch.recv(60)
+        assert len(got) == 2
+        assert not pymizu._pymizu._view_check(got[0])
+        assert np.array_equal(np.asarray(got[0]), big)
+        assert [v.item() for v in got[1][:3]] == [1, 2, 3]
+    finally:
+        ch.close()
+
+
 R_MIZH_3D = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, c(.Call(mizu:::mizu_zc_view_check, x),

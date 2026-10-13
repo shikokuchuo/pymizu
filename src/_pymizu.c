@@ -3405,43 +3405,50 @@ typedef struct {
   int na_free;
 } leaf_desc;
 
+/* A bare-name reference's descriptor off the region's root header (the
+   terminus of a whole-region reference): the layout's own length / attrs
+   size, and whether the form records known-NA-free — an MIZH header pair
+   does; a bare MIZS root and an MIZL root do not. 0 ok, -1 corrupt. */
+static int root_descriptor(const uint8_t *base, size_t size, leaf_desc *d) {
+  if (size < MIZU_HEADER_SIZE) return -1;
+  uint32_t magic;
+  memcpy(&magic, base, 4);
+  if (magic == MIZU_MAGIC_VEC) {
+    int type;
+    int64_t n, valid[2], attrs;
+    if (mizu_mizh_check(base, size, &type, &n, valid) != 0) return -1;
+    memcpy(&attrs, base + 16, 8);
+    d->length = n;
+    d->attrs_size = attrs;
+    d->na_free = valid[0] == 0 && valid[1] == -1;
+    return 0;
+  }
+  if (magic == MIZU_MAGIC_STR) {
+    int64_t n, block, attrs;
+    if (mizu_mizs_check(base, size, &n, &block, &attrs) != 0) return -1;
+    d->length = n;
+    d->attrs_size = attrs;
+    d->na_free = 0;
+    return 0;
+  }
+  if (magic == MIZU_MAGIC_LIST) {
+    int64_t n, aoff, attrs, valid[2];
+    if (mizu_mizl_check(base, size, &n, &aoff, &attrs, valid) != 0)
+      return -1;
+    d->length = n;
+    d->attrs_size = attrs;
+    d->na_free = 0;
+    return 0;
+  }
+  return -1;
+}
+
 static int leaf_descriptor(MizuShmOwner *owner, const char *path,
                            leaf_desc *d) {
   const uint8_t *base = (const uint8_t *) mizu_shm_addr(owner->shm);
   const size_t size = mizu_shm_size(owner->shm);
+  if (path == NULL) return root_descriptor(base, size, d);
   if (size < MIZU_HEADER_SIZE) return -1;
-  if (path == NULL) {
-    uint32_t magic;
-    memcpy(&magic, base, 4);
-    if (magic == MIZU_MAGIC_VEC) {
-      int type;
-      int64_t n, valid[2], attrs;
-      if (mizu_mizh_check(base, size, &type, &n, valid) != 0) return -1;
-      memcpy(&attrs, base + 16, 8);
-      d->length = n;
-      d->attrs_size = attrs;
-      d->na_free = valid[0] == 0 && valid[1] == -1;
-      return 0;
-    }
-    if (magic == MIZU_MAGIC_STR) {
-      int64_t n, block, attrs;
-      if (mizu_mizs_check(base, size, &n, &block, &attrs) != 0) return -1;
-      d->length = n;
-      d->attrs_size = attrs;
-      d->na_free = 0;
-      return 0;
-    }
-    if (magic == MIZU_MAGIC_LIST) {
-      int64_t n, aoff, attrs, valid[2];
-      if (mizu_mizl_check(base, size, &n, &aoff, &attrs, valid) != 0)
-        return -1;
-      d->length = n;
-      d->attrs_size = attrs;
-      d->na_free = 0;
-      return 0;
-    }
-    return -1;
-  }
   const char *p = path;
   if (*p++ != '[') return -1;
   const uint8_t *cur = base;
@@ -3478,6 +3485,21 @@ static int leaf_descriptor(MizuShmOwner *owner, const char *path,
     cur += e.data_offset;
     cursz = (size_t) e.data_size;
   }
+}
+
+/* layout.c's remote-leaf (tag 33) write resolves the referenced column's
+   claims off the live region: the root descriptor — a pymizu view names
+   a whole region, never a path. */
+int mizu_py_root_descriptor(mizu_shm *shm, int64_t *length,
+                            int64_t *attrs, int *na_free) {
+  leaf_desc d;
+  if (root_descriptor((const uint8_t *) mizu_shm_addr(shm),
+                      mizu_shm_size(shm), &d) != 0)
+    return -1;
+  *length = d.length;
+  *attrs = d.attrs_size;
+  *na_free = d.na_free;
+  return 0;
 }
 
 /* The one resolve behind the REF payload read and the 'I' ref leaf: the
