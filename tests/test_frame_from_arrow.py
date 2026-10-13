@@ -250,17 +250,18 @@ def test_from_arrow_midstream_failure_releases():
 
 
 def test_from_arrow_build_failure_releases_both_arms():
-    # column 0 adopts, column 1's conversion warning errors mid-build
+    # column 0 adopts, column 1's conversion warning errors mid-build (a
+    # sliced — copy-arm — masked int32 with a genuine INT32_MIN)
     base = pa.total_allocated_bytes()
     t = pa.table(
         {
             "x": pa.array([1.5] * 100000),
-            "u": pa.array([2**53 + 1] * 100000, type=pa.uint64()),
+            "i": pa.array([0] + [-(2**31), None] * 50000, type=pa.int32())[1:],
         }
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        with pytest.raises(RuntimeWarning, match=r"2\^53"):
+        with pytest.raises(RuntimeWarning, match="NA_integer_ in R"):
             pymizu.Frame.from_arrow(t)
     del t
     gc.collect()
@@ -434,7 +435,8 @@ def test_from_arrow_below_floor_pickles():
 
 
 def test_from_arrow_conversions_not_declines():
-    # uint64 / half_float / string_view are conversions (copies), not declines
+    # half_float / string_view are conversions (copies), not declines;
+    # uint64 keeps its dtype verbatim (adopted like the other exact kinds)
     t = pa.table(
         {
             "u": pa.array([1, 2, 3], type=pa.uint64()),
@@ -447,11 +449,11 @@ def test_from_arrow_conversions_not_declines():
         }
     )
     f = pymizu.Frame.from_arrow(t)
-    # the conversions copy; the duration[ns] column adopts verbatim
+    # the conversions copy; uint64 and duration[ns] adopt verbatim
     dbg = _pymizu._frame_debug(f)
-    assert dbg["adopted"] == (False, False, False, False, False, False, True)
+    assert dbg["adopted"] == (True, False, False, False, False, False, True)
     d = f.to_dict()
-    assert d["u"].dtype == np.float64 and d["u"].tolist() == [1.0, 2.0, 3.0]
+    assert d["u"].dtype == np.uint64 and d["u"].tolist() == [1, 2, 3]
     assert d["e"].dtype == np.float64 and d["e"].tolist() == [1.5, 2.5, 3.5]
     assert d["v"] == ["a", "b", "c"]
     assert d["I"].dtype == np.float64 and np.isnan(d["I"][1])
@@ -464,7 +466,7 @@ def test_from_arrow_conversions_not_declines():
     assert np.isnat(d["n"][1])
     assert d["n"][2] == np.timedelta64(250000, "ns")
     out = pa.table(f)
-    assert out.schema.field("u").type == pa.float64()
+    assert out.schema.field("u").type == pa.uint64()
     assert out.schema.field("v").type == pa.string()
     assert out.schema.field("n").type == pa.duration("ns")
 
@@ -682,10 +684,23 @@ def test_from_arrow_ns_edge_cases():
 
 
 def test_from_arrow_uint64_past_2_to_53_warns():
-    t = pa.table({"u": pa.array([2**53 + 1], type=pa.uint64())})
+    # exact at adoption (no conversion, no warning); the warning fires at
+    # the loss — a foreign send to a peer without MIZU_CAP_MIZL_U64V (bits
+    # 0-5 pass the MIZL gate), on the MIZL-writer and 'I'-writer paths alike
+    from tests.helpers import foreign_pair
+
+    t = pa.table({"u": pa.array([2**53 + 1] * 20000, type=pa.uint64())})
+    f = pymizu.Frame.from_arrow(t)
+    assert f.to_dict()["u"].tolist() == [2**53 + 1] * 20000
+    h, p = foreign_pair(caps=63)
     with pytest.warns(RuntimeWarning, match=r"2\^53"):
-        f = pymizu.Frame.from_arrow(t)
-    assert np.isnan(f.to_dict()["u"][0])
+        assert h.send(t) is True
+    assert np.isnan(p.recv(30).to_dict()["u"][0])
+    with pytest.warns(RuntimeWarning, match=r"2\^53"):
+        assert h.send(f) is True
+    assert np.isnan(p.recv(30).to_dict()["u"][0])
+    p.destroy()
+    h.destroy()
 
 
 def test_from_arrow_declines_unsupported_types():

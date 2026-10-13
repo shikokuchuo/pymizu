@@ -12,6 +12,7 @@ import warnings
 import pytest
 from tests.helpers import (
     foreign_pair,
+    identity,
     na_int,
     na_int64,
     pair_up,
@@ -702,6 +703,158 @@ mizu::mizu_recv(ch, timeout = 30)
         ch.send("ack")
     finally:
         ch.close()
+
+
+def test_export_r_double_na_and_nan(r_mizu):
+    # the flat reserve's {0, 0} section (the common path): NA_real_
+    # exports as an Arrow null off the lazy payload scan, a genuine NaN
+    # stays a valid value. The peer waits for the host's ack against the
+    # payload regions' teardown
+    src = """
+x <- as.numeric(seq_len(100000)) + 0   # past the zc floor: a view crosses
+x[2] <- NA_real_
+x[3] <- NaN
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        view = _exporter(np.asarray(ch.recv(timeout=30)))
+        arr = pa.array(view)
+        assert arr.type == pa.float64()
+        assert arr.null_count == 1
+        assert arr[1].as_py() is None
+        assert np.isnan(arr[2].as_py())  # a valid value, not a null
+        ch.send("ack")
+    finally:
+        ch.close()
+
+
+def test_export_r_double_attributed_na(r_mizu):
+    # the layout tier's stamped section: an attributed (dim) double with
+    # an NA and a NaN exports the carried bitmap, the NaN lane valid
+    src = """
+x <- matrix(as.numeric(seq_len(100000)) + 0, nrow = 100)
+x[2] <- NA_real_
+x[3] <- NaN
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        view = _exporter(ch.recv(timeout=30))
+        assert view is not None
+        arr = pa.array(view)
+        assert arr.null_count == 1
+        assert arr[1].as_py() is None
+        assert np.isnan(arr[2].as_py())
+        ch.send("ack")
+    finally:
+        ch.close()
+
+
+def test_export_r_frame_double_column_na(r_mizu):
+    # a tree-borrowed MIZL leaf: an R data.frame's double column exports
+    # its carried per-column section — the NAs as nulls, the NaN valid
+    src = """
+df <- data.frame(x = as.numeric(seq_len(100000)) + 0)
+df$x[2] <- NA_real_
+df$x[3] <- NaN
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(timeout=30)
+        assert isinstance(f, pymizu.Frame)
+        view = _exporter(f.to_dict()["x"])
+        assert view is not None
+        arr = pa.array(view)
+        assert arr.null_count == 1
+        assert arr[1].as_py() is None
+        assert np.isnan(arr[2].as_py())
+        ch.send("ack")
+    finally:
+        ch.close()
+
+
+def test_export_double_known_free_no_bitmap(echo):
+    # a numpy send stamps {0, -1} (authoritatively null-free): genuine
+    # NaN values export as values — no bitmap, no scan
+    a = np.arange(100000, dtype=np.float64)
+    a[1] = np.nan
+    assert echo.send(a) is True
+    view = _exporter(echo.recv(timeout=5))
+    arr = pa.array(view)
+    assert arr.type == pa.float64()
+    assert arr.null_count == 0
+    assert np.isnan(arr[1].as_py())
+
+
+def test_uint64_frame_exact_py_py(echo):
+    # every current-version peer pair crosses uint64 verbatim: the dtype,
+    # the past-2^63 lanes and the nulls all exact — and silently (the
+    # sentinel counts exclude verbatim columns). Past the floor the MIZL
+    # region carries the marker; below it the pickle form does
+    u = pa.array(
+        [0, 1, 2**53 + 1, 2**63, 2**64 - 1] * 2000 + [None], type=pa.uint64()
+    )
+    f = pymizu.Frame.from_arrow(pa.table({"u": u}))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert echo.send(f) is True
+        g = echo.recv(timeout=10)
+    out = pa.table(g)
+    assert out.schema.field("u").type == pa.uint64()
+    assert out.column("u").to_pylist() == u.to_pylist()
+    small = pymizu.Frame.from_arrow(
+        pa.table({"u": pa.array([2**63, None], type=pa.uint64())})
+    )
+    assert echo.send(small) is True
+    g2 = echo.recv(timeout=5)
+    assert pa.table(g2).column("u").to_pylist() == [2**63, None]
+
+
+def test_uint64_frame_exact_pool_frameref(pool):
+    # the FRAMEREF leaf: a Frame task argument past the floor crosses to
+    # the worker as a region and the result back the same way, exact
+    u = pa.array([2**63, 2**64 - 1] * 5000 + [None], type=pa.uint64())
+    f = pymizu.Frame.from_arrow(pa.table({"u": u}))
+    t = pool.submit(identity, f)
+    g = t.collect(timeout=10)
+    assert pa.table(g).column("u").to_pylist() == u.to_pylist()
+
+
+def test_py_py_frame_genuine_sentinels_no_warning(echo):
+    # the warnings gate: genuine INT32_MIN / INT64_MIN lanes in masked
+    # columns cross to a Python peer identically — the R-semantics counts
+    # are noise on a Py->Py send and stay silent
+    t = pa.table(
+        {
+            "i": pa.array([-(2**31), None] * 10000, type=pa.int32()),
+            "l": pa.array([-(2**63), None] * 10000, type=pa.int64()),
+        }
+    )
+    f = pymizu.Frame.from_arrow(t)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert echo.send(f) is True
+        g = echo.recv(timeout=10)
+    out = pa.table(g)
+    assert out.column("i").to_pylist()[:4] == [-(2**31), None] * 2
+    assert out.column("l").to_pylist()[:4] == [-(2**63), None] * 2
+
+
+def test_int64_frame_column_genuine_sentinel_warns_foreign():
+    # the send-side int64 collision count (the masked walk's, genuine
+    # int64 columns only): a valid INT64_MIN lane in a masked column
+    # reads as NA_integer64_ in R — warned once, for the R peer
+    h, p = foreign_pair(caps=63)
+    t = pa.table({"l": pa.array([-(2**63), None] * 10000, type=pa.int64())})
+    with pytest.warns(RuntimeWarning, match="NA_integer64_ in R"):
+        assert h.send(t) is True
+    p.destroy()
+    h.destroy()
 
 
 def test_export_polars_smoke(echo):

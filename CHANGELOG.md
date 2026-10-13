@@ -10,6 +10,29 @@ Initial pre-release.
 
 ### Changed
 
+- A received double view's Arrow export now honors the region's validity
+  section: `NA_real_` exports as an Arrow null and a genuine NaN stays a
+  valid value — off the carried bitmap when the region carries one, off
+  a lazy payload scan when it does not (the flat reserve's common path),
+  and never for a known-NA-free region. An R -> Python -> R relay
+  through `pa.array(view)` is now exact. `_MapOutView` shares the rule.
+  `np.asarray` keeps the NaN payload as before.
+- uint64 frame columns cross verbatim (channels and pools, Python and R
+  alike). `Frame.from_arrow()` keeps the dtype exact — the eager float64
+  conversion and its silent under-2^53 dtype loss are gone, and the
+  past-2^53 warning moves from adoption time to the foreign send. On the
+  wire the column stages as a verbatim INT64 MIZL leaf carrying a
+  `u64 = TRUE` attribute. R's value landing stays double + `NA` past
+  2^53, warned at the read; the Arrow export (`pa.table(frame)`, R's
+  `mizu_as_arrow()`) is bit-exact. Bare numpy / Arrow uint64 arrays keep
+  converting with the range warning, whose text is now "N uint64
+  value(s) beyond +/-2^53 convert to NA_real_".
+- An Arrow int64 column with a validity bitmap and a genuine
+  `-9223372036854775808` on a valid lane now warns at send ("read as
+  NA_integer64_ in R"), mirroring the int32 warning. Both R-semantics
+  sentinel counts now fire only for an R peer — the columns are written
+  identically to every peer, so they no longer warn on Python-to-Python
+  sends; the range warning still reports to every peer.
 - Nanosecond Arrow datetime fidelity. `timestamp[ns]` and `duration[ns]`
   columns now keep their counts and unit verbatim end to end:
   `Frame.from_arrow()` adopts them unchanged (previously it rescaled to

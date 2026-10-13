@@ -1279,7 +1279,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 63)  # R: all six caps
+        assert ch._h._peer_ident() == (2, 127)  # R: all seven caps
     finally:
         ch.close()
 
@@ -1719,6 +1719,110 @@ mizu::mizu_send(ch, inherits(df$u, "difftime") &&
             )
         )
         assert ch.recv(30) is True
+    finally:
+        ch.close()
+
+
+def _exporter(arr):
+    # the _ShmView at the end of the .base chain (test_arrow.py's helper)
+    base = getattr(arr, "base", None)
+    while base is not None and not hasattr(base, "refcount"):
+        base = getattr(base, "base", None)
+    return base
+
+
+def test_crosslang_real_relay_via_arrow_exact(r_mizu):
+    # R->Py->R through the view's Arrow export: NA_real_ crosses as an
+    # Arrow null (back to NA), a genuine NaN stays a value
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+x <- as.numeric(seq_len(100000)) + 0
+x[2] <- NA_real_
+x[3] <- NaN
+mizu::mizu_send(ch, x)
+df <- mizu::mizu_recv(ch, timeout = 60)
+ok <- tryCatch({
+  stopifnot(is.data.frame(df), is.double(df$x),
+            identical(length(df$x), length(x)),
+            is.na(df$x[2]) && !is.nan(df$x[2]),
+            is.nan(df$x[3]),
+            identical(df$x[-(2:3)], x[-(2:3)]))
+  TRUE
+}, error = function(e) conditionMessage(e))
+mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        view = _exporter(np.asarray(ch.recv(timeout=60)))
+        assert view is not None
+        arr = pa.array(view)
+        assert arr.null_count == 1
+        assert ch.send(pa.table({"x": arr})) is True
+        assert ch.recv(timeout=60) == "OK"
+    finally:
+        ch.close()
+
+
+def test_crosslang_uint64_frame_exact_to_py(r_mizu):
+    # R's uint64 Arrow column lands verbatim (both bindings advertise
+    # MIZU_CAP_MIZL_U64V): dtype, the past-2^63 lanes and the nulls exact
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+i <- arrow::Array$create(
+  c(0, -9.2233720368547758e18, NA, 9007199254740994, rep(1, 9996)))
+u <- i$cast(arrow::int64(), safe = FALSE)$cast(arrow::uint64(), safe = FALSE)
+mizu::mizu_send(ch, arrow::arrow_table(u = u))
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(timeout=60)
+        out = pa.table(f)
+        assert out.schema.field("u").type == pa.uint64()
+        assert out.column("u").to_pylist()[:6] == [
+            0,
+            2**63,
+            None,
+            2**53 + 2,
+            1,
+            1,
+        ]
+        ch.send("ack")
+    finally:
+        ch.close()
+
+
+def test_crosslang_uint64_frame_exact_to_r(r_mizu):
+    # Py->R is verbatim too (the verdict keys on the reader's caps, which
+    # mizu advertises): R's Arrow export of the landing is bit-exact; the
+    # value landing stays double + NA past 2^53, warned at the read
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+df <- mizu::mizu_recv(ch, timeout = 60)
+warned <- tryCatch({ df$u + 0; FALSE }, warning = function(w) TRUE)
+v <- suppressWarnings(df$u + 0)
+s <- mizu::mizu_as_arrow(df)
+fmt <- s$get_schema()$children$u$format
+tab <- arrow::as_arrow_table(s)
+ok <- tryCatch({
+  stopifnot(fmt == "L", warned,
+            is.na(v[2]) && is.na(v[3]) && is.na(v[4]) && v[1] == 0 &&
+              v[5] == 1,
+            identical(tab$u$cast(arrow::utf8())$as_vector()[1:5],
+                      c("0", "9223372036854775808", NA, "9007199254740994",
+                        "1")))
+  TRUE
+}, error = function(e) conditionMessage(e))
+mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        u = pa.array(
+            [0, 2**63, None, 2**53 + 2] + [1] * 9996, type=pa.uint64()
+        )
+        assert ch.send(pa.table({"u": u})) is True
+        assert ch.recv(timeout=60) == "OK"
     finally:
         ch.close()
 

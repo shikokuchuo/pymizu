@@ -780,7 +780,7 @@ static uint8_t *masked_buf(const uint8_t *values, const uint8_t *valid,
     if (bitmap_at(valid, i)) continue;
     switch (kind) {
     case FCOL_F64: store_na_r(buf + 8 * i); break;
-    case FCOL_I64: case FCOL_TS: case FCOL_TD: {
+    case FCOL_I64: case FCOL_TS: case FCOL_TD: case FCOL_U64: {
       const int64_t na = MIZU_NA_INT64;
       memcpy(buf + 8 * i, &na, 8);
       break;
@@ -876,6 +876,41 @@ PyObject *ixr_masked_i64(const uint8_t *values, const uint8_t *valid,
     ixr_vec_conv("int64", buf, n, 8, NULL, NULL);
   free(buf);
   return out;
+}
+
+PyObject *ixr_masked_u64(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n) {
+  if (valid == NULL || masked_nulls(valid, n) == 0)
+    return ixr_vec_raw("uint64", values, n, 8);
+  PyObject *np = mizu_py_numpy_module();
+  if (np == NULL) {
+    uint8_t *buf = masked_buf(values, valid, n, 8, FCOL_U64);
+    if (buf == NULL) return NULL;
+    PyObject *out = ixr_memoryview(buf, (size_t) n * 8);
+    free(buf);
+    return out;
+  }
+  /* masked: float64 + NaN (parity with masked int32 — the Arrow export
+     is the exact path) */
+  Py_ssize_t dims[1] = { (Py_ssize_t) n };
+  PyObject *arr = ixr_np_alloc(dims, 1, "float64", 0);
+  if (arr == NULL) return NULL;
+  Py_buffer v;
+  if (PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE) < 0) {
+    Py_DECREF(arr);
+    return NULL;
+  }
+  const uint64_t *p = (const uint64_t *) values;
+  for (uint64_t i = 0; i < n; i++) {
+    if (bitmap_at(valid, i)) {
+      double x = (double) p[i];
+      memcpy((uint8_t *) v.buf + 8 * i, &x, 8);
+    } else {
+      store_na_r((uint8_t *) v.buf + 8 * i);
+    }
+  }
+  PyBuffer_Release(&v);
+  return arr;
 }
 
 PyObject *ixr_masked_days(const uint8_t *values, const uint8_t *valid,
@@ -1086,6 +1121,11 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
       ents[i].kind = AV_INT;
       memcpy(&ents[i].val.v, &vit.u64[0], 8);
       break;
+    case MIZU_IX_LGL:
+      /* a logical attr rides AV_INT (0/1, NA 2 — the u64 marker's form) */
+      ents[i].kind = AV_INT;
+      ents[i].val.v = (int64_t) vit.u64[0];
+      break;
     default:
       /* vit was already consumed by the mizu_ix_next above; anything
          outside the attribute vocabulary is a decline, never a re-read
@@ -1160,6 +1200,13 @@ static int class_is(attr_ent *e, const char *a, const char *b) {
 static int tscale_ns(const attr_ent *e) {
   return e != NULL && e->kind == AV_STR && e->val.count == 2 &&
     memcmp(e->val.ptr, "ns", 2) == 0;
+}
+
+/* The u64 marker's verbatim verdict (the MIZU_CAP_MIZL_U64V leaf form):
+   {u64 = TRUE} — consumed, never applied as an attribute. */
+static int u64_marked(const attr_ent *ents, int nent) {
+  const attr_ent *u = attr_find(ents, nent, MIZU_IX_ATTR_U64);
+  return u != NULL && u->kind == AV_INT && u->val.v == 1;
 }
 
 /* The no-home error, naming the attribute names and the class. */
@@ -2572,6 +2619,16 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
     c->borrowed = 1;
     tree_valid(c, base, e->valid);
     rc = 0;
+  } else if (nent == 1 && tag == MIZU_TYPE_INT64 &&
+             u64_marked(ents, nent)) {
+    /* the verbatim uint64 leaf (MIZU_CAP_MIZL_U64V): the attr-free
+       fixed-width fill shape, the marker consumed by the verdict */
+    c->kind = FCOL_U64;
+    c->n = e->length;
+    c->values = (uint8_t *) data;
+    c->borrowed = 1;
+    tree_valid(c, base, e->valid);
+    rc = 0;
   } else {
     ixr_no_home(ents, nent, "an attributed frame column");
   }
@@ -2745,6 +2802,12 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
       out = realv_to_timedelta(data, (uint64_t) n, us);
     else
       ixr_no_home(ents, nent, "an attributed value");
+  } else if (nent == 1 && type == MIZU_TYPE_INT64 &&
+             u64_marked(ents, nent)) {
+    /* a verbatim uint64 leaf as a plain list element: the Frame column
+       read's rule (exact uint64, masked promoting to float64) — a view
+       at the wire tag would read sign-flipped int64 */
+    out = ixr_masked_u64(data, valid, (uint64_t) n);
   } else {
     ixr_no_home(ents, nent, "an attributed value");
   }
@@ -3127,6 +3190,33 @@ static void ixe_fcol(ixw *w, const fcol *c) {
                                  (uint64_t) c->n));
     }
     break;
+  case FCOL_U64: {
+    /* uint64 has no 'I' form: the REAL conversion an older-version
+       reader lands (the core's CVT_U64_REAL rule — past-2^53 valid
+       lanes NA, counted; the MIZL frame path is verbatim for a peer
+       advertising MIZU_CAP_MIZL_U64V) */
+    const uint64_t *us = (const uint64_t *) c->values;
+    IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, (uint64_t) c->n));
+    if (w->decline) return;
+    if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
+      uint8_t *dst = w->dst + w->total;
+      for (int64_t i = 0; i < c->n; i++) {
+        const int na = c->valid != NULL && !bitmap_at(c->valid, i);
+        if (na || us[i] > 9007199254740992ULL) {
+          store_na_r(dst + 8 * i);
+          w->warn.n_range += !na;
+        } else {
+          double v = (double) us[i];
+          memcpy(dst + 8 * i, &v, 8);
+        }
+      }
+    } else if (w->dst != NULL) {
+      w->overflow = 1;
+      w->dst = NULL;
+    }
+    w->total += (size_t) c->n * 8;
+    break;
+  }
   case FCOL_U8:
     IXW_PUT(w, mizu_ix_put_vec(IXW_DST(w), MIZU_TYPE_RAW, c->values,
                                (uint64_t) c->n));
@@ -4726,7 +4816,7 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
             /* staged: the conversion warnings raise after the write half
                completed (a raise-as-error rolls the unpublished
                reservation back) */
-            rc = mizu_py_cvt_warn(&warn) != 0 ? 1 : 0;
+            rc = mizu_py_cvt_warn(&warn, x->lang) != 0 ? 1 : 0;
             goto done;
           }
         }
@@ -4750,7 +4840,7 @@ done:
   free(keep2);
   /* the write half completed: raise the accumulated conversion warnings
      (the MIZL paths raised their own and carry none here) */
-  return rc == 0 && mizu_py_cvt_warn(&x->warn) != 0 ? 1 : rc;
+  return rc == 0 && mizu_py_cvt_warn(&x->warn, x->lang) != 0 ? 1 : rc;
 }
 
 /* The single (Series / ChunkedArray) paths: the conversion table onto the
@@ -4858,7 +4948,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
         }
         off += n * pc->row->w_out;
       }
-      return mizu_py_cvt_warn(&warn) != 0 ? 1 : 0;
+      return mizu_py_cvt_warn(&warn, x->lang) != 0 ? 1 : 0;
     }
     /* a declined reservation degrades to the 'I' stream */
   }
@@ -4869,7 +4959,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     pc->kind == PC_TD ? ixs_single_td_emit :
     pc->kind == PC_TS ? ixs_single_ts_emit : ixs_single_cvt_emit;
   int rc = ixs_stage_emit(x, hdr, payload, inline_max, h, emit);
-  return rc == 0 && mizu_py_cvt_warn(&x->warn) != 0 ? 1 : rc;
+  return rc == 0 && mizu_py_cvt_warn(&x->warn, x->lang) != 0 ? 1 : rc;
 }
 
 static int ixs_run(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -4942,7 +5032,8 @@ static int ixs_stage_arrow_pair(PyObject *obj, mizu_slot_hdr *hdr,
 /* The __arrow_c_stream__ front-end. */
 int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint8_t *payload, uint32_t inline_max,
-                                 mizu_handle *h, uint32_t peer_caps) {
+                                 mizu_handle *h, uint32_t peer_lang,
+                                 uint32_t peer_caps) {
   if (Py_TYPE(obj) == &MizuFrameType) return -1;   /* the writer's case */
   if (!PyObject_HasAttrString(obj, "__arrow_c_stream__"))
     return PyObject_HasAttrString(obj, "__arrow_c_array__") ?
@@ -4992,6 +5083,7 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
   x.st = st;
   x.cap = cap;
   x.caps = peer_caps;
+  x.lang = peer_lang;
   int rc = ixs_run(&x, hdr, payload, inline_max, h);
   ixs_free(&x);
   return rc;
@@ -5056,7 +5148,9 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   {
     mizu_arrow_warn warn;
     if (mizu_arrow_stage(h, ar, hdr, payload, &warn) != MIZU_OK) goto out;
-    rc = mizu_py_cvt_warn(&warn) != 0 ? 1 : 0;
+    /* same-language only: the R-semantics sentinel counts are noise here
+       (the columns cross identically), n_range still reports */
+    rc = mizu_py_cvt_warn(&warn, MIZU_LANG_PYTHON) != 0 ? 1 : 0;
   }
 out:
   free(blob);
@@ -5144,6 +5238,14 @@ static void fc_err_reraise(const char *name) {
    values). 1 adopt, 0 copy, -1 a malformed utf8 offsets buffer declined
    (adoption trusts producer geometry the owned constructors never had to:
    the O(n) monotonic walk bounds it). */
+/* The uint64 format's verbatim classify: a 'L' column builds/adopts
+   FCOL_U64 off the format — the Frame exposes uint64 exactly, so the
+   caps-0 open's conversion verdict (its eager float64 build, with the
+   under-2^53 silent dtype loss) never applies. */
+static int u64_arrow_format(const char *f) {
+  return f != NULL && f[0] == 'L' && f[1] == '\0';
+}
+
 static int fc_adopt_gate(ixs *x, int col, char **names) {
   const ixs_pcol *pc = &x->cols[col];
   const ArrowArray *a = x->hold.arrs[0].children[col];
@@ -5151,6 +5253,8 @@ static int fc_adopt_gate(ixs *x, int col, char **names) {
   if (a->offset != 0) return 0;   /* a sliced column: the copy arm rebases */
   switch (pc->kind) {
   case PC_CVT:
+    if (u64_arrow_format(sc->format))
+      return 1;   /* the buffers are already the u64 fcol layout */
     return pc->row->cvt == CVT_COPY &&
       (pc->row->wire == MIZU_TYPE_REAL || pc->row->wire == MIZU_TYPE_INT ||
        pc->row->wire == MIZU_TYPE_INT64 || pc->row->wire == MIZU_TYPE_RAW);
@@ -5217,6 +5321,54 @@ static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
   c->kind = kind;
   c->n = n;
   c->values = buf;
+  return 0;
+}
+
+/* The uint64 copy arm: the identity lanes verbatim, nulls an owned
+   bitmap — no mizu_cvt row applies (pymizu's identity static is never
+   the core's CVT_ROW_I64_V twin, so the masked convert would count the
+   genuine INT64_MIN lanes verbatim uint64 must treat as values), and no
+   sentinel form exists (the fill collides with 2^63). */
+static int fcol_build_u64(ixs *x, int col, fcol *c) {
+  int64_t n = x->hold.rows;
+  uint64_t *buf = malloc((size_t) (n != 0 ? n : 1) * 8);
+  if (buf == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  uint8_t *valid = NULL;
+  int64_t nulls = 0, done = 0;
+  for (size_t b = 0; b < x->hold.nb; b++) {
+    ArrowArray *a = x->hold.arrs[b].children[col];
+    const uint8_t *data = (const uint8_t *) a->buffers[1];
+    memcpy(buf + done, data + (size_t) a->offset * 8,
+           (size_t) a->length * 8);
+    for (int64_t k = 0; k < a->length; k++) {
+      const int64_t i = done + k;
+      if (arrow_valid(a, k)) {
+        if (valid != NULL) valid[i >> 3] |= 1 << (i & 7);
+      } else {
+        nulls++;
+        if (valid == NULL) {
+          valid = calloc(((size_t) n + 7) / 8, 1);
+          if (valid == NULL) {
+            free(buf);
+            PyErr_NoMemory();
+            return -1;
+          }
+          for (int64_t q = 0; q < i; q++) valid[q >> 3] |= 1 << (q & 7);
+        }
+      }
+    }
+    done += a->length;
+  }
+  c->kind = FCOL_U64;
+  c->n = n;
+  c->values = (uint8_t *) buf;
+  c->valid = valid;
+  c->valid_owned = valid != NULL;
+  c->vnulls = nulls;
+  if (valid == NULL) c->known_free = 1;
   return 0;
 }
 
@@ -5400,7 +5552,9 @@ static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
   const ArrowArray *a = x->hold.arrs[0].children[col];
   switch (pc->kind) {
   case PC_CVT:
-    c->kind = pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
+    c->kind = u64_arrow_format(x->schema.children[col]->format) ?
+      FCOL_U64 :
+      pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
       pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
       pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 : FCOL_U8;
     c->values = (uint8_t *) a->buffers[1];
@@ -5599,12 +5753,14 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         int rc;
         switch (pc->kind) {
         case PC_CVT:
-          rc = fcol_build_cvt(&x, i, c, pc->row,
-                              pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
-                              pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
-                              pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 :
-                              pc->row->wire == MIZU_TYPE_RAW ? FCOL_U8 :
-                              FCOL_LGL, &warn);
+          rc = u64_arrow_format(x.schema.children[i]->format) ?
+            fcol_build_u64(&x, i, c) :
+            fcol_build_cvt(&x, i, c, pc->row,
+                           pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
+                           pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
+                           pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 :
+                           pc->row->wire == MIZU_TYPE_RAW ? FCOL_U8 :
+                           FCOL_LGL, &warn);
           break;
         case PC_STR: rc = fcol_build_str(&x, i, c, names); break;
         case PC_DICT: rc = fcol_build_dict(&x, i, c); break;
@@ -5617,7 +5773,9 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
           goto done;
         }
       }
-      if (mizu_py_cvt_warn(&warn) != 0) {
+      /* the adoption has no peer (the Frame's destination is unknown at
+         construction): the counts report unconditionally */
+      if (mizu_py_cvt_warn(&warn, MIZU_LANG_R) != 0) {
         frame_cols_decref(fc);
         fc = NULL;
         goto done;
@@ -5834,7 +5992,10 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
           ixw_raise(&w2);
           goto out;
         }
-        if (mizu_py_cvt_warn(&w2.warn) != 0) goto out;
+        /* the sentinel counts key on the worker language (the pool
+           word's language byte), not the submitter's */
+        if (mizu_py_cvt_warn(&w2.warn, (uint32_t) (word & 0xff)) != 0)
+          goto out;
         hdr->kind = MIZU_KIND_INLINE;
         hdr->len = (uint32_t) w2.total;
         hdr->aux = 0;      /* no keeperless claim: inert on task entries */
@@ -5853,7 +6014,8 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     }
     /* the by-value paths: the record walk's warn record is the write's
        own (the deterministic walk warns identically) */
-    if (mizu_py_cvt_warn(&w.warn) != 0) goto out;
+    if (mizu_py_cvt_warn(&w.warn, (uint32_t) (word & 0xff)) != 0)
+      goto out;
     if (plan.ncand == 0 && total <= (size_t) inline_max) {
       /* one walk: the record walk's write is the stream */
       hdr->kind = MIZU_KIND_INLINE;
@@ -5944,7 +6106,7 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs, target, ident);
-  if (mizu_py_cvt_warn(&w2.warn) != 0) {
+  if (mizu_py_cvt_warn(&w2.warn, target) != 0) {
     free(buf);
     return NULL;
   }
@@ -6325,7 +6487,7 @@ PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_map_desc(&w2, code_s, code_n, (int) kind, args, kwargs, x, target,
                MIZU_PY_IDENT);
-  if (mizu_py_cvt_warn(&w2.warn) != 0) {
+  if (mizu_py_cvt_warn(&w2.warn, target) != 0) {
     free(buf);
     return NULL;
   }
@@ -6640,7 +6802,9 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   }
   const size_t n = w.total;
   if (!w.overflow) {   /* n <= inline_max: the one-walk INLINE frame */
-    if (mizu_py_cvt_warn(&w.warn) != 0) return 1;
+    /* the 'I' codec's reader is an R peer by construction (stage_impl's
+       foreign block), so the sentinel counts always report here */
+    if (mizu_py_cvt_warn(&w.warn, MIZU_LANG_R) != 0) return 1;
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = MIZU_AUX_F_KEEPERLESS;
@@ -6663,7 +6827,8 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     PyErr_SetString(MizuError, "pymizu: interop write mismatch");
     return 1;
   }
-  return mizu_py_cvt_warn(&w2.warn);
+  /* the corpus hook: the 'I' stream's reference reader is R */
+  return mizu_py_cvt_warn(&w2.warn, MIZU_LANG_R);
 }
 
 /* The 'I' builder. The pool collect-side result reader resolves a 0x13
@@ -6710,7 +6875,7 @@ PyObject *pymizu_ix_write_stream(PyObject *obj) {
   w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_stream(&w2, obj);
-  if (mizu_py_cvt_warn(&w2.warn) != 0) {
+  if (mizu_py_cvt_warn(&w2.warn, MIZU_LANG_R) != 0) {
     free(buf);
     return NULL;
   }

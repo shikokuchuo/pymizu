@@ -609,19 +609,29 @@ const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
 /* The conversion warnings, raised after the write half completes (never
    mid-write: under warnings-as-errors a raise must not leave a claimed
    reservation half-written — the write finishes, the warning raises, and
-   the core rolls the unpublished reservation back). */
-int mizu_py_cvt_warn(const cvt_warn *warn) {
+   the core rolls the unpublished reservation back). n_range reports to
+   every peer (it fires exactly at the loss); the R-semantics sentinel
+   counts report only for an R peer — the columns are written identically
+   to every peer, so "reads as NA in R" is noise on a Py->Py send. */
+int mizu_py_cvt_warn(const cvt_warn *warn, uint32_t peer_lang) {
   if (warn->n_range != 0 &&
       PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
-                       "pymizu: %llu integer value(s) beyond +/-2^53 convert "
-                       "to NA on the R side",
+                       "pymizu: %llu uint64 value(s) beyond +/-2^53 convert "
+                       "to NA_real_",
                        (unsigned long long) warn->n_range) < 0)
     return 1;
+  if (peer_lang != MIZU_LANG_R) return 0;
   if (warn->n_intmin != 0 &&
       PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
                        "pymizu: %llu int32 value(s) of -2147483648 read as "
                        "NA_integer_ in R",
                        (unsigned long long) warn->n_intmin) < 0)
+    return 1;
+  if (warn->n_int64 != 0 &&
+      PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                       "pymizu: %llu int64 value(s) of -9223372036854775808 "
+                       "read as NA_integer64_ in R",
+                       (unsigned long long) warn->n_int64) < 0)
     return 1;
   return 0;
 }
@@ -635,13 +645,14 @@ int mizu_py_cvt_warn(const cvt_warn *warn) {
 static int stage_convert(const uint8_t *src, size_t nelts,
                          const cvt_row *row, const uint8_t *valid,
                          uint64_t off, mizu_slot_hdr *hdr, uint8_t *payload,
-                         uint32_t inline_max, mizu_handle *h) {
+                         uint32_t inline_max, mizu_handle *h,
+                         uint32_t peer_lang) {
   uint8_t *dst = mizu_stage_raw(h, (uint64_t) (nelts * row->w_out),
                                row->wire, hdr, payload, inline_max);
   if (dst == NULL) return -1;
-  cvt_warn warn = { 0, 0 };
+  cvt_warn warn = { 0, 0, 0 };
   mizu_cvt_convert(dst, src, valid, off, nelts, row, &warn);
-  return mizu_py_cvt_warn(&warn);
+  return mizu_py_cvt_warn(&warn, peer_lang);
 }
 
 /* The buffer-protocol front-end: key the table by the (char, itemsize)
@@ -649,13 +660,13 @@ static int stage_convert(const uint8_t *src, size_t nelts,
    channel-handle gate is the caller's. */
 static int stage_convert_buffer(const Py_buffer *v, mizu_slot_hdr *hdr,
                                 uint8_t *payload, uint32_t inline_max,
-                                mizu_handle *h) {
+                                mizu_handle *h, uint32_t peer_lang) {
   if (v->ndim > 1) return -1;
   const cvt_row *row = cvt_for_buffer(v->format, v->itemsize);
   if (row == NULL) return -1;
   return stage_convert((const uint8_t *) v->buf,
                        (size_t) v->len / row->w_in, row, NULL, 0,
-                       hdr, payload, inline_max, h);
+                       hdr, payload, inline_max, h, peer_lang);
 }
 
 /* The Arrow import front-end. Validate before touching a buffer (all
@@ -663,7 +674,8 @@ static int stage_convert_buffer(const Py_buffer *v, mizu_slot_hdr *hdr,
    pass. Returns 0 staged, 1 error, -1 not an Arrow producer. */
 static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
                                 mizu_slot_hdr *hdr, uint8_t *payload,
-                                uint32_t inline_max, mizu_handle *h) {
+                                uint32_t inline_max, mizu_handle *h,
+                                uint32_t peer_lang) {
   /* a consumed or moved struct has release == NULL (the spec's move
      semantics); a NULL bitmap is conformant only with no nulls */
   if (schema->release == NULL || array->release == NULL ||
@@ -688,7 +700,8 @@ static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
   /* a zero-length array short-circuits without touching the buffers:
      they may all be NULL, and memcpy(dst, NULL, 0) is UB */
   if (array->length == 0)
-    return stage_convert(NULL, 0, row, NULL, 0, hdr, payload, inline_max, h);
+    return stage_convert(NULL, 0, row, NULL, 0, hdr, payload, inline_max, h,
+                         peer_lang);
   /* the fast path iff there is no bitmap to read: the spec allows
      null_count == -1 ("not yet computed") with a non-NULL bitmap, and a
      NULL bitmap only when the count is 0, so key on the pointer */
@@ -705,13 +718,14 @@ static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
   size_t nelts = (size_t) array->length;
   if (row->cvt == CVT_BIT_LGL)
     return stage_convert(data, nelts, row, valid, off, hdr, payload,
-                         inline_max, h);
+                         inline_max, h, peer_lang);
   return stage_convert(data + off * row->w_in, nelts, row, valid, off,
-                       hdr, payload, inline_max, h);
+                       hdr, payload, inline_max, h, peer_lang);
 }
 
 static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
-                       uint32_t inline_max, mizu_handle *h) {
+                       uint32_t inline_max, mizu_handle *h,
+                       uint32_t peer_lang) {
   if (!PyObject_HasAttrString(obj, "__arrow_c_array__"))
     return -1;   /* a stream-only producer: the front-end's case */
   PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_array__");
@@ -734,7 +748,8 @@ static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     Py_DECREF(pair);
     return 1;
   }
-  int rc = stage_arrow_capsules(schema, array, hdr, payload, inline_max, h);
+  int rc = stage_arrow_capsules(schema, array, hdr, payload, inline_max, h,
+                                peer_lang);
   /* staging is synchronous — nothing aliases the producer's buffers:
      release the imported structs immediately (the capsules own the
      struct memory; release frees the producer's private resources) */
@@ -1465,7 +1480,8 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
           else if (type == 0 && foreign)
             /* the conversion pass is foreign-only: same-language
                handles keep identity dtypes and pickle the rest */
-            rc = stage_convert_buffer(&v, hdr, payload, inline_max, h);
+            rc = stage_convert_buffer(&v, hdr, payload, inline_max, h,
+                                      peer_lang);
         }
       }
       PyBuffer_Release(&v);
@@ -1478,10 +1494,11 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
        stream front-end (__arrow_c_stream__), then the 'I' writer —
        whose decline is the send-time DeclinedError */
-    int arc = stage_arrow(obj, hdr, payload, inline_max, h);
+    int arc = stage_arrow(obj, hdr, payload, inline_max, h, peer_lang);
     if (arc >= 0) return arc;
     int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
-                                           inline_max, h, peer_caps);
+                                           inline_max, h, peer_lang,
+                                           peer_caps);
     if (src >= 0) return src;
     /* the layout tiers past the zc floor: one layout write into a spill
        region, the peer wrapping a view — a list[str | None] as MIZS, a
@@ -2276,7 +2293,7 @@ int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
     want_valid = 1;
     break;
   case MIZU_TYPE_INT: *fmt = "i"; want_valid = 1; break;
-  case MIZU_TYPE_REAL: *fmt = "g"; break;
+  case MIZU_TYPE_REAL: *fmt = "g"; want_valid = 1; break;
   case MIZU_TYPE_INT64: *fmt = "l"; want_valid = 1; break;
   case MIZU_TYPE_RAW: *fmt = "C"; break;
   default:
@@ -2322,11 +2339,12 @@ int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
   } else {
     *values = data;
     if (want_valid && build_valid) {
-      /* scan-only for INT/INT64: the values stay the region's pages. One
-         fused pass counts and clears into an optimistically allocated
+      /* scan-only for INT/INT64/REAL: the values stay the region's pages.
+         One fused pass counts and clears into an optimistically allocated
          bitmap, freed when clean. Typed sentinel constants per branch —
          an int64 sentinel variable against int32 loads miscompiles here
-         (clang 17/21 -O2 widens the loads). */
+         (clang 17/21 -O2 widens the loads). REAL's test is the payload,
+         not isnan: NA_real_ a null, a genuine NaN a value. */
       loan->valid = (uint8_t *) malloc(nb != 0 ? nb : 1);
       if (loan->valid == NULL) goto nomem;
       memset(loan->valid, 0xFF, nb);
@@ -2340,6 +2358,15 @@ int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
             nulls++;
             loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
           }
+      } else if (tag == MIZU_TYPE_REAL) {
+        for (int64_t i = 0; i < n; i++) {
+          uint64_t b;
+          memcpy(&b, data + 8 * i, 8);
+          if (is_na_r(b)) {
+            nulls++;
+            loan->valid[i / 8] &= (uint8_t) ~(1u << (i % 8));
+          }
+        }
       } else {
         const int64_t *d64 = (const int64_t *) data;
         for (int64_t i = 0; i < n; i++)
@@ -2368,9 +2395,10 @@ Export the view through the Arrow C Data Interface: any Arrow consumer\n\
 (pyarrow, polars, duckdb) wraps the shared pages zero-copy. The export\n\
 holds its own mapping and refcount loan, released by the consumer's\n\
 release callback. A logical exports as Arrow bool with a validity bitmap\n\
-(the bit-packed values built at export); an integer or int64 exports with\n\
-a validity bitmap when NAs are present — R's sentinels become Arrow\n\
-nulls. NA_real_ reads as a NaN payload.");
+(the bit-packed values built at export); an integer, int64 or double\n\
+exports with a validity bitmap when NAs are present — R's sentinels\n\
+become Arrow nulls: NA_real_ exports as an Arrow null, NaN stays a\n\
+value; np.asarray keeps the NaN payload.");
 
 static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
                                     PyObject *kw) {
@@ -2444,13 +2472,12 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
   /* the validity source: the region's section when present, the lazy
      sentinel build when absent ({0, 0}), none when known-NA-free
      ({0, -1}). A tree leaf reads its own verdict, never the root's. The
-     tag gate is the helper's want_valid set: a REAL region's section,
-     when one exists, stays unexported. */
+     tag gate is the helper's want_valid set. */
   const uint8_t *validity = NULL;
   int64_t null_count = 0;
   int build_valid = 0;
   if (v->type == MIZU_TYPE_LGL || v->type == MIZU_TYPE_INT ||
-      v->type == MIZU_TYPE_INT64) {
+      v->type == MIZU_TYPE_INT64 || v->type == MIZU_TYPE_REAL) {
     if (v->loan != NULL) {
       if (v->valid != NULL) {
         validity = base + (v->valid -

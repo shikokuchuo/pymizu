@@ -80,7 +80,8 @@ frame_cols *frame_cols_new(int ncols, int64_t nrow) {
 
 int fcol_fixed_size(int kind) {
   switch (kind) {
-  case FCOL_F64: case FCOL_I64: case FCOL_TS: case FCOL_TD: return 8;
+  case FCOL_F64: case FCOL_I64: case FCOL_TS: case FCOL_TD:
+  case FCOL_U64: return 8;
   case FCOL_I32: case FCOL_LGL: case FCOL_DATE: case FCOL_DICT: return 4;
   case FCOL_C128: return 16;
   case FCOL_U8: return 1;
@@ -318,6 +319,8 @@ static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
     return ixr_masked_i32(c->values, c->valid, n);
   case FCOL_I64:
     return ixr_masked_i64(c->values, c->valid, n);
+  case FCOL_U64:
+    return ixr_masked_u64(c->values, c->valid, n);
   case FCOL_U8:
     return ixr_vec_raw("uint8", c->values, n, 1);
   case FCOL_C128:
@@ -490,6 +493,9 @@ static int64_t fcol_ensure_export(fcol *c) {
         na = v == MIZU_NA_INT64;
         break;
       }
+      case FCOL_U64:
+        na = 0;   /* verbatim uint64: INT64_MIN-pattern lanes are values */
+        break;
       default: {
         int32_t v;
         memcpy(&v, c->values + 4 * i, 4);
@@ -867,6 +873,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     case FCOL_F64: fmt = "g"; break;
     case FCOL_I32: fmt = "i"; break;
     case FCOL_I64: fmt = "l"; break;
+    case FCOL_U64: fmt = "L"; break;
     case FCOL_U8: fmt = "C"; break;
     case FCOL_LGL: fmt = "b"; break;
     case FCOL_STR: fmt = "u"; break;
@@ -1001,6 +1008,7 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
     PyObject *tuple = NULL;
     const char *kind = c->kind == FCOL_F64 ? "g" :
       c->kind == FCOL_I32 ? "i" :
+      c->kind == FCOL_U64 ? "L" :
       c->kind == FCOL_I64 ? "l" :
       c->kind == FCOL_U8 ? "C" :
       c->kind == FCOL_C128 ? "Z" :
@@ -1042,6 +1050,13 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
         memcpy(&x, c->values + 8 * j, 8);
         v = x == MIZU_NA_INT64 ? (Py_INCREF(Py_None), Py_None) :
           PyLong_FromLongLong(x);
+        break;
+      }
+      case FCOL_U64: {
+        /* no sentinel: nulls are the bitmap checked above */
+        uint64_t x;
+        memcpy(&x, c->values + 8 * j, 8);
+        v = PyLong_FromUnsignedLongLong(x);
         break;
       }
       case FCOL_U8:
@@ -1224,7 +1239,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     fcol *c = &cols[i];
     c->n = n;
     switch (kind[0]) {
-    case 'g': case 'Z': case 'C': case 'i': case 'l': case 'b':
+    case 'g': case 'Z': case 'C': case 'i': case 'l': case 'L': case 'b':
     case 'D': case 't': case 'T': case 's': case 'd':
       break;
     default:
@@ -1232,6 +1247,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     }
     c->kind = kind[0] == 'g' ? FCOL_F64 :
       kind[0] == 'i' ? FCOL_I32 :
+      kind[0] == 'L' ? FCOL_U64 :
       kind[0] == 'l' ? FCOL_I64 :
       kind[0] == 'C' ? FCOL_U8 :
       kind[0] == 'Z' ? FCOL_C128 :
@@ -1339,6 +1355,44 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       free(loffs);
       free(bytes);
       goto malformed;
+    }
+    if (c->kind == FCOL_U64) {
+      /* nulls bitmap-only: the pickle form's Nones, never a sentinel */
+      uint64_t *vals = malloc((size_t) (n != 0 ? n : 1) * 8);
+      uint8_t *valid = NULL;
+      int64_t nulls = 0;
+      if (vals == NULL) goto nomem;
+      for (Py_ssize_t j = 0; j < n; j++) {
+        PyObject *v = PyList_GET_ITEM(payload, j);
+        if (v == Py_None) {
+          nulls++;
+          if (valid == NULL) {
+            valid = calloc(((size_t) n + 7) / 8, 1);
+            if (valid == NULL) {
+              free(vals);
+              goto nomem;
+            }
+            for (Py_ssize_t q = 0; q < j; q++)
+              valid[q >> 3] |= 1 << (q & 7);
+          }
+          vals[j] = 0;
+        } else {
+          unsigned long long x = PyLong_AsUnsignedLongLong(v);
+          if (x == (unsigned long long) -1 && PyErr_Occurred()) {
+            free(vals);
+            free(valid);
+            goto malformed;
+          }
+          if (valid != NULL) valid[j >> 3] |= 1 << (j & 7);
+          vals[j] = (uint64_t) x;
+        }
+      }
+      c->values = (uint8_t *) vals;
+      c->valid = valid;
+      c->valid_owned = valid != NULL;
+      c->vnulls = nulls;
+      if (valid == NULL) c->known_free = 1;
+      goto next_col;
     }
     c->values = malloc((size_t) (n != 0 ? n : 1) * (size_t) elt);
     if (c->values == NULL) goto nomem;

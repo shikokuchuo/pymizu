@@ -20,8 +20,10 @@ enum {
   FCOL_DATE,  /* i32 days, MIZU_NA_INT32 null — Arrow date32 */
   FCOL_TS,    /* i64 counts of unit, MIZU_NA_INT64 null — Arrow timestamp */
   FCOL_TD,    /* i64 counts of unit, MIZU_NA_INT64 null — Arrow duration */
-  FCOL_STR64  /* a region MIZS block (the tree wrap): values = the block,
+  FCOL_STR64, /* a region MIZS block (the tree wrap): values = the block,
                  validity/i64 offsets/bytes in place — Arrow large_utf8 */
+  FCOL_U64    /* u64 lanes, MIZU_NA_INT64 a *value* (the verbatim uint64
+                 form): nulls bitmap-only, never sentinel-derived */
 };
 
 /* The adoption hold: one per single-batch Frame.from_arrow construction.
@@ -171,6 +173,8 @@ PyObject *ixr_masked_f64(const uint8_t *values, const uint8_t *valid,
 PyObject *ixr_masked_i32(const uint8_t *values, const uint8_t *valid,
                          uint64_t n);
 PyObject *ixr_masked_i64(const uint8_t *values, const uint8_t *valid,
+                         uint64_t n);
+PyObject *ixr_masked_u64(const uint8_t *values, const uint8_t *valid,
                          uint64_t n);
 PyObject *ixr_masked_days(const uint8_t *values, const uint8_t *valid,
                           uint64_t n);

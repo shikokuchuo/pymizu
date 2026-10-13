@@ -48,6 +48,7 @@ typedef struct {
   int64_t *nlevs;
   int64_t *lev_blens;
   uint32_t caps;       /* the peer's capability mask (frame gate) */
+  uint32_t lang;       /* the peer's language (the sentinel warnings gate) */
   PyObject *row_names; /* a same-language Frame's row_names (borrowed);
                           NULL writes the automatic c(NA, -n) form */
   cvt_warn warn;       /* the 'I' frame emit's conversion warnings,

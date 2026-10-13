@@ -57,10 +57,11 @@ void mizu_py_arrow_array_cap_free(PyObject *cap);
    _ShmView and _MapOutView exports. build_valid: no validity section
    exists — scan sentinels into an owned bitmap (loan->valid, freed when
    clean). The scan stays gated on the tag's want_valid, so build_valid=1
-   on a REAL/RAW export builds nothing. null_count is in/out: a caller
-   with a borrowed validity section pre-seeds it (the helper then leaves
-   it alone); either way the caller wires buffers[0] itself — the
-   borrowed section, or loan->valid when the scan found nulls. Fills
+   on a RAW export builds nothing; REAL scans by payload bits (is_na_r:
+   NA_real_ an Arrow null, a genuine NaN a value). null_count is in/out:
+   a caller with a borrowed validity section pre-seeds it (the helper
+   then leaves it alone); either way the caller wires buffers[0] itself —
+   the borrowed section, or loan->valid when the scan found nulls. Fills
    fmt/values/null_count. 0 ok, -1 with TypeError (CPLX) or
    MemoryError set. */
 int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
@@ -114,8 +115,13 @@ int mizu_py_strlist_probe(PyObject *obj, int64_t *str_bytes);
 /* The conversion kernels are the core's mizu_cvt_convert (mizu_ext.h);
    the Arrow keying its mizu_cvt_for_arrow. */
 /* The conversion warnings, raised after the write half completes (never
-   mid-write). 0 ok, 1 a warning raised as an error. */
-int mizu_py_cvt_warn(const cvt_warn *warn);
+   mid-write). The R-semantics sentinel counts (n_intmin, n_int64) report
+   only for an R peer — identity int columns are written identically to
+   every peer, so "reads as NA in R" is noise on a Py->Py send; n_range
+   is ungated (it fires exactly at the loss). peer_lang is the channel
+   handshake word's language byte, or the pool worker-ident word's for
+   pool writes. 0 ok, 1 a warning raised as an error. */
+int mizu_py_cvt_warn(const cvt_warn *warn, uint32_t peer_lang);
 
 // The temporal vocabulary (the 'I' writer's and layout.c's) ---------------------
 
@@ -181,7 +187,7 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
    (channel and pool). */
 #define MIZU_PY_CAPS \
   (MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL | MIZU_CAP_TASKREF | \
-   MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN)
+   MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN | MIZU_CAP_MIZL_U64V)
 #define MIZU_PY_IDENT MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_PY_CAPS)
 
 /* The MIZL remote-leaf directory tag (F2): the column lives in another
@@ -247,11 +253,13 @@ PyObject *pymizu_ix_runner_run(const uint8_t *src, size_t n,
    write the frame shape, non-struct the bare-bytes tiers / 0x0b / the
    temporal and factor shapes; past the zero-copy floor a frame the peer's
    capability mask admits stages as one MIZL region (or REF on an
-   unmodified round trip). 0 staged, 1 error (DeclinedError for a value
-   without a portable home), -1 not a stream producer. */
+   unmodified round trip). peer_lang gates the conversion warnings' two
+   R-semantics sentinel counts. 0 staged, 1 error (DeclinedError for a
+   value without a portable home), -1 not a stream producer. */
 int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint8_t *payload, uint32_t inline_max,
-                                 mizu_handle *h, uint32_t peer_caps);
+                                 mizu_handle *h, uint32_t peer_lang,
+                                 uint32_t peer_caps);
 
 /* The same-language MIZL branch (stage_impl's, ahead of pickle): an exact
    pymizu.Frame past the zero-copy floor stages as one MIZL region
