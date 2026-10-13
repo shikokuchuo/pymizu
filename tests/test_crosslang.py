@@ -31,6 +31,26 @@ repeat {
 
 
 @pytest.fixture(scope="module")
+def r_arrow(r_mizu):
+    """The R peer's arrow + nanoarrow packages (the uint64 frame exchange
+    constructs through arrow and exports through nanoarrow)."""
+    import subprocess
+
+    probe = subprocess.run(
+        [
+            "Rscript",
+            "-e",
+            "if (!all(vapply(c('arrow', 'nanoarrow'), requireNamespace, "
+            "TRUE, quietly = TRUE))) quit('no', 1)",
+        ],
+        capture_output=True,
+    )
+    if probe.returncode != 0:
+        pytest.skip("R arrow/nanoarrow packages not available")
+    return r_mizu
+
+
+@pytest.fixture(scope="module")
 def r_mizu():
     """The shipped R-peer launcher; its probe is the
     skip_if_no_child_mizu() mirror."""
@@ -1764,7 +1784,7 @@ mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
         ch.close()
 
 
-def test_crosslang_uint64_frame_exact_to_py(r_mizu):
+def test_crosslang_uint64_frame_exact_to_py(r_arrow):
     # R's uint64 Arrow column lands verbatim (both bindings advertise
     # MIZU_CAP_MIZL_U64V): dtype, the past-2^63 lanes and the nulls exact
     pa = pytest.importorskip("pyarrow")
@@ -1775,7 +1795,7 @@ u <- i$cast(arrow::int64(), safe = FALSE)$cast(arrow::uint64(), safe = FALSE)
 mizu::mizu_send(ch, arrow::arrow_table(u = u))
 mizu::mizu_recv(ch, timeout = 30)
 """
-    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    ch = pymizu.Channel.create(src, launcher=r_arrow)
     try:
         f = ch.recv(timeout=60)
         out = pa.table(f)
@@ -1793,7 +1813,7 @@ mizu::mizu_recv(ch, timeout = 30)
         ch.close()
 
 
-def test_crosslang_uint64_frame_exact_to_r(r_mizu):
+def test_crosslang_uint64_frame_exact_to_r(r_arrow):
     # Py->R is verbatim too (the verdict keys on the reader's caps, which
     # mizu advertises): R's Arrow export of the landing is bit-exact; the
     # value landing stays double + NA past 2^53, warned at the read
@@ -1816,7 +1836,7 @@ ok <- tryCatch({
 }, error = function(e) conditionMessage(e))
 mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
 """
-    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    ch = pymizu.Channel.create(src, launcher=r_arrow)
     try:
         u = pa.array(
             [0, 2**63, None, 2**53 + 2] + [1] * 9996, type=pa.uint64()

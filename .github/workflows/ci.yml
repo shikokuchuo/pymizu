@@ -93,7 +93,7 @@ jobs:
         env:
           GITHUB_PAT: ${{ secrets.CROSSLANG_PAT }}
         run: |
-          install.packages(c("bit64", "pak"))
+          install.packages(c("bit64", "pak", "arrow", "nanoarrow"))
           pak::pak("shikokuchuo/mizu")
         shell: Rscript {0}
 
