@@ -1299,7 +1299,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 127)  # R: all seven caps
+        assert ch._h._peer_ident() == (2, 95)  # R: all caps but MIZL_TSN
     finally:
         ch.close()
 

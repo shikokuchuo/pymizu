@@ -225,7 +225,7 @@ static int pv_col_match_strview(const pv_col *c, const ArrowArray *a) {
   }
   const uint8_t *views = (const uint8_t *) a->buffers[1];
   for (int64_t k = 0; k < c->length; k++) {
-    if (!arrow_valid(a, k)) continue;   /* the bitmaps proved the set */
+    if (!mizu_arrow_valid(a, k)) continue;   /* the bitmaps proved the set */
     /* the expected span, off the recorded offsets */
     int64_t lo, hi;
     if (i64) {

@@ -258,8 +258,11 @@ tools/vendor-libmizu.sh` for a local checkout).
   churn check live in the core stage; same-language callers pass the
   real caps word (a pool worker's `hctx->peer_caps` is 0 — `stage_impl`
   maps same-language + 0 to `MIZU_PY_CAPS`). The plans copy back out
-  for the kept emitters/builder (`ixs_plans_fill`; the dict levels are
-  owned copies, the `ixs_free` discipline).
+  for the kept emitters/builder (`ixs_plans_fill` — kind / row /
+  str_form only; the column bodies and dicts are the core's per-column
+  writers `mizu_arrow_col_body` / `_col_blob` over the open handle, and
+  the dict levels are read off batch 0's borrowed dictionary — the
+  from_arrow path packs its own where a build needs them).
 - The provenance registry (`src/shmframe.c`): an outgoing frame whose
   columns all match one registered export stages as the region's REF
   (Phase 3.8); per column, a matched column crosses as a remote leaf

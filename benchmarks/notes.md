@@ -865,3 +865,23 @@ residency, not the send number.
 
 Status: full suite 562 pass, 6 skip (pandas/duckdb-absence); ruff +
 ruff format + pyrefly clean.
+
+## 2026-10-14 — the frame-tier span gate + the per-column writer dedup
+
+The Arrow review's pymizu items: the frame tier now gates on the core's
+memoized frame span (the 'I' sizing's per-element string walk runs only
+on the by-value branches — it used to size and discard whenever the
+region won), the inline column emitters delegate to the core's new
+per-column writers (mizu_arrow_col_body / _col_blob; pymizu's copies
+deleted, the dictionary levels no longer copied out at open — the core
+reads batch 0's borrowed dictionary), and the memoized size re-runs
+after an override (libmizu 0f172a8, re-vendored). The wire does not
+change: byte identity holds across the cross-language suite.
+
+Results (A/B probe, worktree at a7e7d68 vs this build, an in-process
+foreign pair, a 2e5-row frame — double, int32, string, timestamp[us],
+string dictionary — best of 5 x 30 sends): 5610 us/send -> 5481 us/send
+(~130 us = the discarded sizing walk over one 2e5-row string column;
+proportionally larger on string-heavier frames).
+
+Status: full suite 590 pass, 6 skip (pandas/duckdb-absence).
