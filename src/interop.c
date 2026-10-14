@@ -4239,130 +4239,6 @@ static void ixs_decline(const char *what) {
                "pymizu: value is not portable to the peer (%s)", what);
 }
 
-/* The column emitters: two passes over the held batches (dst NULL sizes).
-   All return the byte count; the write pass cannot fail (validation ran
-   in the size pass). */
-
-typedef struct {
-  uint8_t *dst;
-  size_t total;
-} ixe;
-
-#define IXE_PUT(x, call) do { (x)->total += call; } while (0)
-#define IXE_DST(x) ((x)->dst != NULL ? (x)->dst + (x)->total : NULL)
-
-static void ixs_emit_cvt_col(ixe *e, ixs *x, int col) {
-  ixs_pcol *pc = &x->cols[col];
-  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), mizu_ix_tag_of(pc->row->wire),
-                           (uint64_t) x->hold.rows));
-  e->total += mizu_arrow_col_body(x->ar, col, IXE_DST(e), &x->warn);
-}
-
-static void ixs_emit_str_col(ixe *e, ixs *x, int col) {
-  ixs_pcol *pc = &x->cols[col];
-  IXE_PUT(e, mizu_ix_put_strv_begin(IXE_DST(e), (uint64_t) x->hold.rows));
-  for (size_t b = 0; b < x->hold.nb; b++) {
-    ArrowArray *a = x->single ? &x->hold.arrs[b] :
-      x->hold.arrs[b].children[col];
-    for (int64_t k = 0; k < a->length; k++) {
-      const uint8_t *s;
-      int32_t len;
-      /* a malformed record (a broken producer) degrades to NA like a
-         null — both passes see the same verdict, so the stream stays
-         consistent; it must never reach the put with a garbage span */
-      if (mizu_arrow_str_at(a, k, pc->str_form, &s, &len) != 1) {
-        IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), NULL, -1));
-      } else {
-        IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), s, len));
-      }
-    }
-  }
-}
-
-static void ixs_emit_date_col(ixe *e, ixs *x, int col) {
-  IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
-  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), MIZU_IX_TAG_REALV,
-                           (uint64_t) x->hold.rows));
-  e->total += mizu_arrow_col_body(x->ar, col, IXE_DST(e), &x->warn);
-  e->total += mizu_arrow_col_blob(x->ar, col, IXE_DST(e));
-}
-
-static void ixs_emit_ts_col(ixe *e, ixs *x, int col) {
-  IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
-  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), MIZU_IX_TAG_REALV,
-                           (uint64_t) x->hold.rows));
-  e->total += mizu_arrow_col_body(x->ar, col, IXE_DST(e), &x->warn);
-  e->total += mizu_arrow_col_blob(x->ar, col, IXE_DST(e));
-}
-
-/* A duration column (Arrow duration[unit], the scale in seconds) to the
-   difftime shape: realv seconds + the {class, units} dict. */
-static void ixs_emit_td_col(ixe *e, ixs *x, int col) {
-  IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
-  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), MIZU_IX_TAG_REALV,
-                           (uint64_t) x->hold.rows));
-  e->total += mizu_arrow_col_body(x->ar, col, IXE_DST(e), &x->warn);
-  e->total += mizu_arrow_col_blob(x->ar, col, IXE_DST(e));
-}
-
-static void ixs_emit_dict_col(ixe *e, ixs *x, int col) {
-  IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
-  IXE_PUT(e, ixe_vec_begin(IXE_DST(e), MIZU_IX_TAG_INTV,
-                           (uint64_t) x->hold.rows));
-  e->total += mizu_arrow_col_body(x->ar, col, IXE_DST(e), &x->warn);
-  e->total += mizu_arrow_col_blob(x->ar, col, IXE_DST(e));
-}
-
-/* The frame shape over the held batches. */
-static void ixs_emit_frame(ixe *e, ixs *x, char **names) {
-  IXE_PUT(e, mizu_ix_put_attr(IXE_DST(e)));
-  IXE_PUT(e, mizu_ix_put_list_begin(IXE_DST(e), (uint64_t) x->ncols));
-  for (int i = 0; i < x->ncols; i++) {
-    ixs_pcol *pc = &x->cols[i];
-    switch (pc->kind) {
-    case PC_CVT: ixs_emit_cvt_col(e, x, i); break;
-    case PC_STR: ixs_emit_str_col(e, x, i); break;
-    case PC_DICT: ixs_emit_dict_col(e, x, i); break;
-    case PC_DATE: ixs_emit_date_col(e, x, i); break;
-    case PC_TS: ixs_emit_ts_col(e, x, i); break;
-    case PC_TD: ixs_emit_td_col(e, x, i); break;
-    }
-  }
-  IXE_PUT(e, mizu_ix_put_dict_begin(IXE_DST(e), 3));
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_NAMES, IX_KEYLEN(MIZU_IX_ATTR_NAMES)));
-  if (x->ncols == 1) {
-    IXE_PUT(e, mizu_ix_put_str(IXE_DST(e), names[0],
-                               (int32_t) strlen(names[0])));
-  } else {
-    IXE_PUT(e, mizu_ix_put_strv_begin(IXE_DST(e), (uint64_t) x->ncols));
-    for (int i = 0; i < x->ncols; i++)
-      IXE_PUT(e, mizu_ix_put_strelt(IXE_DST(e), names[i],
-                                    (int32_t) strlen(names[i])));
-  }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_CLASS, IX_KEYLEN(MIZU_IX_ATTR_CLASS)));
-  {
-    static const char *cls[1] = { MIZU_IX_CLASS_DATAFRAME };
-    ixw w2;
-    memset(&w2, 0, sizeof(w2));
-    w2.dst = IXE_DST(e);
-    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
-    ixe_class(&w2, cls, 1);
-    e->total += w2.total;
-  }
-  IXE_PUT(e, mizu_ix_put_key(IXE_DST(e), MIZU_IX_ATTR_ROWNAMES, IX_KEYLEN(MIZU_IX_ATTR_ROWNAMES)));
-  {
-    ixw w2;
-    memset(&w2, 0, sizeof(w2));
-    w2.dst = IXE_DST(e);
-    w2.limit = SIZE_MAX;   /* the frame emitter's buffer: unbounded */
-    int64_t vals[2] = { 0, -x->hold.rows };
-    int na[2] = { 1, 0 };
-    ixe_intv(&w2, 2, vals, na);
-    e->total += w2.total;
-  }
-}
-
-
 // The front-end driver -------------------------------------------------------------
 
 /* Pull every batch (the size pass holds them; the write pass reads from
@@ -4496,8 +4372,6 @@ static char **ixs_names_collect(ixs *x) {
   return names;
 }
 
-static void ixs_emit_frame(ixe *e, ixs *x, char **names);
-
 static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max, mizu_handle *h) {
   x->ncols = (int) x->schema.n_children;
@@ -4583,17 +4457,12 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
         }
       }
     }
-    /* the by-value 'I' form, sized here: inline within the budget, else
-       the bytes tiers */
-    ixe e = { NULL, 0 };
-    e.total += mizu_ix_put_header(NULL);
-    ixs_emit_frame(&e, x, names);
-    size_t n = e.total;
-    ixe w = { NULL, 0 };
+    /* the by-value 'I' form: one core write straight off the Arrow
+       buffers (dst NULL sizes), inline within the budget, else the
+       bytes tiers */
+    const size_t n = mizu_arrow_write_ix(ar, NULL, &x->warn);
     if (n <= (size_t) inline_max) {
-      w.dst = payload;
-      w.total += mizu_ix_put_header(payload);
-      ixs_emit_frame(&w, x, names);
+      mizu_arrow_write_ix(ar, payload, &x->warn);
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
@@ -4604,9 +4473,7 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
         PyErr_NoMemory();
         goto done;
       }
-      w.dst = buf;
-      w.total += mizu_ix_put_header(buf);
-      ixs_emit_frame(&w, x, names);
+      mizu_arrow_write_ix(ar, buf, &x->warn);
       rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
       free(buf);
     }
@@ -4622,63 +4489,8 @@ done:
 }
 
 /* The single (Series / ChunkedArray) paths: the conversion table onto the
-   bare-bytes tiers, 0x0b for strings, the factor and temporal shapes. */
-static void ixs_single_str_emit(ixe *e, ixs *x) {
-  ixs_emit_str_col(e, x, 0);
-}
-
-static void ixs_single_dict_emit(ixe *e, ixs *x) {
-  ixs_emit_dict_col(e, x, 0);
-}
-
-static void ixs_single_date_emit(ixe *e, ixs *x) {
-  ixs_emit_date_col(e, x, 0);
-}
-
-static void ixs_single_ts_emit(ixe *e, ixs *x) {
-  ixs_emit_ts_col(e, x, 0);
-}
-
-static void ixs_single_td_emit(ixe *e, ixs *x) {
-  ixs_emit_td_col(e, x, 0);
-}
-
-static void ixs_single_cvt_emit(ixe *e, ixs *x) {
-  ixs_emit_cvt_col(e, x, 0);
-}
-
-/* Stage a finished stream: inline within the budget, else the bytes
-   tiers. emit runs twice (size, then write). */
-static int ixs_stage_emit(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
-                          uint32_t inline_max, mizu_handle *h,
-                          void (*emit)(ixe *, ixs *)) {
-  ixe e = { NULL, 0 };
-  e.total += mizu_ix_put_header(NULL);
-  emit(&e, x);
-  size_t n = e.total;
-  ixe w = { NULL, 0 };
-  if (n <= (size_t) inline_max) {
-    w.dst = payload;
-    w.total += mizu_ix_put_header(payload);
-    emit(&w, x);
-    hdr->kind = MIZU_KIND_INLINE;
-    hdr->len = (uint32_t) n;
-    hdr->aux = MIZU_AUX_F_KEEPERLESS;
-    return 0;
-  }
-  uint8_t *buf = malloc(n);
-  if (buf == NULL) {
-    PyErr_NoMemory();
-    return 1;
-  }
-  w.dst = buf;
-  w.total += mizu_ix_put_header(buf);
-  emit(&w, x);
-  int rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
-  free(buf);
-  return rc;
-}
-
+   bare-bytes tiers, the strv / factor / temporal value forms the core's
+   per-column 'I' writer (mizu_arrow_write_ix_col). */
 static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
                           uint32_t inline_max, mizu_handle *h) {
   x->ncols = 1;
@@ -4717,13 +4529,29 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     /* a declined reservation degrades to the 'I' stream */
   }
   {
-    void (*emit)(ixe *, ixs *) =
-      pc->kind == PC_STR ? ixs_single_str_emit :
-      pc->kind == PC_DICT ? ixs_single_dict_emit :
-      pc->kind == PC_DATE ? ixs_single_date_emit :
-      pc->kind == PC_TD ? ixs_single_td_emit :
-      pc->kind == PC_TS ? ixs_single_ts_emit : ixs_single_cvt_emit;
-    rc = ixs_stage_emit(x, hdr, payload, inline_max, h, emit);
+    /* the 'I' value form: the header, then the column's value form off
+       the core writer (dst NULL sizes) — inline within the budget, else
+       the bytes tiers */
+    const size_t n = mizu_ix_put_header(NULL) +
+      mizu_arrow_write_ix_col(ar, 0, NULL, &x->warn);
+    if (n <= (size_t) inline_max) {
+      size_t off = mizu_ix_put_header(payload);
+      off += mizu_arrow_write_ix_col(ar, 0, payload + off, &x->warn);
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
+      rc = 0;
+    } else {
+      uint8_t *buf = malloc(n);
+      if (buf == NULL) {
+        PyErr_NoMemory();
+        goto done;
+      }
+      size_t off = mizu_ix_put_header(buf);
+      off += mizu_arrow_write_ix_col(ar, 0, buf + off, &x->warn);
+      rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
+      free(buf);
+    }
     rc = rc == 0 && mizu_py_cvt_warn(&x->warn, x->lang) != 0 ? 1 : rc;
   }
 done:

@@ -885,3 +885,21 @@ string dictionary — best of 5 x 30 sends): 5610 us/send -> 5481 us/send
 proportionally larger on string-heavier frames).
 
 Status: full suite 590 pass, 6 skip (pandas/duckdb-absence).
+
+## 2026-10-14 — the inline frame emitters promoted into the core
+
+The small-table thorough form, pymizu half: the by-value 'I' frame and
+single-column forms now write through libmizu's mizu_arrow_write_ix /
+_write_ix_col (0c6f5c9, re-vendored) — ixs_emit_frame and the
+ixs_emit_*_col family deleted (~200 lines), one C write straight off
+the Arrow buffers both sides. The wire does not change: byte identity
+holds across the unmodified cross-language suite. pymizu never had the
+convert-back residual (its emitter always wrote 'I' directly), so the
+expected delta is parity.
+
+Results (A/B probe, this build vs 836b213, an in-process same-language
+pair, a 50-row pyarrow table — float64, int32, string — send + recv
+round trips drained per iteration, medians of 7 x 2000 over 3 rounds):
+40.8 us/rt -> 40.5-42.0 us/rt (parity, inside the run-to-run band).
+
+Status: full suite 590 pass, 6 skip (pandas/duckdb-absence).

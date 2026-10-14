@@ -37,8 +37,8 @@ typedef struct {
   ixs_pcol *cols;
   int ncols;
   int single;
-  mizu_arrow *ar;      /* the open core handle while the emitters run
-                          (borrowed by ixs_emit_*; the run functions own) */
+  mizu_arrow *ar;      /* the open core handle while the emit writers run
+                          (the run functions own) */
   uint32_t caps;       /* the peer's capability mask (frame gate) */
   uint32_t lang;       /* the peer's language (the sentinel warnings gate) */
   PyObject *row_names; /* a same-language Frame's row_names (borrowed);
