@@ -90,6 +90,25 @@ def test_nested_submit_inside_a_foreign_task(r_pool):
     assert r_pool.submit(pymizu.call(source=src)).collect() == 42
 
 
+def test_nested_submit_keeps_the_foreign_result_policy(r_pool):
+    # a nested help-collect must not clobber the outer task's submitter
+    # identity: the outer result policy stays the foreign one
+    nested = (
+        "t <- mizu::mizu_submit(mizu::mizu_current_pool(), x * 2, x = 21L)\n"
+        "mizu::mizu_collect(t)\n"
+    )
+    t = r_pool.submit(pymizu.call(source=nested + "list(a = 1, b = 'x')"))
+    assert t.collect() == {"a": 1.0, "b": "x"}
+    t = r_pool.submit(pymizu.call(source=nested + "stop('boom')"))
+    with pytest.raises(pymizu.TaskError) as ei:
+        t.collect()
+    assert ei.value.remote_type == "simpleError"
+    t = r_pool.submit(pymizu.call(source=nested + "function(x) x"))
+    with pytest.raises(pymizu.TaskError) as ei:
+        t.collect()
+    assert ei.value.remote_type == "mizu_error_not_portable"
+
+
 def test_collect_any_all_cross_language(r_pool):
     t1 = r_pool.submit(pymizu.call(source="1 + 1"))
     t2 = r_pool.submit(pymizu.call(source='stop("boom")'))
