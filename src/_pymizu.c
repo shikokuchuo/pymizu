@@ -94,6 +94,12 @@ static PyObject *mizu_traceback_fmt;
    a standard protocol stream). Resolved at module init; protocol pinned to 4. */
 static PyObject *mizu_dumps, *mizu_loads;
 
+/* The Arrow producer dunder names, interned at module init (pyinterop.h
+   externs them for interop.c): the foreign send path's probes look the
+   interned name up exception-free instead of building a str per call. */
+PyObject *mizu_py_str_arrow_c_array;
+PyObject *mizu_py_str_arrow_c_stream;
+
 /* numpy, probed lazily on the first raw-vector read: the module, or Py_None
    when absent. Never a build-time dependency. */
 static PyObject *mizu_numpy;
@@ -726,10 +732,10 @@ static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
 static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                        uint32_t inline_max, mizu_handle *h,
                        uint32_t peer_lang) {
-  if (!PyObject_HasAttrString(obj, "__arrow_c_array__"))
-    return -1;   /* a stream-only producer: the front-end's case */
-  PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_array__");
-  if (fn == NULL) return 1;
+  PyObject *fn = NULL;
+  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
+  if (prc < 0) return 1;
+  if (fn == NULL) return -1;   /* a stream-only producer: the front-end's case */
   PyObject *pair = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (pair == NULL) return 1;   /* the object claimed the interface */
@@ -1391,6 +1397,16 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
   return rc;
 }
 
+/* An exact builtin can carry neither Arrow dunder (no instance dict, an
+   immutable type): the foreign path's producer probes are provably wasted
+   on it — the same exact-type discipline the codec applies. */
+static int arrow_probe_skip(PyObject *obj) {
+  PyTypeObject *tp = Py_TYPE(obj);
+  return tp == &PyList_Type || tp == &PyTuple_Type || tp == &PyDict_Type ||
+         tp == &PyUnicode_Type || tp == &PyLong_Type || tp == &PyFloat_Type ||
+         tp == &PyBool_Type || tp == &PyBytes_Type || tp == &PyComplex_Type;
+}
+
 static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                       uint32_t inline_max, mizu_handle *h,
                       uint32_t peer_lang, uint32_t peer_caps) {
@@ -1493,13 +1509,16 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   if (foreign) {
     /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
        stream front-end (__arrow_c_stream__), then the 'I' writer —
-       whose decline is the send-time DeclinedError */
-    int arc = stage_arrow(obj, hdr, payload, inline_max, h, peer_lang);
-    if (arc >= 0) return arc;
-    int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
-                                           inline_max, h, peer_lang,
-                                           peer_caps);
-    if (src >= 0) return src;
+       whose decline is the send-time DeclinedError. An exact builtin
+       provably carries neither dunder, so its probes are skipped */
+    if (!arrow_probe_skip(obj)) {
+      int arc = stage_arrow(obj, hdr, payload, inline_max, h, peer_lang);
+      if (arc >= 0) return arc;
+      int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
+                                             inline_max, h, peer_lang,
+                                             peer_caps);
+      if (src >= 0) return src;
+    }
     /* the layout tiers past the zc floor: one layout write into a spill
        region, the peer wrapping a view — a list[str | None] as MIZS, a
        buffer (any strides) or temporal array as MIZH plus the attrs
@@ -7363,6 +7382,13 @@ PyInit__pymizu(void)
   mizu_loads = PyObject_GetAttrString(pickler, "loads");
   Py_DECREF(pickler);
   if (mizu_dumps == NULL || mizu_loads == NULL) return NULL;
+
+  mizu_py_str_arrow_c_array = PyUnicode_InternFromString("__arrow_c_array__");
+  mizu_py_str_arrow_c_stream =
+    PyUnicode_InternFromString("__arrow_c_stream__");
+  if (mizu_py_str_arrow_c_array == NULL ||
+      mizu_py_str_arrow_c_stream == NULL)
+    return NULL;
 
   PyObject *m = PyModule_Create(&pymizu_module);
   if (m == NULL) return NULL;

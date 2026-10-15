@@ -25,6 +25,25 @@
    __arrow_c_array__ / __arrow_c_stream__) and the view's and Frame's
    export dunders use them. */
 
+/* The exception-free attribute probe: PyObject_GetOptionalAttr is 3.13+,
+   the private _PyObject_LookupAttr the same protocol on the supported
+   floor (1 found, 0 absent without error, -1 with one set). The Arrow
+   producer probes run per foreign send, so they take this over
+   HasAttrString's per-call str construction and exception machinery. */
+static inline int mizu_py_get_optional_attr(PyObject *obj, PyObject *name,
+                                            PyObject **result) {
+#if PY_VERSION_HEX >= 0x030d0000
+  return PyObject_GetOptionalAttr(obj, name, result);
+#else
+  return _PyObject_LookupAttr(obj, name, result);
+#endif
+}
+
+/* The two producer dunder names, interned at module init (_pymizu.c's
+   PyInit; interop.c shares them). */
+extern PyObject *mizu_py_str_arrow_c_array;
+extern PyObject *mizu_py_str_arrow_c_stream;
+
 // The Arrow export (shared by _pymizu.c's views and map.c's _MapOutView) -------
 
 /* The export holds its own mapping and its own zc loan: mizu_shm_open_view

@@ -903,3 +903,23 @@ round trips drained per iteration, medians of 7 x 2000 over 3 rounds):
 40.8 us/rt -> 40.5-42.0 us/rt (parity, inside the run-to-run band).
 
 Status: full suite 590 pass, 6 skip (pandas/duckdb-absence).
+
+## 2026-10-15 — the Arrow producer probes interned and skipped for builtins
+
+The foreign send path's producer probes no longer build a str per
+lookup or pay HasAttrString's exception machinery: the two dunder
+names intern at module init and look up exception-free
+(PyObject_GetOptionalAttr on 3.13+, _PyObject_LookupAttr below), the
+probe-then-get pair collapsing to one lookup, and exact builtins
+(list, tuple, dict, str, int, float, bool, bytes, complex) skip the
+probes outright — no instance dict and an immutable type, so neither
+dunder can exist. ixs_frame_cols_build takes the same lookup form.
+The wire does not move.
+
+Results (A/B probe, this build vs da5de74, an in-process foreign pair,
+send + recv round trips, best of 5 x 20000): int 0.405 -> 0.278 us/rt,
+{a: 1, b: 2.5} 0.532 -> 0.384, [1, 2, 3] 0.454 -> 0.327, a 40-byte str
+0.146 -> 0.146 (the control — STR1 stages ahead of the foreign block).
+~0.13-0.15 us off every probed non-buffer send.
+
+Status: full suite 593 pass, 6 skip (pandas/duckdb-absence).

@@ -11,6 +11,7 @@ import warnings
 
 import pytest
 from tests.helpers import (
+    RawArrowStream,
     foreign_pair,
     identity,
     na_int,
@@ -458,6 +459,47 @@ def test_arrow_invalid_capsules():
 
     with pytest.raises(ValueError, match="boom"):
         h.send(Boom())
+    p.destroy()
+    h.destroy()
+
+
+def test_arrow_probes_look_up_once():
+    # the foreign send path probes each dunder exactly once per send (one
+    # exception-free lookup on the interned name, no HasAttr + GetAttr
+    # pair, no per-call str construction)
+    class CountingStream:
+        def __init__(self, inner):
+            self.inner = inner
+            self.lookups = []
+
+        def __getattr__(self, name):
+            self.lookups.append(name)
+            return getattr(self.inner, name)
+
+    h, p = foreign_pair()
+    prod = CountingStream(
+        RawArrowStream([("i", "x", [([1, 2], None)])]),  # one batch
+    )
+    assert h.send(prod) is True
+    assert prod.lookups == ["__arrow_c_array__", "__arrow_c_stream__"]
+    assert list(p.recv(timeout=5).to_dict()["x"]) == [1, 2]
+    p.destroy()
+    h.destroy()
+
+
+def test_arrow_probe_error_propagates():
+    # a lookup that raises something other than AttributeError is the
+    # object claiming the interface and failing: it propagates, never a
+    # swallowed decline
+    class BoomStream:
+        def __getattr__(self, name):
+            if name == "__arrow_c_stream__":
+                raise RuntimeError("boom")
+            raise AttributeError(name)
+
+    h, p = foreign_pair()
+    with pytest.raises(RuntimeError, match="boom"):
+        h.send(BoomStream())
     p.destroy()
     h.destroy()
 

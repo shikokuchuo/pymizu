@@ -4583,12 +4583,11 @@ static int ixs_run(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
 
 /* An __arrow_c_array__ producer whose format the conversion table
    declines (a StringArray, DictionaryArray, DateArray, ...): the single
-   path over the capsule pair as one borrowed batch. */
-static int ixs_stage_arrow_pair(PyObject *obj, mizu_slot_hdr *hdr,
+   path over the capsule pair as one borrowed batch. fn is the front-end's
+   probed bound method, stolen. */
+static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
                                 uint8_t *payload, uint32_t inline_max,
                                 mizu_handle *h) {
-  PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_array__");
-  if (fn == NULL) return 1;
   PyObject *pair = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (pair == NULL) return 1;   /* the object claimed the interface */
@@ -4634,11 +4633,16 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  mizu_handle *h, uint32_t peer_lang,
                                  uint32_t peer_caps) {
   if (Py_TYPE(obj) == &MizuFrameType) return -1;   /* the writer's case */
-  if (!PyObject_HasAttrString(obj, "__arrow_c_stream__"))
-    return PyObject_HasAttrString(obj, "__arrow_c_array__") ?
-      ixs_stage_arrow_pair(obj, hdr, payload, inline_max, h) : -1;
-  PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_stream__");
-  if (fn == NULL) return 1;
+  PyObject *fn = NULL;
+  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_stream, &fn);
+  if (prc < 0) return 1;
+  if (fn == NULL) {
+    /* not a stream producer: an array-only one takes the pair path */
+    prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
+    if (prc < 0) return 1;
+    if (fn == NULL) return -1;
+    return ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h);
+  }
   PyObject *cap = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (cap == NULL) {
@@ -5251,15 +5255,16 @@ static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
 frame_cols *ixs_frame_cols_build(PyObject *obj) {
   /* the producer gate is the __arrow_c_stream__ attribute alone (pyarrow,
      polars, duckdb producers all qualify) */
-  if (!PyObject_HasAttrString(obj, "__arrow_c_stream__")) {
+  PyObject *fn = NULL;
+  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_stream, &fn);
+  if (prc < 0) return NULL;
+  if (fn == NULL) {
     PyErr_SetString(MizuError, "pymizu: Frame.from_arrow: object has no "
                     "__arrow_c_stream__ (a pyarrow Table or "
                     "RecordBatchReader, a polars DataFrame, a duckdb "
                     "relation)");
     return NULL;
   }
-  PyObject *fn = PyObject_GetAttrString(obj, "__arrow_c_stream__");
-  if (fn == NULL) return NULL;
   PyObject *cap = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (cap == NULL) {
