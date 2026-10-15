@@ -77,6 +77,7 @@ static PyObject *MizuSlotsExhaustedError;
 static PyObject *MizuStoppedError;
 static PyObject *MizuCancelledError;
 static PyObject *MizuWorkerDiedError;
+static PyObject *MizuTaskLostError;   /* the claimant's own gone verdict */
 static PyObject *MizuTaskError;       /* a task's own error, re-raised */
 static PyObject *MizuDeclinedError;   /* a foreign-handle send-time decline */
 
@@ -1632,6 +1633,9 @@ typedef struct {
   uint64_t pool_ident;     /* pool: the cached pool word (0 until a worker
                               joins; re-read while 0, never reset after) */
   PyObject *err_exc;
+  int exec_fail;           /* pool worker, test-only: fail the next task
+                              decode (1 = corrupt payload, 2 = the vanished-
+                              payload gone read); the _exec_fail seam */
 } MizuHandleCtx;
 
 /* Frame an exception as an 'I' err stream INLINE (defined with the other
@@ -4292,7 +4296,7 @@ static PyObject *read_impl(const mizu_slot_hdr *hdr, const uint8_t *payload,
     /* the claimant published LOST itself (no death verdict), so ctx
        carries no claimant record */
     return caught_new(PyObject_CallFunction(
-      MizuError, "s", "pymizu: task lost: payload region vanished"));
+      MizuTaskLostError, "s", "pymizu: task lost: payload region vanished"));
   }
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
@@ -4724,6 +4728,16 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
        handle's policy fields set — a later task must not inherit them */
     hctx->peer_lang = 0;
     hctx->peer_caps = 0;
+  }
+  if (hctx != NULL && hctx->exec_fail == 1) {
+    /* test-only seam (_exec_fail): the decode-failure arm */
+    PyErr_SetString(MizuError, "pymizu: corrupt task payload");
+    return publish_exc(sink, 0);
+  }
+  if (hctx != NULL && hctx->exec_fail == 2) {
+    /* test-only: the vanished-payload arm (a gone task-entry read) */
+    mizu_result_publish_lost(sink);
+    return 0;
   }
   size_t blen = 0;
   const uint8_t *bytes = pool_entry_bytes(hdr, payload, limit, ctx, &blen);
@@ -5595,6 +5609,21 @@ static PyObject *Pool_worker_ident(MizuPool *self,
   if (hctx->pool_ident == 0) Py_RETURN_NONE;
   return Py_BuildValue("(I I)", (unsigned) (hctx->pool_ident & 0xff),
                        (unsigned) (uint32_t) (hctx->pool_ident >> 32));
+}
+
+PyDoc_STRVAR(pool_exec_fail_doc,
+"_exec_fail(on) -> None\n\n\
+Test-only seam on a worker handle: arm (1) the decode-failure or (2) the\n\
+vanished-payload (gone read) branch of the next task's exec; 0 clears.\n\
+Sticky until cleared — mirrors mizu's mizu_pool_exec_fail.");
+
+static PyObject *Pool_exec_fail(MizuPool *self, PyObject *arg) {
+  long on = PyLong_AsLong(arg);
+  if (on == -1 && PyErr_Occurred()) return NULL;
+  if (pool_get(self) == NULL) return NULL;
+  MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
+  hctx->exec_fail = (int) on;
+  Py_RETURN_NONE;
 }
 
 PyDoc_STRVAR(pool_submit_batch_doc,
@@ -6470,6 +6499,7 @@ static PyMethodDef Pool_methods[] = {
    pool_help_once_doc},
   {"_submit_runner", (PyCFunction)(void (*)(void)) Pool_submit_runner,
    METH_VARARGS | METH_KEYWORDS, pool_submit_runner_doc},
+  {"_exec_fail", (PyCFunction) Pool_exec_fail, METH_O, pool_exec_fail_doc},
   {NULL, NULL, 0, NULL}
 };
 
@@ -6500,7 +6530,8 @@ PyDoc_STRVAR(task_collect_doc,
 Wait up to `timeout` seconds (None indefinitely, 0 polls) for the task's\n\
 terminal state and return its result. A task error re-raises as\n\
 pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation\n\
-as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError.\n\
+as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost\n\
+payload region as pymizu.TaskLostError.\n\
 pymizu.TIMEOUT on expiry; a task is collected exactly once.");
 
 static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
@@ -7438,6 +7469,11 @@ PyInit__pymizu(void)
                     MizuError, NULL,
                     "The executing worker died mid-task. Carries 'slot' "
                     "and 'pid' attributes identifying the worker.") < 0 ||
+      add_exception(m, &MizuTaskLostError, "pymizu.TaskLostError", MizuError,
+                    NULL,
+                    "The claimant's read of the task's payload region "
+                    "failed without a death verdict — a vanished or "
+                    "unreadable region, not a dead worker.") < 0 ||
       add_exception(m, &MizuTaskError, "pymizu.TaskError", MizuError,
                     NULL,
                     "The task callable raised. Carries 'remote_type' and "

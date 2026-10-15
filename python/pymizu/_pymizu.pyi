@@ -75,6 +75,10 @@ class WorkerDiedError(MizuError):
     pid: int
     lost: list  # set by Pool.map on the worker-death path
 
+class TaskLostError(MizuError):
+    """The claimant's read of the task's payload region failed without a
+    death verdict (a vanished or unreadable region, not a dead worker)."""
+
 class _Task:
     """A submitted-task handle."""
 

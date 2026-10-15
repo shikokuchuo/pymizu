@@ -24,8 +24,9 @@ if TYPE_CHECKING:
 _MISSING = object()
 
 # Drain collect bound: a submission made mid-collect waits at most this
-# long for the next snapshot. 50ms keeps late submissions prompt; an idle
-# re-park costs one syscall.
+# long for the next snapshot — and, the verbs lock serializing the core
+# handle, for the drain's collect to release the lock. 50ms keeps late
+# submissions prompt; an idle re-park costs one syscall.
 _COLLECT_BOUND = 0.05
 
 
@@ -91,6 +92,10 @@ class PoolExecutor(_Executor):
         self._pool = pool
         self._stop_pool = stop_pool
         self._cond = _threading.Condition()
+        # one lock serializing the core verbs: a pool handle is
+        # single-threaded per side, so the caller thread's submit and the
+        # drain thread's collect_any must never run concurrently
+        self._verbs = _threading.Lock()
         self._outstanding: dict[_TaskFuture, _pymizu._Task] = {}
         self._drain: _threading.Thread | None = None
         self._shutdown = False
@@ -144,7 +149,8 @@ class PoolExecutor(_Executor):
                 raise RuntimeError(
                     "cannot schedule new futures after shutdown"
                 )
-            task = self._pool.submit(fn, *args, **kwargs)
+            with self._verbs:
+                task = self._pool.submit(fn, *args, **kwargs)
             future = _TaskFuture(task)
             self._outstanding[future] = task
             if self._drain is None:
@@ -196,15 +202,27 @@ class PoolExecutor(_Executor):
                 pairs = list(self._outstanding.items())
             tasks = [task for _, task in pairs]
             try:
-                got = self._pool.collect_any(tasks, timeout=_COLLECT_BOUND)
+                with self._verbs:
+                    got = self._pool.collect_any(tasks, timeout=_COLLECT_BOUND)
             except Exception as e:
                 index = getattr(e, "index", None)
-                if index is None:
-                    # infrastructure failure: fail everything outstanding
-                    self._fail_all(e)
-                    return
-                self._resolve(pairs[index][0], exception=e)
-                continue
+                if index is not None:
+                    self._resolve(pairs[index][0], exception=e)
+                    continue
+                # a cancelled queued task is freed by the worker's
+                # CANCEL->FREE skip, so a stale handle in the snapshot
+                # fails collect_any's claim with a no-index "already
+                # collected" error: drop the handles now reading
+                # "collected" (the failed claim consumed nothing) and
+                # re-snapshot rather than failing every outstanding future
+                stale = [f for f, t in pairs if t.state == "collected"]
+                if stale:
+                    for future in stale:
+                        self._resolve(future, exception=e)
+                    continue
+                # infrastructure failure: fail everything outstanding
+                self._fail_all(e)
+                return
             if isinstance(got, _pymizu.Sentinel):  # TIMEOUT: re-snapshot
                 continue
             index, value = got

@@ -3258,6 +3258,44 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     }
     break;
   }
+  case FCOL_STR64: {
+    /* the tree wrap's region string column: the validity bitmap and the
+       i64 offsets walk the MIZS block in place (fcol_str64_check's span
+       rule; a torn span declines, both passes agreeing element-wise) */
+    mizu_mizs_geom g = mizu_mizs_geometry(c->n);
+    const uint8_t *block = c->values;
+    const uint8_t *validity = block + g.validity;
+    const int64_t *offs64 = (const int64_t *) (block + g.offsets);
+    const uint8_t *data = block + g.data;
+    if (c->n == 1) {
+      const int64_t lo = offs64[0], hi = offs64[1];
+      if (!bitmap_at(validity, 0)) {
+        IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), NULL, -1));
+      } else if (lo < 0 || hi < lo || hi > c->bytes_len ||
+                 hi - lo > INT32_MAX) {
+        ixw_decline(w, "invalid string data in the frame's shared region");
+      } else {
+        IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), data + lo,
+                                   (int32_t) (hi - lo)));
+      }
+      break;
+    }
+    IXW_PUT(w, mizu_ix_put_strv_begin(IXW_DST(w), (uint64_t) c->n));
+    for (int64_t i = 0; i < c->n && !w->decline; i++) {
+      if (!bitmap_at(validity, i)) {
+        IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), NULL, -1));
+        continue;
+      }
+      const int64_t lo = offs64[i], hi = offs64[i + 1];
+      if (lo < 0 || hi < lo || hi > c->bytes_len || hi - lo > INT32_MAX) {
+        ixw_decline(w, "invalid string data in the frame's shared region");
+        break;
+      }
+      IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), data + lo,
+                                    (int32_t) (hi - lo)));
+    }
+    break;
+  }
   case FCOL_DICT: {
     static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
     const int32_t *codes = (const int32_t *) c->values;
@@ -5676,12 +5714,11 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
          partial stream */
       zc_node = NULL;
     }
-    /* the by-value paths: the record walk's warn record is the write's
-       own (the deterministic walk warns identically) */
-    if (mizu_py_cvt_warn(&w.warn, (uint32_t) (word & 0xff)) != 0)
-      goto out;
     if (plan.ncand == 0 && total <= (size_t) inline_max) {
-      /* one walk: the record walk's write is the stream */
+      /* one walk: the record walk's write is the stream, and its warn
+         record is complete — nothing flipped it to count-only */
+      if (mizu_py_cvt_warn(&w.warn, (uint32_t) (word & 0xff)) != 0)
+        goto out;
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) total;
       hdr->aux = 0;        /* no keeperless claim: inert on task entries */
@@ -5716,6 +5753,10 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
       ixw_raise(&w2);
       goto out;
     }
+    /* the complete warn record is the rewrite walk's — the record walk's
+       was cut short at the flip to count-only, so it is never raised */
+    if (mizu_py_cvt_warn(&w2.warn, (uint32_t) (word & 0xff)) != 0)
+      goto out;
     if (total <= (size_t) inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) w2.total;
@@ -5770,6 +5811,11 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs, target, ident);
+  if (w2.decline || w2.total != n) {
+    free(buf);
+    PyErr_SetString(MizuError, "pymizu: interop write mismatch");
+    return NULL;
+  }
   if (mizu_py_cvt_warn(&w2.warn, target) != 0) {
     free(buf);
     return NULL;
@@ -6487,7 +6533,9 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   w2.limit = n;   /* exact: the deterministic write re-counts to n */
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_stream(&w2, obj);
-  if (w2.overflow) {
+  /* a write-pass decline (or any count disagreement) leaves the
+     reservation's tail unwritten — stale bytes under the n-byte header */
+  if (w2.decline || w2.total != n) {
     PyErr_SetString(MizuError, "pymizu: interop write mismatch");
     return 1;
   }
@@ -6539,6 +6587,11 @@ PyObject *pymizu_ix_write_stream(PyObject *obj) {
   w2.limit = n;
   memset(&w2.warn, 0, sizeof(w2.warn));
   ixw_stream(&w2, obj);
+  if (w2.decline || w2.total != n) {
+    free(buf);
+    PyErr_SetString(MizuError, "pymizu: interop write mismatch");
+    return NULL;
+  }
   if (mizu_py_cvt_warn(&w2.warn, MIZU_LANG_R) != 0) {
     free(buf);
     return NULL;

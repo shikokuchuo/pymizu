@@ -10,6 +10,10 @@ Initial pre-release.
 
 ### Added
 
+- `pymizu.TaskLostError`: a task whose payload region vanished without a
+  worker-death verdict (a transient open failure on the worker, not a
+  dead worker) now collects as this distinct error instead of a generic
+  `MizuError`, with `Task.state` reading `"lost"`.
 - Cross-language streaming maps: `Pool.map()` with `stream=True` and a
   `pymizu.call` spec as `fn` now runs over workers of any language
   (previously a `TypeError`). Each chunk in the sliding window stages a
@@ -26,6 +30,35 @@ Initial pre-release.
   already carries an `index` — a map error's element index, the
   documented `Pool.map` contract — keeps it as before, so both are now
   present.
+
+### Fixed
+
+- A straggler of an unclean `PreparedMap.run()` (timeout, error, worker
+  death) can no longer write its in-flight batch into the re-armed
+  region's output area after a later run has collected: the unclean run
+  drops the staged region, so the next run restages into a fresh one
+  (the streaming run's existing discipline).
+- A region-backed `Frame` with a string column re-sends through the
+  foreign writer (a caps-less peer, nested in a container, or as a
+  `pymizu.call` argument) instead of staging a stream the peer rejects
+  as malformed.
+- `PoolExecutor`: cancelling a queued future no longer fails every other
+  outstanding future and kills the drain thread — the worker's
+  cancel-skip frees the task, so the drain's next collect claimed a
+  stale handle. The drain now drops the freed handles and re-snapshots.
+- `PoolExecutor` serializes its core verbs on one lock: the pool handle
+  is single-threaded per side, and the caller thread's `submit` and the
+  drain thread's `collect_any` could otherwise race the shared spill
+  free list with the GIL released.
+- Conversion warnings (e.g. uint64 past 2^53, the missing-value
+  sentinels) now fire for `pymizu.call` spec tasks whose stream is
+  rewritten past the inline budget — previously the warning record was
+  cut short and the rewrite's record never raised, so the lossy
+  conversion was silent.
+- A foreign-channel send whose write pass declines mid-write (a buffer
+  exporter failing a later `__buffer__` call) now fails the send instead
+  of staging a partially written reservation the peer reads as a corrupt
+  or wrong value.
 
 ### Changed
 

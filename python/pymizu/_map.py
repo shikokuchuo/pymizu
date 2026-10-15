@@ -1915,6 +1915,7 @@ class PreparedMap:
             )
         r = min(self._n_morsels, max(1, live), free_rs, inj_cap)
         handles = []
+        unclean = True
         try:
             if _submit_runners(
                 pool,
@@ -1940,6 +1941,8 @@ class PreparedMap:
                 self._lang,
                 self._morsel,
             )
+            if out is not pymizu.TIMEOUT:
+                unclean = False
             if out is pymizu.TIMEOUT or self._tprobe is None:
                 return out
             out, transferred = _gather_out(
@@ -1951,14 +1954,19 @@ class PreparedMap:
             return out
         finally:
             # the interrupt/error/timeout backstop (a clean collect
-            # consumed every handle: a no-op then); the region survives —
-            # the next run's re-arm clears the cancel word
+            # consumed every handle: a no-op then)
             pending = [h for h in handles if h is not None]
-            if pending:
-                if self._capsule is not None:
-                    _pymizu._map_cancel_set(self._capsule)
-                for h in pending:
-                    h.cancel()
+            if pending and self._capsule is not None:
+                _pymizu._map_cancel_set(self._capsule)
+            if unclean:
+                # a straggler of an unclean run holds this region's name
+                # and faces no generation fence on its output-area write:
+                # drop the stage so the next run restages into a fresh
+                # region (mirror _run_stream)
+                self._capsule = None
+                self._name = None
+            for h in pending:
+                h.cancel()
 
     def _run_stream(
         self,

@@ -25,7 +25,8 @@ package). The governing design document is the ipc plan in the libmizu repo
 - `src/_pymizu.c` — the extension module (`pymizu._pymizu`): `_Channel` /
   `_Pool` / `_Task` handles, stage/read/check callbacks, verb wrappers,
   sentinel singletons, the exception hierarchy (`TaskError` with
-  remote_type/remote_traceback, `WorkerDiedError` with slot/pid), the
+  remote_type/remote_traceback, `WorkerDiedError` with slot/pid,
+  `TaskLostError` for the no-death-verdict lost task), the
   `_Caught` outcome box the collect veneer unwraps and raises. The
   create/attach/join verbs share `token_valid`, `parse_ident` (the
   test-only `_ident` override), and `handle_ctx_alloc`.
@@ -434,6 +435,13 @@ tools/vendor-libmizu.sh` for a local checkout).
   import them. The root `conftest.py` puts the repo root on `sys.path`,
   making `tests.helpers` importable to the test process and the workers
   (whose `sys.path[0]` is the repo root).
+- A worker's outcome that no spawned worker can produce on cue runs on an
+  in-process worker instead: `_pool_worker_join(token, slot)` on a
+  `_pool_new` pool, `run()` + `leave()` in a daemon thread (the `leave()`
+  is what lets the controller's `stop()` return cleanly), the test-only
+  `_exec_fail(1|2)` arm on the worker handle forcing the decode-failure /
+  vanished-payload (LOST publish) branch (`tests/test_pool.py`
+  `test_task_lost`).
 - pytest is configured in `pyproject.toml` (`testpaths = ["tests"]`,
   `addopts = "-ra --durations 10 --strict-markers"`; no custom markers
   exist to declare). Coverage excludes `if TYPE_CHECKING:` blocks.

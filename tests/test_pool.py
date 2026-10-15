@@ -27,6 +27,7 @@ from tests.helpers import (
 )
 
 import pymizu
+from pymizu import _pymizu
 
 
 @pytest.fixture
@@ -321,6 +322,38 @@ def test_worker_died():
         assert exc_info.value.pid > 0
     finally:
         p.stop()
+
+
+def test_task_lost():
+    # the claimant's own gone verdict (no death) collects as TaskLostError,
+    # distinct from WorkerDiedError (C-03); the _exec_fail(2) arm stands in
+    # for the gone read — the real trigger is a transient open failure
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        wk._exec_fail(2)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        pool = pymizu.Pool._wrap(h)
+        t = pool.submit(identity, 1)
+        deadline = time.monotonic() + 10
+        while t.state != "lost" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert t.state == "lost"
+        with pytest.raises(
+            pymizu.TaskLostError, match="payload region vanished"
+        ):
+            t.collect(timeout=10)
+        # the worker lives on: a later task runs once the arm clears
+        wk._exec_fail(0)
+        assert pool.submit(identity, 2).collect(timeout=10) == 2
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
 
 
 def test_nested_submit(pool):

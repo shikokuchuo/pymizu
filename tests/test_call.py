@@ -1,4 +1,5 @@
 import pickle
+import warnings
 
 import pytest
 
@@ -53,6 +54,23 @@ def test_spec_tasks_run_same_language():
         # extra args with a spec are rejected
         with pytest.raises(TypeError, match="carries its own arguments"):
             p.submit(pymizu.call("math.sqrt", 16), 1)
+
+
+def test_spec_task_conversion_warning_survives_the_rewrite():
+    # a spec task past the inline budget rewrites its stream: the
+    # conversion warning record rides the rewrite walk, so a large uint64
+    # argument warns exactly once at submit (P-06)
+    np = pytest.importorskip("numpy")
+    with pymizu.Pool.create(1) as p:
+        arr = np.full(200_000, 2**60, dtype=np.uint64)
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            assert (
+                p.submit(pymizu.call("numpy.size", arr)).collect() == 200_000
+            )
+        conv = [w for w in rec if "uint64 value(s)" in str(w.message)]
+        assert len(conv) == 1
+        assert "200000 uint64 value(s)" in str(conv[0].message)
 
 
 def test_pool_word_zero_and_attach_race():

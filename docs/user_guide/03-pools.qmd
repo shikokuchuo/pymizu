@@ -61,6 +61,7 @@ container-exact); construct the `Frame` first to opt in.
 | The task raised | `pymizu.TaskError`, with `remote_type` and `remote_traceback` |
 | The task was cancelled before it ran | `pymizu.CancelledError` |
 | The executing worker died | `pymizu.WorkerDiedError`, with `slot` and `pid` |
+| The task's payload region vanished without a death verdict | `pymizu.TaskLostError` |
 | The collect timeout expired | the `pymizu.TIMEOUT` sentinel |
 
 A task error crosses as a plain description of type, message, and traceback —

@@ -642,6 +642,34 @@ def test_multibatch_frame():
     h.destroy()
 
 
+def test_region_frame_with_strings_resends():
+    # a region-backed Frame's string column (FCOL_STR64) walks the MIZS
+    # block's i64 offsets/validity through the 'I' writer — an explicit
+    # arm, values and NAs crossing exact (P-02)
+    s = ["x" * 10] * 8000
+    s[17] = None
+    tbl = pa.table({"s": s, "v": np.arange(8000.0)})
+    h1, p1 = foreign_pair(7)  # MIZS | ATTRS | MIZL: the frame arrives
+    h2, p2 = foreign_pair()  # region-backed; caps-0: the 'I' writer path
+    try:
+        assert h1.send(tbl) is True
+        f = p1.recv(5)
+        assert h2.send(f) is True
+        d = p2.recv(5).to_dict()
+        assert len(d["s"]) == 8000
+        assert d["s"][0] == "x" * 10
+        assert d["s"][17] is None
+        assert d["s"][-1] == "x" * 10
+        assert float(d["v"][-1]) == 7999.0
+        # nested in a list: the same writer path even with caps
+        assert h1.send([f]) is True
+        [g] = p1.recv(5)
+        assert len(g) == 8000
+    finally:
+        for x in (p1, h1, p2, h2):
+            x.destroy()
+
+
 def test_corrupt_and_unknown_streams():
     for hexstream in [
         "49017f",  # unknown tag
@@ -686,6 +714,37 @@ def test_depth_cap():
         x = [x]
     with pytest.raises(pymizu.DeclinedError, match="depth cap"):
         _pymizu._write_stream(x)
+
+
+def test_a_declined_write_pass_fails_the_send():
+    # an exporter whose later __buffer__ call fails declines walk 2
+    # mid-write: the send must fail, never stage a partial stream (P-07)
+    class Flaky:
+        def __init__(self, a):
+            self.a = a
+            self.calls = 0
+
+        def __buffer__(self, flags):
+            self.calls += 1
+            if self.calls == 4:
+                raise BufferError("export refused")
+            return memoryview(self.a)
+
+        def __release_buffer__(self, view):
+            view.release()
+
+    h, p = foreign_pair()
+    try:
+        assert h.send([b"A" * 2000, np.full(10, 7.0), [9, 9, 9]]) is True
+        p.recv(5)
+        with pytest.raises(pymizu.MizuError, match="interop write mismatch"):
+            h.send([b"B" * 2000, Flaky(np.full(10, 1.0)), [1, 2, 3]])
+        # the ring still flows
+        assert h.send([1, 2]) is True
+        assert p.recv(5) == [1, 2]
+    finally:
+        p.destroy()
+        h.destroy()
 
 
 def test_frame_export_machinery():

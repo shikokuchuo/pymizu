@@ -4,6 +4,7 @@ map, wait/as_completed, cancellation, and shutdown semantics."""
 import asyncio
 import concurrent.futures
 import operator
+import time
 
 import pytest
 from tests.helpers import fail_at, sleep_ident, square
@@ -85,6 +86,33 @@ def test_shutdown_blocks_new_submit(pool):
     ex.shutdown()
     with pytest.raises(RuntimeError, match="shutdown"):
         ex.submit(square, 2)
+
+
+def test_cancelled_claim_race_recovers():
+    # a cancelled queued task is freed by the worker's skip, so the drain
+    # thread's collect_any claims a stale handle and fails with a no-index
+    # "already collected" error: the drain drops the collected handles and
+    # re-snapshots rather than failing every outstanding future (P-03)
+    p = pymizu.Pool.create(2)
+    try:
+        ex = pymizu.PoolExecutor(p)
+        f0 = ex.submit(sleep_ident, 0.6)  # worker A busy; drain parks on f0
+        time.sleep(0.1)
+        f1 = ex.submit(square, 1)  # claimed by worker B at once
+        assert f1.cancel()  # B's skip frees it CANCEL->FREE
+        deadline = time.monotonic() + 5
+        while f1._task.state != "collected" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # let the drain's next snapshot claim the stale handle
+        time.sleep(0.2)
+        f2 = ex.submit(square, 2)
+        assert f0.result(timeout=5) == 0.6
+        assert f2.result(timeout=5) == 4
+        assert f1.cancelled()
+        assert ex._drain.is_alive()
+        ex.shutdown(wait=False)
+    finally:
+        p.stop()
 
 
 def test_shutdown_cancel_futures():

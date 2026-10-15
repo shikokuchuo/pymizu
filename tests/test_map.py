@@ -30,6 +30,7 @@ from tests.helpers import (
     scalar_double,
     scale_add,
     sleep_ident,
+    sleep_on,
     square,
 )
 
@@ -528,6 +529,27 @@ def test_map_prepared_timeout(pool):
     try:
         assert pm.run(timeout=0.2) is pymizu.TIMEOUT
         assert pool.map(square, [2], timeout=15) == [4]
+    finally:
+        pm.close()
+
+
+def test_map_prepared_unclean_run_restages(pool):
+    # a timed-out run's straggler faces no generation fence on its
+    # output-area write: the unclean run drops the stage, so the next run
+    # restages into a fresh region and the straggler writes into the void
+    pm = pool.map_prepare(
+        sleep_on,
+        np.array([100.0, 1.0, 2.0, 3.0]),
+        args=({100.0}, 2.0),
+        template=np.zeros(1),
+        collect="view",
+    )
+    try:
+        assert pm.run(timeout=0.3) is pymizu.TIMEOUT
+        out = pm.run(np.array([200.0, 1.0, 2.0, 3.0]), timeout=15)
+        np.testing.assert_array_equal(np.asarray(out), [200.0, 1.0, 2.0, 3.0])
+        time.sleep(2.2)  # the straggler's write lands now, into the void
+        np.testing.assert_array_equal(np.asarray(out), [200.0, 1.0, 2.0, 3.0])
     finally:
         pm.close()
 
