@@ -7,6 +7,7 @@ Arrow stream front-end."""
 import datetime
 import pathlib
 import pickle
+import sys
 import warnings
 
 import pytest
@@ -716,6 +717,9 @@ def test_depth_cap():
         _pymizu._write_stream(x)
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
+)
 def test_a_declined_write_pass_fails_the_send():
     # an exporter whose later __buffer__ call fails declines walk 2
     # mid-write: the send must fail, never stage a partial stream (P-07)
