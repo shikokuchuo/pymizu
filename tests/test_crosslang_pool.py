@@ -16,6 +16,20 @@ import pymizu
 from pymizu import _pymizu
 
 
+def _gc_r_workers(pool, pred, timeout=10.0):
+    """Drive gc() across the R workers until pred() holds.
+
+    An R worker releases a decoded argument loan only at its own GC (R
+    has no public exact reference count to fire it at the outcome
+    write), so a balance assertion must push gc() tasks through the
+    pool — work stealing eventually lands one on every worker.
+    """
+    deadline = time.monotonic() + timeout
+    while not pred():
+        pool.submit(pymizu.call(source="gc(); NULL")).collect()
+        assert time.monotonic() < deadline, "R worker loans did not balance"
+
+
 @pytest.fixture(scope="module")
 def r_pool():
     try:
@@ -178,9 +192,11 @@ def test_received_view_resent_as_arg(r_pool):
         pymizu.call("base::mean", big)
     ).collect() == pytest.approx(float(big.mean()))
     assert big.base.flags & 1 == 1  # REFHELD
+    # an R worker releases a decoded argument loan only at its own GC
+    _gc_r_workers(r_pool, lambda: big.base.refcount <= 1)
     rc0 = big.base.refcount
     r_pool.submit(pymizu.call("base::mean", big)).collect()
-    assert big.base.refcount == rc0
+    _gc_r_workers(r_pool, lambda: big.base.refcount <= rc0)
     # result-is-the-arg: arrives intact, a view, elevated by our own add
     res = r_pool.submit(pymizu.call(source="x", x=big)).collect()
     assert type(res.base).__name__ == "_ShmView"
@@ -211,11 +227,14 @@ def test_multiple_ref_args_and_a_nested_view(r_pool):
     )
     expected = float(a.sum() + b.sum() + a.sum() + b.sum())
     assert t.collect() == pytest.approx(expected)
-    rc0a, rc0b = va.base.refcount, vb.base.refcount
+    # an R worker releases a decoded argument loan only at its own GC
+    _gc_r_workers(
+        r_pool, lambda: va.base.refcount <= 1 and vb.base.refcount <= 1
+    )
     t2 = r_pool.submit(pymizu.call("base::mean", big))
     assert t2.collect() == pytest.approx(float(big.mean()))
-    assert va.base.refcount == rc0a
-    assert vb.base.refcount == rc0b
+    assert va.base.refcount == 1
+    assert vb.base.refcount == 1
 
 
 def test_ref_candidate_declines_without_taskref():
