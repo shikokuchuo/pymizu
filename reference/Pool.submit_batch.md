@@ -32,4 +32,4 @@ Seconds to wait for injection-ring space; None waits indefinitely.
 
 
 `A list of `<a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task</code></a>` handles. Ring-full past`  
-`timeout` ends the batch short -- the returned handles stay valid and collectible.
+`timeout` ends the batch short -- the returned handles stay valid and collectible. A mid-batch failure raises with an `accepted` attribute holding the handles already submitted, which stay valid and collectible.

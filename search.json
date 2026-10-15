@@ -470,7 +470,7 @@
     "href": "reference/Pool.submit_batch.html#returns",
     "title": "Pool.submit_batch()",
     "section": "Returns",
-    "text": "Returns\n\n\n A list of Task handles. Ring-full past\n\ntimeout ends the batch short — the returned handles stay valid and collectible.",
+    "text": "Returns\n\n\n A list of Task handles. Ring-full past\n\ntimeout ends the batch short — the returned handles stay valid and collectible. A mid-batch failure raises with an accepted attribute holding the handles already submitted, which stay valid and collectible.",
     "crumbs": [
       "Reference",
       "Pool Methods",
@@ -662,7 +662,7 @@
     "href": "reference/Pool.collect_all.html#returns",
     "title": "Pool.collect_all()",
     "section": "Returns",
-    "text": "Returns\n\n\n All values in input order. On the first non-OK outcome by\n\nposition, raises with an index attribute (0-based) — handles up to it inclusive are consumed, the rest stay collectible. The TIMEOUT sentinel consumes nothing.",
+    "text": "Returns\n\n\n All values in input order. On the first non-OK outcome by\n\nposition, raises with an index attribute (0-based) — only the reported handle is consumed; every other, the results ahead of it included, stays collectible. A result that fails to read raises with index and a values attribute carrying the consumed prefix. The TIMEOUT sentinel consumes nothing.",
     "crumbs": [
       "Reference",
       "Pool Methods",
