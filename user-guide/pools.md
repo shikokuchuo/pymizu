@@ -37,6 +37,7 @@ A <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link"><code>Frame</
 | The task raised | [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), with `remote_type` and `remote_traceback` |
 | The task was cancelled before it ran | [pymizu.CancelledError](../reference/CancelledError.md#pymizu.CancelledError) |
 | The executing worker died | [pymizu.WorkerDiedError](../reference/WorkerDiedError.md#pymizu.WorkerDiedError), with `slot` and `pid` |
+| The task's payload region vanished without a death verdict | `pymizu.TaskLostError` |
 | The collect timeout expired | the `pymizu.TIMEOUT` sentinel |
 
 A task error crosses as a plain description of type, message, and traceback -- never a pickled exception object. A worker's death is detected at OS notification latency, with no heartbeats or polling. A dead worker fails exactly the tasks it had claimed. The surviving workers take over the rest of its queue.

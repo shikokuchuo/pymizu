@@ -830,7 +830,7 @@ result(timeout=None) -&gt; value | sentinel
 <div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>collect(timeout<span class="op">=</span><span class="va">None</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Wait up to <code>timeout</code> seconds (None indefinitely, 0 polls) for the task’s terminal state and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError. pymizu.TIMEOUT on expiry; a task is collected exactly once.</p>
+<p>Wait up to <code>timeout</code> seconds (None indefinitely, 0 polls) for the task’s terminal state and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost payload region as pymizu.TaskLostError. pymizu.TIMEOUT on expiry; a task is collected exactly once.</p>
 </div>
 </section>
 <hr style="border: none; border-top: 2px dotted #b0b4ba; margin: 1.5rem 0 1rem 0;">
