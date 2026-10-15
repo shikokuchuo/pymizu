@@ -1523,7 +1523,8 @@ pymizu moves each value the cheapest way it can:
 2. Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross
    without serialization.
    float64, int32, int64, complex128, and uint8 keep their exact values and
-   arrive as arrays (`bytes` arrives as a uint8 array).
+   arrive as arrays (`bytes` arrives as a uint8 array); numpy scalars and
+   0-d arrays keep their exact type and shape.
    A large buffer arrives as a read-only zero-copy view over the shared
    pages — no copy, no parse.
 3. A `str` within the inline budget crosses as raw UTF-8.
