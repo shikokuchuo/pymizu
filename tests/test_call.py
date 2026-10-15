@@ -33,6 +33,27 @@ def test_task_hooks_roundtrip():
     assert got == (2, 0, 30064771074, "math.sqrt", [16], {"y": 2.5})
 
 
+def test_spec_bytes_arg_keeps_type_at_size():
+    # exact bytes stay the bytes form past the zero-copy gate — never a
+    # uint8 array (P-11)
+    with pymizu.Pool.create(1) as p:
+        for n in (10, 100000):
+            t = p.submit(pymizu.call("builtins.type", b"x" * n))
+            assert t.collect(timeout=15) is bytes
+
+
+def test_spec_task_error_escapes_surrogates():
+    # a lone surrogate in the task's error text crosses escaped, never
+    # blanked (P-12)
+    spec = pymizu.call(source="raise ValueError('bad path: /tmp/caf\\udce9')")
+    with pymizu.Pool.create(1) as p:
+        t = p._h.submit(_pymizu._call_frame(spec, (2, 7)), None)
+        with pytest.raises(pymizu.TaskError) as ei:
+            t.collect(timeout=15)
+    assert "bad path: /tmp/caf" in str(ei.value)
+    assert ei.value.remote_traceback
+
+
 def test_spec_tasks_run_same_language():
     with pymizu.Pool.create(1) as p:
         t = p.submit(pymizu.call("math.sqrt", 16))

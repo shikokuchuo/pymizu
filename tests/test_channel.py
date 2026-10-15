@@ -309,6 +309,27 @@ def test_numpy_rawspill(echo):
     assert np.array_equal(b, a)
 
 
+def test_numpy_scalar_and_0d_roundtrip(echo):
+    # numpy scalars and 0-d arrays keep type and shape: the codec's
+    # numpy row, not the raw tier's 1-D length-1 read (P-18)
+    cases = [
+        np.float64(3.5),
+        np.int32(-7),
+        np.int64(1 << 40),
+        np.uint8(9),
+        np.complex128(1 + 2j),
+        np.array(3.5),
+        np.array(7, dtype=np.int32),
+    ]
+    for v in cases:
+        assert echo.send(v) is True
+        r = echo.recv(timeout=5)
+        assert type(r) is type(v)
+        assert getattr(r, "shape", None) == v.shape
+        assert getattr(r, "dtype", None) == v.dtype
+        assert bool(np.all(r == v))
+
+
 def test_numpy_gate_fallbacks(echo):
     # 2-D, non-contiguous, and unmappable dtypes fall to pickle, which
     # preserves shape and dtype exactly. (Mappable-but-non-identity
@@ -786,3 +807,5 @@ def test_peer_system_exit_sends_no_error_value():
         assert ch.recv(timeout=10) is pymizu.CLOSED
     finally:
         ch.close()
+    # an orderly exit: no traceback, no err stream, exit status 0
+    assert ch._proc.wait() == 0

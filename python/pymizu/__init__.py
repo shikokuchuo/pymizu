@@ -720,7 +720,9 @@ class Pool:
         -------
             A list of [`Task`](`pymizu.Task`) handles. Ring-full past
             ``timeout`` ends the batch short — the returned handles
-            stay valid and collectible.
+            stay valid and collectible. A mid-batch failure raises with
+            an ``accepted`` attribute holding the handles already
+            submitted, which stay valid and collectible.
         """
         _check_native(self._h._worker_ident(), "Pool.submit_batch")
         payloads = []
@@ -766,8 +768,11 @@ class Pool:
         -------
             All values in input order. On the first non-OK outcome by
             position, raises with an ``index`` attribute (0-based) —
-            handles up to it inclusive are consumed, the rest stay
-            collectible. The `TIMEOUT` sentinel consumes nothing.
+            only the reported handle is consumed; every other, the
+            results ahead of it included, stays collectible. A result
+            that fails to read raises with ``index`` and a ``values``
+            attribute carrying the consumed prefix. The `TIMEOUT`
+            sentinel consumes nothing.
         """
         return self._h.collect_all(tasks, timeout)
 

@@ -1,6 +1,9 @@
 """The pool trace hook (mizu_pool_set_trace): submit-side events on the
 calling thread, removal with None, and unraisable hook errors."""
 
+import gc
+import weakref
+
 import pytest
 
 import pymizu
@@ -48,3 +51,17 @@ def test_trace_hook_error_is_unraisable(pool, capsys):
     t = pool.submit(pow, 2, 2)
     assert t.collect(timeout=5) == 4  # the hook error fails nothing
     pool.trace(None)
+
+
+def test_trace_hook_cycle_is_garbage_collected():
+    # a hook closing over the pool forms a cycle through the C handle;
+    # the GC sees and collects it (P-09)
+    def make():
+        p = pymizu.Pool.create(1)
+        p.trace(lambda ev, tid: p.status())
+        return weakref.ref(p)
+
+    wr = make()
+    for _ in range(3):
+        gc.collect()
+    assert wr() is None

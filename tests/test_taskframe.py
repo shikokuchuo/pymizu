@@ -14,6 +14,7 @@ from functools import partial
 import numpy as np
 import pytest
 from tests.helpers import (
+    BufferFailAfterFirst,
     array_sum,
     echo,
     frame_and_buffer,
@@ -21,6 +22,7 @@ from tests.helpers import (
     is_readonly,
     square,
     sum_mixed,
+    sum_two,
 )
 
 import pymizu
@@ -104,6 +106,34 @@ def test_small_numpy_arg_is_a_writable_copy(pool):
     assert pool.submit(is_readonly, a).collect(timeout=5) is False
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
+)
+def test_abandoned_bufref_stage_rolls_back(pool):
+    # a by-reference leaf's retain followed by a write-pass failure: the
+    # abandoned checkout rolls back, so the pickle fallback reuses the
+    # region instead of orphaning it for a fresh one (P-17)
+    def reuse():
+        return next(
+            s["spill_reuse"]
+            for s in pool.stats()["submitters"]
+            if s["pid"] == os.getpid()
+        )
+
+    # seed the free list with one region (a big pickled payload: its
+    # surrender at collect is deterministic)
+    assert pool.submit(len, "x" * 200000).collect(timeout=15) == 200000
+    before = reuse()
+    big = np.full(16000, 1.0)  # 125 KiB: past the zero-copy floor
+    flaky = BufferFailAfterFirst(np.full(10, 2.0))
+    t = pool.submit(sum_two, big, flaky)
+    # the pickle fallback pops the rolled-back BUFREF region: one
+    # published spill frame, marked reused (an orphaned checkout would
+    # force a fresh create: reuse delta 0)
+    assert reuse() - before == 1
+    assert t.collect(timeout=15) == 16020.0
+
+
 def test_container_with_buffer_leaves(pool):
     out = pool.submit(sum_mixed, [np.arange(4.0), 5]).collect(timeout=5)
     assert out == 11.0
@@ -156,6 +186,20 @@ def big_frame(n=20000, with_nulls=True):
         ],
         None,
     )
+
+
+def test_frame_rebuild_complex_na():
+    # a complex payload's None rebuilds as the NA pair, never a
+    # malformed-state error (P-15)
+    f = _frame_rebuild(["z"], [("Z", [1 + 2j, None, 3 - 1j])], None)
+    out = f.to_dict()["z"]
+    assert out[0] == 1 + 2j and out[2] == 3 - 1j
+    assert out[1].real != out[1].real and out[1].imag != out[1].imag
+    # the pickle form round-trips (the reduce emits None at the NA)
+    g = pickle.loads(pickle.dumps(f))
+    got = g.to_dict()["z"]
+    assert got[0] == 1 + 2j and got[2] == 3 - 1j
+    assert got[1].real != got[1].real and got[1].imag != got[1].imag
 
 
 def test_frame_arg_zero_copy_view(pool):

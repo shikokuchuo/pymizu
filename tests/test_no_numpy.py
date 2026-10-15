@@ -308,3 +308,28 @@ def test_from_arrow_without_numpy(tmp_path):
         assert d["s"] == ["a", "b", None]
         """,
     )
+
+
+def test_numpy_row_reads_as_python_scalar_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import struct
+
+        from pymizu import _pymizu
+
+        def row(type_byte, form, payload):
+            # the codec magic 'P', the numpy tag, wire type, form, bytes
+            return bytes([0x50, 0x61, type_byte, form]) + payload
+
+        # the codec's numpy row degrades to the Python scalar (P-18)
+        rd = _pymizu._read_stream
+        assert rd(row(14, 0, struct.pack("<d", 3.5))) == 3.5
+        assert rd(row(13, 0, struct.pack("<i", -7))) == -7
+        assert rd(row(32, 0, struct.pack("<q", 1 << 40))) == 1 << 40
+        assert rd(row(24, 0, bytes([9]))) == 9
+        assert rd(row(15, 0, struct.pack("<dd", 1.0, 2.0))) == 1 + 2j
+        # form 1 (a 0-d array) degrades likewise
+        assert rd(row(14, 1, struct.pack("<d", 2.5))) == 2.5
+        """,
+    )

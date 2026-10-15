@@ -14,11 +14,13 @@ from functools import partial
 
 import pytest
 from tests.helpers import (
+    BadCallable,
     busy,
     fail_indexed,
     fanout,
     fanout_with_thread,
     identity,
+    make_fail_on_unpickle,
     make_unpicklable,
     raise_long,
     takes_timeout,
@@ -310,6 +312,33 @@ def test_collect_all_cancelled_index(pool):
         also.collect(timeout=0)
     for t in slow:
         t.collect(timeout=10)
+
+
+def test_collect_all_read_failure_attaches_prefix(pool):
+    # a mid-batch read failure: the exception carries the failing slot's
+    # index and the consumed prefix (P-04)
+    t0 = pool.submit(abs, -1)
+    t1 = pool.submit(make_fail_on_unpickle)
+    t2 = pool.submit(abs, -2)
+    with pytest.raises(ValueError, match="test unpickle failure") as ei:
+        pool.collect_all([t0, t1, t2], timeout=15)
+    assert ei.value.index == 1
+    assert ei.value.values == [1]
+    # a pool read failure never consumes: the failing slot fails again,
+    # and every handle past the prefix stays collectible
+    with pytest.raises(ValueError, match="test unpickle failure"):
+        t1.collect(timeout=5)
+    assert t2.collect(timeout=5) == 2
+
+
+def test_submit_batch_mid_failure_attaches_accepted(pool):
+    # a mid-batch stage failure: the exception carries the accepted
+    # handles, which stay valid and collectible (P-05)
+    with pytest.raises(TypeError, match="unpicklable on purpose") as ei:
+        pool.submit_batch([partial(abs, -1), BadCallable()])
+    accepted = ei.value.accepted
+    assert len(accepted) == 1
+    assert accepted[0].collect(timeout=15) == 1
 
 
 def test_worker_died():

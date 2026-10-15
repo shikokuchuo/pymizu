@@ -781,7 +781,9 @@ enum {
   PYMIZU_TAG_TASK = 'k',      /* the (fn, args, kwargs) task frame */
   PYMIZU_TAG_BUFFER = 'Y',    /* a buffer-protocol leaf, inline bytes */
   PYMIZU_TAG_BUFREF = 'r',    /* a buffer leaf by reference (SHM_VEC name) */
-  PYMIZU_TAG_FRAMEREF = 'F'   /* a Frame by reference (a MIZL region name) */
+  PYMIZU_TAG_FRAMEREF = 'F',  /* a Frame by reference (a MIZL region name) */
+  PYMIZU_TAG_NUMPY = 'a'      /* a numpy scalar / 0-d array: wire type,
+                                 form (0 scalar, 1 array), element bytes */
 };
 
 /* Exact-type checks throughout: a subclass (IntEnum, a str subclass) keeps
@@ -1386,6 +1388,11 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
     } else {
       rc = stage_bytes(buf, n, hdr, payload, inline_max, h);
     }
+  } else {
+    /* a write-pass failure can follow a by-reference leaf's retain: roll
+       the abandoned checkout back before the caller's pickle fallback
+       re-reserves (its spill_get would orphan the region) */
+    mizu_stage_rollback(h);
   }
   if (buf != payload) free(buf);
   frame_plan_clear(&fp);
@@ -1400,6 +1407,41 @@ static int arrow_probe_skip(PyObject *obj) {
   return tp == &PyList_Type || tp == &PyTuple_Type || tp == &PyDict_Type ||
          tp == &PyUnicode_Type || tp == &PyLong_Type || tp == &PyFloat_Type ||
          tp == &PyBool_Type || tp == &PyBytes_Type || tp == &PyComplex_Type;
+}
+
+/* The numpy row's form byte: 1 a 0-d ndarray, 0 a scalar (numpy scalars
+   and exotic 0-d exporters alike). The probe caches np.ndarray. */
+static int np0_form(PyObject *obj) {
+  static PyObject *ndarray_type;
+  if (ndarray_type == NULL) {
+    PyObject *np = numpy_module();
+    if (np == NULL) return 0;
+    ndarray_type = PyObject_GetAttrString(np, "ndarray");
+    if (ndarray_type == NULL) {
+      PyErr_Clear();
+      return 0;
+    }
+  }
+  return PyObject_TypeCheck(obj, (PyTypeObject *) ndarray_type) != 0;
+}
+
+/* A 0-d buffer of an identity dtype (a numpy scalar or 0-d array): the
+   codec's numpy row — magic, tag, wire type, form, the element bytes — so
+   the value crosses exactly, not as the RAWVEC read's 1-D length-1
+   array. Same-language only (a foreign peer's 0-d keeps the raw tier's R
+   vector). -1 hands the object back to the general path. */
+static int stage_np0(PyObject *obj, const Py_buffer *v, int type,
+                     mizu_slot_hdr *hdr, uint8_t *payload,
+                     uint32_t inline_max, mizu_handle *h) {
+  size_t elt = mizu_type_elt_size(type);
+  if (elt == 0 || (size_t) v->len != elt) return -1;
+  uint8_t row[4 + 16];
+  row[0] = MIZU_PYMIZU_CODEC_MAGIC;
+  row[1] = PYMIZU_TAG_NUMPY;
+  row[2] = (uint8_t) type;
+  row[3] = (uint8_t) np0_form(obj);
+  memcpy(row + 4, v->buf, elt);
+  return stage_bytes(row, 4 + elt, hdr, payload, inline_max, h);
 }
 
 static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -1486,13 +1528,17 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
              the 'I' writer (foreign) or pickle (same-language) sees it */
           const int temporal = type != 0 && v.format != NULL &&
             v.format[0] == 'B' && mizu_py_np_temporal(obj) != 0;
-          if (type != 0 && !temporal)
-            rc = stage_raw(&v, type, hdr, payload, inline_max, h);
-          else if (type == 0 && foreign)
+          if (type != 0 && !temporal) {
+            if (v.ndim == 0 && !foreign)
+              rc = stage_np0(obj, &v, type, hdr, payload, inline_max, h);
+            else
+              rc = stage_raw(&v, type, hdr, payload, inline_max, h);
+          } else if (type == 0 && foreign) {
             /* the conversion pass is foreign-only: same-language
                handles keep identity dtypes and pickle the rest */
             rc = stage_convert_buffer(&v, hdr, payload, inline_max, h,
                                       peer_lang);
+          }
         }
       }
       PyBuffer_Release(&v);
@@ -3677,6 +3723,73 @@ static uint64_t codec_get64(const uint8_t **p) {
   return v;
 }
 
+/* The numpy row's value: the exact-dtype scalar off the payload bytes,
+   form 1 the 0-d array of it. Without numpy the Python scalar stands in
+   (the documented degradation). NULL with no error is a corrupt type
+   byte; NULL with one propagates (the codec reader's discipline). */
+static PyObject *numpy_scalar_read(int type, int form, const uint8_t *data) {
+  PyObject *v;
+  const char *name;
+  switch (type) {
+  case MIZU_TYPE_RAW:
+    v = PyLong_FromLong(data[0]);
+    name = "uint8";
+    break;
+  case MIZU_TYPE_INT: {
+    int32_t x;
+    memcpy(&x, data, 4);
+    v = PyLong_FromLong(x);
+    name = "int32";
+    break;
+  }
+  case MIZU_TYPE_INT64: {
+    int64_t x;
+    memcpy(&x, data, 8);
+    v = PyLong_FromLongLong(x);
+    name = "int64";
+    break;
+  }
+  case MIZU_TYPE_REAL: {
+    double x;
+    memcpy(&x, data, 8);
+    v = PyFloat_FromDouble(x);
+    name = "float64";
+    break;
+  }
+  case MIZU_TYPE_CPLX: {
+    double re, im;
+    memcpy(&re, data, 8);
+    memcpy(&im, data + 8, 8);
+    v = PyComplex_FromDoubles(re, im);
+    name = "complex128";
+    break;
+  }
+  default:
+    return NULL;
+  }
+  if (v == NULL) return NULL;
+  PyObject *np = numpy_module();
+  if (np == NULL) return v;   /* the Python scalar stands in */
+  PyObject *cls = PyObject_GetAttrString(np, name);
+  if (cls == NULL) {
+    Py_DECREF(v);
+    return NULL;
+  }
+  PyObject *s = PyObject_CallFunctionObjArgs(cls, v, NULL);
+  Py_DECREF(cls);
+  Py_DECREF(v);
+  if (s == NULL || form == 0) return s;
+  PyObject *mk = PyObject_GetAttrString(np, "array");
+  if (mk == NULL) {
+    Py_DECREF(s);
+    return NULL;
+  }
+  PyObject *arr = PyObject_CallFunctionObjArgs(mk, s, NULL);
+  Py_DECREF(mk);
+  Py_DECREF(s);
+  return arr;
+}
+
 static PyObject *codec_read_scalar(const uint8_t **p, const uint8_t *end) {
   if (*p >= end) return NULL;
   switch (*(*p)++) {
@@ -3719,6 +3832,17 @@ static PyObject *codec_read_scalar(const uint8_t **p, const uint8_t *end) {
     if (b == NULL) return NULL;
     *p += n;
     return b;
+  }
+  case PYMIZU_TAG_NUMPY: {
+    if ((size_t) (end - *p) < 2) return NULL;
+    int type = *(*p)++;
+    int form = *(*p)++;
+    if (form > 1) return NULL;
+    size_t elt = mizu_type_elt_size(type);
+    if (elt == 0 || (size_t) (end - *p) < elt) return NULL;
+    PyObject *s = numpy_scalar_read(type, form, *p);
+    if (s != NULL) *p += elt;
+    return s;
   }
   }
   return NULL;
@@ -4026,6 +4150,7 @@ static PyObject *codec_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
   case PYMIZU_TAG_FLOAT:
   case PYMIZU_TAG_STR:
   case PYMIZU_TAG_BYTES:
+  case PYMIZU_TAG_NUMPY:
     p--;   /* the scalar reader consumes its own tag */
     out = codec_read_scalar(&p, end);
     if (out == NULL) {
@@ -4375,6 +4500,32 @@ static void py_park(void *Py_UNUSED(ctx), int entering) {
   }
 }
 
+/* The worker's idle cache drop: clear the Python-side map context cache
+   (each cached _Ctx pins a map-region mapping, and a view-x's counted zc
+   loan). Runs at the core's idle/departure points on the worker thread;
+   an error is unraisable, never into the core. */
+static PyObject *mizu_map_sweep = NULL;
+
+static void py_sweep(void *Py_UNUSED(ctx)) {
+  PyGILState_STATE gs = PyGILState_Ensure();
+  if (mizu_map_sweep == NULL) {
+    PyObject *mod = PyImport_ImportModule("pymizu._map");
+    if (mod != NULL) {
+      mizu_map_sweep = PyObject_GetAttrString(mod, "_sweep_ctx_cache");
+      Py_DECREF(mod);
+    }
+    if (mizu_map_sweep == NULL) PyErr_Clear();
+  }
+  if (mizu_map_sweep != NULL) {
+    PyObject *r = PyObject_CallNoArgs(mizu_map_sweep);
+    if (r == NULL)
+      PyErr_WriteUnraisable(mizu_map_sweep);
+    else
+      Py_DECREF(r);
+  }
+  PyGILState_Release(gs);
+}
+
 // Task execution (the worker's exec_fn) ----------------------------------------
 
 /* UTF-8-boundary truncation: decoding with "ignore" drops the partial
@@ -4438,6 +4589,24 @@ static PyObject *traceback_text(PyObject *type, PyObject *value,
   return text;
 }
 
+/* UTF-8 bytes for the err envelope: a lone surrogate (an OSError's
+   surrogateescape'd path) must not blank the span — backslash-escape it
+   instead. *keep holds the encoded bytes when the fast path failed. */
+static const char *utf8_or_escape(PyObject *s, PyObject **keep,
+                                  Py_ssize_t *n) {
+  const char *p = PyUnicode_AsUTF8AndSize(s, n);
+  if (p != NULL) return p;
+  PyErr_Clear();
+  *keep = PyUnicode_AsEncodedString(s, "utf-8", "backslashreplace");
+  if (*keep == NULL) {
+    PyErr_Clear();
+    *n = 0;
+    return "";
+  }
+  *n = PyBytes_GET_SIZE(*keep);
+  return PyBytes_AS_STRING(*keep);
+}
+
 /* Frame an exception as an 'I' err stream INLINE (the _send_error shim
    path): type name, str(), traceback text — mizu_ix_write_err truncates
    to the slot by construction, so the publish cannot fail. */
@@ -4460,22 +4629,19 @@ static int frame_err_exc(PyObject *exc, uint8_t *payload,
     return 1;
   }
   Py_ssize_t tn_n = 0, ms_n = 0, tb_n = 0;
-  const char *tn_s = PyUnicode_AsUTF8AndSize(tname, &tn_n);
-  const char *ms_s = PyUnicode_AsUTF8AndSize(msg, &ms_n);
-  const char *tb_s = PyUnicode_AsUTF8AndSize(tbs, &tb_n);
-  if (tn_s == NULL || ms_s == NULL || tb_s == NULL) {
-    PyErr_Clear();                 /* a lone surrogate is no detail */
-    static const char empty[] = "";
-    if (tn_s == NULL) { tn_s = empty; tn_n = 0; }
-    if (ms_s == NULL) { ms_s = empty; ms_n = 0; }
-    if (tb_s == NULL) { tb_s = empty; tb_n = 0; }
-  }
+  PyObject *k1 = NULL, *k2 = NULL, *k3 = NULL;
+  const char *tn_s = utf8_or_escape(tname, &k1, &tn_n);
+  const char *ms_s = utf8_or_escape(msg, &k2, &ms_n);
+  const char *tb_s = utf8_or_escape(tbs, &k3, &tb_n);
   size_t n = mizu_ix_write_err(payload, inline_max,
                                  tn_s, (size_t) tn_n, ms_s, (size_t) ms_n,
                                  tb_s, (size_t) tb_n, 0, 0);
   hdr->kind = MIZU_KIND_INLINE;
   hdr->len = (uint32_t) n;
   hdr->aux = MIZU_AUX_F_KEEPERLESS;
+  Py_XDECREF(k1);
+  Py_XDECREF(k2);
+  Py_XDECREF(k3);
   Py_DECREF(tname);
   Py_DECREF(msg);
   Py_DECREF(tbs);
@@ -4541,20 +4707,17 @@ static int publish_exc(mizu_result_sink *sink, uint64_t sub_ident) {
         widx = (uint64_t) v;
     }
     Py_ssize_t tn_n = 0, ms_n = 0, tb_n = 0;
-    const char *tn_s = PyUnicode_AsUTF8AndSize(tname, &tn_n);
-    const char *ms_s = PyUnicode_AsUTF8AndSize(msg, &ms_n);
-    const char *tb_s = PyUnicode_AsUTF8AndSize(tbs, &tb_n);
-    if (tn_s == NULL || ms_s == NULL || tb_s == NULL) {
-      PyErr_Clear();               /* a lone surrogate is no detail */
-      static const char empty[] = "";
-      if (tn_s == NULL) { tn_s = empty; tn_n = 0; }
-      if (ms_s == NULL) { ms_s = empty; ms_n = 0; }
-      if (tb_s == NULL) { tb_s = empty; tb_n = 0; }
-    }
+    PyObject *k1 = NULL, *k2 = NULL, *k3 = NULL;
+    const char *tn_s = utf8_or_escape(tname, &k1, &tn_n);
+    const char *ms_s = utf8_or_escape(msg, &k2, &ms_n);
+    const char *tb_s = utf8_or_escape(tbs, &k3, &tb_n);
     size_t n = mizu_ix_write_err(sink->payload, budget,
                                    tn_s, (size_t) tn_n, ms_s, (size_t) ms_n,
                                    tb_s, (size_t) tb_n, eidx != NULL, widx);
     int rc = mizu_result_publish_err(sink, NULL, (uint32_t) n);
+    Py_XDECREF(k1);
+    Py_XDECREF(k2);
+    Py_XDECREF(k3);
     Py_DECREF(tname);
     Py_DECREF(msg);
     Py_DECREF(tbs);
@@ -5364,9 +5527,9 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->check = py_check;
   b->exec = worker ? py_exec : NULL;
   b->park = worker ? py_park : NULL;
+  b->sweep = worker ? py_sweep : NULL;
   b->ident = MIZU_PY_IDENT;
   b->drop = py_drop;
-  /* sweep NULL: no per-handle caches */
 }
 
 static mizu_pool *pool_peek(MizuPool *self) {
@@ -5630,7 +5793,8 @@ PyDoc_STRVAR(pool_submit_batch_doc,
 "submit_batch(payloads, timeout=None) -> list of _Task\n\n\
 One task per payload in a single crossing. Ring-full past `timeout` ends\n\
 the batch short — the accepted handles stay valid and collectible; the\n\
-fatal outcomes still raise.");
+fatal outcomes still raise. A mid-batch failure raises with an `accepted`\n\
+attribute holding the handles already submitted.");
 
 static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
                                    PyObject *kw) {
@@ -5667,8 +5831,33 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   PyMem_Free(objs);
   Py_DECREF(fast);
   if (st == MIZU_ERR) {
+    if (done == 0) {
+      PyMem_Free(ts);
+      return pool_raise(self);
+    }
+    /* a mid-batch failure: the accepted tasks run regardless — wrap their
+       handles onto the exception instead of orphaning the result slots */
+    pool_raise(self);
+    PyObject *et, *ev, *tb;
+    PyErr_Fetch(&et, &ev, &tb);
+    PyErr_NormalizeException(&et, &ev, &tb);
+    if (ev != NULL) {
+      PyObject *acc = PyList_New((Py_ssize_t) done);
+      for (size_t i = 0; acc != NULL && i < done; i++) {
+        MizuTask *t = task_wrap(self, &ts[i]);
+        if (t == NULL)
+          Py_CLEAR(acc);
+        else
+          PyList_SET_ITEM(acc, (Py_ssize_t) i, (PyObject *) t);
+      }
+      /* a secondary failure keeps the original error */
+      if (acc == NULL || PyObject_SetAttrString(ev, "accepted", acc) < 0)
+        PyErr_Clear();
+      Py_XDECREF(acc);
+    }
+    PyErr_Restore(et, ev, tb);
     PyMem_Free(ts);
-    return pool_raise(self);
+    return NULL;
   }
   PyObject *out = PyList_New((Py_ssize_t) done);
   if (out == NULL) {
@@ -5746,7 +5935,9 @@ PyDoc_STRVAR(pool_collect_all_doc,
 Wait until every task is terminal; return all values in input order. On\n\
 the first non-OK outcome by position it raises with an `index` attribute\n\
 — only the reported handle is consumed; every other, the results ahead\n\
-of it included, stays collectible. pymizu.TIMEOUT consumes nothing.");
+of it included, stays collectible. A result that fails to read raises\n\
+with `index` and a `values` attribute carrying the consumed prefix.\n\
+pymizu.TIMEOUT consumes nothing.");
 
 static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
                                   PyObject *kw) {
@@ -5772,11 +5963,11 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
     PyMem_Free(ts);
     return NULL;
   }
-  size_t err_idx = 0;
+  size_t err_idx = 0, consumed = 0;
   mizu_status st;
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_collect_all_fn(self->core, ts, n, list_sink, out, &err_idx,
-                               NULL, ms);
+                               &consumed, ms);
   POOL_RESUME();
   PyMem_Free(ts);
   if (st == MIZU_TIMEOUT) {
@@ -5785,8 +5976,30 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
     return SentTimeout;
   }
   if (st == MIZU_ERR) {
+    if (consumed == 0) {
+      Py_DECREF(out);
+      return pool_raise(self);
+    }
+    /* a mid-batch read failure: the consumed prefix's slots are already
+       freed, so the values live only here — attach them (and the failing
+       slot's 0-based index) to the exception rather than dropping them */
+    pool_raise(self);
+    PyObject *et, *ev, *tb;
+    PyErr_Fetch(&et, &ev, &tb);
+    PyErr_NormalizeException(&et, &ev, &tb);
+    if (ev != NULL) {
+      PyObject *prefix = PyList_GetSlice(out, 0, (Py_ssize_t) consumed);
+      PyObject *i = PyLong_FromSize_t(err_idx);
+      if (prefix == NULL || i == NULL ||
+          PyObject_SetAttrString(ev, "index", i) < 0 ||
+          PyObject_SetAttrString(ev, "values", prefix) < 0)
+        PyErr_Clear();
+      Py_XDECREF(prefix);
+      Py_XDECREF(i);
+    }
     Py_DECREF(out);
-    return pool_raise(self);
+    PyErr_Restore(et, ev, tb);
+    return NULL;
   }
   if (err_idx < n) {
     /* the first non-OK by position: its box, with the 0-based index */
@@ -6366,7 +6579,18 @@ static PyObject *Pool_repr(MizuPool *self) {
   return PyUnicode_FromFormat("<pymizu.Pool %s (%s)>", buf, role);
 }
 
+static int Pool_traverse(MizuPool *self, visitproc visit, void *arg) {
+  Py_VISIT(self->trace_fn);
+  return 0;
+}
+
+static int Pool_clear(MizuPool *self) {
+  Py_CLEAR(self->trace_fn);
+  return 0;
+}
+
 static void Pool_dealloc(MizuPool *self) {
+  PyObject_GC_UnTrack(self);
   /* a controller destroy broadcasts shutdown (no wait); a participant
      releases its slot; a forked child's copy never touches the region */
   if (self->core != NULL && self->self_pid == mizu_self_pid())
@@ -6515,12 +6739,14 @@ static PyTypeObject MizuPoolType = {
   .tp_name = "_pymizu._Pool",
   .tp_basicsize = sizeof(MizuPool),
   .tp_repr = (reprfunc) Pool_repr,
-  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
   .tp_doc = "A pool handle (process-private; does not survive fork()). "
             "Construct through pymizu.Pool.create() / Pool.attach().",
   .tp_methods = Pool_methods,
   .tp_getset = Pool_getset,
   .tp_dealloc = (destructor) Pool_dealloc,
+  .tp_traverse = (traverseproc) Pool_traverse,
+  .tp_clear = (inquiry) Pool_clear,
 };
 
 // Task verbs ---------------------------------------------------------------------
@@ -6604,7 +6830,13 @@ static PyObject *Task_repr(MizuTask *self) {
                               (unsigned int) (self->word >> 40));
 }
 
+static int Task_traverse(MizuTask *self, visitproc visit, void *arg) {
+  Py_VISIT(self->pool);
+  return 0;
+}
+
 static void Task_dealloc(MizuTask *self) {
+  PyObject_GC_UnTrack(self);
   MizuPool *pool = (MizuPool *) self->pool;
   /* the finalizer release for a handle that was never collected: cancels a
      pending task, frees a terminal one — advisory and total, so safe for a
@@ -6646,12 +6878,13 @@ static PyTypeObject MizuTaskType = {
   .tp_name = "_pymizu._Task",
   .tp_basicsize = sizeof(MizuTask),
   .tp_repr = (reprfunc) Task_repr,
-  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
   .tp_doc = "A task handle from _Pool.submit(). Collected exactly once; "
             "an uncollected handle's finalizer releases its slot.",
   .tp_methods = Task_methods,
   .tp_getset = Task_getset,
   .tp_dealloc = (destructor) Task_dealloc,
+  .tp_traverse = (traverseproc) Task_traverse,
 };
 
 // Create / attach (module functions; the policy layer lives in pymizu.Channel) ------

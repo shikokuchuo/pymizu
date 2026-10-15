@@ -11,6 +11,7 @@ import struct
 import warnings
 
 import pytest
+from tests.helpers import RawArrowStream
 
 import pymizu
 from pymizu import _pymizu
@@ -752,6 +753,44 @@ def test_from_arrow_producer_failures():
     # a non-struct root (a bare array, not a table)
     with pytest.raises(pymizu.MizuError, match="not a struct"):
         pymizu.Frame.from_arrow(pa.chunked_array([[1.5, 2.5]]))
+
+
+class UnknownNullsStream(RawArrowStream):
+    """Reports null_count = -1 (the C Data Interface's "not yet computed")
+    on every column, with the validity bitmap present."""
+
+    def __init__(self, columns):
+        super().__init__(columns)
+        for _, children, *_ in self._batches:
+            for a in children:
+                a.null_count = -1
+
+
+def test_from_arrow_unknown_null_count():
+    # a spec-legal producer count of -1: the export serves the popcount,
+    # never a bare MemoryError (P-14). The producer must stay referenced:
+    # the adoption borrows its buffers
+    prod = UnknownNullsStream([("g", "x", [([1.5, 2.0, 3.0], [1, 0, 1])])])
+    f = pymizu.Frame.from_arrow(prod)
+    d = f.to_dict()["x"]
+    assert d[0] == 1.5 and d[1] != d[1] and d[2] == 3.0
+    t = pa.table(f)
+    assert t.column("x").null_count == 1
+    assert t.column("x").to_pylist() == [1.5, None, 3.0]
+
+
+def test_frame_rebuild_rejects_a_surrogate_tz():
+    # a crafted pickle state with a lone-surrogate tz raises the
+    # malformed-state ValueError, never a SystemError (P-20)
+    f = pymizu.Frame.from_arrow(
+        pa.table({"ts": pa.array([0, 1], type=pa.timestamp("us", tz="UTC"))})
+    )
+    fn, state = f.__reduce__()
+    names, columns, rn = state
+    kind, payload, tz, unit = columns[0]
+    columns[0] = (kind, payload, "bad\udce9tz", unit)
+    with pytest.raises(ValueError, match="malformed frame rebuild state"):
+        fn(names, columns, rn)
 
 
 def test_frame_type_not_constructible():

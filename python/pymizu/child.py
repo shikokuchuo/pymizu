@@ -47,12 +47,13 @@ def main() -> int:
         exec(code, {"__name__": "__pymizu_peer__", "ch": ch})
     except KeyboardInterrupt:
         status = 2
+    except SystemExit:
+        # an orderly exit: no traceback, no err stream, status 0
+        pass
     except BaseException as exc:
         traceback.print_exc()
         # the err stream crosses ahead of the close signal, whatever the
-        # peer's language; a full ring drops it (the traceback stands).
-        # Exception subclasses only: SystemExit is an orderly exit, not a
-        # remote error.
+        # peer's language; a full ring drops it (the traceback stands)
         if isinstance(exc, Exception):
             ch._send_error(exc)
         status = 1

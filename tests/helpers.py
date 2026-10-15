@@ -66,6 +66,44 @@ class ExitOnUnpickle:
         return (sys.exit, (0,))
 
 
+def make_fail_on_unpickle():
+    return FailOnUnpickle()
+
+
+class BadCallable:
+    """A callable whose pickle fails: a submit_batch item that cannot
+    stage (P-05)."""
+
+    def __call__(self):
+        return 1
+
+    def __reduce_ex__(self, proto):
+        raise TypeError("unpicklable on purpose")
+
+
+class BufferFailAfterFirst:
+    """A PEP 688 exporter whose second __buffer__ call fails: the stage
+    size pass succeeds, the write pass declines (P-17)."""
+
+    def __init__(self, a):
+        self.a = a
+        self.calls = 0
+
+    def __buffer__(self, flags):
+        self.calls += 1
+        if self.calls > 1:
+            raise BufferError("export refused")
+        return memoryview(self.a)
+
+    def __release_buffer__(self, view):
+        view.release()
+
+
+def sum_two(a, b):
+    """b is a BufferFailAfterFirst: its .a rides the pickle."""
+    return float(a.sum() + b.a.sum())
+
+
 def make_unpicklable():
     return Unpicklable()
 

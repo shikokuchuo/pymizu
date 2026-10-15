@@ -6,6 +6,7 @@ worker-death lost ranges, buffer x forms, prepared maps, and the
 unclean-run restage — over real spawned workers."""
 
 import pickle
+import time
 
 import pytest
 from tests.helpers import (
@@ -461,15 +462,23 @@ def test_stream_prepared_error_restages(pool):
         pm.close()
 
 
-def test_stream_ctx_cache_one_attach():
-    # a multi-chunk map on one worker holds exactly one cached context
+def test_stream_ctx_cache_swept_on_idle():
+    # the worker's idle sweep drops completed maps' contexts (P-16): a
+    # multi-chunk map's cache entry clears at the first idle beat
     p = pymizu.Pool.create(1)
     try:
         pm = p.map_prepare(square, list(range(16)), n_chunks=4, stream=True)
         try:
             assert pm.run() == [i * i for i in range(16)]
-            names = p.submit(map_ctx_names, []).collect(timeout=15)
-            assert names == [pm._name]
+            # poll until the completed map's context clears (pre-fix:
+            # never); the sleeps let the worker park — a busy worker
+            # never reaches the idle sweep
+            names = None
+            deadline = time.monotonic() + 15
+            while names != [] and time.monotonic() < deadline:
+                time.sleep(0.1)
+                names = p.submit(map_ctx_names, []).collect(timeout=15)
+            assert names == []
         finally:
             pm.close()
     finally:

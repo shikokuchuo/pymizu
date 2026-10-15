@@ -30,6 +30,21 @@ Initial pre-release.
   already carries an `index` — a map error's element index, the
   documented `Pool.map` contract — keeps it as before, so both are now
   present.
+- NumPy scalars and 0-d arrays (`np.float64(3.5)`, `np.array(3.5)`)
+  round-trip with their exact type and shape on the same-language path,
+  staged as a new compact-codec row (wire type, scalar/0-d form, element
+  bytes) instead of the raw tier's 1-D length-1 array read. Without
+  numpy, a received row reads as the plain Python scalar. Note for
+  mixed-version deployments: the new tag errors loudly against pymizu
+  builds from before this release on same-language channels and pools.
+- `Pool.collect_all()`: a result that fails to read mid-batch now
+  raises with an `index` (0-based failing slot) and a `values`
+  attribute carrying the already-consumed prefix, instead of discarding
+  those results. The failing slot and every handle past the prefix stay
+  collectible.
+- `Pool.submit_batch()`: a mid-batch failure now raises with an
+  `accepted` attribute holding the handles already submitted, which stay
+  valid and collectible — previously they leaked their result slots.
 
 ### Fixed
 
@@ -59,6 +74,42 @@ Initial pre-release.
   exporter failing a later `__buffer__` call) now fails the send instead
   of staging a partially written reservation the peer reads as a corrupt
   or wrong value.
+- A trace hook that closes over its pool no longer leaks the pool (and
+  its workers): the `_Pool` and `_Task` handle types now participate in
+  the cyclic GC.
+- The worker's map-context cache is dropped at the worker's idle sweep:
+  a parked worker no longer keeps completed maps' regions mapped (and a
+  view `x`'s zero-copy loan held) until eight other maps evict it.
+- Attr'd values (2-D arrays, temporal values, frames) nested within a
+  few levels of the interchange depth cap are now declined at send time
+  with the depth reason, instead of shipping a stream every reader
+  rejects.
+- A `bytes` argument to a `pymizu.call` spec stays `bytes` at any size —
+  past the zero-copy gate it previously arrived as a uint8 array.
+- A task whose error text contains a lone surrogate (e.g. an `OSError`'s
+  undecodable path) now crosses with the text backslash-escaped, instead
+  of a blanked message and traceback.
+- A `DeclinedError` under a long non-ASCII dict key raises cleanly with
+  its `path`/`reason` attributes, instead of a `UnicodeDecodeError`.
+- `Frame.from_arrow()` on a producer reporting `null_count = -1` (the C
+  Data Interface's "not yet computed", with a validity bitmap present)
+  now counts the bitmap at adoption instead of raising a bare
+  `MemoryError` at the frame's Arrow export.
+- A frame with a complex column holding an NA now round-trips through
+  pickle (`Frame.__reduce__` emits `None`, the rebuild accepts it);
+  previously the rebuild rejected the state as malformed.
+- A task frame abandoned after its by-reference buffer leaf staged (a
+  later leaf's buffer export failing) no longer orphans the region: the
+  abandoned checkout rolls back (via libmizu's newly exported
+  `mizu_stage_rollback`), and the pickle fallback reuses it.
+- Hardening: over-long strings are declined at send (string-vector
+  elements and task code past 2^31 bytes, dict keys past 2^32 bytes,
+  column names past 2^31 in total); a crafted frame pickle state with an
+  undecodable timezone raises the malformed-state `ValueError` instead
+  of a `SystemError`; a factor column stamped known-NA-free whose codes
+  contain the NA sentinel now rejects as corrupt at export.
+- A channel peer calling `sys.exit()` now exits 0 without a traceback —
+  an orderly exit, not a remote error.
 
 ### Changed
 

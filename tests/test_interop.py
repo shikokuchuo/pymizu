@@ -751,6 +751,35 @@ def test_a_declined_write_pass_fails_the_send():
         h.destroy()
 
 
+def test_attr_shapes_decline_at_the_depth_cap():
+    # the attr shapes count their cursor frames: a value the reader would
+    # reject declines at the send instead (P-10)
+    x = np.zeros((2, 2))
+    for _ in range(61):
+        x = [x]
+    got = _read(_write(x))
+    for _ in range(61):
+        assert isinstance(got, list) and len(got) == 1
+        got = got[0]
+    assert isinstance(got, np.ndarray)
+    assert np.array_equal(got, np.zeros((2, 2)))
+    for depth in (62, 63):
+        y = np.zeros((2, 2))
+        for _ in range(depth):
+            y = [y]
+        with pytest.raises(pymizu.DeclinedError, match="depth cap"):
+            _pymizu._write_stream(y)
+
+
+def test_declined_path_decodes_past_truncated_utf8():
+    # a long non-ASCII key's repr truncates mid-sequence in the path
+    # buffer: the DeclinedError still raises (P-13)
+    with pytest.raises(pymizu.DeclinedError) as ei:
+        _pymizu._write_stream({"€" * 100: object()})
+    assert isinstance(ei.value.path, str)
+    assert "€" in ei.value.path
+
+
 def test_frame_export_machinery():
     pl = pytest.importorskip("polars")
     # a three-column frame: factor and int64 columns, Arrow dictionary out

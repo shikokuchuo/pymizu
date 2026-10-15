@@ -534,9 +534,11 @@ static int64_t fcol_ensure_export(fcol *c) {
     if (c->codes0 == NULL) return -1;
     const int32_t *v = (const int32_t *) c->values;
     for (int64_t i = 0; i < n; i++) {
-      if (v[i] == MIZU_NA_INT32) {
+      if (v[i] == MIZU_NA_INT32 && !c->known_free) {
         c->codes0[i] = MIZU_NA_INT32;
       } else if (v[i] < 1 || (int64_t) v[i] > c->nlev) {
+        /* an NA code under a known-NA-free stamp is a torn writer's: the
+           bitmap that would carry it was never written */
         PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                         "(a factor code outside the levels)");
         return -1;
@@ -1414,9 +1416,16 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         break;
       }
       case FCOL_C128: {
-        if (!PyComplex_Check(v)) goto nomem_malformed;
-        double re = PyComplex_RealAsDouble(v);
-        double im = PyComplex_ImagAsDouble(v);
+        double re, im;
+        if (v == Py_None) {
+          const uint64_t bits = PYMIZU_NA_REAL_BITS;
+          memcpy(&re, &bits, 8);
+          memcpy(&im, &bits, 8);
+        } else {
+          if (!PyComplex_Check(v)) goto nomem_malformed;
+          re = PyComplex_RealAsDouble(v);
+          im = PyComplex_ImagAsDouble(v);
+        }
         memcpy(c->values + 16 * j, &re, 8);
         memcpy(c->values + 16 * j + 8, &im, 8);
         break;
@@ -1475,8 +1484,11 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       c->unit = 'u';
       if (c->kind == FCOL_TS && tn >= 3) {
         PyObject *tz = PyTuple_GET_ITEM(t, 2);
-        if (tz != NULL && PyUnicode_Check(tz))
-          snprintf(c->tz, sizeof(c->tz), "%s", PyUnicode_AsUTF8(tz));
+        if (tz != NULL && PyUnicode_Check(tz)) {
+          const char *tzs = PyUnicode_AsUTF8(tz);
+          if (tzs == NULL) goto malformed;
+          snprintf(c->tz, sizeof(c->tz), "%s", tzs);
+        }
       }
       if (tn > ui) {
         PyObject *un = PyTuple_GET_ITEM(t, ui);

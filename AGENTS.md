@@ -151,20 +151,26 @@ tools/vendor-libmizu.sh` for a local checkout).
      and the codec's container walk; an int past int64 falls through to
      pickle). Foreign scalars route to the 'I' writer below the buffer
      tier.
-  4. Buffer-protocol objects -> the core's raw-tier reservation
-     (`mizu_stage_raw`, vendored `stage_raw.c`): RAWVEC inline, then past
-     max(inline budget, `MIZU_ZC_FLOOR`) SHM_VEC (one MIZH layout write
-     into a spill region, `mizu_stage_retain_zc` storing the producer-loan
-     refcount). The channel keeps the arena copy below `MIZU_ZC_FLOOR_RAW`
-     and under churn; the pool frames RAWSPILL as a named region. A NULL
-     reservation falls through to pickle. Ahead of the reservation, a
-     read-only buffer is checked for a received view re-sent whole
-     (`stage_ref`: a `_ShmView`, or a numpy array whose `.base` chain
-     ends in one over the view's exact bytes at its wire type — an LGL
-     view read as int32 included): it crosses as REF (the region name,
-     zero payload bytes) after `MIZU_ZC_FLAG_REFHELD` is OR'd into the
-     region's flags word. A slice, reshape or dtype view goes by value;
-     writable buffers never pay the `.base` walk.
+  4. Buffer-protocol objects: a 0-d buffer of an identity dtype (a
+     numpy scalar or 0-d array), same-language only -> the codec's
+     numpy row (`PYMIZU_TAG_NUMPY` 'a': wire type, scalar/0-d form,
+     element bytes), read back as the exact type — never the raw tier's
+     1-D length-1 array. (New in this release: an older build's reader
+     errors loudly on the tag.) Otherwise -> the core's raw-tier
+     reservation (`mizu_stage_raw`, vendored `stage_raw.c`): RAWVEC
+     inline, then past max(inline budget, `MIZU_ZC_FLOOR`) SHM_VEC (one
+     MIZH layout write into a spill region, `mizu_stage_retain_zc`
+     storing the producer-loan refcount). The channel keeps the arena
+     copy below `MIZU_ZC_FLOOR_RAW` and under churn; the pool frames
+     RAWSPILL as a named region. A NULL reservation falls through to
+     pickle. Ahead of the reservation, a read-only buffer is checked
+     for a received view re-sent whole (`stage_ref`: a `_ShmView`, or a
+     numpy array whose `.base` chain ends in one over the view's exact
+     bytes at its wire type — an LGL view read as int32 included): it
+     crosses as REF (the region name, zero payload bytes) after
+     `MIZU_ZC_FLAG_REFHELD` is OR'd into the region's flags word. A
+     slice, reshape or dtype view goes by value; writable buffers never
+     pay the `.base` walk.
   5. Foreign handles (an R peer), the pinned order ahead of the codec
      and pickle: the Arrow front-ends (`__arrow_c_array__`, then
      `__arrow_c_stream__`), then the layout tiers past the zc floor
@@ -324,7 +330,9 @@ tools/vendor-libmizu.sh` for a local checkout).
   or native-fn map on a foreign pool errors locally naming the spec.
 - A task error crosses as the worker's constructed, bounded (type,
   message, traceback) envelope — never a pickled exception instance; an
-  unpicklable result recovers as the task's ERR.
+  unpicklable result recovers as the task's ERR. Text carrying a lone
+  surrogate (an `OSError`'s undecodable path) crosses
+  backslash-escaped, never blanked.
 - `pymizu.current_pool()` binds the worker's own handle inside a task
   (nested submit/collect).
 - Pool surface beyond submit/collect: `submit_batch`,
@@ -344,7 +352,13 @@ tools/vendor-libmizu.sh` for a local checkout).
   every park/wait and reacquire it in the `check` hook for
   `PyErr_CheckSignals()`; worker (exec-capable) handles hold the GIL
   through collect and register the core's around-park `park` hook, which
-  drops the GIL for each bounded sleep.
+  drops the GIL for each bounded sleep. Worker handles also register the
+  core's idle `sweep` hook (`py_sweep`): it clears the Python-side map
+  context cache (`pymizu._map._ctx_cache`), so a parked worker holds no
+  map-region mappings or view-x zc loans.
+- The `_Pool` and `_Task` handle types participate in the cyclic GC
+  (`Py_TPFLAGS_HAVE_GC` + traverse; `_Pool` clears `trace_fn`), so a
+  trace hook closing over its pool no longer pins it.
 - Sentinels map to Python singletons; `MIZU_ERR` maps to an exception
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.

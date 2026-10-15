@@ -313,6 +313,9 @@ int mizu_py_strlist_probe(PyObject *obj, int64_t *str_bytes) {
       return 0;
     }
     any_str = 1;
+    /* a str past the wire's int32 length is not a string vector: the
+       generic walk declines it with the top-level path's reason */
+    if (len > INT32_MAX) return 0;
     bytes += (int64_t) len;
   }
   if (!any_str) return 0;
@@ -445,6 +448,18 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
   w->total += (size_t) n * 8;
 }
 
+/* The attr shapes emit frames the value walk's depth accounting never
+   counted: the cursor pushes the attr frame, the value container, the
+   attrs dict, and a vector value inside the dict. k is the worst-case
+   extra pushes past w->depth (ix_push fails at 64); decline at the send —
+   the depth discipline — rather than ship a stream every reader
+   rejects. */
+static int ixw_attr_depth(ixw *w, int k) {
+  if (w->depth + k <= MIZU_IX_DEPTH_MAX) return 1;
+  ixw_decline(w, "the value nests past the depth cap (64)");
+  return 0;
+}
+
 /* The attr shapes (the corpus-pinned forms):
    factor:  attr(intv codes, {levels: strv, class: "factor"})
    Date:    attr(realv days, {class: "Date"})
@@ -452,6 +467,7 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
 */
 static void ixe_date(ixw *w, const int64_t *days, uint64_t n, double scale) {
   static const char *cls[1] = { MIZU_IX_CLASS_DATE };
+  if (!ixw_attr_depth(w, 2)) return;   /* attr + vec (scalar class) */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, days, NULL, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
@@ -462,6 +478,7 @@ static void ixe_date(ixw *w, const int64_t *days, uint64_t n, double scale) {
 static void ixe_posixct(ixw *w, const int64_t *counts, const uint8_t *valid,
                         uint64_t n, const char *tz, double scale) {
   static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
+  if (!ixw_attr_depth(w, 3)) return;   /* attr + vec + dict's class strv */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, counts, valid, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
@@ -480,6 +497,7 @@ static void ixe_posixct(ixw *w, const int64_t *counts, const uint8_t *valid,
 static void ixe_difftime(ixw *w, const int64_t *counts,
                          const uint8_t *valid, uint64_t n, double scale) {
   static const char *cls[1] = { MIZU_IX_CLASS_DIFFTIME };
+  if (!ixw_attr_depth(w, 2)) return;   /* attr + vec (scalar units) */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, counts, valid, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
@@ -536,6 +554,7 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
       const char *u =
         PyUnicode_AsUTF8AndSize(PyList_GET_ITEM(row_names, 0), &len);
       if (u == NULL) return 0;
+      if (len > INT32_MAX) goto malformed;
       IXW_PUT(&w, mizu_ix_put_str(IXW_DST(&w), u, (int32_t) len));
     } else {
       IXW_PUT(&w, mizu_ix_put_strv_begin(IXW_DST(&w), (uint64_t) nr));
@@ -544,6 +563,7 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
         const char *u =
           PyUnicode_AsUTF8AndSize(PyList_GET_ITEM(row_names, i), &len);
         if (u == NULL) return 0;
+        if (len > INT32_MAX) goto malformed;
         IXW_PUT(&w, mizu_ix_put_strelt(IXW_DST(&w), u, (int32_t) len));
       }
     }
@@ -2144,6 +2164,11 @@ static int frame_names_build(frame_cols *fc, const attr_ent *nm) {
       PyErr_NoMemory();
       return -1;
     }
+    if ((size_t) len > (size_t) INT32_MAX - name_len) {
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "column names past 2^31 bytes");
+      return -1;
+    }
     fc->names = nb;
     memcpy(fc->names + name_len, s, (size_t) len);
     fc->name_off[i] = (int32_t) name_len;
@@ -3383,6 +3408,9 @@ static void ixe_fcol(ixw *w, const fcol *c) {
 /* The frame shape: attr(list cols, {names, class: "data.frame",
    row.names}). Names and row.names follow the length-1 scalar rule. */
 static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
+  /* attr + the column list + a column's own attr shape (3 at worst:
+     factor/Date/TS/TD) */
+  if (!ixw_attr_depth(w, 5)) return;
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) fc->ncols));
   for (int i = 0; i < fc->ncols; i++) ixe_fcol(w, &fc->cols[i]);
@@ -3414,13 +3442,23 @@ static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
       Py_ssize_t l = 0;
       const char *s = PyUnicode_AsUTF8AndSize(PyList_GET_ITEM(row_names, 0),
                                               &l);
+      if (s == NULL || l > INT32_MAX) {
+        PyErr_Clear();
+        ixw_decline(w, "a row name is not writable as UTF-8");
+        return;
+      }
       IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), s, (int32_t) l));
     } else {
       IXW_PUT(w, mizu_ix_put_strv_begin(IXW_DST(w), (uint64_t) n));
-      for (Py_ssize_t i = 0; i < n; i++) {
+      for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
         Py_ssize_t l = 0;
         const char *s = PyUnicode_AsUTF8AndSize(PyList_GET_ITEM(row_names,
                                                                 i), &l);
+        if (s == NULL || l > INT32_MAX) {
+          PyErr_Clear();
+          ixw_decline(w, "a row name is not writable as UTF-8");
+          return;
+        }
         IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), s, (int32_t) l));
       }
     }
@@ -3624,6 +3662,7 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
 static void ixe_dim(ixw *w, const uint8_t *src, int nd,
                     const int64_t *shape, const int64_t *strides,
                     const cvt_row *row) {
+  if (!ixw_attr_depth(w, 3)) return;   /* attr + vec + dict's dim intv */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_nd_body(w, src, nd, shape, strides, row);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
@@ -4087,8 +4126,11 @@ static void ixw_node(ixw *w, PyObject *obj) {
        buffer records and walks by value for its subtree size, nested
        detection suppressed; the optimistic write's tail past the first
        candidate is abandoned (selection follows the walk). */
+    /* exact bytes stay the 0x05 bytes form at every size: a by-reference
+       candidate would read back as a uint8 array — a size-dependent type */
     if (w->plan != NULL && !w->plan_suppress && !w->churn &&
-        w->plan->ncand < 16 && PyObject_CheckBuffer(obj)) {
+        w->plan->ncand < 16 && !PyBytes_CheckExact(obj) &&
+        PyObject_CheckBuffer(obj)) {
       Py_buffer v;
       if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
         const size_t zc_gate = (size_t) w->inline_max > MIZU_ZC_FLOOR ?
@@ -4212,6 +4254,10 @@ static void ixw_value(ixw *w, PyObject *obj) {
         PyErr_Clear();
         ixw_decline(w, "a dict key is not writable as UTF-8 "
                     "(a lone surrogate)");
+        break;
+      }
+      if (kn > UINT32_MAX) {
+        ixw_decline(w, "a dict key past 2^32 bytes has no portable home");
         break;
       }
       size_t save = w->path_len;
@@ -5299,6 +5345,14 @@ static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
     c->valid = (uint8_t *) a->buffers[0];
     c->vnulls = a->null_count;   /* the producer's count, served at export;
                                     value readers decide per bit */
+    if (c->vnulls < 0) {
+      /* "not yet computed" is spec-legal: count the bitmap now so the
+         export never serves a negative count (read as OOM) */
+      int64_t nn = 0;
+      for (int64_t i = 0; i < a->length; i++)
+        nn += !bitmap_at(c->valid, i);
+      c->vnulls = nn;
+    }
   }
   c->ahold = hold;
   atomic_fetch_add_explicit(&hold->refs, 1, memory_order_relaxed);
@@ -5496,6 +5550,12 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
           fc = NULL;
           goto done;
         }
+        if (len > (size_t) INT32_MAX - name_len) {
+          PyErr_SetString(MizuError, "pymizu: column names past 2^31 bytes");
+          frame_cols_decref(fc);
+          fc = NULL;
+          goto done;
+        }
         fc->names = nb;
         memcpy(fc->names + name_len, names[i], len);
         fc->name_off[i] = (int32_t) name_len;
@@ -5551,6 +5611,10 @@ static void ixw_raise(ixw *w);
    argument, bad names) latches on w. */
 static void ixw_task_fields(ixw *w, const char *code, Py_ssize_t code_n,
                             PyObject *args, PyObject *kwargs) {
+  if (code_n > INT32_MAX) {
+    ixw_decline(w, "a task code string past 2^31 bytes has no portable home");
+    return;
+  }
   IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), code, (int32_t) code_n));
   w->depth++;
   Py_ssize_t na = PyTuple_GET_SIZE(args);
@@ -5576,6 +5640,10 @@ static void ixw_task_fields(ixw *w, const char *code, Py_ssize_t code_n,
       PyErr_Clear();
       ixw_decline(w, "a dict key is not writable as UTF-8 "
                     "(a lone surrogate)");
+      break;
+    }
+    if (kn > UINT32_MAX) {
+      ixw_decline(w, "a dict key past 2^32 bytes has no portable home");
       break;
     }
     size_t save = w->path_len;
@@ -6465,21 +6533,35 @@ out:
 }
 
 static void ixw_raise(ixw *w) {
+  /* the path's repr truncation can cut a multi-byte UTF-8 sequence:
+     decode with replacement so the DeclinedError itself always raises */
+  PyObject *p = PyUnicode_DecodeUTF8(w->path, (Py_ssize_t) w->path_len,
+                                     "replace");
+  PyObject *r = PyUnicode_FromString(w->reason);
+  if (p == NULL || r == NULL) {
+    Py_XDECREF(p);
+    Py_XDECREF(r);
+    return;
+  }
   PyObject *msg = PyUnicode_FromFormat(
-    "pymizu: value is not portable to the peer (%s at %s)", w->reason,
-    w->path);
-  if (msg == NULL) return;
+    "pymizu: value is not portable to the peer (%U at %U)", r, p);
+  if (msg == NULL) {
+    Py_DECREF(p);
+    Py_DECREF(r);
+    return;
+  }
   PyObject *exc = PyObject_CallFunctionObjArgs(MizuDeclinedError, msg,
                                                NULL);
   Py_DECREF(msg);
-  if (exc == NULL) return;
-  PyObject *p = PyUnicode_FromString(w->path);
-  PyObject *r = PyUnicode_FromString(w->reason);
-  if (p == NULL || r == NULL ||
-      PyObject_SetAttrString(exc, "path", p) < 0 ||
+  if (exc == NULL) {
+    Py_DECREF(p);
+    Py_DECREF(r);
+    return;
+  }
+  if (PyObject_SetAttrString(exc, "path", p) < 0 ||
       PyObject_SetAttrString(exc, "reason", r) < 0) {
-    Py_XDECREF(p);
-    Py_XDECREF(r);
+    Py_DECREF(p);
+    Py_DECREF(r);
     Py_DECREF(exc);
     return;
   }

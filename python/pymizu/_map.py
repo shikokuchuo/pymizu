@@ -122,6 +122,13 @@ class _Ctx:
 _ctx_cache: dict[str, _Ctx] = {}
 
 
+def _sweep_ctx_cache() -> None:
+    """Drop every cached map context: the worker's idle sweep hook (the C
+    binding's ``sweep`` callback), so a parked worker holds no map-region
+    mappings or view-x zc loans."""
+    _ctx_cache.clear()
+
+
 def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
     """The map guard for a foreign pool: a native fn fails fast at the
     entry point (its runner tasks are same-language private frames that
