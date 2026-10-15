@@ -56,12 +56,6 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max);
 static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max);
-static int stage_mizs_list(PyObject *obj, mizu_slot_hdr *hdr,
-                           uint8_t *payload, uint32_t inline_max,
-                           mizu_handle *h);
-static int stage_mizh_dim(PyObject *obj, mizu_slot_hdr *hdr,
-                          uint8_t *payload, uint32_t inline_max,
-                          mizu_handle *h);
 static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
 static PyObject *view_to_object(PyObject *view, int type);
 static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -2080,7 +2074,7 @@ static PyGetSetDef view_getset[] = {
   {"flags", view_flags, NULL,
    "The region's zero-copy flags word (bit 0: REFHELD; introspection).",
    NULL},
-  {NULL}
+  {NULL, NULL, NULL, NULL, NULL}
 };
 
 // REF stage (a received view re-sent whole) ---------------------------------------
@@ -2727,7 +2721,7 @@ static PyMethodDef view_methods[] = {
    METH_VARARGS | METH_KEYWORDS, view_to_arrow_doc},
   {"to_numpy", (PyCFunction)(void (*)(void)) view_to_numpy, METH_NOARGS,
    view_to_numpy_doc},
-  {NULL}
+  {NULL, NULL, 0, NULL}
 };
 
 static Py_ssize_t view_length(PyObject *self) {
@@ -2961,7 +2955,7 @@ static PyMethodDef strview_methods[] = {
    METH_VARARGS | METH_KEYWORDS, strview_arrow_c_array_doc},
   {"to_arrow", (PyCFunction)(void (*)(void)) strview_arrow_c_array,
    METH_VARARGS | METH_KEYWORDS, strview_to_arrow_doc},
-  {NULL}
+  {NULL, NULL, 0, NULL}
 };
 
 static PyObject *strview_refcount(PyObject *obj, void *Py_UNUSED(closure)) {
@@ -2982,7 +2976,7 @@ static PyGetSetDef strview_getset[] = {
   {"flags", strview_flags, NULL,
    "The region's zero-copy flags word (bit 0: REFHELD; introspection).",
    NULL},
-  {NULL}
+  {NULL, NULL, NULL, NULL, NULL}
 };
 
 static PyTypeObject MizuShmStrViewType = {

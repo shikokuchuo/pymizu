@@ -1260,7 +1260,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     if (c->kind == FCOL_STR) {
       int32_t *offs = malloc(((size_t) n + 1) * 4);
       uint8_t *bytes = NULL, *valid = NULL;
-      size_t blen = 0;
+      size_t blen = 0, bcap = 0;
       int64_t nulls = 0;
       if (offs == NULL) goto nomem;
       offs[0] = 0;
@@ -1279,14 +1279,14 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
           Py_ssize_t l;
           const char *u = PyUnicode_AsUTF8AndSize(s, &l);
           if (u == NULL) goto str_malformed;
-          uint8_t *nb = realloc(bytes, blen + (size_t) l + 1);
-          if (nb == NULL) goto str_nomem;
-          bytes = nb;
+          if (bytes_reserve(&bytes, &bcap, blen + (size_t) l + 1) != 0)
+            goto str_nomem;
           memcpy(bytes + blen, u, (size_t) l);
           blen += (size_t) l;
         }
         offs[j + 1] = (int32_t) blen;
       }
+      bytes_shrink(&bytes, blen);
       c->values = (uint8_t *) offs;
       c->bytes = bytes;
       c->bytes_len = (int64_t) blen;
@@ -1312,7 +1312,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       int32_t *codes = malloc((size_t) (n != 0 ? n : 1) * 4);
       int32_t *loffs = malloc(((size_t) nlev + 1) * 4);
       uint8_t *bytes = NULL;
-      size_t blen = 0;
+      size_t blen = 0, bcap = 0;
       if (codes == NULL || loffs == NULL) goto dict_nomem;
       loffs[0] = 0;
       for (Py_ssize_t j = 0; j < nlev; j++) {
@@ -1321,13 +1321,13 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         Py_ssize_t l;
         const char *u = PyUnicode_AsUTF8AndSize(s, &l);
         if (u == NULL) goto dict_malformed;
-        uint8_t *nb = realloc(bytes, blen + (size_t) l + 1);
-        if (nb == NULL) goto dict_nomem;
-        bytes = nb;
+        if (bytes_reserve(&bytes, &bcap, blen + (size_t) l + 1) != 0)
+          goto dict_nomem;
         memcpy(bytes + blen, u, (size_t) l);
         blen += (size_t) l;
         loffs[j + 1] = (int32_t) blen;
       }
+      bytes_shrink(&bytes, blen);
       for (Py_ssize_t j = 0; j < n; j++) {
         PyObject *v = PyList_GET_ITEM(payload, j);
         if (v == Py_None) {

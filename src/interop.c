@@ -163,7 +163,8 @@ static void ixref_dealloc(PyObject *self) {
   Py_TYPE(self)->tp_free(self);
 }
 
-static int ixref_init(PyObject *self, PyObject *args, PyObject *kwargs) {
+static int ixref_init(PyObject *self, PyObject *args,
+                      PyObject *Py_UNUSED(kwargs)) {
   PyObject *id = NULL;
   if (!PyArg_ParseTuple(args, "U", &id)) return -1;
   Py_INCREF(id);
@@ -174,7 +175,7 @@ static int ixref_init(PyObject *self, PyObject *args, PyObject *kwargs) {
 static PyMemberDef ixref_members[] = {
   { "id", T_OBJECT_EX, offsetof(MizuIxRef, id), READONLY,
     "the region identifier" },
-  { NULL }
+  { NULL, 0, 0, 0, NULL }
 };
 
 static PyTypeObject MizuIxRefType = {
@@ -951,7 +952,8 @@ static PyObject *ixr_str(const mizu_ix_item *it) {
                               NULL);
 }
 
-static PyObject *ixr_strv(mizu_ix *cur, uint64_t count, const ixr_mode *mode) {
+static PyObject *ixr_strv(mizu_ix *cur, uint64_t count,
+                          const ixr_mode *Py_UNUSED(mode)) {
   PyObject *out = PyList_New((Py_ssize_t) count);
   if (out == NULL) return NULL;
   for (uint64_t i = 0; i < count; i++) {
@@ -1142,7 +1144,8 @@ fail:
   return NULL;
 }
 
-static attr_ent *attr_find(attr_ent *ents, int n, const char *key) {
+static const attr_ent *attr_find(const attr_ent *ents, int n,
+                                 const char *key) {
   size_t klen = strlen(key);
   for (int i = 0; i < n; i++)
     if (ents[i].key_len == klen && memcmp(ents[i].key, key, klen) == 0)
@@ -1180,7 +1183,7 @@ static int str_obj_eq(PyObject *s, const char *c) {
 }
 
 /* class == [a] (AV_STR is the length-1 form) or [a, b]. */
-static int class_is(attr_ent *e, const char *a, const char *b) {
+static int class_is(const attr_ent *e, const char *a, const char *b) {
   if (e == NULL) return 0;
   if (e->kind == AV_STR) {
     size_t alen = strlen(a);
@@ -1210,7 +1213,7 @@ static int u64_marked(const attr_ent *ents, int nent) {
 }
 
 /* The no-home error, naming the attribute names and the class. */
-static void ixr_no_home(attr_ent *ents, int n, const char *what) {
+static void ixr_no_home(const attr_ent *ents, int n, const char *what) {
   char msg[512];
   size_t off = 0;
   off += snprintf(msg + off, sizeof(msg) - off,
@@ -1218,7 +1221,7 @@ static void ixr_no_home(attr_ent *ents, int n, const char *what) {
   for (int i = 0; i < n && off < sizeof(msg) - 48; i++)
     off += snprintf(msg + off, sizeof(msg) - off, "%s\"%.*s\"",
                     i != 0 ? ", " : "", (int) ents[i].key_len, ents[i].key);
-  attr_ent *cls = attr_find(ents, n, MIZU_IX_ATTR_CLASS);
+  const attr_ent *cls = attr_find(ents, n, MIZU_IX_ATTR_CLASS);
   if (cls != NULL && off < sizeof(msg) - 48) {
     off += snprintf(msg + off, sizeof(msg) - off, "; class: ");
     if (cls->kind == AV_STR) {
@@ -1241,12 +1244,13 @@ static void ixr_no_home(attr_ent *ents, int n, const char *what) {
 }
 
 /* A factor's levels (AV_STR the length-1 form) into C storage. */
-static int levels_read(attr_ent *e, int32_t **off_out, uint8_t **bytes_out,
-                       int64_t *nlev_out, int64_t *blen_out) {
+static int levels_read(const attr_ent *e, int32_t **off_out,
+                       uint8_t **bytes_out, int64_t *nlev_out,
+                       int64_t *blen_out) {
   Py_ssize_t nlev = e->kind == AV_STR ? 1 : PyList_GET_SIZE(e->val.obj);
   int32_t *offs = malloc(((size_t) nlev + 1) * 4);
   uint8_t *bytes = NULL;
-  size_t blen = 0;
+  size_t blen = 0, bcap = 0;
   if (offs == NULL) goto nomem;
   offs[0] = 0;
   for (Py_ssize_t i = 0; i < nlev; i++) {
@@ -1270,13 +1274,13 @@ static int levels_read(attr_ent *e, int32_t **off_out, uint8_t **bytes_out,
                     "offset range");
       goto fail;
     }
-    uint8_t *nb = realloc(bytes, blen + (size_t) len + 1);
-    if (nb == NULL) goto nomem;
-    bytes = nb;
+    if (bytes_reserve(&bytes, &bcap, blen + (size_t) len + 1) != 0)
+      goto nomem;
     memcpy(bytes + blen, s, (size_t) len);
     blen += (size_t) len;
     offs[i + 1] = (int32_t) blen;
   }
+  bytes_shrink(&bytes, blen);
   *off_out = offs;
   *bytes_out = bytes;
   *nlev_out = nlev;
@@ -1676,11 +1680,11 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   int nent = 0;
   attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
   if (ents == NULL) return NULL;
-  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
-  attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
-  attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
-  attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
-  attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+  const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+  const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
+  const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
+  const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -1865,7 +1869,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     uint64_t n = it.count;
     int32_t *offs = malloc(((size_t) n + 1) * 4);
     uint8_t *bytes = NULL, *valid = NULL;
-    size_t blen = 0;
+    size_t blen = 0, bcap = 0;
     int64_t nulls = 0;
     if (offs == NULL) {
       PyErr_NoMemory();
@@ -1896,17 +1900,16 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
                           "int32 offset range");
           goto strv_fail;
         }
-        uint8_t *nb = realloc(bytes, blen + sit.len + 1);
-        if (nb == NULL) {
+        if (bytes_reserve(&bytes, &bcap, blen + sit.len + 1) != 0) {
           PyErr_NoMemory();
           goto strv_fail;
         }
-        bytes = nb;
         memcpy(bytes + blen, sit.ptr, sit.len);
         blen += sit.len;
       }
       offs[i + 1] = (int32_t) blen;
     }
+    bytes_shrink(&bytes, blen);
     c->kind = FCOL_STR;
     c->n = (int64_t) n;
     c->values = (uint8_t *) offs;
@@ -1953,9 +1956,9 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
     if (ents == NULL) return -1;
     int rc = -1;
-    attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
-    attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
-    attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
+    const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+    const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+    const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
     if (cls != NULL && lv != NULL && nent == 2 &&
         class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
         (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -1987,7 +1990,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     } else if (cls != NULL && nent == 2 &&
                class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
                vtype == MIZU_TYPE_REAL) {
-      attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+      const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
       const double us = un != NULL && un->kind == AV_STR ?
         difftime_unit_secs((const char *) un->val.ptr,
                            (size_t) un->val.count) : 0.0;
@@ -2206,7 +2209,7 @@ static PyObject *frame_rownames_build(const attr_ent *rn, int64_t nrow) {
 /* The data.frame shape: read the columns, then the dict, and validate
    before installing the shell. */
 static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
-                           const ixr_mode *mode) {
+                           const ixr_mode *Py_UNUSED(mode)) {
   if (ncols64 == 0 || ncols64 > (1u << 20)) {
     PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
                     "a frame without columns");
@@ -2228,9 +2231,9 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
   int nent = 0;
   attr_ent *ents = ixr_attr_dict(cur, &nent, NULL);
   if (ents == NULL) goto fail;
-  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
-  attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
-  attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
+  const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  const attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
+  const attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
   if (cls == NULL || nm == NULL || rn == NULL || nent != 3 ||
       !class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL)) {
     if (!PyErr_Occurred())
@@ -2553,10 +2556,10 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   attr_ent *ents = blob_attrs(data + body, (size_t) e->attrs_size, &nent);
   if (ents == NULL) return -1;
   int rc = -1;
-  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
-  attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
-  attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
-  attr_ent *ts = attr_find(ents, nent, MIZU_IX_ATTR_TSCALE);
+  const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+  const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
+  const attr_ent *ts = attr_find(ents, nent, MIZU_IX_ATTR_TSCALE);
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && tag == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -2599,7 +2602,7 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
     rc = 0;
   } else if (cls != NULL && nent == 2 && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
              tag == MIZU_TYPE_REAL) {
-    attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+    const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
     const double us = un != NULL && un->kind == AV_STR ?
       difftime_unit_secs((const char *) un->val.ptr,
                          (size_t) un->val.count) : 0.0;
@@ -2759,9 +2762,9 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   attr_ent *ents = blob_attrs(blob, blob_size, &nent);
   if (ents == NULL) return NULL;
   PyObject *out = NULL;
-  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
-  attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
-  attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
+  const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
+  const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && type == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -2794,7 +2797,7 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
                                                          metadata, dropped */
   } else if (cls != NULL && nent == 2 &&
              class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) && type == MIZU_TYPE_REAL) {
-    attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+    const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
     const double us = un != NULL && un->kind == AV_STR ?
       difftime_unit_secs((const char *) un->val.ptr,
                          (size_t) un->val.count) : 0.0;
@@ -2966,7 +2969,7 @@ fail:
    directory entries (a remote leaf's region hold deduped on the block),
    names and row.names off the root blob, the tree's loan anchor on the
    shell. */
-static PyObject *tree_frame(PyObject *owner, PyObject *loan,
+static PyObject *tree_frame(PyObject *Py_UNUSED(owner), PyObject *loan,
                             const uint8_t *base, size_t size, int64_t n,
                             const attr_ent *nm, const attr_ent *rn,
                             unsigned depth) {
@@ -3013,9 +3016,9 @@ fail:
 static PyObject *tree_home(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
                            attr_ent *ents, int nent, unsigned depth) {
-  attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
-  attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
-  attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
+  const attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
+  const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  const attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
   if (nent == 0)
     return tree_list(owner, loan, base, size, n, depth);
   if (nent == 1 && nm != NULL)
@@ -4521,7 +4524,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     uint8_t *dst = mizu_stage_raw(h, total * pc->row->w_out, pc->row->wire,
                                   hdr, payload, inline_max);
     if (dst != NULL) {
-      cvt_warn warn = { 0, 0 };
+      cvt_warn warn = { 0, 0, 0 };
       mizu_arrow_col_body(ar, 0, dst, &warn);
       rc = mizu_py_cvt_warn(&warn, x->lang) != 0 ? 1 : 0;
       goto done;
@@ -5000,7 +5003,7 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
   int64_t n = x->hold.rows;
   int32_t *offs = malloc(((size_t) n + 1) * 4);
   uint8_t *bytes = NULL, *valid = NULL;
-  size_t blen = 0;
+  size_t blen = 0, bcap = 0;
   if (offs == NULL) goto nomem;
   offs[0] = 0;
   {
@@ -5019,9 +5022,8 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
                          names[col]);
             goto fail;
           }
-          uint8_t *nb = realloc(bytes, blen + (size_t) len + 1);
-          if (nb == NULL) goto nomem;
-          bytes = nb;
+          if (bytes_reserve(&bytes, &bcap, blen + (size_t) len + 1) != 0)
+            goto nomem;
           memcpy(bytes + blen, s, (size_t) len);
           blen += (size_t) len;
         } else {
@@ -5038,6 +5040,7 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
     }
     c->vnulls = nulls;
   }
+  bytes_shrink(&bytes, blen);
   c->kind = FCOL_STR;
   c->n = n;
   c->values = (uint8_t *) offs;
@@ -5057,7 +5060,7 @@ fail:
 /* The dictionary copy: the codes to owned i32 (NA32 at nulls — the owned
    invariant), the canonical levels packed off batch 0's dictionary (the
    core's validation already ran: every record resolves). */
-static int fcol_build_dict(ixs *x, int col, fcol *c) {
+static int fcol_build_dict(ixs *x, int col, fcol *c, char **names) {
   const ixs_pcol *pc = &x->cols[col];
   int64_t n = x->hold.rows;
   int32_t *codes = malloc((size_t) (n != 0 ? n : 1) * 4);
@@ -5106,29 +5109,30 @@ static int fcol_build_dict(ixs *x, int col, fcol *c) {
   int32_t *offs = malloc(((size_t) nlev + 1) * 4);
   uint8_t *bytes = NULL;
   if (offs == NULL) {
-    free(codes);
     PyErr_NoMemory();
-    return -1;
+    goto fail;
   }
   offs[0] = 0;
-  size_t blen = 0;
+  size_t blen = 0, bcap = 0;
   for (int64_t i = 0; i < nlev; i++) {
     const uint8_t *s;
     int32_t len;
     (void) mizu_arrow_str_at(d, i, pc->str_form, &s, &len);
-    uint8_t *nb = realloc(bytes, blen + (size_t) len + 1);
-    if (nb == NULL) {
-      free(offs);
-      free(bytes);
-      free(codes);
-      PyErr_NoMemory();
-      return -1;
+    if (blen + (size_t) len > INT32_MAX) {
+      PyErr_Format(MizuError, "pymizu: Frame.from_arrow: column "
+                   "'%s' is past the int32 offset range",
+                   names[col]);
+      goto fail;
     }
-    bytes = nb;
+    if (bytes_reserve(&bytes, &bcap, blen + (size_t) len + 1) != 0) {
+      PyErr_NoMemory();
+      goto fail;
+    }
     memcpy(bytes + blen, s, (size_t) len);
     blen += (size_t) len;
     offs[i + 1] = (int32_t) blen;
   }
+  bytes_shrink(&bytes, blen);
   c->kind = FCOL_DICT;
   c->n = n;
   c->values = (uint8_t *) codes;
@@ -5137,6 +5141,11 @@ static int fcol_build_dict(ixs *x, int col, fcol *c) {
   c->nlev = nlev;
   c->bytes_len = (int64_t) blen;
   return 0;
+fail:
+  free(offs);
+  free(bytes);
+  free(codes);
+  return -1;
 }
 
 /* The date copy: i32 days verbatim, NA32 at masked lanes (a hand loop,
@@ -5392,7 +5401,7 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
       goto done_hold;
     }
     {
-      cvt_warn warn = { 0, 0 };
+      cvt_warn warn = { 0, 0, 0 };
       for (int i = 0; i < x.ncols; i++) {
         ixs_pcol *pc = &x.cols[i];
         fcol *c = &fc->cols[i];
@@ -5413,7 +5422,7 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
                            FCOL_LGL, &warn);
           break;
         case PC_STR: rc = fcol_build_str(&x, i, c, names); break;
-        case PC_DICT: rc = fcol_build_dict(&x, i, c); break;
+        case PC_DICT: rc = fcol_build_dict(&x, i, c, names); break;
         case PC_DATE: rc = fcol_build_date(&x, i, c); break;
         default: rc = fcol_build_counts(&x, i, c); break;
         }

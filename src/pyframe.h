@@ -120,6 +120,33 @@ static inline int span_has_na32(const int32_t *p, size_t n) {
   return 0;
 }
 
+/* A packed byte store's geometric growth: double on overflow from 64, one
+   exact-size shrink at the end (a failed shrink keeps the slack). The +1
+   slack keeps the block non-NULL for an empty store. -1 without an error
+   set, the frame_cols_new discipline. */
+static inline int bytes_reserve(uint8_t **bytes, size_t *cap, size_t need) {
+  if (need <= *cap) return 0;
+  size_t ncap = *cap != 0 ? *cap : 64;
+  while (ncap < need) {
+    if (ncap > SIZE_MAX / 2) {
+      ncap = need;
+      break;
+    }
+    ncap *= 2;
+  }
+  uint8_t *nb = realloc(*bytes, ncap);
+  if (nb == NULL) return -1;
+  *bytes = nb;
+  *cap = ncap;
+  return 0;
+}
+
+static inline void bytes_shrink(uint8_t **bytes, size_t len) {
+  if (*bytes == NULL) return;
+  uint8_t *nb = realloc(*bytes, len + 1);
+  if (nb != NULL) *bytes = nb;
+}
+
 typedef struct {
   PyObject_HEAD
   frame_cols *fc;

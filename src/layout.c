@@ -423,8 +423,9 @@ static void mizh_leaf_blob_write(uint8_t *dst, const pymizu_leaf *lf) {
    semantics (the stage_mizh_dim doctrine, generalized past F-contiguity
    by the shared gather). -1 declines to the 'I' writer's value-exact
    copy; 0 staged. */
-static int mizh_root(PyObject *obj, pymizu_leaf *lf, mizu_slot_hdr *hdr,
-                     uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
+static int mizh_root(PyObject *Py_UNUSED(obj), pymizu_leaf *lf,
+                     mizu_slot_hdr *hdr, uint8_t *payload,
+                     uint32_t inline_max, mizu_handle *h) {
   const uint64_t body = mizh_leaf_body_size(lf);
   const uint64_t blob = mizh_leaf_blob_size(lf);
   const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?

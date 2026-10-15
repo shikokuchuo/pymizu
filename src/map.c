@@ -726,7 +726,7 @@ static PyMethodDef mapview_methods[] = {
    METH_VARARGS | METH_KEYWORDS, mapview_arrow_c_array_doc},
   {"to_arrow", (PyCFunction)(void (*)(void)) mapview_arrow_c_array,
    METH_VARARGS | METH_KEYWORDS, mapview_to_arrow_doc},
-  {NULL}
+  {NULL, NULL, 0, NULL}
 };
 
 static PyTypeObject MizuMapViewType = {
