@@ -4288,6 +4288,11 @@ static PyObject *read_impl(const mizu_slot_hdr *hdr, const uint8_t *payload,
       MizuCancelledError, "s", "pymizu: task cancelled or pool stopped"));
   case MIZU_RS_DIED:
     return caught_new(worker_died_of(ctx));
+  case MIZU_RS_LOST:
+    /* the claimant published LOST itself (no death verdict), so ctx
+       carries no claimant record */
+    return caught_new(PyObject_CallFunction(
+      MizuError, "s", "pymizu: task lost: payload region vanished"));
   }
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
@@ -4724,8 +4729,9 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
   const uint8_t *bytes = pool_entry_bytes(hdr, payload, limit, ctx, &blen);
   if (bytes == NULL && ctx->gone) {
     /* the enqueuer died and its region went along: the task can never
-       run anywhere — it fails as DIED, and the drain continues */
-    mizu_result_publish_died(sink);
+       run anywhere — it fails as LOST (no death verdict on the worker),
+       and the drain continues */
+    mizu_result_publish_lost(sink);
     return 0;
   }
   if (bytes != NULL) {
@@ -4752,7 +4758,7 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
     read_stream(bytes, blen, ctx) : read_impl(hdr, payload, limit, ctx);
   if (task == NULL) {
     if (ctx->gone) {
-      mizu_result_publish_died(sink);
+      mizu_result_publish_lost(sink);
       return 0;
     }
     return publish_exc(sink, 0);   /* the decode failure is the task's error */
@@ -5741,7 +5747,7 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
   mizu_status st;
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_collect_all_fn(self->core, ts, n, list_sink, out, &err_idx,
-                               ms);
+                               NULL, ms);
   POOL_RESUME();
   PyMem_Free(ts);
   if (st == MIZU_TIMEOUT) {
@@ -6549,6 +6555,7 @@ static PyObject *Task_state_get(MizuTask *self, void *Py_UNUSED(closure)) {
     case MIZU_RS_ERR:     state = "err"; break;
     case MIZU_RS_CANCEL:  state = "cancel"; break;
     case MIZU_RS_DIED:    state = "died"; break;
+    case MIZU_RS_LOST:    state = "lost"; break;
     default:             state = "collected"; break;   /* FREE / stale */
     }
   }

@@ -4315,6 +4315,11 @@ static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep1,
       wraps[b] = x->hold.arrs[b];
       wraps[b].children = &wkids[b];
       wraps[b].n_children = 1;
+      /* the synthetic struct carries no validity of its own: the child's
+         nulls ride the child's bitmap, and the core's batch gate reads
+         the struct's offset / null_count as the batch shape */
+      wraps[b].offset = 0;
+      wraps[b].null_count = 0;
       batches[b] = &wraps[b];
     }
     mizu_arrow *ar = NULL;
