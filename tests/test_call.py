@@ -1,4 +1,5 @@
 import pickle
+import threading
 import warnings
 
 import pytest
@@ -25,6 +26,13 @@ def test_call_builds_name_and_source_specs():
         pymizu.call(1)
     # an ordinary object elsewhere: it pickles
     assert pickle.loads(pickle.dumps(spec)).code == "numpy.mean"
+
+
+def test_call_repr():
+    assert repr(pymizu.call("math.sqrt", 16)) == "pymizu.call(math.sqrt, ...)"
+    assert (
+        repr(pymizu.call(source="x + 1")) == "pymizu.call(source='x + 1', ...)"
+    )
 
 
 def test_task_hooks_roundtrip():
@@ -150,6 +158,28 @@ def test_qualifier_check_per_language():
         pool = pymizu.Pool._wrap(h)
         with pytest.raises(TypeError, match="qualified name"):
             pool.submit(pymizu.call("stats::quantile", [1]))
+    finally:
+        h.destroy()
+
+
+def test_qualifier_defers_on_unknown_language():
+    # an unknown worker language skips the local qualifier check: the
+    # unqualified name crosses and the worker's own resolution verdict
+    # comes back as the task's error stream
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0, _ident=(7, 0))
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        pool = pymizu.Pool._wrap(h)
+        assert pool._h._worker_ident() == (7, 0)
+        with pytest.raises(pymizu.TaskError):
+            pool.submit(pymizu.call("sqrt", 4.0)).collect(timeout=10)
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
     finally:
         h.destroy()
 

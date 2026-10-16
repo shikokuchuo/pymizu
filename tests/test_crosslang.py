@@ -67,6 +67,29 @@ def test_r_launcher_missing_rscript():
         pymizu.r_launcher(rscript="/nonexistent/Rscript")
 
 
+def test_r_launcher_rscript_not_on_path(monkeypatch):
+    # no rscript= argument: the PATH search comes up empty
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(pymizu.MizuError, match="Rscript"):
+        pymizu.r_launcher()
+
+
+def test_r_launcher_probe_fails():
+    # a real executable that cannot answer the probe (nonzero exit)
+    with pytest.raises(pymizu.MizuError, match="mizu"):
+        pymizu.r_launcher(rscript=sys.executable)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake is a shell script")
+def test_r_launcher_probe_malformed_output(tmp_path):
+    # the probe exits 0 without the (script, libpaths) line pair
+    fake = tmp_path / "Rscript"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    with pytest.raises(pymizu.MizuError, match="mizu"):
+        pymizu.r_launcher(rscript=str(fake))
+
+
 def _settled_refcount(view, timeout=10.0):
     """The region's refcount with R's producer loan waited out.
 

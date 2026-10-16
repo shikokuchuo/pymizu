@@ -209,6 +209,27 @@ def kill_at(i, bad):
     return i
 
 
+def raise_system_exit():
+    """A task's BaseException escapes the exec hook (hard crash)."""
+    raise SystemExit(3)
+
+
+def raise_keyboard_interrupt():
+    """The KeyboardInterrupt tier of a task's BaseException escape."""
+    raise KeyboardInterrupt
+
+
+def fail_with_map_index(i, idx):
+    """An error annotated with an in-flight element index, as a map
+    runner's batch loop does: the error envelope carries it as the
+    fourth tuple element."""
+    try:
+        raise ValueError(f"element {i}")
+    except ValueError as e:
+        e._pymizu_map_index = idx
+        raise
+
+
 def nested_map(n):
     """A map inside a task, on the evaluating worker's own pool handle."""
     pool = pymizu.current_pool()

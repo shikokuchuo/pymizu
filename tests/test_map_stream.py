@@ -5,6 +5,7 @@ collect_any (the position stamp defers to the envelope's element index),
 worker-death lost ranges, buffer x forms, prepared maps, and the
 unclean-run restage — over real spawned workers."""
 
+import os
 import pickle
 import time
 
@@ -12,6 +13,7 @@ import pytest
 from tests.helpers import (
     fail_at,
     fail_on,
+    fail_with_map_index,
     identity,
     kill_at,
     map_ctx_names,
@@ -569,3 +571,181 @@ def test_stream_prepared_template_view_transfers(pool):
         np.testing.assert_array_equal(pm.run(), np.array([2.0, 4.0, 6.0]))
     finally:
         pm.close()
+
+
+# -- the spec window's fail path and deadline pre-checks (direct drives) ------
+
+
+def _wait_states(*pairs):
+    deadline = time.monotonic() + 10
+    for h, want in pairs:
+        while h.state != want:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+
+def test_stream_fail_spec_drains_siblings(pool):
+    # the spec fail path's sibling drain: an already-consumed (None)
+    # handle, a collected sibling, a completed sibling, and an errored
+    # sibling whose element index offsets to its chunk's global range
+    # before the minimum raises
+    h_first = pool.submit(fail_with_map_index, 0, 2)
+    h_ok = pool.submit(identity, 1)
+    h_sib = pool.submit(fail_with_map_index, 0, 7)
+    _wait_states((h_first, "err"), (h_ok, "ok"), (h_sib, "err"))
+    first = None
+    try:
+        pool._h.collect_any([h_first], 5)
+    except pymizu.TaskError as e:
+        first = e  # position 0, element index 2 from the envelope
+    assert first is not None
+    handles = [None, h_first, h_ok, h_sib]
+    ranges = [(0, 10), (10, 20), (20, 30), (30, 40)]
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        _map_mod._stream_fail_spec(
+            pymizu, handles, [None] * 4, [0, 1, 2, 3], ranges, first
+        )
+    assert exc_info.value is first
+    assert first.index == 2
+
+
+def test_stream_fail_spec_sibling_without_index_raises(pool):
+    # a sibling error that is not fn's (no element index) is fatal on the
+    # spot, not merged into the first-by-index set
+    h_first = pool.submit(fail_with_map_index, 0, 1)
+    h_plain = pool.submit(fail_at, 0, 0)
+    _wait_states((h_first, "err"), (h_plain, "err"))
+    first = None
+    try:
+        pool._h.collect_any([h_first], 5)
+    except pymizu.TaskError as e:
+        first = e
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        _map_mod._stream_fail_spec(
+            pymizu, [h_plain], [None], [0], [(0, 4)], first
+        )
+    assert not hasattr(exc_info.value, "index")
+    assert exc_info.value.remote_type == "ValueError"
+
+
+def test_stream_fail_spec_reraises_died():
+    # a dead sibling's verdict wins over the first error: the re-raised
+    # WorkerDiedError carries every dead sibling's chunk range as lost
+    p = pymizu.Pool.create(2)
+    try:
+        h_first = p.submit(fail_with_map_index, 0, 1)
+        h_die = p.submit(os._exit, 1)
+        h_pend = p.submit(sleep_ident, 2)
+        _wait_states((h_first, "err"), (h_die, "died"))
+        first = None
+        try:
+            p._h.collect_any([h_first], 5)
+        except pymizu.TaskError as e:
+            first = e
+        with pytest.raises(pymizu.WorkerDiedError) as exc_info:
+            _map_mod._stream_fail_spec(
+                pymizu,
+                [h_pend, h_die],
+                [None, None],
+                [0, 1],
+                [(0, 4), (4, 8)],
+                first,
+            )
+        assert exc_info.value.lost == [(4, 8)]
+        h_pend.cancel()
+    finally:
+        p.stop()
+
+
+def test_stream_window_spec_submit_expiry(pool):
+    # the deadline expires inside a chunk's runner submit: the staged
+    # chunk region is cancelled and closed, and the window reports
+    # TIMEOUT. The scripted expiry stands in for a deadline landing
+    # mid-stage, between the refill and submit pre-checks.
+    plan = _map_mod._Plan(
+        pool, pymizu.call(source="x"), (), None, None, None, None, None, True
+    )
+    handles = [None, None]
+    capsules = [None, None]
+    remaining, _ = _map_mod._deadline(10)
+    checks = iter([False, True])
+    out = _map_mod._stream_window_spec(
+        pool,
+        pymizu,
+        [(0, 2), (2, 4)],
+        1,
+        plan,
+        pymizu.call(source="x"),
+        [1, 2, 3, 4],
+        None,
+        None,
+        capsules,
+        remaining,
+        lambda: next(checks),
+        handles,
+    )
+    assert out is pymizu.TIMEOUT
+    assert capsules == [None, None]  # the staged chunk was closed
+
+
+def test_stream_window_spec_loop_expiry(pool):
+    # the refill landed a chunk but the deadline expired before the first
+    # collect: TIMEOUT, with the chunk's region and runner handle handed
+    # back for the caller's backstop
+    plan = _map_mod._Plan(
+        pool, pymizu.call(source="x"), (), None, None, None, None, None, True
+    )
+    handles = [None, None]
+    capsules = [None, None]
+    remaining, _ = _map_mod._deadline(10)
+    checks = iter([False, False, True])
+    out = _map_mod._stream_window_spec(
+        pool,
+        pymizu,
+        [(0, 2), (2, 4)],
+        1,
+        plan,
+        pymizu.call(source="x"),
+        [1, 2, 3, 4],
+        None,
+        None,
+        capsules,
+        remaining,
+        lambda: next(checks),
+        handles,
+    )
+    assert out is pymizu.TIMEOUT
+    handles[0].cancel()
+    pymizu._pymizu._map_close(capsules[0])
+
+
+def test_stream_window_spec_refill_expiry(pool):
+    # a chunk collected inside the deadline, the next refill past it:
+    # TIMEOUT, every chunk region and runner consumed on the way out.
+    # The scripted expiry stands in for a deadline landing between the
+    # collect and the refill's pre-check.
+    plan = _map_mod._Plan(
+        pool, pymizu.call(source="x"), (), None, None, None, None, None, True
+    )
+    handles = [None, None]
+    capsules = [None, None]
+    remaining, _ = _map_mod._deadline(10)
+    checks = iter([False, False, False, True])
+    out = _map_mod._stream_window_spec(
+        pool,
+        pymizu,
+        [(0, 2), (2, 4)],
+        1,
+        plan,
+        pymizu.call(source="x"),
+        [1, 2, 3, 4],
+        None,
+        None,
+        capsules,
+        remaining,
+        lambda: next(checks),
+        handles,
+    )
+    assert out is pymizu.TIMEOUT
+    assert capsules == [None, None]
+    assert handles == [None, None]

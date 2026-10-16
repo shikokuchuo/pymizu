@@ -54,6 +54,109 @@ def test_map_int64_without_numpy(tmp_path):
     )
 
 
+def test_map_view_x_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+        from pymizu import _map
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+        # a received view as map x on a spec map crosses as one ref leaf;
+        # the workers resolve it and index the memoryview (no numpy)
+        x = bytes(range(256)) * 1200
+        ch = pymizu.Channel.create(
+            "ch.send(bytes(range(256)) * 1200); ch.recv(timeout=30)"
+        )
+        try:
+            v = ch.recv(timeout=15)
+            assert type(v).__name__ == "_ShmView"
+            p = pymizu.Pool.create(2)
+            try:
+                out = p.map(pymizu.call(source="x + 1"), v, timeout=30)
+            finally:
+                p.stop()
+            assert out == [b + 1 for b in x]
+        finally:
+            ch.close()
+        """,
+    )
+
+
+def test_map_complex_declines_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import os
+        import subprocess
+        import sys
+
+        import pymizu
+        from pymizu import _map
+        from tests.helpers import square
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+
+        def numpy_child_launcher(token):
+            # the child keeps numpy: only this process is shimmed
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+            return subprocess.Popen(
+                [sys.executable, "-m", "pymizu.child", token],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+
+        # a complex128 view (buffer protocol carries the 'Zd' format
+        # without numpy): every map tier declines informatively
+        src = (
+            "import numpy as np; "
+            "ch.send(np.arange(40000, dtype=np.complex128)); "
+            "ch.recv(timeout=30)"
+        )
+        ch = pymizu.Channel.create(src, launcher=numpy_child_launcher)
+        try:
+            v = ch.recv(timeout=30)
+            assert type(v).__name__ == "_ShmView"
+            p = pymizu.Pool.create(2)
+            try:
+                # a complex buffer x declines the raw section (the list
+                # fallback then reports the view is not iterable)
+                try:
+                    p.map(square, v, timeout=30)
+                except TypeError as e:
+                    assert "not iterable" in str(e)
+                else:
+                    raise AssertionError("no TypeError")
+                # a complex template needs numpy's frombuffer
+                try:
+                    p.map(square, [1], template=v)
+                except TypeError as e:
+                    assert "complex128" in str(e)
+                else:
+                    raise AssertionError("no TypeError")
+                # a complex replacement x declines likewise at the swap
+                pm = p.map_prepare(square, [1, 2])
+                try:
+                    try:
+                        pm.run(v, timeout=30)
+                    except TypeError as e:
+                        assert "not iterable" in str(e)
+                    else:
+                        raise AssertionError("no TypeError")
+                finally:
+                    pm.close()
+            finally:
+                p.stop()
+        finally:
+            ch.close()
+        """,
+    )
+
+
 def test_interop_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,

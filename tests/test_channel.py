@@ -828,3 +828,33 @@ def test_peer_system_exit_sends_no_error_value():
         ch.close()
     # an orderly exit: no traceback, no err stream, exit status 0
     assert ch._proc.wait() == 0
+
+
+def test_peer_keyboard_interrupt():
+    # a KeyboardInterrupt out of the peer source: the interrupt exit
+    # status, no err stream
+    ch = pymizu.Channel.create("raise KeyboardInterrupt")
+    try:
+        assert ch.recv(timeout=10) is pymizu.CLOSED
+    finally:
+        ch.close()
+    assert ch._proc.wait() == 2
+
+
+@r_only
+def test_r_interop_string_view_maps_by_ref():
+    # a received MIZS view as map x on a spec map crosses as one ref leaf:
+    # the workers resolve it and read elements off the shared pages (the
+    # string view's one copy is its to_list())
+    ch = _r_channel("{ mizu_send(ch, rep('x', 100000))\n" + _R_ECHO + " }")
+    try:
+        v = ch.recv(timeout=10)
+        assert type(v).__name__ == "_ShmStrView"
+        p = pymizu.Pool.create(2)
+        try:
+            out = p.map(pymizu.call("builtins.len"), v, timeout=30)
+        finally:
+            p.stop()
+        assert out == [1] * 100000
+    finally:
+        ch.close()

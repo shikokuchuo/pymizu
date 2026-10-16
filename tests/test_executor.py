@@ -4,6 +4,7 @@ map, wait/as_completed, cancellation, and shutdown semantics."""
 import asyncio
 import concurrent.futures
 import operator
+import threading
 import time
 
 import pytest
@@ -113,6 +114,32 @@ def test_cancelled_claim_race_recovers():
         ex.shutdown(wait=False)
     finally:
         p.stop()
+
+
+def test_stale_handle_recovers(pool):
+    # a task collected outside the drain frees its slot: the drain's next
+    # collect_any claims a stale handle and fails with a no-index
+    # "already collected" error — the drain drops the stale futures and
+    # re-snapshots rather than failing everything outstanding (P-03). The
+    # done callback parks the drain outside its collect so the outside
+    # collect wins the slot deterministically.
+    ex = pymizu.PoolExecutor(pool)
+    entered = threading.Event()
+
+    def park_drain(_):
+        entered.set()
+        time.sleep(1)
+
+    f0 = ex.submit(sleep_ident, 0.3)
+    f0.add_done_callback(park_drain)
+    f1 = ex.submit(sleep_ident, 0.6)
+    assert entered.wait(timeout=5)
+    # collected outside the drain while it is parked in the callback
+    assert f1._task.collect(timeout=5) == 0.6
+    assert f0.result(timeout=5) == 0.3
+    with pytest.raises(pymizu.MizuError, match="already collected"):
+        f1.result(timeout=5)
+    ex.shutdown()
 
 
 def test_shutdown_cancel_futures():

@@ -87,6 +87,11 @@ def test_starmap_spec_rejected(pool):
         pool.starmap(pymizu.call("math.sqrt"), [(1.0,)])
 
 
+def test_starmap_fn_not_callable(pool):
+    with pytest.raises(TypeError, match="callable"):
+        pool.starmap(None, [(1, 2)])
+
+
 def test_starmap_error_index(pool):
     with pytest.raises(pymizu.TaskError) as exc_info:
         pool.starmap(fail_at, [(0, 99), (4, 4)])
@@ -116,6 +121,58 @@ def test_map_region_path(pool):
     # a descriptor past the inline budget forces the region path
     x = list(range(2000))
     assert pool.map(identity, x) == x
+
+
+def test_map_fn_not_callable(pool):
+    with pytest.raises(TypeError, match="callable"):
+        pool.map(42, [1])
+
+
+def test_map_n_chunks_zero(pool):
+    with pytest.raises(ValueError, match="n_chunks"):
+        pool.map(square, [1], n_chunks=0)
+
+
+def test_map_blob_submit_timeout(pool):
+    # the deadline pre-check in the chunk-submit loop, ahead of any
+    # payload build: timeout=0 expires it on the first iteration
+    assert pool.map(square, [1, 2, 3], timeout=0) is pymizu.TIMEOUT
+
+
+def test_map_region_submit_timeout(pool):
+    # the same pre-check on the region path's runner submits
+    assert pool.map(identity, list(range(2000)), timeout=0) is pymizu.TIMEOUT
+
+
+def test_map_prepared_submit_timeout(pool):
+    pm = pool.map_prepare(square, list(range(2000)))
+    try:
+        assert pm.run(timeout=0) is pymizu.TIMEOUT
+    finally:
+        pm.close()
+
+
+def test_map_slots_exhausted():
+    # no free result slot: the map fails fast rather than queuing runners
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=2)
+    try:
+        t1 = p.submit(time.sleep, 0.5)
+        t2 = p.submit(time.sleep, 0.5)
+        with pytest.raises(pymizu.SlotsExhaustedError, match="result slots"):
+            p.map(square, [1, 2], timeout=5)
+        pm = p.map_prepare(square, list(range(2000)))
+        try:
+            with pytest.raises(
+                pymizu.SlotsExhaustedError, match="result slots"
+            ):
+                pm.run(timeout=5)
+        finally:
+            pm.close()
+        t1.collect(timeout=5)
+        t2.collect(timeout=5)
+        assert p.map(square, [2], timeout=5) == [4]
+    finally:
+        p.stop()
 
 
 def test_map_chunking_invariance(pool):
@@ -189,6 +246,21 @@ def test_map_seed_offset(pool):
         pool.map(rand_elt, [1], seed=(42, -1))
     with pytest.raises(TypeError, match="pair"):
         pool.map(rand_elt, [1], seed=(1, 2, 3))
+
+
+def test_map_seed_bad_type(pool):
+    with pytest.raises(TypeError, match="int or bytes"):
+        pool.map(rand_elt, [1], seed=1.5)
+    with pytest.raises(TypeError, match="int or bytes"):
+        pool.map(rand_elt, [1], seed=True)
+
+
+def test_map_seed_bytes(pool):
+    # a bytes seed is carried as-is (an int seed crosses as its ascii form)
+    a = pool.map(rand_elt, list(range(30)), seed=b"raw")
+    b = pool.map(rand_elt, list(range(30)), seed=b"raw", n_chunks=7)
+    c = pool.map(rand_elt, list(range(30)), seed=bytearray(b"raw"))
+    assert a == b == c
 
 
 def test_map_seed_restores_worker_rng(pool):
@@ -493,6 +565,17 @@ def test_map_prepared_template(pool):
         pm.close()
 
 
+def test_map_prepared_empty_template(pool):
+    # an empty x stages nothing: the run gathers an empty output area
+    pm = pool.map_prepare(scalar_double, [], template=np.empty(2))
+    try:
+        out = pm.run()
+        assert out.shape == (0, 2)
+        assert out.dtype == np.float64
+    finally:
+        pm.close()
+
+
 def test_map_prepared_view_restages(pool):
     pm = pool.map_prepare(
         scalar_double, list(range(50)), template=np.empty(1), collect="view"
@@ -637,6 +720,136 @@ def test_map_spec_source_kind(pool):
     # a statement prefix runs per element; the trailing expression's value
     src = "import math\nmath.floor(x)"
     assert pool.map(pymizu.call(source=src), [1.7, 2.3]) == [1, 2]
+
+
+def test_map_spec_source_no_tail(pool):
+    # a source of statements only has no trailing expression: the
+    # per-element result is None
+    assert pool.map(pymizu.call(source="y = x + 1"), [1, 2]) == [None, None]
+
+
+def test_map_spec_stream_worker_died():
+    # the position stamp names the dead chunk; its fixed range is the
+    # lost set (the blob path's precedent)
+    p = pymizu.Pool.create(1)
+    try:
+        with pytest.raises(pymizu.WorkerDiedError) as exc_info:
+            p.map(
+                pymizu.call(source="import os\nos._exit(1) if x == 0 else x"),
+                [0, 1, 2],
+                stream=True,
+                timeout=15,
+            )
+        assert exc_info.value.lost == [(0, 1)]
+    finally:
+        p.stop()
+
+
+def test_map_spec_stream_timeout(pool):
+    out = pool.map(
+        pymizu.call(source="import time\ntime.sleep(2)\nx"),
+        [1, 2],
+        stream=True,
+        timeout=0.3,
+    )
+    assert out is pymizu.TIMEOUT
+    # the backstop cancelled the outstanding chunk: the pool is usable
+    assert pool.map(pymizu.call(source="x * 2"), [3], timeout=15) == [6]
+
+
+def test_map_spec_stream_refill_timeout(pool):
+    # the deadline pre-check in the spec window's refill, ahead of any
+    # chunk stage: timeout=0 expires it on the first iteration
+    out = pool.map(pymizu.call(source="x"), [1, 2], stream=True, timeout=0)
+    assert out is pymizu.TIMEOUT
+
+
+def test_resolve_name_malformed():
+    from pymizu import _map
+
+    with pytest.raises(pymizu.MizuError, match="not qualified"):
+        _map._resolve_name("nodots")
+
+
+def test_runner_ix_ordinal_out_of_range(pool):
+    # a runner ordinal past the descriptor's CLAIM capacity is a malformed
+    # runner stream, caught before any claim
+    import pickle
+
+    from pymizu import _map
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = pymizu._pymizu._map_stage(desc, None, 6, 1, None, False, 3)
+    try:
+        claim_n = pymizu._pymizu._map_header(capsule)["claim_n"]
+        with pytest.raises(pymizu.MizuError, match="out of range"):
+            _map._runner_ix(name, claim_n << 32, None)
+    finally:
+        _map._ctx_cache.pop(name, None)
+        pymizu._pymizu._map_close(capsule)
+
+
+def test_collect_region_fatal_runner_error(pool):
+    # a runner-level failure that is not fn's carries no element index:
+    # the collect raises it as fatal rather than merging it into the
+    # first-by-element-index set. An ordinary failing task stands in for
+    # the runner (the _exec_fail precedent).
+    import pickle
+
+    from pymizu import _map
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = pymizu._pymizu._map_stage(desc, None, 6, 1, None, False, 3)
+    try:
+        h = pool.submit(fail_at, 0, 0)
+        remaining, expired = _map._deadline(10)
+        with pytest.raises(pymizu.TaskError) as exc_info:
+            _map._collect_region(pymizu, capsule, [h], 6, remaining, expired)
+        assert not hasattr(exc_info.value, "index")
+    finally:
+        _map._ctx_cache.pop(name, None)
+        pymizu._pymizu._map_close(capsule)
+
+
+def test_collect_region_deferral_timeout(pool):
+    # every handle defers (nothing claimed) and the deadline expires in
+    # the park-slice branch: TIMEOUT. The scripted expiry stands in for a
+    # deadline landing between the two checks of one pass.
+    import pickle
+
+    from pymizu import _map
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = pymizu._pymizu._map_stage(desc, None, 6, 1, None, False, 3)
+    try:
+        h = pool.submit(sleep_ident, 1)
+        remaining, _ = _map._deadline(10)
+        checks = iter([False, True])
+        out = _map._collect_region(
+            pymizu,
+            capsule,
+            [h],
+            6,
+            remaining,
+            lambda: next(checks),
+        )
+        assert out is pymizu.TIMEOUT
+        h.cancel()
+    finally:
+        _map._ctx_cache.pop(name, None)
+        pymizu._pymizu._map_close(capsule)
+
+
+def test_map_guard_no_worker():
+    # a spec fn needs the pool word already set (the descriptor's target
+    # byte stages once): no worker joined yet
+    h = pymizu._pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        pool0 = pymizu.Pool._wrap(h)
+        with pytest.raises(pymizu.MizuError, match="no worker has joined"):
+            pool0.map(pymizu.call("math.sqrt"), [1.0])
+    finally:
+        h.destroy()
 
 
 def test_map_spec_held_in_a_variable(pool):

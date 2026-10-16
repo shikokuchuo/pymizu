@@ -16,6 +16,7 @@ from functools import partial
 import pytest
 from tests.helpers import (
     BadCallable,
+    big_array,
     busy,
     fail_indexed,
     fanout,
@@ -23,7 +24,9 @@ from tests.helpers import (
     identity,
     make_fail_on_unpickle,
     make_unpicklable,
+    raise_keyboard_interrupt,
     raise_long,
+    raise_system_exit,
     takes_timeout,
     trace_to_file,
     warn_then,
@@ -489,6 +492,84 @@ def test_shutdown_alias(pool):
     assert pool.shutdown(timeout=5) is True
     with pytest.raises(pymizu.MizuError, match="closed"):
         pool.submit(len, [1])
+
+
+def test_stop_timeout_warns():
+    # a worker mid-task cannot observe the shutdown inside the timeout:
+    # stop returns False and warns (the worker exits on its own after)
+    p = pymizu.Pool.create(1)
+    t = p.submit(time.sleep, 1.5)  # bound: a dropped handle cancels
+    deadline = time.monotonic() + 5
+    while p.dump()["submitters"][0]["claimed"] != 1:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    with pytest.warns(UserWarning, match="timed out"):
+        assert p.stop(timeout=0.05) is False
+    assert p.stop(timeout=10) is True
+    assert t.cancel() is False
+
+
+def test_worker_base_exception_task_exits_1():
+    # a task's SystemExit escapes the exec hook: the worker goes down
+    # (status 1) and the leave handshake fails the in-flight task DIED
+    procs = []
+
+    def launcher(token, slot):
+        procs.append(pymizu._default_worker_launcher()(token, slot))
+        return procs[-1]
+
+    p = pymizu.Pool.create(1, launcher=launcher)
+    try:
+        t = p.submit(raise_system_exit)
+        with pytest.raises(pymizu.WorkerDiedError):
+            t.collect(timeout=15)
+        assert procs[0].wait(timeout=15) == 1
+    finally:
+        p.stop()
+
+
+def test_worker_keyboard_interrupt_task_exits_2():
+    # the KeyboardInterrupt tier of a task's BaseException escape
+    procs = []
+
+    def launcher(token, slot):
+        procs.append(pymizu._default_worker_launcher()(token, slot))
+        return procs[-1]
+
+    p = pymizu.Pool.create(1, launcher=launcher)
+    try:
+        t = p.submit(raise_keyboard_interrupt)
+        with pytest.raises(pymizu.WorkerDiedError):
+            t.collect(timeout=15)
+        assert procs[0].wait(timeout=15) == 2
+    finally:
+        p.stop()
+
+
+def test_retired_worker_lingers_for_uncollected_result():
+    # a retained (SHM_VEC) result keeps the retired worker mapped as its
+    # lifetime anchor — plain sleeps, no unpark can reach a released slot
+    # — until the collect drops the keeper
+    procs = []
+
+    def launcher(token, slot):
+        procs.append(pymizu._default_worker_launcher()(token, slot))
+        return procs[-1]
+
+    p = pymizu.Pool.create(1, launcher=launcher)
+    try:
+        t = p.submit(big_array, 100000)
+        deadline = time.monotonic() + 10
+        while t.state != "ok" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        p.retire(0)
+        time.sleep(2.5)  # a linger beat
+        assert procs[0].poll() is None
+        assert len(t.collect(timeout=10)) == 100000
+        # the keeper dropped: the next lame_duck reap ends the linger
+        assert procs[0].wait(timeout=15) == 0
+    finally:
+        p.stop()
 
 
 def test_retire_and_spawn():

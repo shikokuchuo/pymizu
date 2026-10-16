@@ -130,6 +130,32 @@ def test_prepared_spec_map_re_arms_without_restage(r_pool):
         pm.close()
 
 
+def test_prepared_swap_conversion_warning_escalates(r_pool):
+    # a uint64 x converts to double for R workers; values past 2^53 warn
+    # after the write. Under warnings-as-errors the swap raises, the
+    # staged state is dropped, and the next run restages fresh.
+    import warnings
+
+    import numpy as np
+
+    pm = r_pool.map_prepare(
+        pymizu.call("base::identity"), np.arange(4, dtype=np.uint64)
+    )
+    try:
+        assert pm.run() == [0.0, 1.0, 2.0, 3.0]
+        name = pm._name
+        bad = np.full(4, 2**60, dtype=np.uint64)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(RuntimeWarning, match="uint64"):
+                pm.run(bad)
+        assert pm._name is None  # the staged region was dropped
+        assert pm.run(np.arange(4, dtype=np.uint64)) == [0.0, 1.0, 2.0, 3.0]
+        assert pm._name != name
+    finally:
+        pm.close()
+
+
 def test_a_dead_r_workers_lost_set_scan():
     # a killed worker mid-map reports the lost element ranges
     try:
