@@ -5444,9 +5444,14 @@ static PyObject *Channel_repr(MizuChannel *self) {
 
 static void Channel_dealloc(MizuChannel *self) {
   /* destroy signals close and runs the non-blocking rendezvous check; a
-     forked child's copy never touches the shared region */
-  if (self->core != NULL && self->self_pid == mizu_self_pid())
-    mizu_channel_destroy(self->core);
+     forked child's copy abandons instead — only its own mapping and heap
+     release, the parent's channel untouched */
+  if (self->core != NULL) {
+    if (self->self_pid == mizu_self_pid())
+      mizu_channel_destroy(self->core);
+    else
+      mizu_channel_abandon(self->core);
+  }
   view_cache_free(self->vcache);
   MizuChannelType.tp_free((PyObject *) self);
 }
@@ -6592,9 +6597,14 @@ static int Pool_clear(MizuPool *self) {
 static void Pool_dealloc(MizuPool *self) {
   PyObject_GC_UnTrack(self);
   /* a controller destroy broadcasts shutdown (no wait); a participant
-     releases its slot; a forked child's copy never touches the region */
-  if (self->core != NULL && self->self_pid == mizu_self_pid())
-    mizu_pool_destroy(self->core);
+     releases its slot; a forked child's copy abandons instead — only its
+     own mapping and heap release, the parent's pool untouched */
+  if (self->core != NULL) {
+    if (self->self_pid == mizu_self_pid())
+      mizu_pool_destroy(self->core);
+    else
+      mizu_pool_abandon(self->core);
+  }
   view_cache_free(self->vcache);
   Py_XDECREF(self->trace_fn);
   MizuPoolType.tp_free((PyObject *) self);

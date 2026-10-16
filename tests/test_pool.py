@@ -2,6 +2,7 @@
 death, nested submit, and collect_any/all semantics, over real spawned
 workers (``python -m pymizu.worker``)."""
 
+import gc
 import os
 import pickle
 import re
@@ -568,6 +569,24 @@ def test_fork_guard(pool):
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 0
     assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_child_dealloc():
+    pool = pymizu.Pool.create(2)
+    try:
+        pid = os.fork()
+        if pid == 0:
+            # the child's dealloc abandons only its own copies
+            del pool
+            gc.collect()
+            os._exit(0)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
+    finally:
+        pool.stop()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")

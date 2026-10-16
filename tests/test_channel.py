@@ -269,6 +269,25 @@ def test_fork_guard(echo):
     assert echo.recv(timeout=5) == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_child_dealloc():
+    ch = pymizu.Channel.create(ECHO_PEER)
+    try:
+        pid = os.fork()
+        if pid == 0:
+            # the child's dealloc abandons only its own copies
+            del ch
+            gc.collect()
+            os._exit(0)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert ch.send(1) is True  # the parent's channel is unaffected
+        assert ch.recv(timeout=5) == 1
+    finally:
+        ch.close()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")
 def test_recv_interrupt():
     ch = pymizu.Channel.create("import time; time.sleep(30)")
