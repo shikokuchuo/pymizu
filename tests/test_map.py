@@ -7,6 +7,7 @@ import operator
 import os
 import random
 import signal
+import sys
 import threading
 import time
 
@@ -1135,10 +1136,7 @@ def test_map_foreign_capsule_tolerance():
 
 
 def test_map_open_unknown_region():
-    # pins the current failure mode: the em-dash in the error format
-    # defeats PyErr_Format (an ASCII-only parser) — the intended
-    # MizuShmError never surfaces
-    with pytest.raises(ValueError, match="ASCII"):
+    with pytest.raises(pymizu.ShmError, match="cannot open map region"):
         pymizu._pymizu._map_open("/mizu_no_such_region_0000")
 
 
@@ -1231,7 +1229,6 @@ def test_map_write_scalar_forms():
     # non-numeric scalar)
     forms = [
         (np.empty(1), 3.5, "s", None, "format 'd'"),
-        (np.empty(1, dtype=np.int32), 5, 2**40, 1.5, "format 'i'"),
         (np.empty(1, dtype=np.int64), 5, 2**100, 1.5, "format 'q'"),
         (np.empty(1, dtype=np.uint8), 5, 300, "s", "format 'B'"),
         (np.empty(1, dtype=np.complex128), 1 + 2j, "s", None, "format 'Zd'"),
@@ -1247,8 +1244,27 @@ def test_map_write_scalar_forms():
                     Q._map_write(capsule, 0, [nonnum])
         finally:
             Q._map_close(capsule)
-    # an int lands in a REAL slot; a negative int past the range breaks
-    # the same as a positive one
+    # past the int32 range: the conversion to a C long overflows outright
+    # on Windows (32-bit long), elsewhere the range check takes the
+    # template mismatch
+    range_error = (
+        OverflowError if sys.platform == "win32" else pymizu.MizuError
+    )
+    match = None if sys.platform == "win32" else "format 'i'"
+    name, capsule = Q._map_stage(
+        desc, None, 4, 1, np.empty(1, dtype=np.int32), False, 1
+    )
+    try:
+        Q._map_write(capsule, 0, [5, 5, 5, 5])
+        with pytest.raises(range_error, match=match):
+            Q._map_write(capsule, 0, [2**40])
+        with pytest.raises(range_error, match=match):
+            Q._map_write(capsule, 0, [-(2**31) - 1])
+        with pytest.raises(pymizu.MizuError, match="format 'i'"):
+            Q._map_write(capsule, 0, [1.5])
+    finally:
+        Q._map_close(capsule)
+    # an int lands in a REAL slot
     name, capsule = Q._map_stage(desc, None, 4, 1, np.empty(1), False, 1)
     try:
         Q._map_write(capsule, 0, [7])
@@ -1257,14 +1273,6 @@ def test_map_write_scalar_forms():
             Q._map_write(capsule, 3, [1.0, 2.0])
         with pytest.raises(TypeError, match="must be a sequence"):
             Q._map_write(capsule, 0, 42)
-    finally:
-        Q._map_close(capsule)
-    name, capsule = Q._map_stage(
-        desc, None, 4, 1, np.empty(1, dtype=np.int32), False, 1
-    )
-    try:
-        with pytest.raises(pymizu.MizuError, match="format 'i'"):
-            Q._map_write(capsule, 0, [-(2**31) - 1])
     finally:
         Q._map_close(capsule)
     name, capsule = Q._map_stage(

@@ -303,7 +303,7 @@ static PyObject *py_map_open(PyObject *Py_UNUSED(module), PyObject *arg) {
   if (name == NULL) return NULL;
   mizu_shm *shm;
   if (mizu_shm_open_rw(&shm, name, 0) != MIZU_OK) {
-    PyErr_Format(MizuShmErr, "pymizu: cannot open map region '%s' — its "
+    PyErr_Format(MizuShmErr, "pymizu: cannot open map region '%s' -- its "
                  "submitter died or the map ended", name);
     return NULL;
   }
@@ -647,7 +647,7 @@ static PyObject *mapview_arrow_c_array(PyObject *obj, PyObject *args,
   const char *name = mizu_shm_name(mh->shm);
   if (mizu_shm_open_view_flags(&shm, name, MIZU_OPEN_VIEW_NOCOUNT) !=
       MIZU_OK) {
-    PyErr_Format(MizuShmErr, "pymizu: cannot open map region '%s' — its "
+    PyErr_Format(MizuShmErr, "pymizu: cannot open map region '%s' -- its "
                  "submitter died or the map ended", name);
     return NULL;
   }
