@@ -11,16 +11,15 @@ subtitle: "Zero-copy shared-memory parallelism across Python and R"
      \/_______/
 ```
 
-pymizu makes communication between Python processes cheap enough to divide
-work at granularities usually reserved for threads.
+pymizu makes communication between Python processes fast enough to
+parallelize work at thread granularity.
 
-Shared memory has always been the fastest IPC transport.
-A socket round trip costs four system calls and four copies of the data; in
-shared memory, one process reads the bytes the other wrote — the kernel
-never touches the data.
-pymizu handles the synchronization, waiting, and peer crashes for you, so a
-task round trip drops from around 100 µs over sockets to under a
-microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
+pymizu uses shared memory as the fastest IPC transport.
+Processes read and write into shared memory directly, with no kernel
+involvement and no data copies through system sockets.
+This means task round trips drop from around 100 µs over sockets to under a
+microsecond — two orders of magnitude improvement (see
+[Benchmarks](#benchmarks)).
 
 In the default CPython build, the GIL runs CPU-bound threads on one core at a
 time, so compute parallelism in Python usually means multiple processes.
@@ -29,30 +28,23 @@ down with it.
 
 Channels and work-stealing task pools run over POSIX shared memory (Linux,
 macOS) or Win32 file mappings (Windows).
-
-A channel is a two-way message link between a Python process and a helper
-process that it spawns.
-A pool is a set of worker processes that divide submitted tasks among
-themselves.
-
-The hot path stays in user space: single-producer single-consumer rings with
-batched publication, spin-then-park waiting, and event-driven peer-death
-detection.
+The hot path stays in user space.
+Data moves through single-producer single-consumer rings with batched
+publication.
+Waiting is spin-then-park, and peer death arrives as an OS event.
 
 pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C
 library for lock-free shared-memory IPC.
 [mizu](https://github.com/shikokuchuo/mizu) binds the same core for R, so
-Python and R processes can share a channel.
+Python and R can talk to each other.
 
 - Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas,
-  duckdb).
+  duckdb)
 - Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`,
-  `as_completed`, `asyncio.wrap_future`.
+  `as_completed`, `asyncio.wrap_future`
 - Reproducible parallel randomness (`seed=`), invariant for any worker count
-  or steal order.
-- Sentinels, not exceptions, on hot paths; worker crashes detected at OS
-  latency.
-- Typed (`py.typed` + stubs); Python 3.10+ on Linux, macOS, and Windows.
+  or steal order
+- Nested parallel maps — a task can map over its own pool, deadlock-free
 
 > **Pre-release.** The API is not stable and may change at any time before a
 > release.
@@ -104,70 +96,10 @@ CPU-bound work at a single core):
 | Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
 
-Against `InterpreterPoolExecutor` (Python 3.14+, subinterpreters with
-per-interpreter GILs): on the trivial-task rows it lands between the
-thread and process pools — 21.3 µs per round trip and 59,600 tasks/s
-pipelined on this machine (measured 2026-10-07).
-The map rows it cannot run at all: task payloads must be shareable —
-builtin scalars, plain containers, or buffer-protocol objects — so
-numpy arrays and numpy scalars raise `NotShareableError`.
-
 \* elt = element; microseconds of wall time per map element.
 
 See [Benchmarks](user-guide/benchmarks.qmd) for how pymizu compares with
 other frameworks, and for the benchmark scripts.
-
-## Channels
-
-`Channel.create()` spawns a peer process and connects both ends over a
-lock-free ring pair.
-The peer program is a Python source string, evaluated with `ch` bound to the
-peer-side handle:
-
-```{python}
-import pymizu
-
-ch = pymizu.Channel.create("""
-import pymizu
-while True:
-    x = ch.recv()
-    if x is pymizu.CLOSED:
-        break
-    ch.send(x)
-""")
-ch.send([1, "a", None])
-ch.recv(timeout=5)
-```
-
-```{python}
-ch.close()
-```
-
-Sends never block for ring space.
-Terminal states come back as sentinel singletons — `pymizu.FULL`,
-`pymizu.TIMEOUT`, `pymizu.CLOSED`, `pymizu.PEER_GONE` — tested by identity,
-never raised.
-See [Channels](user-guide/channels.qmd).
-
-## Task pools
-
-`Pool.create()` spawns worker processes that claim tasks from per-submitter
-injection rings and steal work from each other — no dispatcher in the loop.
-`pool.submit()` returns a task handle immediately; `task.collect()` waits for
-its result:
-
-```{python}
-with pymizu.Pool.create(4) as pool:
-    task = pool.submit(pow, 2, 16)
-    result = task.collect(timeout=5)
-
-result
-```
-
-A task error re-raises on collect as `pymizu.TaskError`; the death of the
-executing worker raises `pymizu.WorkerDiedError`, detected at OS
-notification latency with no heartbeats or polling.
-See [Task pools](user-guide/pools.qmd).
 
 ## Drop-in `concurrent.futures`
 
@@ -188,15 +120,14 @@ wrapping an existing pool and the cancellation semantics.
 
 ## Parallel map
 
-`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a list in input
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the results in
 order.
-The function, its constant arguments, and the data are staged once; runner
-tasks self-schedule element batches off a shared cursor.
-A 1-D numpy array crosses as raw bytes — every worker views the same array
-in shared memory — and with `template=`, results are written straight into a
-shared output array, never serialized.
-`seed=` gives every element a deterministic random stream, reproducible for
-any worker count or steal order:
+The function and data cross into shared memory once.
+Workers divide the elements among themselves, claiming ranges from a shared
+cursor.
+
+A map also nests — the mapped function can map over its own pool with
+`pymizu.current_pool()`, deadlock-free.
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
@@ -227,13 +158,14 @@ with pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:
     print(pl.DataFrame(task.collect()))
 ```
 
-A numpy array arrives in R as a numeric vector and a polars, pyarrow, or
-pandas frame as a data.frame; a vector or data.frame arrives back as a
-numpy array or a `pymizu.Frame`.
-For a channel peer, pass the peer program as R source and set the launcher
-to `pymizu.r_launcher()`.
-The launchers need R and the `mizu` package installed; if either is missing
-they raise `MizuError` before anything is spawned.
+- A numpy array arrives in R as a numeric vector, and a polars, pyarrow, or
+  pandas frame as a data frame
+- A vector or data frame arrives back as a numpy array or a `pymizu.Frame`
+- Arrow data (pyarrow tables and record batch readers, or any
+  `__arrow_c_stream__` producer) crosses the same way
+
+The mizu README shows the reverse direction: an R host that drives Python
+workers with `mizu_py_pool_launcher()`.
 See [R interop](user-guide/interop.qmd).
 
 ## Where next
