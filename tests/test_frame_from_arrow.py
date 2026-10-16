@@ -704,6 +704,18 @@ def test_from_arrow_uint64_past_2_to_53_warns():
     h.destroy()
 
 
+def test_from_arrow_uint64_copy_arms():
+    # the uint64 copy arm (adoption declines nulls and offsets): a null
+    # reads as NaN in the float64 home, a null-free slice stays exact
+    t = pa.table({"u": pa.array([1, None, 3], type=pa.uint64())})
+    d = pymizu.Frame.from_arrow(t).to_dict()
+    assert d["u"][0] == 1.0 and np.isnan(d["u"][1]) and d["u"][2] == 3.0
+    big = pa.array([2**63 + k for k in range(10)], type=pa.uint64())
+    d2 = pymizu.Frame.from_arrow(pa.table({"u": big.slice(2, 5)})).to_dict()
+    assert d2["u"].dtype == np.uint64
+    assert d2["u"].tolist() == [2**63 + k for k in range(2, 7)]
+
+
 def test_from_arrow_declines_unsupported_types():
     cases = {
         "bin": pa.array([b"a"], type=pa.binary()),
@@ -791,6 +803,46 @@ def test_frame_rebuild_rejects_a_surrogate_tz():
     columns[0] = (kind, payload, "bad\udce9tz", unit)
     with pytest.raises(ValueError, match="malformed frame rebuild state"):
         fn(names, columns, rn)
+
+
+def test_frame_repr():
+    f = pymizu.Frame.from_arrow(pa.table({"i": pa.array([1, 2, 3])}))
+    assert repr(f) == "pymizu.Frame(3 rows x 1 cols)"
+
+
+def test_frame_export_stream_schema_served_once():
+    # the stream contract: a second get_schema fails and get_last_error
+    # names it (a consumer re-request never happens through pyarrow)
+    import ctypes
+
+    f = pymizu.Frame.from_arrow(pa.table({"i": pa.array([1, 2])}))
+    cap = f.__arrow_c_stream__()
+    get_ptr = ctypes.pythonapi.PyCapsule_GetPointer
+    get_ptr.restype = ctypes.c_void_p
+    get_ptr.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    addr = get_ptr(cap, b"arrow_array_stream")
+    fields = ctypes.cast(addr, ctypes.POINTER(ctypes.c_void_p))
+    iint = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    get_schema = iint(fields[0])
+    get_last_error = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p)(
+        fields[2]
+    )
+    release = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(fields[3])
+    schema = (ctypes.c_byte * 96)()  # ArrowSchema: 9 pointer-sized fields
+    try:
+        assert get_schema(addr, schema) == 0
+        sfields = ctypes.cast(schema, ctypes.POINTER(ctypes.c_void_p))
+        children = ctypes.cast(sfields[5], ctypes.POINTER(ctypes.c_void_p))
+        for i in range(sfields[4]):  # n_children: each child holds a ref
+            cfields = ctypes.cast(children[i], ctypes.POINTER(ctypes.c_void_p))
+            ctypes.CFUNCTYPE(None, ctypes.c_void_p)(cfields[7])(children[i])
+        ctypes.CFUNCTYPE(None, ctypes.c_void_p)(sfields[7])(
+            ctypes.addressof(schema)
+        )
+        assert get_schema(addr, schema) != 0
+        assert get_last_error(addr) == b"the schema was already served"
+    finally:
+        release(addr)
 
 
 def test_frame_type_not_constructible():

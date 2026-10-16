@@ -163,6 +163,33 @@ def test_scalar_and_container_roundtrips():
     h.destroy()
 
 
+def test_write_runner_golden():
+    # the kind-2 (map runner) task stream, pinned byte-for-byte: the
+    # 0x12 task tag (target, kind 2, ident), the region name, the
+    # ordinal/generation word, then nil or the int64 (seed, offset) pair
+    got = _pymizu._write_runner("/mizu_abc", 3 << 32 | 1, (42, 7), 2, 0x1234)
+    assert got.hex() == (
+        "49011202020000341200000000000004090000002f6d697a755f616263"
+        "0201000000030000000e02000000000000002a000000000000000700000000000000"
+    )
+    got = _pymizu._write_runner("/mizu_abc", 5, None, 2, 0)
+    assert got.hex() == (
+        "49011202020000000000000000000004090000002f6d697a755f616263"
+        "02050000000000000000"
+    )
+    # the generic task decode refuses kind 2 (the runner half decodes in
+    # the exec hook)
+    with pytest.raises(pymizu.MizuError, match="unsupported task kind"):
+        _pymizu._read_task(got)
+
+
+def test_write_runner_validation():
+    with pytest.raises(TypeError, match="_write_runner expects"):
+        _pymizu._write_runner(b"n", 0, None, 2, 0)
+    with pytest.raises(ValueError, match="language byte"):
+        _pymizu._write_runner("/mizu_abc", 0, None, 256, 0)
+
+
 def _tree(n):
     return [
         {"id": i, "name": f"item-{i:04d}", "vals": [i, i * 1.5, True, None]}

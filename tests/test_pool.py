@@ -24,9 +24,12 @@ from tests.helpers import (
     identity,
     make_fail_on_unpickle,
     make_unpicklable,
+    raise_deep,
     raise_keyboard_interrupt,
     raise_long,
+    raise_long_named,
     raise_system_exit,
+    raise_unprintable,
     takes_timeout,
     trace_to_file,
     warn_then,
@@ -56,6 +59,22 @@ def test_task_result_alias(pool):
 def test_submit_kwargs(pool):
     t = pool.submit(round, 3.14159, ndigits=2)
     assert t.collect(timeout=5) == 3.14
+
+
+def test_submit_container_args(pool):
+    # the task frame's flat container leaves: a tuple and a dict decode
+    # on the worker as themselves
+    assert pool.submit(sum, (1, 2, 3)).collect(timeout=5) == 6
+    assert pool.submit(sorted, {"b": 1, "a": 2}).collect(timeout=5) == ["a", "b"]
+
+
+def test_submit_rawspill_result(pool):
+    # a bytes result between the inline budget and the zero-copy floor
+    # spills a bare-bytes region (RAWSPILL): read back as a uint8 array
+    np = pytest.importorskip("numpy")
+    out = pool.submit(identity, b"x" * 10000).collect(timeout=10)
+    assert isinstance(out, np.ndarray)
+    assert out.tobytes() == b"x" * 10000
 
 
 def test_collect_timeout(pool):
@@ -97,10 +116,53 @@ def test_task_error_envelope_is_bounded(pool):
         t.collect(timeout=10)
     exc = exc_info.value
     assert exc.remote_type == "ValueError"
-    # the envelope truncates to the result slot's inline budget (472 bytes
-    # at the default 512-byte slot size)
+    # the envelope truncates to the result slot's inline budget (240 bytes
+    # at the default 256-byte slot size)
     assert len(str(exc)) < 1000
     assert len(exc.remote_traceback) < 1000
+
+
+def test_task_error_envelope_sheds_traceback_first(pool):
+    # the truncation ladder: the traceback shrinks before the message is
+    # touched
+    t = pool.submit(raise_deep, 200, "boom")
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        t.collect(timeout=10)
+    exc = exc_info.value
+    assert "boom" in str(exc)
+    assert exc.remote_traceback.startswith(
+        "Traceback (most recent call last)"
+    )
+    assert len(exc.remote_traceback) < 250
+
+
+def test_task_error_envelope_drops_traceback_then_truncates(pool):
+    # past the traceback: it empties, then the message halves
+    t = pool.submit(raise_long, "x" * 5000)
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        t.collect(timeout=10)
+    exc = exc_info.value
+    assert exc.remote_traceback == ""
+    assert str(exc) == "ValueError: " + "x" * (len(str(exc)) - 12)
+    assert len(str(exc)) < 300
+
+
+def test_task_error_unprintable_exception(pool):
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.submit(raise_unprintable).collect(timeout=10)
+    exc = exc_info.value
+    assert exc.remote_type == "UnprintableError"
+    assert "<unprintable exception>" in str(exc)
+
+
+def test_task_error_untransportable_condition():
+    # a tiny slot and a long type name: the fixed fallback message
+    p = pymizu.Pool.create(1, slot_size=128)
+    try:
+        with pytest.raises(pymizu.TaskError, match="untransportable"):
+            p.submit(raise_long_named, 500).collect(timeout=10)
+    finally:
+        p.stop()
 
 
 def test_task_warning_passes_through(pool):
@@ -613,6 +675,59 @@ def test_startup_error():
 
     with pytest.raises(pymizu.StartupError):
         pymizu.Pool.create(1, startup_timeout=1.0, launcher=launcher)
+
+
+def test_pool_repr(pool):
+    assert re.fullmatch(
+        rf"<pymizu\.Pool {re.escape(pool.token)} \(controller\)>",
+        repr(pool._h),
+    )
+    pa = pymizu.Pool.attach(pool.token)
+    assert "(submitter)" in repr(pa._h)
+    pa.destroy()
+    assert repr(pa._h) == "<pymizu.Pool (closed)>"
+
+
+def test_task_repr_and_pool(pool):
+    t = pool.submit(identity, 3)
+    assert t.collect(timeout=5) == 3
+    assert re.fullmatch(r"<pymizu\.Task seq=\d+ slot=\d+>", repr(t))
+    assert t.pool is pool._h
+
+
+def test_controller_only_verbs(pool):
+    pa = pymizu.Pool.attach(pool.token)
+    with pytest.raises(pymizu.MizuError, match="only the controller"):
+        pa.retire(0)
+    with pytest.raises(pymizu.MizuError, match="only the controller"):
+        pa._h.ready_wait(1, 0)
+    with pytest.raises(pymizu.MizuError, match="only the controller"):
+        pa.stop()
+    with pytest.raises(ValueError, match="worker slot out of range"):
+        pool.retire(99)
+    pa.destroy()
+
+
+def test_pool_new_geometry_validation():
+    from pymizu import _pymizu
+
+    ok = (1, 8, 64, 64, 64, 512)
+    cases = [
+        ((0, *ok[1:]), "max_workers"),
+        ((1, 0, *ok[2:]), "max_submitters"),
+        ((1, 65, *ok[2:]), "max_submitters"),
+        ((*ok[:2], 3, *ok[3:]), "injection_cap"),
+        ((*ok[:3], 3, *ok[4:]), "per_worker_cap"),
+        ((*ok[:4], 4, ok[5]), "result_slots"),
+        ((*ok[:5], 100), "slot_size"),
+    ]
+    for args, msg in cases:
+        with pytest.raises(ValueError, match=msg):
+            _pymizu._pool_new(*args)
+    with pytest.raises(ValueError, match="malformed join token"):
+        _pymizu._pool_attach("not-a-token")
+    with pytest.raises(ValueError, match="malformed join token"):
+        _pymizu._pool_worker_join("not-a-token", 0)
 
 
 def test_task_state(pool):

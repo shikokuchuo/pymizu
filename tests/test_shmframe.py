@@ -171,6 +171,25 @@ def test_mizl_frame_string_nulls():
     h.destroy()
 
 
+def test_strview_resent_to_a_no_mizs_peer_copies():
+    # a string view re-sent to a peer short of MIZU_CAP_MIZS: the
+    # by-value fallback — the list conversion, never the region name
+    n = 20000
+    vals = [f"s{k}" for k in range(n)]
+    h0, p0 = foreign_pair(caps=CAPS_R)
+    h0.send(vals)
+    sv = p0.recv(10)
+    assert type(sv).__name__ == "_ShmStrView"
+    h, p = foreign_pair(caps=CAPS_R & ~1)
+    assert h.send(sv) is True
+    got = p.recv(10)
+    assert type(got) is list and got == vals
+    p.destroy()
+    h.destroy()
+    p0.destroy()
+    h0.destroy()
+
+
 def test_mizl_frame_dictionary_and_temporal():
     h, p = foreign_pair(caps=CAPS_R)
     h.send(big_table().select(["f", "d", "t"]))
@@ -328,6 +347,43 @@ def test_same_language_frame_mizl():
     h.destroy()
     p0.destroy()
     h0.destroy()
+
+
+def test_same_language_frame_row_names_blob():
+    # a custom row_names rides the region's root blob (blob_frame): the
+    # str list and the int32 array forms both read back verbatim
+    n = 20000
+    f = _pymizu._frame_rebuild(
+        ["i", "s"],
+        [("i", list(range(n))), ("s", [f"s{k % 100}" for k in range(n)])],
+        [f"r{k}" for k in range(n)],
+    )
+    g = _pymizu._frame_rebuild(
+        ["i"], [("i", list(range(n)))], list(range(100, 100 + n))
+    )
+    h, p = same_pair()
+    h.send(f)
+    h.send(g)
+    got, got2 = p.recv(10), p.recv(10)
+    assert got.row_names[:3] == ["r0", "r1", "r2"]
+    assert got.to_dict()["i"][n - 1] == n - 1
+    assert list(got2.row_names[:3]) == [100, 101, 102]
+    p.destroy()
+    h.destroy()
+
+
+def test_same_language_frame_one_row_region_blob():
+    # a one-row frame can still reach the region (a big string column):
+    # the blob's scalar row-names form
+    big = "x" * 40000
+    f = _pymizu._frame_rebuild(["s"], [("s", [big])], ["only"])
+    h, p = same_pair()
+    h.send(f)
+    got = p.recv(10)
+    assert got.row_names == ["only"]
+    assert got.to_dict()["s"][0] == big
+    p.destroy()
+    h.destroy()
 
 
 def test_same_language_small_frame_pickles():

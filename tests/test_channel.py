@@ -3,6 +3,7 @@ discipline, over real spawned peers (``python -m pymizu.child``)."""
 
 import gc
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -214,6 +215,29 @@ def test_peer_ident_after_destroy():
     h.destroy()
     with pytest.raises(pymizu.MizuError, match="closed"):
         h._peer_ident()
+
+
+def test_channel_repr():
+    ch = pymizu.Channel.create(ECHO_PEER)
+    assert re.fullmatch(r"<pymizu\.Channel [0-9a-f]+_[0-9a-f]+>", repr(ch._h))
+    ch.destroy()
+    assert repr(ch._h) == "<pymizu.Channel (closed)>"
+
+
+def test_c_attach_validation():
+    from pymizu import _pymizu
+
+    with pytest.raises(ValueError, match="malformed join token"):
+        _pymizu._channel_attach("not-a-token")
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    try:
+        for bad in ("x", (1,), (256, 0), (-1, 0)):
+            with pytest.raises(ValueError, match="_ident must be"):
+                _pymizu._channel_attach(h.token, _ident=bad)
+        with pytest.raises(TypeError):
+            _pymizu._channel_attach(h.token, _ident=("a", 0))
+    finally:
+        h.destroy()
 
 
 def test_peer_gone():

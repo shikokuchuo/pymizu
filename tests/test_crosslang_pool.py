@@ -6,14 +6,19 @@ has exactly one home.
 """
 
 import os
+import pathlib
+import shutil
 import signal
 import subprocess
+import sys
 import time
 
 import pytest
 
 import pymizu
 from pymizu import _pymizu
+
+RSCRIPT = shutil.which("Rscript")
 
 
 def _gc_r_workers(pool, pred, timeout=10.0):
@@ -41,6 +46,27 @@ def r_pool():
     p = pymizu.Pool.create(2, max_workers=3, launcher=launcher)
     yield p
     p.stop()
+
+
+def test_r_host_python_workers(r_pool):
+    """The reverse direction: an R submitter driving Python workers — the
+    Python worker's foreign publish paths are asserted on the R side."""
+    script = pathlib.Path(__file__).parent / "r_host_pool.R"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (
+        str(pathlib.Path(pymizu.__file__).resolve().parent.parent)
+        + os.pathsep
+        + env.get("PYTHONPATH", "")
+    )
+    proc = subprocess.run(
+        [RSCRIPT, str(script), sys.executable],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
 
 
 def test_both_kinds_and_result_values(r_pool):

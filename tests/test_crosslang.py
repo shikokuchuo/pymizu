@@ -755,6 +755,33 @@ def test_py_peer_tree_remote_leaf(r_mizu):
         ch.close()
 
 
+R_PATH_VIEWS = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, x[[1]])
+mizu::mizu_send(ch, x[[2]][[2]])
+mizu::mizu_send(ch, x[[3]])
+"""
+
+
+def test_r_peer_path_view_resolves(r_mizu):
+    # an element view's identifier is a path: x[[1]] and the nested
+    # x[[2]][[2]] re-sent top-level resolve off the terminal directory
+    # entry — views over the tree region, values exact
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_PATH_VIEWS, launcher=r_mizu)
+    try:
+        big = np.arange(10000)
+        assert ch.send([big + 1, [big + 2, big + 3], ["q"] * 10]) is True
+        e1, e2, e3 = ch.recv(30), ch.recv(30), ch.recv(30)
+        assert type(e1.base).__name__ == "_ShmView"
+        assert np.array_equal(np.asarray(e1), big + 1)
+        assert np.array_equal(np.asarray(e2), big + 3)
+        assert type(e3).__name__ == "_ShmStrView"
+        assert e3.to_list()[:3] == ["q", "q", "q"]
+    finally:
+        ch.close()
+
+
 R_MIZL_VIEW_TREE_COPIES = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, list(x, seq_len(20000) + 0L))
@@ -775,6 +802,36 @@ def test_r_peer_view_tree_copies(r_mizu):
         assert not pymizu._pymizu._view_check(got[0])
         assert np.array_equal(np.asarray(got[0]), big)
         assert [v.item() for v in got[1][:3]] == [1, 2, 3]
+    finally:
+        ch.close()
+
+
+R_TREE_REF_RELAY = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, x)
+y <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, y)
+"""
+
+
+def test_r_peer_tree_remote_leaf_resolve(r_mizu):
+    # pymizu's writer emits a remote leaf for a view element (mizu's own
+    # tree gate rejects them, so the producer here is pymizu): the tree
+    # region comes back whole by REF and the read resolves the remote
+    # leaf onto the referenced region — no copy of either payload
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_TREE_REF_RELAY, launcher=r_mizu)
+    try:
+        ch.send(np.arange(100000, dtype=np.float64) + 3)
+        v = ch.recv(30)
+        assert type(v.base).__name__ == "_ShmView"
+        big = np.arange(200000, dtype=np.float64)
+        assert ch.send([v, big]) is True
+        got = ch.recv(60)
+        assert type(got[0].base).__name__ == "_ShmView"
+        assert np.array_equal(np.asarray(got[0]), np.asarray(v))
+        assert type(got[1].base).__name__ == "_ShmView"
+        assert np.array_equal(np.asarray(got[1]), big)
     finally:
         ch.close()
 
@@ -1010,6 +1067,87 @@ send(ci)
         assert d.dtype == np.int32 and not d.flags.writeable
         assert d[0] == 1 and d[-1] == 100
         del d
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_view_to_numpy_na_verdict_cached(r_mizu):
+    # the fallback scan's NA verdict is cached on the view: a second
+    # to_numpy() reads it (no rescan) and hands the view back
+    np = pytest.importorskip("numpy")
+    src = """
+x <- rep(c(TRUE, FALSE, NA), length.out = 1e6)
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        v = ch.recv(30).base
+        a = v.to_numpy()
+        assert a.dtype == np.int32 and list(a[:3]) == [1, 0, -(2**31)]
+        b = v.to_numpy()  # the cached verdict: the int32 view again
+        assert b.dtype == np.int32 and list(b[:3]) == [1, 0, -(2**31)]
+        del a, b
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+R_INT64_NA = r"""
+x <- bit64::as.integer64(c(1, NA, 3))
+x <- rep(x, length.out = 1e6)
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 30)
+"""
+
+
+def test_r_peer_int64_view_to_numpy_na_warns(r_mizu):
+    # an int64 view's NA verdict warns at to_numpy (the view reads the
+    # sentinel as -2^63; .to_arrow() is the NA-honest accessor)
+    np = pytest.importorskip("numpy")
+    if (
+        subprocess.run(
+            [
+                RSCRIPT,
+                "-e",
+                "if (!length(find.package('bit64', quiet = TRUE))) quit('no', 1)",
+            ],
+            capture_output=True,
+        ).returncode
+        != 0
+    ):
+        pytest.skip("R bit64 package not available")
+    ch = pymizu.Channel.create(R_INT64_NA, launcher=r_mizu)
+    try:
+        v = ch.recv(30).base
+        assert memoryview(v).format == "q"
+        with pytest.warns(UserWarning, match="NA values"):
+            out = v.to_numpy()
+        assert out.dtype == np.int64
+        assert out[0] == 1 and out[1] == -(2**63) and out[2] == 3
+        del out
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_tree_leaf_arrow_na_free(r_mizu):
+    # an NA-free leaf view exports to Arrow with no nulls: the validity
+    # scan-build finds the leaf clean (no bitmap claim rides the tree)
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+x <- list(rep(c(TRUE, FALSE), length.out = 3e4), 1:10)
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        tree = ch.recv(30)
+        arr = pa.array(tree[0].base)
+        assert arr.type == pa.bool_() and arr.null_count == 0
+        assert arr.slice(0, 3).to_pylist() == [True, False, True]
+        del arr
         ch.send(b"")
     finally:
         ch.close()

@@ -84,6 +84,29 @@ def test_map_view_x_without_numpy(tmp_path):
     )
 
 
+def test_view_to_numpy_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+
+        ch = pymizu.Channel.create(
+            "ch.send(bytes(range(256)) * 1200); ch.recv(timeout=30)"
+        )
+        try:
+            v = ch.recv(timeout=15)
+            assert type(v).__name__ == "_ShmView"
+            try:
+                v.to_numpy()
+                raise SystemExit("expected ImportError")
+            except ImportError as e:
+                assert "requires numpy" in str(e)
+        finally:
+            ch.close()
+        """,
+    )
+
+
 def test_map_complex_declines_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,

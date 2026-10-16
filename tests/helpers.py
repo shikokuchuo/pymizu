@@ -38,6 +38,29 @@ def raise_long(msg):
     raise ValueError(msg)
 
 
+class UnprintableError(Exception):
+    def __str__(self):
+        raise RuntimeError("cannot print")
+
+
+def raise_unprintable():
+    raise UnprintableError("never seen")
+
+
+def raise_deep(n, msg):
+    if n <= 0:
+        raise ValueError(msg)
+    return raise_deep(n - 1, msg)
+
+
+class ALongExceptionNameForEnvelopeSizingPastTheBudgetBoundary(Exception):
+    pass
+
+
+def raise_long_named(n):
+    raise ALongExceptionNameForEnvelopeSizingPastTheBudgetBoundary("y" * n)
+
+
 class Unpicklable:
     def __reduce__(self):
         raise TypeError("cannot pickle Unpicklable")

@@ -542,6 +542,30 @@ def test_map_write_rejects_a_wrapping_range(pool):
         pm.close()
 
 
+def test_map_cancel_word_hooks(pool):
+    # the fail-fast word: an erroring runner sets it ahead of its ERR
+    # publish, the re-arm clears it, and a stale-generation runner then
+    # claims nothing (the generation fence)
+    import pickle
+
+    from pymizu import _map
+
+    desc = pickle.dumps((fail_at, (2,), {}, [0, 1, 2, 3]), 4)
+    name, capsule = pymizu._pymizu._map_stage(desc, None, 4, 1, None, False, 1)
+    try:
+        assert pymizu._pymizu._map_cancel_get(capsule) is False
+        with pytest.raises(pymizu.TaskError, match="element 2"):
+            pool.submit(_map._runner_ix, name, 0, None).collect(timeout=10)
+        assert pymizu._pymizu._map_cancel_get(capsule) is True
+        assert pymizu._pymizu._map_reset(capsule) == 1
+        assert pymizu._pymizu._map_cancel_get(capsule) is False
+        out = pool.submit(_map._runner_ix, name, 0, None).collect(timeout=10)
+        assert out == ([], [])
+    finally:
+        _map._ctx_cache.pop(name, None)
+        pymizu._pymizu._map_close(capsule)
+
+
 def test_map_lost_with_one_shot_histories(pool):
     # a generator history is materialized once — a second sizing pass
     # must not desync the allocation from the fill
