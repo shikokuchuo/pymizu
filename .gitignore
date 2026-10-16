@@ -8,3 +8,6 @@ dist/
 .venv/
 .posit/
 .coverage*
+/coverage.lcov
+/c-cov/
+*.profraw

@@ -1111,7 +1111,8 @@ def test_r_peer_int64_view_to_numpy_na_warns(r_mizu):
             [
                 RSCRIPT,
                 "-e",
-                "if (!length(find.package('bit64', quiet = TRUE))) quit('no', 1)",
+                "if (!length(find.package('bit64', quiet = TRUE))) "
+                "quit('no', 1)",
             ],
             capture_output=True,
         ).returncode

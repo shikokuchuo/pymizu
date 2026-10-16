@@ -65,7 +65,8 @@ def test_submit_container_args(pool):
     # the task frame's flat container leaves: a tuple and a dict decode
     # on the worker as themselves
     assert pool.submit(sum, (1, 2, 3)).collect(timeout=5) == 6
-    assert pool.submit(sorted, {"b": 1, "a": 2}).collect(timeout=5) == ["a", "b"]
+    t = pool.submit(sorted, {"b": 1, "a": 2})
+    assert t.collect(timeout=5) == ["a", "b"]
 
 
 def test_submit_rawspill_result(pool):
@@ -130,9 +131,7 @@ def test_task_error_envelope_sheds_traceback_first(pool):
         t.collect(timeout=10)
     exc = exc_info.value
     assert "boom" in str(exc)
-    assert exc.remote_traceback.startswith(
-        "Traceback (most recent call last)"
-    )
+    assert exc.remote_traceback.startswith("Traceback (most recent call last)")
     assert len(exc.remote_traceback) < 250
 
 

@@ -115,3 +115,67 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # C coverage of the binding's own sources: an instrumented editable
+  # build under clang, the test suite (spawned children inherit
+  # LLVM_PROFILE_FILE and write their own profraws), an lcov export, and
+  # an upload alongside the Python report — Codecov merges per commit.
+  c-coverage:
+    runs-on: ubuntu-latest
+    env:
+      CROSSLANG_PAT: ${{ secrets.CROSSLANG_PAT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # setuptools_scm reads the version from tags
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # Editable: the tests (and their spawned children) must load the
+      # instrumented .so, and llvm-cov needs its stable source-tree path.
+      - name: Instrumented build
+        run: |
+          CC=clang CFLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+            LDFLAGS="-fprofile-instr-generate" \
+            pip install -e . pytest numpy pyarrow polars cloudpickle
+      # Same cross-language gate as the build legs (they exercise the
+      # interop C paths); probe-skips without the secret.
+      - name: Set up R (cross-language tests)
+        if: env.CROSSLANG_PAT != ''
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - name: Install the mizu R package (cross-language tests)
+        if: env.CROSSLANG_PAT != ''
+        env:
+          GITHUB_PAT: ${{ secrets.CROSSLANG_PAT }}
+        run: |
+          install.packages(c("bit64", "pak", "arrow", "nanoarrow"))
+          pak::pak("shikokuchuo/mizu")
+        shell: Rscript {0}
+      - name: Test
+        # %p keeps each process's profraw distinct; the profile runtime
+        # creates no directories.
+        run: |
+          mkdir -p c-cov
+          LLVM_PROFILE_FILE="$PWD/c-cov/pymizu-%p.profraw" python -m pytest tests/ -q
+      # The regex drops the vendored core (measured in libmizu's own CI)
+      # and CPython's headers (an -I path, so clang emits their inline
+      # functions). llvm-cov/llvm-profdata must match the clang that
+      # produced the profraw.
+      - name: Export lcov
+        run: |
+          v=$(clang --version | sed -n 's/.*version \([0-9][0-9]*\)\..*/\1/p' | head -1)
+          if ! command -v llvm-cov-"$v" >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y llvm-"$v"
+          fi
+          llvm-profdata-"$v" merge -sparse c-cov/*.profraw -o c-cov/merged.profdata
+          llvm-cov-"$v" export -format=lcov python/pymizu/_pymizu*.so \
+            -instr-profile=c-cov/merged.profdata \
+            -ignore-filename-regex='vendor/|include/python' > coverage.lcov
+      - name: Upload coverage
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.lcov
+          fail_ci_if_error: false
