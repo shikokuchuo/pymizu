@@ -9,6 +9,7 @@
 <meta name="description" content="A map staged once into a persistent region, run many times.">
 
 <title>PreparedMap | pymizu 水</title>
+<meta property="og:type" content="website">
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -122,8 +123,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <style>:root{--gd-nav-prefix-api:"API";--gd-nav-prefix-cli:"CLI";--gd-nav-prefix-mcp:"MCP";}</style>
 <meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.5">
 <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/PreparedMap.html">
+<meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/PreparedMap.html">
 
 
+<meta property="og:title" content="PreparedMap | pymizu 水">
+<meta property="og:description" content="A map staged once into a persistent region, run many times.">
+<meta property="og:site_name" content="pymizu 水">
+<meta name="twitter:title" content="PreparedMap | pymizu 水">
+<meta name="twitter:description" content="A map staged once into a persistent region, run many times.">
+<meta name="twitter:card" content="summary">
   <link rel="alternate" type="text/markdown" href="PreparedMap.md">
   <script type="application/ld+json">
 [
@@ -153,14 +161,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   }
 ]
 </script>
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="PreparedMap | pymizu 水">
-  <meta property="og:description" content="A map staged once into a persistent region, run many times.">
-  <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/PreparedMap.html">
-  <meta property="og:site_name" content="pymizu 水">
-  <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="PreparedMap | pymizu 水">
-  <meta name="twitter:description" content="A map staged once into a persistent region, run many times.">
 </head>
 
 <body class="gd-ref-sidebar nav-sidebar floating nav-fixed doc-api-page doc-py-api-page quarto-light">
@@ -831,7 +831,7 @@ Stream slices of <code>x</code> instead of staging it whole — as for <a href="
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Stage the map once, then re-run it over replacement data at memcpy cost (same dtype and length swap in place):</p>
-<div id="f9acd181" class="cell" data-execution_count="1">
+<div id="9c5b5972" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
