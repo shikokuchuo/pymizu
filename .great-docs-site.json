@@ -202,7 +202,7 @@
     "sidebar-wrap.js",
     "site_libs",
     "site_libs/bootstrap",
-    "site_libs/bootstrap/bootstrap-90c0cb8701bc726ef78bd9649a6be318.min.css",
+    "site_libs/bootstrap/bootstrap-728ecd11ec725c9fefd66e2d52244692.min.css",
     "site_libs/bootstrap/bootstrap-icons.css",
     "site_libs/bootstrap/bootstrap-icons.woff",
     "site_libs/bootstrap/bootstrap.min.js",
@@ -242,6 +242,7 @@
     "user-guide/map.md",
     "user-guide/pools.html",
     "user-guide/pools.md",
-    "video-embed.js"
+    "video-embed.js",
+    "wide-layout.js"
   ]
 }
