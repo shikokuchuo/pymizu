@@ -3,6 +3,7 @@ name: docs
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   contents: write
@@ -24,14 +25,17 @@ jobs:
       - name: Install pymizu and the docs toolchain
         # Editable install: the render imports pymizu from the source tree
         # (great-docs puts python/ on PYTHONPATH), so the extension must be
-        # built in place. The docs extra carries great-docs (unreleased,
-        # pinned to a main commit in pyproject.toml) plus the render deps.
-        run: pip install -e ".[docs]"
+        # built in place. great-docs tracks main (0.17.0 lacks repo-root
+        # config discovery); the docs extra carries the render deps.
+        run: |
+          pip install "great-docs @ git+https://github.com/posit-dev/great-docs.git@main"
+          pip install -e ".[docs]"
 
       - name: Build the site
         run: great-docs build
 
       - name: Publish to GitHub Pages
+        if: github.event_name == 'push'
         # Static deploy: docs/ is no longer a Quarto project, so
         # quarto-actions/publish refuses docs/_site.
         uses: peaceiris/actions-gh-pages@v4

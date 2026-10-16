@@ -53,11 +53,11 @@ dev = [
   "pyarrow",
   "polars",
 ]
-# great-docs is unreleased: a direct reference pinned to a main commit (the
-# docs workflow installs this extra). Direct references block PyPI uploads —
-# switch to a version pin once great-docs releases.
+# Docs render deps only. great-docs comes from git main in the docs workflow
+# (0.17.0 lacks repo-root config discovery; pin the release here once one has
+# it — a direct reference blocks PyPI uploads). Local docs builds:
+#   pip install "great-docs @ git+https://github.com/posit-dev/great-docs.git@main"
 docs = [
-  "great-docs @ git+https://github.com/posit-dev/great-docs.git@de82be025039c21fc5bff50f2e55747eb254109a",
   "numpy",
   "cloudpickle",
   "jupyter",
