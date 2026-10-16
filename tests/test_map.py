@@ -1029,3 +1029,402 @@ def test_map_swap_x_convert_flag():
             )
     finally:
         pymizu._pymizu._map_close(capsule)
+
+
+# -- low-level map hooks ----------------------------------------------------
+
+
+def test_map_stage_geometry_gates():
+    import pickle
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    stage = pymizu._pymizu._map_stage
+    for args, match in [
+        ((desc, None, 0, 1, None, False, 1), "invalid map length"),
+        ((desc, None, 2**48 + 1, 1, None, False, 1), "invalid map length"),
+        ((desc, None, 4, 0, None, False, 1), "invalid map morsel size"),
+        ((desc, None, 4, 5, None, False, 1), "invalid map morsel size"),
+        ((b"", None, 4, 1, None, False, 1), "invalid map descriptor size"),
+        (
+            (desc, np.arange(3, dtype=np.float64), 4, 1, None, False, 1),
+            "not eligible for the map raw section",
+        ),
+        (
+            (desc, np.arange(4, dtype=np.int8), 4, 1, None, False, 1),
+            "not eligible for the map raw section",
+        ),
+        (
+            (desc, np.arange(4, dtype=np.float32), 4, 1, None, False, 1),
+            "not eligible for the map raw section",
+        ),
+        (
+            (desc, np.arange(3, dtype=np.float32), 4, 1, None, True, 2),
+            "not eligible for the map raw section",
+        ),
+        (
+            (desc, np.array(["a", "b", "c", "d"]), 4, 1, None, True, 2),
+            "not eligible for the map raw section",
+        ),
+        (
+            (desc, None, 4, 1, np.arange(2, dtype=np.int8), False, 1),
+            "invalid map template",
+        ),
+        ((desc, None, 4, 1, np.empty(0), False, 1), "invalid map template"),
+    ]:
+        with pytest.raises(pymizu.MizuError, match=match):
+            stage(*args)
+    with pytest.raises(TypeError):
+        stage(desc, 42, 4, 1, None, False, 1)
+    with pytest.raises(TypeError):
+        stage(desc, None, 4, 1, 42, False, 1)
+
+
+def test_map_stage_conversion_warning_as_error():
+    # the fused convert completes before the warning raises, so a
+    # warn-as-error leaves no half-written region behind
+    import pickle
+    import warnings
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    x = np.array([2**62, 1], dtype=np.uint64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="beyond"):
+            pymizu._pymizu._map_stage(desc, x, 2, 1, None, True, 2)
+
+
+def test_map_capsule_lifecycle():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, caps = Q._map_stage(desc, None, 4, 1, None, False, 1)
+    Q._map_close(caps)
+    Q._map_close(caps)  # idempotent
+    Q._map_cancel_set(caps)  # closed: a no-op (runs from unwind paths)
+    for call in (
+        lambda: Q._map_header(caps),
+        lambda: Q._map_desc(caps),
+        lambda: Q._map_x_view(caps),
+        lambda: Q._map_cancel_get(caps),
+        lambda: Q._map_gather(caps),
+        lambda: Q._map_gather_view(caps),
+        lambda: Q._map_next(caps, None, 0, 0),
+        lambda: Q._map_write(caps, 0, [1.0]),
+        lambda: Q._map_swap_x(caps, np.arange(4, dtype=np.float64), False, 1),
+        lambda: Q._map_lost(caps, []),
+        lambda: Q._map_abandon(caps, 0, 0),
+    ):
+        with pytest.raises(pymizu.MizuError, match="not a map context"):
+            call()
+    with pytest.raises(pymizu.MizuError, match="not a map context"):
+        Q._map_close(42)
+
+
+def test_map_foreign_capsule_tolerance():
+    # a non-map capsule: close and cancel_set are no-ops, the accessors
+    # refuse
+    pa = pytest.importorskip("pyarrow", reason="pyarrow not installed")
+
+    Q = pymizu._pymizu
+    scap, _acap = pa.array([1.0]).__arrow_c_array__()
+    Q._map_close(scap)
+    Q._map_cancel_set(scap)
+    with pytest.raises(pymizu.MizuError, match="not a map context"):
+        Q._map_header(scap)
+
+
+def test_map_open_unknown_region():
+    # pins the current failure mode: the em-dash in the error format
+    # defeats PyErr_Format (an ASCII-only parser) — the intended
+    # MizuShmError never surfaces
+    with pytest.raises(ValueError, match="ASCII"):
+        pymizu._pymizu._map_open("/mizu_no_such_region_0000")
+
+
+def test_map_x_view_requires_an_x_section():
+    import pickle
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = pymizu._pymizu._map_stage(desc, None, 4, 1, None, False, 1)
+    try:
+        with pytest.raises(pymizu.MizuError, match="no x section"):
+            pymizu._pymizu._map_x_view(capsule)
+    finally:
+        pymizu._pymizu._map_close(capsule)
+
+
+def test_map_next_gates():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 4, 1, None, False, 1)
+    try:
+        claim_n = Q._map_header(capsule)["claim_n"]
+        with pytest.raises(pymizu.MizuError, match="ordinal out of range"):
+            Q._map_next(capsule, None, claim_n, 0)
+        with pytest.raises(pymizu.MizuError, match="not a pool-signal"):
+            Q._map_next(capsule, capsule, 0, 0)
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_abandon_gates():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 4, 1, None, False, 1)
+    try:
+        claim_n = Q._map_header(capsule)["claim_n"]
+        assert Q._map_abandon(capsule, 0, 0) == 0  # trigger unarmed: idle
+        with pytest.raises(pymizu.MizuError, match="ordinal out of range"):
+            Q._map_abandon(capsule, -1, 0)
+        with pytest.raises(pymizu.MizuError, match="ordinal out of range"):
+            Q._map_abandon(capsule, claim_n, 0)
+        with pytest.raises(TypeError):
+            Q._map_abandon(capsule, "x", 0)
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_lost_scan():
+    # the lost set: issued off the cursor minus the collected histories
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(
+        desc, np.arange(10, dtype=np.float64), 10, 2, None, False, 1
+    )
+    try:
+        assert Q._map_lost(capsule, []) == []  # nothing issued yet
+        assert Q._map_next(capsule, None, 0, 0) is not None
+        assert Q._map_next(capsule, None, 0, 0) is not None
+        issued_hi = Q._map_lost(capsule, [])[0][1]
+        assert Q._map_lost(capsule, []) == [(0, issued_hi)]
+        assert Q._map_lost(capsule, [[(0, 2)], [(3, 4)]]) == [
+            (2, 3),
+            (4, issued_hi),
+        ]
+        with pytest.raises(TypeError, match="list of range lists"):
+            Q._map_lost(capsule, 42)
+        with pytest.raises(TypeError, match="invalid map batch history"):
+            Q._map_lost(capsule, [42])
+        with pytest.raises(pymizu.MizuError, match="invalid map batch"):
+            Q._map_lost(capsule, [[(3, 2)]])
+        with pytest.raises(pymizu.MizuError, match="invalid map batch"):
+            Q._map_lost(capsule, [[(0, 11)]])
+        with pytest.raises(pymizu.MizuError, match="invalid map batch"):
+            Q._map_lost(capsule, [[("a", 1)]])
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_write_scalar_forms():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    # (template, a good scalar, a scalar past the type's range, a
+    # non-numeric scalar)
+    forms = [
+        (np.empty(1), 3.5, "s", None, "format 'd'"),
+        (np.empty(1, dtype=np.int32), 5, 2**40, 1.5, "format 'i'"),
+        (np.empty(1, dtype=np.int64), 5, 2**100, 1.5, "format 'q'"),
+        (np.empty(1, dtype=np.uint8), 5, 300, "s", "format 'B'"),
+        (np.empty(1, dtype=np.complex128), 1 + 2j, "s", None, "format 'Zd'"),
+    ]
+    for template, good, bad, nonnum, match in forms:
+        name, capsule = Q._map_stage(desc, None, 4, 1, template, False, 1)
+        try:
+            Q._map_write(capsule, 0, [good, good, good, good])
+            with pytest.raises(pymizu.MizuError, match=match):
+                Q._map_write(capsule, 0, [bad])
+            if nonnum is not None:
+                with pytest.raises(pymizu.MizuError, match=match):
+                    Q._map_write(capsule, 0, [nonnum])
+        finally:
+            Q._map_close(capsule)
+    # an int lands in a REAL slot; a negative int past the range breaks
+    # the same as a positive one
+    name, capsule = Q._map_stage(desc, None, 4, 1, np.empty(1), False, 1)
+    try:
+        Q._map_write(capsule, 0, [7])
+        assert Q._map_gather(capsule)[:8] == np.float64(7.0).tobytes()
+        with pytest.raises(pymizu.MizuError, match="out of bounds"):
+            Q._map_write(capsule, 3, [1.0, 2.0])
+        with pytest.raises(TypeError, match="must be a sequence"):
+            Q._map_write(capsule, 0, 42)
+    finally:
+        Q._map_close(capsule)
+    name, capsule = Q._map_stage(
+        desc, None, 4, 1, np.empty(1, dtype=np.int32), False, 1
+    )
+    try:
+        with pytest.raises(pymizu.MizuError, match="format 'i'"):
+            Q._map_write(capsule, 0, [-(2**31) - 1])
+    finally:
+        Q._map_close(capsule)
+    name, capsule = Q._map_stage(
+        desc, None, 4, 1, np.empty(1, dtype=np.uint8), False, 1
+    )
+    try:
+        with pytest.raises(pymizu.MizuError, match="format 'B'"):
+            Q._map_write(capsule, 0, [-1])
+    finally:
+        Q._map_close(capsule)
+    # PyLong conversion overflows propagate (REAL/INT/RAW), the int64 form
+    # absorbs its OverflowError into the template mismatch
+    name, capsule = Q._map_stage(
+        desc, None, 4, 1, np.empty(1, dtype=np.int32), False, 1
+    )
+    try:
+        with pytest.raises(OverflowError):
+            Q._map_write(capsule, 0, [2**100])
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_write_buffer_forms():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 4, 1, np.empty(2), False, 1)
+    try:
+        Q._map_write(capsule, 0, [np.array([1.5, 2.5])])
+        assert Q._map_gather(capsule)[:16] == np.array([1.5, 2.5]).tobytes()
+        # a buffer of another dtype, a wrong length, and a strided view
+        # all miss the template
+        with pytest.raises(pymizu.MizuError, match="must match"):
+            Q._map_write(capsule, 0, [np.array([1, 2], dtype=np.int32)])
+        with pytest.raises(pymizu.MizuError, match="must match"):
+            Q._map_write(capsule, 0, [np.array([1.0])])
+        with pytest.raises(pymizu.MizuError, match="must match"):
+            Q._map_write(capsule, 0, [np.arange(4, dtype=np.float64)[::2]])
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_output_area_absent():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 4, 1, None, False, 1)
+    try:
+        with pytest.raises(pymizu.MizuError, match="no output area"):
+            Q._map_write(capsule, 0, [1.0])
+        with pytest.raises(pymizu.MizuError, match="no output area"):
+            Q._map_gather(capsule)
+        with pytest.raises(pymizu.MizuError, match="no output area"):
+            Q._map_gather_view(capsule)
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_swap_x_gates():
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 4, 1, None, False, 1)
+    try:
+        with pytest.raises(pymizu.MizuError, match="no x section"):
+            Q._map_swap_x(capsule, np.arange(4, dtype=np.float64), False, 1)
+    finally:
+        Q._map_close(capsule)
+    name, capsule = Q._map_stage(
+        desc, np.arange(4, dtype=np.float64), 4, 1, None, False, 1
+    )
+    try:
+        with pytest.raises(TypeError):
+            Q._map_swap_x(capsule, 42, False, 1)
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_probe_x_no_conversion_row():
+    # a dtype with no conversion row probes as ineligible even under the
+    # flag; a dtype numpy will not export as a buffer clears and probes
+    # the same
+    assert pymizu._pymizu._map_probe_x(np.zeros(3, dtype="U3"), True) is None
+    assert (
+        pymizu._pymizu._map_probe_x(
+            np.array([1, 2], dtype="datetime64[D]"), True
+        )
+        is None
+    )
+
+
+def test_map_view_buffer_formats():
+    import ctypes
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    for dtype, fmt in [
+        (np.float64, "d"),
+        (np.int32, "i"),
+        (np.int64, "q"),
+        (np.uint8, "B"),
+        (np.complex128, "Zd"),
+    ]:
+        name, capsule = Q._map_stage(
+            desc, None, 3, 1, np.empty(1, dtype=dtype), False, 1
+        )
+        try:
+            view = Q._map_gather_view(capsule)
+            mv = memoryview(view)
+            assert mv.format == fmt
+            assert len(mv) == 3
+            assert bytes(view) == bytes(3 * mv.itemsize)  # the simple form
+        finally:
+            Q._map_close(capsule)
+    name, capsule = Q._map_stage(desc, None, 3, 1, np.empty(1), False, 1)
+    try:
+        view = Q._map_gather_view(capsule)
+        with pytest.raises(TypeError, match="not writable"):
+            ctypes.c_char.from_buffer(view)
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_view_arrow_export_after_close():
+    # the export re-validates the map context it owns: closed is an
+    # informative error, never a dangling read
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 3, 1, np.empty(1), False, 1)
+    view = Q._map_gather_view(capsule)
+    Q._map_close(capsule)
+    with pytest.raises(pymizu.MizuError, match="not a map context"):
+        view.__arrow_c_array__()
+
+
+def test_map_hook_signatures():
+    # malformed calls fail at argument parsing, never in the protocol
+    import pickle
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 3, 1, np.empty(1), False, 1)
+    try:
+        for call in (
+            lambda: Q._map_stage(desc, None, 3),
+            lambda: Q._map_next(capsule, None),
+            lambda: Q._map_abandon(capsule),
+            lambda: Q._map_swap_x(capsule),
+            lambda: Q._map_write(capsule),
+            lambda: Q._map_lost(capsule),
+            lambda: Q._map_probe_x(None),
+            lambda: Q._map_gather_view(capsule).__arrow_c_array__(1, 2),
+        ):
+            with pytest.raises(TypeError):
+                call()
+    finally:
+        Q._map_close(capsule)

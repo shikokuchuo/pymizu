@@ -7,6 +7,7 @@ Arrow stream front-end."""
 import datetime
 import pathlib
 import pickle
+import struct
 import sys
 import warnings
 
@@ -996,3 +997,524 @@ def test_err_send_crosses_foreign_and_same_language_channels():
     assert not pymizu.is_remote_error(v3)
     pp.destroy()
     hh.destroy()
+
+
+# -- hand-built streams: the column and attribute forms --------------------
+
+
+def _ix_key(k):
+    b = k.encode()
+    return len(b).to_bytes(4, "little") + b
+
+
+def _ix_sval(v):
+    b = v.encode()
+    return b"\x04" + len(b).to_bytes(4, "little") + b
+
+
+def _ix_strelt(v):
+    if v is None:
+        return (-1).to_bytes(4, "little", signed=True)
+    b = v.encode()
+    return len(b).to_bytes(4, "little") + b
+
+
+def _ix_int(v):
+    return b"\x02" + v.to_bytes(8, "little", signed=True)
+
+
+def _ix_real(v):
+    return b"\x03" + struct.pack("<d", v)
+
+
+def _ix_vec(tag, data, count):
+    return bytes([tag]) + count.to_bytes(8, "little") + data
+
+
+def _ix_frame(cols, names, nrow):
+    s = bytearray(b"\x0f")
+    s += b"\x0c" + len(cols).to_bytes(8, "little")
+    for c in cols:
+        s += c
+    s += b"\x0d" + (3).to_bytes(8, "little")
+    s += _ix_key("names")
+    if len(names) == 1:
+        s += _ix_sval(names[0])
+    else:
+        s += b"\x0b" + len(names).to_bytes(8, "little")
+        for nm in names:
+            s += _ix_strelt(nm)
+    s += _ix_key("class") + _ix_sval("data.frame")
+    s += _ix_key("row.names")
+    s += _ix_vec(
+        0x07,
+        (-(2**31)).to_bytes(4, "little", signed=True)
+        + (-nrow).to_bytes(4, "little", signed=True),
+        2,
+    )
+    return b"I\x01" + bytes(s)
+
+
+def test_frame_scalar_column_forms():
+    # one scalar column per kind: the length-1 column homes (the scalar
+    # tags promote to the n == 1 vector forms at read)
+    cases = [
+        (b"\x01\x01", "lgl", [True]),
+        (b"\x01\x02", "lgl_na", [np.int32(-(2**31))]),
+        (_ix_int(5), "i32", [5]),
+        (_ix_int(2**40), "i64", [2**40]),
+        (_ix_real(1.5), "f64", [1.5]),
+        (b"\x10" + struct.pack("<dd", 1.0, 2.0), "c128", [1 + 2j]),
+        (_ix_sval("x"), "str", ["x"]),
+        (b"\x04" + (-1).to_bytes(4, "little", signed=True), "str_na", [None]),
+    ]
+    for col, name, want in cases:
+        f = _read(_ix_frame([col], [name], 1))
+        got = f.to_dict()[name]
+        got = got.tolist() if hasattr(got, "tolist") else got
+        assert got == want, (name, got)
+        # the canonical fixpoint: the write-back reads and writes the same
+        s = _pymizu._write_stream(f)
+        assert _pymizu._write_stream(_read(s)) == s, name
+
+
+def test_frame_scalar_int64_column_reemits():
+    # a scalar INT past int32 adopts an i64 column; the NA scalar a masked
+    # i32 one
+    f = _read(_ix_frame([_ix_int(2**40)], ["a"], 1))
+    assert f.to_dict()["a"].dtype == np.int64
+    f = _read(_ix_frame([_ix_int(-(2**63))], ["a"], 1))
+    d = f.to_dict()["a"]
+    assert d.dtype == np.float64 and np.isnan(d[0])
+
+
+def test_frame_vector_column_forms():
+    # a vector column per wire type, CPLX included (a pyarrow producer has
+    # no complex — the stream form carries it)
+    i32 = struct.pack("<3i", 1, 2, -(2**31))
+    f64 = struct.pack("<3d", 1.5, -2.5, 3.5)
+    i64v = struct.pack("<3q", 1, -1, 2**60)
+    cplx = struct.pack("<6d", 1, 1, 2, 2, 3, 3)
+    raw = b"\x00\x01\xff"
+    lgl = struct.pack("<3i", 0, 1, -(2**31))
+    cols = [
+        _ix_vec(0x08, f64, 3),
+        _ix_vec(0x07, i32, 3),
+        _ix_vec(0x0E, i64v, 3),
+        _ix_vec(0x09, cplx, 3),
+        _ix_vec(0x0A, raw, 3),
+        _ix_vec(0x06, lgl, 3),
+    ]
+    names = ["f64", "i32", "i64", "c128", "u8", "lgl"]
+    f = _read(_ix_frame(cols, names, 3))
+    d = f.to_dict()
+    assert d["f64"].tolist() == [1.5, -2.5, 3.5]
+    assert d["i32"].tolist()[0] == 1.0 and np.isnan(d["i32"][2])
+    assert d["i64"].tolist() == [1, -1, 2**60]
+    assert d["c128"].tolist() == [1 + 1j, 2 + 2j, 3 + 3j]
+    assert d["u8"].tolist() == [0, 1, 255]
+    assert d["lgl"].tolist()[:2] == [False, True]
+    s = _pymizu._write_stream(f)
+    assert _pymizu._write_stream(_read(s)) == s
+
+
+def test_frame_column_malformed_forms():
+    # the column reader's refusals, byte-exact
+    cases = [
+        # a string column whose second element is not a string
+        (
+            b"\x0b" + (2).to_bytes(8, "little") + _ix_strelt("a") + _ix_int(1),
+            None,
+        ),
+        # an attributed column wrapping a non-vector value
+        (
+            b"\x0f"
+            + b"\x0c"
+            + (0).to_bytes(8, "little")
+            + b"\x0d"
+            + (0).to_bytes(8, "little"),
+            "attributed form",
+        ),
+        # an attributed column of an unknown class
+        (
+            b"\x0f"
+            + _ix_real(1.5)
+            + b"\x0d"
+            + (1).to_bytes(8, "little")
+            + _ix_key("class")
+            + _ix_sval("mystery"),
+            "no portable home",
+        ),
+        # a difftime column of an unknown unit
+        (
+            b"\x0f"
+            + _ix_real(1.5)
+            + b"\x0d"
+            + (2).to_bytes(8, "little")
+            + _ix_key("class")
+            + _ix_sval("difftime")
+            + _ix_key("units")
+            + _ix_sval("fortnights"),
+            "no portable home",
+        ),
+        # a list column
+        (b"\x0c" + (0).to_bytes(8, "little"), "unexpected form"),
+    ]
+    for col, match in cases:
+        with pytest.raises(pymizu.MizuError, match=match):
+            _read(_ix_frame([col], ["a"], 1))
+
+
+def test_attr_dict_malformed_forms():
+    # the attribute dict's refusals (on a standalone POSIXct-shaped value)
+    def attr_val(dict_bytes):
+        return b"I\x01\x0f" + _ix_real(1.5) + dict_bytes
+
+    # the attributes are not a dict
+    with pytest.raises(pymizu.MizuError, match="not a dict"):
+        _read(attr_val(_ix_int(1)))
+    # past 16 entries
+    big = b"\x0d" + (17).to_bytes(8, "little")
+    for i in range(17):
+        big += _ix_key(f"k{i}") + _ix_int(1)
+    with pytest.raises(pymizu.MizuError, match="past 16"):
+        _read(attr_val(big))
+    # a duplicate key
+    dup = b"\x0d" + (2).to_bytes(8, "little")
+    dup += (
+        _ix_key("class")
+        + _ix_sval("Date")
+        + _ix_key("class")
+        + _ix_sval("Date")
+    )
+    with pytest.raises(pymizu.MizuError, match="duplicate"):
+        _read(attr_val(dup))
+    # an NA string value
+    nastr = b"\x0d" + (1).to_bytes(8, "little")
+    nastr += (
+        _ix_key("class") + b"\x04" + (-1).to_bytes(4, "little", signed=True)
+    )
+    with pytest.raises(pymizu.MizuError, match="NA attribute string"):
+        _read(attr_val(nastr))
+    # a value of an unsupported kind
+    badk = b"\x0d" + (1).to_bytes(8, "little")
+    badk += _ix_key("class") + _ix_real(1.5)
+    with pytest.raises(pymizu.MizuError, match="unsupported kind"):
+        _read(attr_val(badk))
+    # an attribute vector of a non-INT type
+    badv = b"\x0d" + (1).to_bytes(8, "little")
+    badv += _ix_key("dim") + _ix_vec(0x08, struct.pack("<d", 1.5), 1)
+    with pytest.raises(pymizu.MizuError, match="unexpected type"):
+        _read(attr_val(badv))
+
+
+def test_factor_standalone_forms():
+    # the standalone factor homes a list[str | None]; the scalar code and
+    # the NA code included
+    def factor(codes, levels):
+        s = bytearray(b"I\x01\x0f")
+        s += _ix_vec(0x07, struct.pack(f"<{len(codes)}i", *codes), len(codes))
+        s += b"\x0d" + (2).to_bytes(8, "little")
+        s += _ix_key("class") + _ix_sval("factor")
+        s += _ix_key("levels")
+        if len(levels) == 1 and levels[0] is not None:
+            s += _ix_sval(levels[0])
+        else:
+            s += b"\x0b" + len(levels).to_bytes(8, "little")
+            for lv in levels:
+                s += _ix_strelt(lv)
+        return bytes(s)
+
+    got = _read(factor([1, -(2**31), 2], ["a", "b"]))
+    assert got == ["a", None, "b"]
+    # the scalar-code form (the 0x02 scalar, 1-based)
+    s = bytearray(b"I\x01\x0f") + _ix_int(2)
+    s += b"\x0d" + (2).to_bytes(8, "little")
+    s += _ix_key("class") + _ix_sval("factor") + _ix_key("levels")
+    s += (
+        b"\x0b" + (2).to_bytes(8, "little") + _ix_strelt("a") + _ix_strelt("b")
+    )
+    assert _read(bytes(s)) == ["b"]
+    # a code outside the levels
+    with pytest.raises(pymizu.MizuError, match="outside the levels"):
+        _read(factor([3], ["a", "b"]))
+    # an NA level
+    with pytest.raises(pymizu.MizuError, match="NA factor level"):
+        _read(factor([1], [None]))
+
+
+def test_dim_malformed_forms():
+    def dim_val(dims_bytes, vec_tag=0x07, vec_data=None, n=2):
+        if vec_data is None:
+            vec_data = struct.pack("<2i", 1, 2)
+        s = bytearray(b"I\x01\x0f")
+        s += _ix_vec(vec_tag, vec_data, n)
+        s += b"\x0d" + (1).to_bytes(8, "little")
+        s += _ix_key("dim") + dims_bytes
+        return bytes(s)
+
+    # an empty dim (the zero-length intv)
+    with pytest.raises(pymizu.MizuError, match="an empty dim"):
+        _read(dim_val(_ix_vec(0x07, b"", 0)))
+    # a negative dim
+    with pytest.raises(pymizu.MizuError, match="a negative dim"):
+        _read(
+            dim_val(
+                _ix_vec(
+                    0x07,
+                    (-1).to_bytes(4, "little", signed=True)
+                    + (2).to_bytes(4, "little", signed=True),
+                    2,
+                )
+            )
+        )
+    # a dim product overflow
+    big = struct.pack("<3i", 2**31 - 1, 2**31 - 1, 2**31 - 1)
+    with pytest.raises(pymizu.MizuError, match="product overflow"):
+        _read(dim_val(_ix_vec(0x07, big, 3)))
+    # a dim past 32 axes
+    with pytest.raises(pymizu.MizuError, match="past 32"):
+        _read(dim_val(_ix_vec(0x07, struct.pack("<33i", *([1] * 33)), 33)))
+    # the product is not the element count
+    with pytest.raises(
+        pymizu.MizuError, match="not the value's element count"
+    ):
+        _read(dim_val(_ix_vec(0x07, struct.pack("<2i", 3, 3), 2)))
+    # a scalar dim is the length-1 shift: a plain vector
+    got = _read(dim_val(_ix_int(2)))
+    assert got.tolist() == [1, 2]
+
+
+def test_attr_value_form_errors():
+    # an attributed list reads as a frame: zero columns is malformed
+    s = b"I\x01\x0f" + b"\x0c" + (0).to_bytes(8, "little")
+    s += b"\x0d" + (0).to_bytes(8, "little")
+    with pytest.raises(pymizu.MizuError, match="without columns"):
+        _read(s)
+    # an attributed value of a non-vector form
+    s = b"I\x01\x0f" + b"\x05" + (0).to_bytes(8, "little")
+    s += b"\x0d" + (0).to_bytes(8, "little")
+    with pytest.raises(pymizu.MizuError, match="of this form"):
+        _read(s)
+    # an unhandled class list names the classes in the error
+    s = bytearray(b"I\x01\x0f")
+    s += _ix_vec(0x07, struct.pack("<2i", 1, 2), 2)
+    s += b"\x0d" + (1).to_bytes(8, "little")
+    s += _ix_key("class")
+    s += (
+        b"\x0b"
+        + (2).to_bytes(8, "little")
+        + _ix_strelt("foo")
+        + _ix_strelt("bar")
+    )
+    with pytest.raises(pymizu.MizuError, match='"foo", "bar"'):
+        _read(bytes(s))
+
+
+def test_int64_na_warning_as_error():
+    # the sentinel-carrying read honors the warning filter
+    s = b"I\x01" + _ix_vec(0x0E, struct.pack("<2q", 1, -(2**63)), 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="NA_integer64_"):
+            _read(s)
+
+
+def test_err_stream_with_an_index():
+    out = _read(_pymizu._write_err("ValueError", "msg", "tb", index=7))
+    assert isinstance(out, pymizu.TaskError)
+    assert out.remote_type == "ValueError"
+    assert out.index == 7
+
+
+def test_ref_leaf_in_a_value_stream():
+    # the 0x13 leaf declines on the channel value reader
+    s = b"I\x01\x13\x08/mizu_ab"
+    with pytest.raises(pymizu.MizuError, match="cannot cross as a channel"):
+        _read(s)
+
+
+def test_dict_and_strv_malformed_forms():
+    # a dict whose key is not a string
+    s = b"I\x01\x0d" + (1).to_bytes(8, "little") + _ix_int(1) + _ix_int(2)
+    with pytest.raises(pymizu.MizuError):
+        _read(s)
+    # a duplicate dict key
+    s = b"I\x01\x0d" + (2).to_bytes(8, "little")
+    s += _ix_key("a") + _ix_int(1) + _ix_key("a") + _ix_int(2)
+    with pytest.raises(pymizu.MizuError, match="duplicate"):
+        _read(s)
+    # a string vector whose element is not a string
+    s = b"I\x01\x0b" + (2).to_bytes(8, "little") + _ix_strelt("a") + _ix_int(1)
+    with pytest.raises(pymizu.MizuError):
+        _read(s)
+
+
+def test_str_list_length_one_is_a_scalar():
+    # the ixe_strv shape: length 1 is the 0x04 scalar both ways
+    assert _read(_pymizu._write_stream(["a"])) == "a"
+    assert _read(_pymizu._write_stream([["a"]])) == ["a"]
+
+
+def test_scalar_dtype_u64_and_declines():
+    # the uint64 scalar: within int64 it is the int tag, past it a decline;
+    # a 0-d buffer of an unmapped dtype declines too
+    assert _read(_pymizu._write_stream(np.uint64(5))) == 5
+    assert _read(_pymizu._write_stream(np.uint64(2**63 - 1))) == 2**63 - 1
+    with pytest.raises(pymizu.DeclinedError):
+        _pymizu._write_stream(np.uint64(2**63))
+    with pytest.raises(pymizu.DeclinedError):
+        _pymizu._write_stream(np.array("ab"))
+
+
+def test_numpy_temporal_2d_declines():
+    with pytest.raises(pymizu.DeclinedError, match="past 1-D"):
+        _pymizu._write_stream(np.zeros((2, 2), dtype="m8[ms]"))
+    with pytest.raises(pymizu.DeclinedError, match="past 1-D"):
+        _pymizu._write_stream(np.zeros((2, 2), dtype="M8[us]"))
+
+
+def test_stdlib_datetime_zone_forms():
+    # datetime.timezone.utc has no zoneinfo key: its str() is "UTC"
+    got = _read(
+        _pymizu._write_stream(
+            datetime.datetime(2023, 11, 14, 22, tzinfo=datetime.timezone.utc)
+        )
+    )
+    assert got == np.array(["2023-11-14T22:00:00"], dtype="datetime64[us]")[0]
+    # a fixed-offset zone normalizes to the UTC instant but its str() is
+    # not "UTC": no portable home
+    with pytest.raises(pymizu.DeclinedError, match="no zoneinfo key"):
+        _pymizu._write_stream(
+            datetime.datetime(
+                2023,
+                11,
+                14,
+                tzinfo=datetime.timezone(datetime.timedelta(hours=2)),
+            )
+        )
+
+    class BadTZ(datetime.tzinfo):
+        def utcoffset(self, dt):
+            raise ValueError("broken")
+
+    with pytest.raises(pymizu.DeclinedError):
+        _pymizu._write_stream(datetime.datetime(2023, 11, 14, tzinfo=BadTZ()))
+
+
+def test_stdlib_timedelta_range_decline():
+    with pytest.raises(pymizu.DeclinedError, match="past the int64"):
+        _pymizu._write_stream(datetime.timedelta(days=200000))
+
+
+def test_ref_marker_forms():
+    # the corpus marker: a valid identifier round-trips through the task
+    # hooks; malformed identifiers decline at the write
+    m = _pymizu._IxRef("/mizu_abc")
+    s = _pymizu._write_task("os.getpid", 0, (m,), {}, 1, 0)
+    got = _pymizu._read_task(s)
+    assert type(got[4][0]).__name__ == "_IxRef"
+    assert got[4][0].id == "/mizu_abc"
+    for bad in ("", "x" * 256):
+        with pytest.raises(pymizu.DeclinedError, match="1..255"):
+            _pymizu._write_task(
+                "os.getpid", 0, (_pymizu._IxRef(bad),), {}, 1, 0
+            )
+    with pytest.raises(pymizu.DeclinedError, match="UTF-8"):
+        _pymizu._write_task(
+            "os.getpid", 0, (_pymizu._IxRef("\ud800"),), {}, 1, 0
+        )
+
+
+def test_task_stream_read_as_a_value():
+    s = _pymizu._write_task("os.getpid", 0, (), {}, 1, 0)
+    with pytest.raises(pymizu.MizuError, match="not a value"):
+        _read(s)
+
+
+def test_write_task_hook_validation():
+    with pytest.raises(TypeError, match="expects"):
+        _pymizu._write_task(42, 0, (), {}, 1, 0)
+    with pytest.raises(TypeError, match="expects"):
+        _pymizu._write_task("os.getpid", 0, [], {}, 1, 0)
+    with pytest.raises(TypeError, match="expects"):
+        _pymizu._write_task("os.getpid", 0, (), [], 1, 0)
+    # a lone-surrogate code string
+    with pytest.raises(ValueError):
+        _pymizu._write_task("\ud800", 0, (), {}, 1, 0)
+
+
+def test_write_task_kwargs_forms():
+    # the named-dict walk: values through the generic writer, a non-str or
+    # lone-surrogate key a decline
+    b = _pymizu._write_task(
+        "math.sqrt", 0, (16,), {"y": 2.5, "z": None}, 2, 99
+    )
+    got = _pymizu._read_task(b)
+    assert got[5] == {"y": 2.5, "z": None}
+    with pytest.raises(pymizu.DeclinedError, match="non-str dict key"):
+        _pymizu._write_task("m.f", 0, (), {1: 2}, 1, 0)
+    with pytest.raises(pymizu.DeclinedError, match="not writable as UTF-8"):
+        _pymizu._write_task("m.f", 0, (), {"\ud800": 1}, 1, 0)
+
+
+def test_read_task_malformed_dicts():
+    def task(dict_body):
+        s = bytearray(b"I\x01\x12\x01\x00\x00\x00") + (0).to_bytes(8, "little")
+        s += _ix_sval("m.f")
+        s += b"\x0c" + (0).to_bytes(8, "little")
+        s += b"\x0d" + dict_body
+        return bytes(s)
+
+    dup = (2).to_bytes(8, "little")
+    dup += _ix_key("a") + _ix_int(1) + _ix_key("a") + _ix_int(2)
+    with pytest.raises(pymizu.MizuError, match="a duplicate dict key"):
+        _pymizu._read_task(task(dup))
+    # an item where a key was expected
+    nonstr = (1).to_bytes(8, "little") + _ix_int(1)
+    with pytest.raises(pymizu.MizuError):
+        _pymizu._read_task(task(nonstr))
+
+
+def test_map_desc_hooks():
+    # the descriptor's 'I' form, both x forms, and the reader's refusals
+    b = _pymizu._map_desc_write("math.sqrt", 0, (), {"k": 1}, [1, 2.5, "x"], 1)
+    kind, code, pos, kw, x = _pymizu._map_desc_read(b)
+    assert (kind, code, pos, kw, x) == (
+        0,
+        "math.sqrt",
+        [],
+        {"k": 1},
+        [1, 2.5, "x"],
+    )
+    b = _pymizu._map_desc_write("os.getpid", 1, (), {}, None, 2)
+    assert _pymizu._map_desc_read(b) == (1, "os.getpid", [], {}, None)
+    with pytest.raises(pymizu.DeclinedError):
+        _pymizu._map_desc_write("m.f", 0, (), {}, [object()], 1)
+    with pytest.raises(TypeError, match="expects"):
+        _pymizu._map_desc_write(42, 0, (), {}, None, 1)
+    # the reader's shape checks
+    s = b"I\x01\x0c" + (1).to_bytes(8, "little") + b"\x00"
+    with pytest.raises(pymizu.MizuError, match="two-element list"):
+        _pymizu._map_desc_read(s)
+    s = b"I\x01\x0c" + (2).to_bytes(8, "little") + b"\x00\x00"
+    with pytest.raises(pymizu.MizuError, match="no task tag"):
+        _pymizu._map_desc_read(s)
+    s = b"I\x01\x0c" + (2).to_bytes(8, "little")
+    s += b"\x12\x01\x02\x00\x00" + (0).to_bytes(8, "little")
+    with pytest.raises(pymizu.MizuError, match="not a call spec"):
+        _pymizu._map_desc_read(s)
+    with pytest.raises(pymizu.MizuError, match="bad magic"):
+        _pymizu._map_desc_read(b"")
+    with pytest.raises(pymizu.MizuError, match="truncated"):
+        _pymizu._map_desc_read(b"I\x01\x0c")
+
+
+def test_write_runner_hook():
+    # the kind-2 stream off the frame fields: nil and (seed, offset) forms
+    b = _pymizu._write_runner("/mizu_xyz", 5 << 32 | 1, None, 1, 0)
+    assert b[:3] == b"I\x01\x12"
+    b2 = _pymizu._write_runner("/mizu_xyz", 1, (42, 7), 1, 0)
+    assert len(b2) > len(b)
+    with pytest.raises(TypeError):
+        _pymizu._write_runner(42, 1, None, 1, 0)

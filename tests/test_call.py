@@ -284,3 +284,133 @@ def test_non_portable_args_decline_at_submit():
     with pymizu.Pool.create(1) as p:
         with pytest.raises(pymizu.DeclinedError):
             p.submit(pymizu.call("builtins.repr", {1, 2, 3}))
+
+
+def test_spec_on_a_channel_fails():
+    # the spec verb is pool-only: a call frame staged on a channel errors
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    try:
+        with pytest.raises(pymizu.MizuError, match="through Pool.submit"):
+            h.send(_pymizu._call_frame(pymizu.call("math.sqrt", 16)))
+    finally:
+        h.destroy()
+
+
+def test_spec_malformed_gates():
+    # the spec components are duck-read at stage: missing attributes
+    # propagate, wrong shapes are the local malformed error
+    with pymizu.Pool.create(1) as pool:
+        with pytest.raises(AttributeError):
+            pool._h.submit(_pymizu._call_frame(object()))
+
+    class FakeSpec:
+        code = "math.sqrt"
+        kind = 0
+        args = ()
+        kwargs = {}
+
+    for field, value in [
+        ("code", 42),
+        ("code", "\ud800"),
+        ("kind", -1),
+        ("kind", 300),
+        ("kind", "0"),
+        ("args", []),
+        ("kwargs", []),
+    ]:
+        bad = FakeSpec()
+        setattr(bad, field, value)
+        with pymizu.Pool.create(1) as pool:
+            with pytest.raises(pymizu.MizuError, match="malformed call spec"):
+                pool._h.submit(_pymizu._call_frame(bad))
+
+
+def test_spec_submit_at_word_zero():
+    # the C-side race guard (the facade's own gate is ahead of it)
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        with pytest.raises(pymizu.MizuError, match="no worker has joined"):
+            h.submit(_pymizu._call_frame(pymizu.call("math.sqrt", 16)))
+    finally:
+        h.destroy()
+
+
+def test_spec_unqualified_name_fails_on_the_worker():
+    # the facade validates its own specs; a duck-typed spec slips through
+    # to the worker's resolver
+    class FakeSpec:
+        code = "nodots"
+        kind = 0
+        args = ()
+        kwargs = {}
+
+    with pymizu.Pool.create(1) as pool:
+        with pytest.raises(pymizu.TaskError, match="not qualified"):
+            pool._h.submit(_pymizu._call_frame(FakeSpec())).collect(timeout=10)
+
+
+def test_spec_resolution_failures():
+    with pymizu.Pool.create(1) as pool:
+        with pytest.raises(pymizu.TaskError) as exc_info:
+            pool.submit(pymizu.call("no_such_module_xyz.f", 1)).collect(
+                timeout=10
+            )
+        assert exc_info.value.remote_type == "ModuleNotFoundError"
+        with pytest.raises(pymizu.TaskError) as exc_info:
+            pool.submit(pymizu.call("os.no_such_attr_xyz", 1)).collect(
+                timeout=10
+            )
+        assert exc_info.value.remote_type == "AttributeError"
+
+
+def test_spec_kwargs_vectorcall():
+    with pymizu.Pool.create(1) as pool:
+        t = pool.submit(pymizu.call("numpy.mean", [1, 2, 3], axis=0))
+        assert t.collect(timeout=10) == 2.0
+
+
+def test_spec_ref_args_need_taskref():
+    # a foreign pool short of the bit fails the by-reference submit
+    # locally rather than losing the work to a remote error
+    import numpy as np
+
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    w = _pymizu._pool_worker_join(h.token, 0, _ident=(2, 7))
+    try:
+        a = np.arange(200_000, dtype=np.float64)
+        with pytest.raises(pymizu.DeclinedError, match="by-reference"):
+            h.submit(_pymizu._call_frame(pymizu.call("numpy.size", a)))
+    finally:
+        w.leave()
+        h.destroy()
+
+
+def test_spec_big_arg_crosses_by_reference():
+    # the zc candidate: the task stream carries the ref, the worker reads
+    # off the shared pages
+    import numpy as np
+
+    with pymizu.Pool.create(1) as pool:
+        a = np.arange(200_000, dtype=np.float64)
+        t = pool.submit(pymizu.call("numpy.size", a))
+        assert t.collect(timeout=30) == 200_000
+
+
+def test_spec_rewrite_when_no_candidate_fits():
+    # two candidates whose refs leave the stream over budget: the by-value
+    # rewrite rides the reservation
+    import numpy as np
+
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    pymizu._default_worker_launcher()(h.token, 0)
+    try:
+        pool = pymizu.Pool._wrap(h)
+        assert pool.submit(abs, -1).collect(timeout=10) == 1  # the join
+        a = np.arange(70_000, dtype=np.float64)
+        b = np.arange(70_000, dtype=np.float64) * 2
+        t = pool.submit(pymizu.call("numpy.add", a, b))
+        out = t.collect(timeout=30)
+        assert out.shape == (70_000,)
+        assert out[1] == 3.0
+    finally:
+        h.destroy()
