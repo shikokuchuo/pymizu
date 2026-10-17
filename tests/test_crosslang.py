@@ -1749,6 +1749,12 @@ report(structure(1e13, class = "difftime", units = "secs"))
         # the complex column of a region frame
         f = ch.recv(60)
         assert f.to_dict()["z"].dtype == np.complex128
+        # release the frame's region before the next stage: on Linux a
+        # free-list miss with lent regions outstanding churns the channel
+        # to the copy tiers (a macOS create is lazy, so only Linux pays),
+        # and the next send then dies at R's send-side whitelist
+        del f
+        gc.collect()
         ch.send(True)
         # the read errors (each payload consumed, the channel unharmed)
         for msg in [
