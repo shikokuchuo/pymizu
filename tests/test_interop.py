@@ -2060,3 +2060,32 @@ def test_frame_column_truncated_forms():
     col_attr = b"\x0f" + b"\x08" + (2**40).to_bytes(8, "little")
     with pytest.raises(pymizu.MizuError, match="truncated"):
         _read(_ix_frame([col_attr], ["a"], 1))
+
+
+def test_stdlib_datetime_offset_attr_failures():
+    # a tzinfo returning a timedelta subclass whose shadowing properties
+    # fail the offset read: cleared, the key probe declines
+    class StrDays(datetime.timedelta):
+        @property
+        def days(self):
+            return "not an int"
+
+    class RaisingDays(datetime.timedelta):
+        @property
+        def days(self):
+            raise AttributeError("days")
+
+    class Tz(datetime.tzinfo):
+        delta = datetime.timedelta(hours=1)
+
+        def utcoffset(self, dt):
+            return self.delta
+
+        def dst(self, dt):
+            return None
+
+    for delta in (StrDays(hours=1), RaisingDays(hours=1)):
+        Tz.delta = delta
+        x = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=Tz())
+        with pytest.raises(pymizu.DeclinedError, match="no zoneinfo key"):
+            _write(x)

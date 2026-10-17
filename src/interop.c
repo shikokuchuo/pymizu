@@ -77,16 +77,22 @@ static void datetime_probe(void) {
   Py_DECREF(dt);
 }
 
+/* ok NULL: the exact-typed stdlib objects — the C-level getsets cannot
+   fail (the error clear is unconditional insurance). A live ok: the
+   utcoffset result — PyDelta_Check admits a timedelta subclass, which can
+   shadow the attributes. */
 static int64_t attr_as_long(PyObject *obj, const char *name, int *ok) {
   PyObject *v = PyObject_GetAttrString(obj, name);
   if (v == NULL) {
-    *ok = 0;
+    if (ok != NULL) *ok = 0;
+    else PyErr_Clear();
     return 0;
   }
   long long x = PyLong_AsLongLong(v);
   Py_DECREF(v);
   if (x == -1 && PyErr_Occurred()) {
-    *ok = 0;
+    if (ok != NULL) *ok = 0;
+    else PyErr_Clear();
     return 0;
   }
   return (int64_t) x;
@@ -330,11 +336,8 @@ int mizu_py_strlist_probe(PyObject *obj, int64_t *str_bytes) {
 static void ixe_strlist(ixw *w, PyObject *obj) {
   const Py_ssize_t n = PyList_GET_SIZE(obj);
   if (n == 1) {
+    /* the probe's any_str rule: the single element is always a string */
     PyObject *elt = PyList_GET_ITEM(obj, 0);
-    if (elt == Py_None) {
-      IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), NULL, -1));
-      return;
-    }
     Py_ssize_t len;
     const char *s = PyUnicode_AsUTF8AndSize(elt, &len);
     if (s == NULL) {
@@ -363,15 +366,10 @@ static void ixe_strlist(ixw *w, PyObject *obj) {
   }
 }
 
-/* An intv value, or the 0x02 scalar at length 1. Vector elements must fit
-   int32 (the callers' contract); the scalar form keeps the full i64. */
+/* An intv value (the callers pass n >= 2). Vector elements must fit int32
+   (the callers' contract). */
 static void ixe_intv(ixw *w, Py_ssize_t n, const int64_t *vals,
                      const int *na) {
-  if (n == 1) {
-    int64_t v = na != NULL && na[0] ? INT64_MIN : vals[0];
-    IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), v));
-    return;
-  }
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
   if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
@@ -590,15 +588,10 @@ malformed:
 // The builder -----------------------------------------------------------------------
 
 /* np.empty(dims, dtype=dt[, order="F"]); NULL with an exception set. */
+/* Every caller has already gated on numpy's presence. */
 static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
                               int fortran) {
-  PyObject *np = mizu_py_numpy_module();
-  if (np == NULL) {
-    PyErr_SetString(MizuError,
-                    "pymizu: this interop read needs numpy (install it)");
-    return NULL;
-  }
-  PyObject *empty = PyObject_GetAttrString(np, "empty");
+  PyObject *empty = PyObject_GetAttrString(mizu_py_numpy_module(), "empty");
   if (empty == NULL) return NULL;
   PyObject *shape = PyTuple_New(nd);
   PyObject *arr = NULL;
@@ -641,9 +634,9 @@ static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
 }
 
 /* Fill arr's buffer (conv(dst, ctx), or a plain memcpy when src is given);
-   the buffer size must match n. An F-order array's buffer refuses the
-   C-contiguous request — it IS the wire's layout, so either contiguity
-   fills by one memcpy. */
+   the size matches n by construction (the fresh allocation above). An
+   F-order array's buffer refuses the C-contiguous request — it IS the
+   wire's layout, so either contiguity fills by one memcpy. */
 static int ixr_np_fill(PyObject *arr, void (*conv)(uint8_t *, const void *),
                        const void *ctx, const void *src, size_t n) {
   Py_buffer v;
@@ -651,11 +644,6 @@ static int ixr_np_fill(PyObject *arr, void (*conv)(uint8_t *, const void *),
     PyErr_Clear();
     if (PyObject_GetBuffer(arr, &v, PyBUF_F_CONTIGUOUS | PyBUF_WRITABLE) < 0)
       return -1;
-  }
-  if ((size_t) v.len != n) {
-    PyBuffer_Release(&v);
-    PyErr_SetString(MizuError, "pymizu: numpy buffer size mismatch");
-    return -1;
   }
   if (src != NULL) memcpy(v.buf, src, n);
   else conv((uint8_t *) v.buf, ctx);
@@ -768,8 +756,7 @@ static PyObject *ixr_vec(int wire_type, const uint8_t *ptr, uint64_t count) {
     return ixr_vec_raw("int64", ptr, count, 8);
   }
   }
-  PyErr_SetString(MizuError, "pymizu: unknown interop vector wire type");
-  return NULL;
+  Py_UNREACHABLE();   /* the cursor's tag->type mapping is the closed six */
 }
 
 /* The reader's 0x13 mode, threaded through the builder: 0 declines (the
@@ -855,10 +842,8 @@ PyObject *ixr_masked_i32(const uint8_t *values, const uint8_t *valid,
   PyObject *arr = ixr_np_alloc(dims, 1, "float64", 0);
   if (arr == NULL) return NULL;
   Py_buffer v;
-  if (PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE) < 0) {
-    Py_DECREF(arr);
-    return NULL;
-  }
+  /* a fresh 1-D array always exports PyBUF_ND | PyBUF_WRITABLE */
+  (void) PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE);
   const int32_t *p = (const int32_t *) values;
   for (uint64_t i = 0; i < n; i++) {
     if (bitmap_at(valid, i)) {
@@ -917,10 +902,8 @@ PyObject *ixr_masked_u64(const uint8_t *values, const uint8_t *valid,
   PyObject *arr = ixr_np_alloc(dims, 1, "float64", 0);
   if (arr == NULL) return NULL;
   Py_buffer v;
-  if (PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE) < 0) {
-    Py_DECREF(arr);
-    return NULL;
-  }
+  /* a fresh 1-D array always exports PyBUF_ND | PyBUF_WRITABLE */
+  (void) PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE);
   const uint64_t *p = (const uint64_t *) values;
   for (uint64_t i = 0; i < n; i++) {
     if (bitmap_at(valid, i)) {
@@ -1459,8 +1442,7 @@ static PyObject *ixr_value(mizu_ix *cur, const ixr_mode *mode) {
     PyErr_SetString(MizuError, "pymizu: an interop task is not a value");
     return NULL;
   }
-  PyErr_SetString(MizuError, "pymizu: corrupt interop stream");
-  return NULL;
+  Py_UNREACHABLE();   /* the cursor's closed kind set */
 }
 
 // The attr shape builders -----------------------------------------------------------
@@ -1636,9 +1618,9 @@ static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
   case MIZU_TYPE_RAW: dt = "uint8"; elt = 1; break;
   case MIZU_TYPE_INT64: dt = "int64"; elt = 8; break;
   default:
-    PyErr_SetString(MizuError, "pymizu: no portable home for a "
-                    "character matrix");
-    return NULL;
+    /* the attr gate admits only the vector items (a character matrix is
+       the strv branch above) */
+    Py_UNREACHABLE();
   }
   PyObject *arr = ixr_np_alloc(shape, (int) nd, dt, 1);
   if (arr == NULL) return NULL;
@@ -1870,9 +1852,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     case MIZU_TYPE_CPLX: kind = FCOL_C128; break;
     case MIZU_TYPE_LGL: kind = FCOL_LGL; break;
     default:
-      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                      "a frame column of an unexpected wire type");
-      return -1;
+      Py_UNREACHABLE();   /* the cursor's closed type set */
     }
     size_t sz = (size_t) it.count * (size_t) fcol_fixed_size(kind);
     c->values = malloc(sz != 0 ? sz : 1);
@@ -3584,7 +3564,7 @@ static void ixe_transpose2(uint8_t *dst, const uint8_t *src, uint64_t m,
             case 4: memcpy(dp, sp, 4); break;
             case 8: memcpy(dp, sp, 8); break;
             case 16: memcpy(dp, sp, 16); break;
-            default: memcpy(dp, sp, wo); break;
+            default: Py_UNREACHABLE();   /* the cvt table's closed widths */
             }
           } else {
             mizu_cvt_convert(dp, sp, NULL, 0, 1, row, warn);
@@ -3892,27 +3872,19 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
 /* A stdlib datetime.datetime scalar: the POSIXct(1) shape — an aware
    datetime's zoneinfo key as tzone, a naive one "UTC". */
 static void ixw_stdlib_datetime(ixw *w, PyObject *obj) {
-  int ok = 1;
-  int64_t y = attr_as_long(obj, "year", &ok);
-  int64_t mo = attr_as_long(obj, "month", &ok);
-  int64_t d = attr_as_long(obj, "day", &ok);
-  int64_t hh = attr_as_long(obj, "hour", &ok);
-  int64_t mi = attr_as_long(obj, "minute", &ok);
-  int64_t ss = attr_as_long(obj, "second", &ok);
-  int64_t us = attr_as_long(obj, "microsecond", &ok);
-  if (!ok) {
-    PyErr_Clear();
-    ixw_decline_type(w, obj, "a datetime value that cannot cross");
-    return;
-  }
+  int64_t y = attr_as_long(obj, "year", NULL);
+  int64_t mo = attr_as_long(obj, "month", NULL);
+  int64_t d = attr_as_long(obj, "day", NULL);
+  int64_t hh = attr_as_long(obj, "hour", NULL);
+  int64_t mi = attr_as_long(obj, "minute", NULL);
+  int64_t ss = attr_as_long(obj, "second", NULL);
+  int64_t us = attr_as_long(obj, "microsecond", NULL);
   int64_t days = days_from_civil(y, mo, d);
   int64_t instant = ((days * 86400 + hh * 3600 + mi * 60 + ss) * 1000000) +
     us;
   char tz[64] = "UTC";
   PyObject *tzi = PyObject_GetAttrString(obj, "tzinfo");
-  if (tzi == NULL) {
-    PyErr_Clear();
-  } else if (tzi != Py_None) {
+  if (tzi != Py_None) {
     PyObject *off = PyObject_CallMethod(obj, "utcoffset", NULL);
     if (off != NULL && off != Py_None) {
       int ok2 = 1;
@@ -3953,15 +3925,9 @@ static void ixw_stdlib_datetime(ixw *w, PyObject *obj) {
 }
 
 static void ixw_stdlib_date(ixw *w, PyObject *obj) {
-  int ok = 1;
-  int64_t y = attr_as_long(obj, "year", &ok);
-  int64_t mo = attr_as_long(obj, "month", &ok);
-  int64_t d = attr_as_long(obj, "day", &ok);
-  if (!ok) {
-    PyErr_Clear();
-    ixw_decline_type(w, obj, "a date value that cannot cross");
-    return;
-  }
+  int64_t y = attr_as_long(obj, "year", NULL);
+  int64_t mo = attr_as_long(obj, "month", NULL);
+  int64_t d = attr_as_long(obj, "day", NULL);
   int64_t days = days_from_civil(y, mo, d);
   ixe_date(w, &days, 1, 1.0);
 }
@@ -3969,15 +3935,9 @@ static void ixw_stdlib_date(ixw *w, PyObject *obj) {
 /* A datetime.timedelta scalar: the normalized (days, seconds,
    microseconds) triple to int64 us, emitted as one difftime second. */
 static void ixw_stdlib_timedelta(ixw *w, PyObject *obj) {
-  int ok = 1;
-  int64_t d = attr_as_long(obj, "days", &ok);
-  int64_t s = attr_as_long(obj, "seconds", &ok);
-  int64_t us = attr_as_long(obj, "microseconds", &ok);
-  if (!ok) {
-    PyErr_Clear();
-    ixw_decline_type(w, obj, "a timedelta value that cannot cross");
-    return;
-  }
+  int64_t d = attr_as_long(obj, "days", NULL);
+  int64_t s = attr_as_long(obj, "seconds", NULL);
+  int64_t us = attr_as_long(obj, "microseconds", NULL);
   if (d > 106000 || d < -106000) {   /* |us| would overflow int64 */
     ixw_decline(w, "a timedelta past the int64 microsecond range has no "
                 "portable home");
@@ -3995,10 +3955,9 @@ static void ixw_stdlib_timedelta(ixw *w, PyObject *obj) {
    is known only at the checkout. A checkout failure (a churn race)
    abandons: nothing is retained yet, the caller re-runs with no_zc = 1. */
 static void ixw_zc_leaf(ixw *w, PyObject *obj) {
-  if (w->dst == NULL) {
-    w->total += 2 + (MIZU_NAME_MAX - 1);
-    return;
-  }
+  /* write-pass only (the plan's zc_node is never set on a count walk; the
+     conservative reservation it mirrors, 2 + (MIZU_NAME_MAX - 1), lives in
+     stage_task's selection arithmetic) */
   Py_buffer v;
   if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
     PyErr_Clear();
@@ -4843,12 +4802,7 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
     return -1;
   }
   ArrowArrayStream *st = (ArrowArrayStream *) PyCapsule_GetPointer(
-    cap, "arrow_array_stream");
-  if (st == NULL) {
-    Py_DECREF(cap);
-    PyErr_Clear();
-    return -1;
-  }
+    cap, "arrow_array_stream");   /* the Frame's own export's capsule */
   ixs x;
   memset(&x, 0, sizeof(x));
   x.st = st;
@@ -4867,11 +4821,7 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
    column when known. */
 static void fc_err_reraise(const char *name) {
   PyObject *et, *ev, *tb;
-  PyErr_Fetch(&et, &ev, &tb);
-  if (et == NULL) {
-    PyErr_SetString(MizuError, "pymizu: Frame.from_arrow failed");
-    return;
-  }
+  PyErr_Fetch(&et, &ev, &tb);   /* the caller's failure always carries one */
   if (!PyErr_GivenExceptionMatches(et, MizuDeclinedError)) {
     PyErr_Restore(et, ev, tb);
     return;
@@ -4894,9 +4844,8 @@ static void fc_err_reraise(const char *name) {
 /* The adoption verdict for one column of a single offset-0 batch: the fcol
    layout IS the Arrow layout for these types, nulls included (the validity
    bitmap adopts with the values — every fcol reader consults it before the
-   values). 1 adopt, 0 copy, -1 a malformed utf8 offsets buffer declined
-   (adoption trusts producer geometry the owned constructors never had to:
-   the O(n) monotonic walk bounds it). */
+   values). 1 adopt, 0 copy (producer geometry is trusted: the core's open
+   vetted it). */
 /* The uint64 format's verbatim classify: a 'L' column builds/adopts
    FCOL_U64 off the format — the Frame exposes uint64 exactly, so the
    caps-0 open's conversion verdict (its eager float64 build, with the
@@ -4922,7 +4871,7 @@ static void fcol_dict_idx_form(const char *f, int *w, int *sig) {
   }
 }
 
-static int fc_adopt_gate(ixs *x, int col, char **names) {
+static int fc_adopt_gate(ixs *x, int col) {
   const ixs_pcol *pc = &x->cols[col];
   const ArrowArray *a = x->hold.arrs[0].children[col];
   const ArrowSchema *sc = x->schema.children[col];
@@ -4936,17 +4885,9 @@ static int fc_adopt_gate(ixs *x, int col, char **names) {
        pc->row->wire == MIZU_TYPE_INT64 || pc->row->wire == MIZU_TYPE_RAW);
   case PC_STR: {
     if (pc->str_form != 1) return 0;
+    /* monotonic offsets: the core's open vetted them (arrow.c) */
     const int32_t *offs = (const int32_t *) a->buffers[1];
-    if (offs == NULL || offs[0] != 0) return 0;
-    for (int64_t k = 0; k < a->length; k++)
-      if (offs[k + 1] < offs[k]) {
-        PyErr_Format(MizuError,
-                     "pymizu: Frame.from_arrow: column '%s' has malformed "
-                     "offsets (element %lld's span ends before it starts)",
-                     names[col], (long long) k);
-        return -1;
-      }
-    return 1;
+    return offs != NULL && offs[0] == 0;
   }
   case PC_DICT: {
     /* i32 codes, utf8 levels on offset-0 buffers (the level contents —
@@ -4967,7 +4908,7 @@ static int fc_adopt_gate(ixs *x, int col, char **names) {
     /* i64 counts at any unit: the fcol layout IS the Arrow layout */
     return 1;
   }
-  return 0;
+  Py_UNREACHABLE();   /* the core classify's closed kinds */
 }
 
 /* The copy arm for the cvt-table kinds (bool, narrow ints, uint32/64,
@@ -5439,10 +5380,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         goto done;
       }
       for (int i = 0; i < x.ncols; i++) {
-        int v = fc_adopt_gate(&x, i, names);
-        if (v < 0) goto done;
-        adopt[i] = v;
-        nadopt += v;
+        adopt[i] = fc_adopt_gate(&x, i);
+        nadopt += adopt[i];
       }
       if (nadopt > 0) {
         hold = malloc(sizeof(*hold));
@@ -5764,13 +5703,11 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
       goto out;
     }
     /* candidates recorded, none fitting (or the zc write abandoned): the
-       record walk counted the by-value stream — rewrite it inline, or
-       stage it into the reservation at the recorded size */
-    uint8_t *dst = payload;
-    if (total > (size_t) inline_max) {
-      dst = mizu_py_stage_reserve(total, hdr, payload, h);
-      if (dst == NULL) goto out;
-    }
+       record walk counted the by-value stream — always past inline here
+       (a recorded candidate is itself at or past the zc gate), so the
+       rewrite rides the reservation, which stamps hdr */
+    uint8_t *dst = mizu_py_stage_reserve(total, hdr, payload, h);
+    if (dst == NULL) goto out;
     ixw w2;
     memcpy(&w2, &w, sizeof(w2));
     w2.total = 0;
@@ -5791,12 +5728,6 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
        was cut short at the flip to count-only, so it is never raised */
     if (mizu_py_cvt_warn(&w2.warn, (uint32_t) (word & 0xff)) != 0)
       goto out;
-    if (total <= (size_t) inline_max) {
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) w2.total;
-      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
-    }
-    /* past inline the reservation stamped hdr already */
     if (w2.ref_emitted) {
       Py_INCREF(spec);
       mizu_stage_pin(h, (void *) spec);
@@ -5885,11 +5816,8 @@ static int ixt_next(mizu_ix *cur, mizu_ix_item *it) {
 static PyObject *ixt_key(mizu_ix *cur, PyObject *keyset) {
   mizu_ix_item key;
   if (ixt_next(cur, &key) < 0) return NULL;
-  if (key.kind != MIZU_IX_STR || !key.key) {
-    PyErr_SetString(MizuError, "pymizu: malformed task stream: a dict "
-                    "key was expected");
-    return NULL;
-  }
+  /* the cursor serves a bare string at every dict-key position (its
+     2*count parity), kind and key flag guaranteed */
   PyObject *ko = PyUnicode_FromStringAndSize((const char *) key.ptr,
                                              (Py_ssize_t) key.len);
   if (ko == NULL) return NULL;
@@ -6449,11 +6377,7 @@ PyObject *pymizu_ix_runner_run(const uint8_t *src, size_t n,
   mizu_ix_item it, name, gen, seed;
   if (mizu_ixt_open(&cur, src, n, &it, 2) != MIZU_OK) return ixt_stop_tls();
   *ident_out = it.u64[0];
-  if (it.task_kind != 2) {
-    PyErr_SetString(MizuError, "pymizu: malformed runner stream: not a "
-                    "runner task");
-    return NULL;
-  }
+  /* kind 2 by construction: the exec dispatch keys the same kind byte */
   if (ixt_next(&cur, &name) < 0) return NULL;
   if (name.kind != MIZU_IX_STR1 || name.na) {
     PyErr_SetString(MizuError, "pymizu: malformed runner stream: the "
