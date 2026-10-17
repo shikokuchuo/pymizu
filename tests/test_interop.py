@@ -189,6 +189,37 @@ def test_write_runner_validation():
         _pymizu._write_runner(b"n", 0, None, 2, 0)
     with pytest.raises(ValueError, match="language byte"):
         _pymizu._write_runner("/mizu_abc", 0, None, 256, 0)
+    with pytest.raises(TypeError):
+        _pymizu._write_runner("/mizu_abc", "x", None, 2, 0)
+
+
+def test_task_hook_validation():
+    # the test-only hooks' argument gates
+    with pytest.raises(TypeError, match="_runner_frame expects"):
+        _pymizu._runner_frame(1, 2, None)
+    with pytest.raises(TypeError, match="_call_frame expects"):
+        _pymizu._call_frame()
+    with pytest.raises(TypeError, match="_write_task expects"):
+        _pymizu._write_task("os.getpid", 0, (), {}, 1)
+    with pytest.raises(TypeError):
+        _pymizu._write_task("os.getpid", "x", (), {}, 1, 0)
+    with pytest.raises(ValueError, match="language byte"):
+        _pymizu._write_task("os.getpid", 0, (), {}, -1, 0)
+    with pytest.raises(TypeError, match="_map_desc_write expects"):
+        _pymizu._map_desc_write("os.getpid", 0, (), {})
+    with pytest.raises(ValueError, match="language byte"):
+        _pymizu._map_desc_write("os.getpid", 0, (), {}, None, 256)
+    for hook in (
+        _pymizu._read_task,
+        _pymizu._map_desc_read,
+        _pymizu._read_stream,
+    ):
+        with pytest.raises(TypeError, match="expected a bytes stream"):
+            hook(1)
+    with pytest.raises(TypeError):
+        _pymizu._write_err(1, "m", "d")
+    # a budget past the stack buffer spills to the heap
+    assert _pymizu._write_err("t", "m", "d", budget=4096) != b""
 
 
 def _tree(n):

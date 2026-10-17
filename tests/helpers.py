@@ -61,6 +61,23 @@ def raise_long_named(n):
     raise ALongExceptionNameForEnvelopeSizingPastTheBudgetBoundary("y" * n)
 
 
+LongNamedError = type("A" + "x" * 249, (Exception,), {})
+
+
+def raise_long_named_short_message():
+    # the truncation ladder reaches the message cut with the message
+    # exactly inside the half budget (236 at the default slot): the
+    # truncate is a no-op (the type name alone carries the envelope
+    # past the budget, so the fixed fallback still lands)
+    raise LongNamedError("y" * 236)
+
+
+def raise_with_surrogate_message():
+    # a lone surrogate in the message: the private envelope's truncate
+    # blanks rather than escapes (the 'I' err stream's dual)
+    raise ValueError("x" * 600 + "\udcff")
+
+
 class Unpicklable:
     def __reduce__(self):
         raise TypeError("cannot pickle Unpicklable")

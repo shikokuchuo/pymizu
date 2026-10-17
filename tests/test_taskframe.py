@@ -74,6 +74,26 @@ def test_fn_unresolvable_on_worker(pool):
     assert exc_info.value.remote_type == "ModuleNotFoundError"
 
 
+def test_fn_without_module_or_qualname_pickles(pool):
+    # a function missing __module__ / __qualname__ fails the by-reference
+    # gate and rides its own pickle instead
+    pytest.importorskip("cloudpickle")
+
+    def bare(x):
+        return x + 1
+
+    del bare.__module__
+    assert pool.submit(bare, 1).collect(timeout=5) == 2
+
+    def noqual(x):
+        return x + 2
+
+    # __qualname__ itself refuses deletion: clear __dict__ but keep the
+    # module, so the gate fails on the qualname fetch
+    noqual.__dict__ = {"__module__": "tests.helpers"}
+    assert pool.submit(noqual, 1).collect(timeout=5) == 3
+
+
 def test_scalar_none_kwargs_args(pool):
     out = pool.submit(echo, 1, None, "x", 2.5, k=None, b=True).collect(
         timeout=5
@@ -453,3 +473,107 @@ def test_task_frame_factory_validation():
     frame = _task_frame(pow, (2, 10), {})
     assert type(frame).__name__ == "_TaskFrame"
     assert tuple(frame) == (pow, (2, 10), {})
+
+
+def test_task_frame_non_str_kwarg_falls_back(pool):
+    # the frame writer only carries str keys: a non-str key declines the
+    # frame to the whole-tuple pickle, and the call fails there instead
+    frame = _task_frame(pow, (2,), {1: 2})
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool._h.submit(frame).collect(timeout=5)
+    assert "keywords must be strings" in str(exc_info.value)
+
+
+def test_read_stream_codec_scalar_errors():
+    # a scalar that fails with an error set (invalid UTF-8) propagates it
+    # out of the container readers, never a bare corrupt-slot
+    with pytest.raises(UnicodeDecodeError):
+        _read_stream(b"Ps" + (1).to_bytes(4, "little") + b"\xff")
+    with pytest.raises(UnicodeDecodeError):
+        _read_stream(
+            b"Pl"
+            + (1).to_bytes(4, "little")
+            + b"s"
+            + (1).to_bytes(4, "little")
+            + b"\xff"
+        )
+    with pytest.raises(UnicodeDecodeError):
+        _read_stream(
+            b"Pd"
+            + (1).to_bytes(4, "little")
+            + b"s"
+            + (1).to_bytes(4, "little")
+            + b"\xff"
+            + b"n"
+        )
+
+
+def test_read_stream_codec_corrupt_rows():
+    # an unknown tag, trailing bytes past the value, a numpy row with a
+    # corrupt form byte, and one with a wire type the scalar reader
+    # declines (LGL has no numpy home)
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pz")
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pi" + (5).to_bytes(8, "little") + b"x")
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pa" + bytes([14, 2]) + (0).to_bytes(8, "little"))
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pa" + bytes([10, 0]) + (0).to_bytes(4, "little"))
+
+
+def test_read_stream_task_frame_bad_leaves():
+    fn = _s("builtins") + _s("pow")
+    no_args = b"t" + (0).to_bytes(4, "little")
+    # a pickled-fn frame whose fn is not bytes
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pk\x01" + b"n")
+    # a kwargs key that is not a string
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(
+            b"Pk\x00"
+            + fn
+            + no_args
+            + b"d"
+            + (1).to_bytes(4, "little")
+            + b"i"
+            + (5).to_bytes(8, "little")
+            + b"n"
+        )
+    # a kwargs value that does not decode (a truncated int)
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(
+            b"Pk\x00"
+            + fn
+            + no_args
+            + b"d"
+            + (1).to_bytes(4, "little")
+            + _s("k")
+            + b"i"
+            + (1).to_bytes(2, "little")
+        )
+    # a list argument whose element does not decode
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(
+            b"Pk\x00"
+            + fn
+            + b"t"
+            + (1).to_bytes(4, "little")
+            + b"l"
+            + (1).to_bytes(4, "little")
+            + b"i"
+            + (1).to_bytes(2, "little")
+        )
+    # a nested dict argument whose key is not a string
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(
+            b"Pk\x00"
+            + fn
+            + b"t"
+            + (1).to_bytes(4, "little")
+            + b"d"
+            + (1).to_bytes(4, "little")
+            + b"i"
+            + (5).to_bytes(8, "little")
+            + b"n"
+        )

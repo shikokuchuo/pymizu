@@ -6,6 +6,7 @@ decline surface (unsupported types name their column; malformed producer
 geometry is never silently trusted)."""
 
 import gc
+import os
 import pickle
 import struct
 import warnings
@@ -891,6 +892,172 @@ def test_frame_rebuild_rejects_a_surrogate_tz():
     columns[0] = (kind, payload, "bad\udce9tz", unit)
     with pytest.raises(ValueError, match="malformed frame rebuild state"):
         fn(names, columns, rn)
+
+
+def test_frame_rebuild_needs_a_three_part_state():
+    with pytest.raises(TypeError):
+        _pymizu._frame_rebuild(["a"], [("i", [1])])
+
+
+def test_frame_rebuild_rejects_malformed_states():
+    # each malformed shape is the ValueError, never a SystemError
+    states = [
+        ([], [], None),  # no columns
+        (["a"], [], None),  # names/columns length mismatch
+        (["a"], [42], None),  # a column that is not a tuple
+        (["a"], [("x", [1])], None),  # an unknown kind byte
+        (["a", "b"], [("i", [1, 2]), ("i", [1])], None),  # ragged payloads
+        (["a"], [("s", [42])], None),  # a non-str in a string column
+        (["a"], [("s", ["bad\udce9s"])], None),  # a surrogate string
+        (["a"], [("d", [5], ["x"])], None),  # a code outside the levels
+        (["a"], [("d", [0], [1])], None),  # a non-str level
+        (["a"], [("d", [0], ["bad\udce9l"])], None),  # a surrogate level
+        (["a"], [("L", [-1])], None),  # a negative uint64
+        (["a"], [("g", ["x"])], None),  # a non-float in an f64 column
+        (["a"], [("Z", [1])], None),  # a non-complex in a c128 column
+        (["a"], [("C", [256])], None),  # a uint8 out of range
+        (["a"], [("b", [1])], None),  # a non-bool in a bool column
+        (["a"], [("i", [2**40])], None),  # an int32 overflow
+        (["a"], [("t", [0], "UTC", "X")], None),  # a bad unit byte
+        # duplicate names (non-adjacent; an adjacent dup slips the check —
+        # name_off[i] is written after the scan in its own iteration)
+        (["a", "b", "a"], [("i", [1]), ("i", [2]), ("i", [3])], None),
+        (["a"], [("i", [1, 2])], ["r1", 2]),  # a non-str row name
+        (["a"], [("i", [1, 2])], ["bad\udce9r", "r2"]),  # a surrogate one
+        (["a"], [("i", [1, 2])], [1, "x"]),  # a non-int int row name
+        (["a"], [("i", [1, 2])], [1, 2**40]),  # an int32 row name overflow
+        (["a"], [("i", [1, 2])], 42),  # row_names neither None nor list
+        (["a"], [("i", [1, 2])], [1, 2, 3]),  # a row_names length mismatch
+    ]
+    for names, columns, rn in states:
+        with pytest.raises(ValueError, match="malformed frame rebuild"):
+            _pymizu._frame_rebuild(names, columns, rn)
+
+
+def test_frame_rebuild_bool_column_pickles():
+    # a rebuilt bool column stores the NA sentinel without a bitmap: its
+    # own pickle form reads the sentinel back out (the reduce's LGL arm)
+    f = _pymizu._frame_rebuild(["b"], [("b", [True, None, False])], None)
+    _, state = f.__reduce__()
+    assert state[1][0] == ("b", [True, None, False])
+    g = pickle.loads(pickle.dumps(f))
+    assert g.to_dict()["b"].tolist() == [1, -(2**31), 0]
+
+
+def test_frame_pickle_dict_column_with_nulls():
+    # a rebuilt dict column's NA codes (no bitmap) read back as Nones
+    f = _pymizu._frame_rebuild(["d"], [("d", [None, 1, 0], ["x", "y"])], None)
+    g = pickle.loads(pickle.dumps(f))
+    assert g.to_dict()["d"] == [None, "y", "x"]
+
+
+def test_frame_pickle_int_row_names():
+    # int row names rebuild as a buffer; the pickle form converts them
+    # back to a plain list of ints
+    f = _pymizu._frame_rebuild(["a"], [("i", [1, 2])], [10, 20])
+    _, state = f.__reduce__()
+    assert state[2] == [10, 20]
+    g = pickle.loads(pickle.dumps(f))
+    assert g.row_names.tolist() == [10, 20]
+
+
+def test_frame_pickle_region_backed():
+    # a region-backed frame (a received MIZL read): its pickle form reads
+    # the borrowed columns, the str column through the MIZS geometry
+    t = pa.table(
+        {
+            "x": pa.array([k * 0.5 for k in range(20000)]),
+            "s": pa.array(
+                [None if k % 7 == 0 else f"s{k % 100}" for k in range(20000)]
+            ),
+        }
+    )
+    h, p = same_pair()
+    try:
+        assert h.send(pymizu.Frame.from_arrow(t)) is True
+        f = p.recv(10)
+    finally:
+        p.destroy()
+        h.destroy()
+    g = pickle.loads(pickle.dumps(f))
+    d = g.to_dict()
+    assert d["x"][5] == 2.5
+    assert d["s"][:3] == [None, "s1", "s2"]
+
+
+def test_frame_stage_sizes_dict_and_borrowed_str_columns():
+    # the MIZL stage's size pass: a dict column prices codes + levels +
+    # bytes; a re-sent region frame's borrowed str column prices its span
+    h, p = same_pair()
+    try:
+        f = pymizu.Frame.from_arrow(
+            pa.table(
+                {
+                    "d": pa.array(
+                        [f"v{k % 50}" for k in range(20000)],
+                        type=pa.dictionary(pa.int32(), pa.string()),
+                    )
+                }
+            )
+        )
+        assert h.send(f) is True
+        assert p.recv(10).to_dict()["d"][:2] == ["v0", "v1"]
+        f = pymizu.Frame.from_arrow(
+            pa.table({"s": pa.array([f"s{k % 100}" for k in range(20000)])})
+        )
+        assert h.send(f) is True
+        g = p.recv(10)
+        assert p.send(g) is True  # the region-backed frame re-stages
+        assert h.recv(10).to_dict()["s"][:2] == ["s0", "s1"]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_from_arrow_needs_one_argument():
+    with pytest.raises(TypeError, match="exactly one argument"):
+        pymizu.Frame.from_arrow()
+    f = pymizu.Frame.from_arrow(pa.table({"i": pa.array([1])}))
+    with pytest.raises(TypeError):
+        f.__arrow_c_stream__(None, None)
+
+
+def test_frame_export_stream_capsule_freed_unreleased():
+    # the capsule destructor releases a stream no consumer released
+    f = pymizu.Frame.from_arrow(pa.table({"i": pa.array([1, 2])}))
+    cap = f.__arrow_c_stream__()
+    del cap
+    gc.collect()
+
+
+FRAME_PEER = """
+import time
+from pymizu import _pymizu
+f = _pymizu._frame_rebuild(["i"], [("i", list(range(20000)))], None)
+ch.send(f)
+time.sleep(30)
+"""
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="no unlink on Windows: the name resolves while a handle lives",
+)
+def test_frame_export_after_producer_death():
+    # the export's own fresh open of the region fails once a dead
+    # producer's verdict unlinked the name — a clean MizuError, the
+    # frame itself still readable off its surviving mapping
+    ch = pymizu.Channel.create(FRAME_PEER)
+    f = ch.recv(30)
+    assert type(f).__name__ == "Frame"
+    ch._proc.kill()
+    assert ch.close() is True
+    ch._proc.wait()
+    pymizu.prune()  # a killed producer runs no teardown: the reaper
+    # unlinks its orphaned regions
+    assert f.to_dict()["i"][3] == 3
+    with pytest.raises(pymizu.MizuError):
+        f.__arrow_c_stream__()
 
 
 def test_frame_repr():

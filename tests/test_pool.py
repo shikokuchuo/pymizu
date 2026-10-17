@@ -28,8 +28,10 @@ from tests.helpers import (
     raise_keyboard_interrupt,
     raise_long,
     raise_long_named,
+    raise_long_named_short_message,
     raise_system_exit,
     raise_unprintable,
+    raise_with_surrogate_message,
     takes_timeout,
     trace_to_file,
     warn_then,
@@ -162,6 +164,24 @@ def test_task_error_untransportable_condition():
             p.submit(raise_long_named, 500).collect(timeout=10)
     finally:
         p.stop()
+
+
+def test_task_error_truncate_noop_at_the_half_budget(pool):
+    # the message cut reached with the message already inside the half
+    # budget: a no-op, and the fallback still follows (the type name
+    # alone is too long)
+    with pytest.raises(pymizu.TaskError, match="untransportable"):
+        pool.submit(raise_long_named_short_message).collect(timeout=10)
+
+
+def test_task_error_surrogate_message_blanks(pool):
+    # the private envelope cannot encode a lone surrogate: the message
+    # blanks (the 'I' err stream backslash-escapes instead)
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.submit(raise_with_surrogate_message).collect(timeout=10)
+    exc = exc_info.value
+    assert exc.remote_type == "ValueError"
+    assert str(exc) == "ValueError: "
 
 
 def test_task_warning_passes_through(pool):
@@ -450,6 +470,30 @@ def test_task_lost():
         h.destroy()
 
 
+def test_task_decode_failure_is_the_task_error():
+    # the _exec_fail(1) arm stands in for a corrupt task payload: the
+    # decode failure publishes as the task's ERR, and the worker lives on
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        wk._exec_fail(1)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        pool = pymizu.Pool._wrap(h)
+        t = pool.submit(identity, 1)
+        with pytest.raises(pymizu.TaskError, match="corrupt task payload"):
+            t.collect(timeout=10)
+        wk._exec_fail(0)
+        assert pool.submit(identity, 2).collect(timeout=10) == 2
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
 def test_nested_submit(pool):
     t = pool.submit(fanout, 8)
     assert t.collect(timeout=15) == sum(i * i for i in range(8))
@@ -705,6 +749,56 @@ def test_controller_only_verbs(pool):
     with pytest.raises(ValueError, match="worker slot out of range"):
         pool.retire(99)
     pa.destroy()
+
+
+def test_pool_verb_argument_validation(pool):
+    with pytest.raises(TypeError):
+        pool._h.submit_batch()
+    with pytest.raises(TypeError):
+        pool._h.collect_any()
+    with pytest.raises(TypeError):
+        pool._h.collect_all()
+    with pytest.raises(TypeError):
+        pool._h.ready_wait(["x"], 1)
+    with pytest.raises(ValueError, match="worker slot out of range"):
+        pool._h.ready_wait([-1], 0)
+    with pytest.raises(pymizu.MizuError, match="not a worker handle"):
+        pool._h.run()
+    with pytest.raises(pymizu.MizuError, match="not a worker handle"):
+        pool._h.leave()
+    with pytest.raises(TypeError):
+        pool._h._submit_runner()
+
+
+def test_collect_any_all_other_pool_handle(pool):
+    # tasks all of one other handle: rejected before any wait
+    other = pymizu.Pool.create(1)
+    try:
+        t = other.submit(len, [1])
+        for verb in (pool.collect_any, pool.collect_all):
+            with pytest.raises(ValueError, match="this pool handle"):
+                verb([t], timeout=0)
+        assert t.collect(timeout=5) == 1
+    finally:
+        other.stop()
+
+
+def test_submit_batch_on_a_stopped_pool():
+    # the whole batch fails before the first accept: the bare raise
+    p = pymizu.Pool.create(1)
+    p.stop()
+    with pytest.raises(pymizu.MizuError):
+        p.submit_batch([len])
+
+
+def test_pool_stop_default_timeout():
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        assert h.stop() is True  # the no-argument timeout
+        with pytest.raises(TypeError):
+            h.stop("x")
+    finally:
+        h.destroy()
 
 
 def test_pool_new_geometry_validation():

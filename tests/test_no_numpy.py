@@ -295,6 +295,29 @@ def test_difftime_read_without_numpy(tmp_path):
     )
 
 
+def test_frame_date_difftime_to_dict_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        from pymizu import _pymizu
+
+        # the temporal frame columns' to_dict() homes need numpy and say so
+        f = _pymizu._frame_rebuild(["d"], [("D", [1, None])], None)
+        try:
+            f.to_dict()
+            raise SystemExit("no decline")
+        except Exception as e:
+            assert "a Date column needs numpy" in str(e), e
+        f = _pymizu._frame_rebuild(["u"], [("T", [1000, None])], None)
+        try:
+            f.to_dict()
+            raise SystemExit("no decline")
+        except Exception as e:
+            assert "a difftime column needs numpy" in str(e), e
+        """,
+    )
+
+
 def test_tree_wrap_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,

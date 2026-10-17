@@ -62,6 +62,16 @@ def test_spec_task_error_escapes_surrogates():
     assert ei.value.remote_traceback
 
 
+def test_spec_task_base_exception_takes_the_worker_down():
+    # a BaseException out of an 'I' task escapes the exec hook: the
+    # worker goes down, the collector meets WorkerDiedError
+    with pymizu.Pool.create(1) as p:
+        with pytest.raises(pymizu.WorkerDiedError):
+            p.submit(pymizu.call("tests.helpers.raise_system_exit")).collect(
+                timeout=15
+            )
+
+
 def test_spec_tasks_run_same_language():
     with pymizu.Pool.create(1) as p:
         t = p.submit(pymizu.call("math.sqrt", 16))

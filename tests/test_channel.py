@@ -11,7 +11,7 @@ import sys
 import threading
 
 import pytest
-from tests.helpers import StrSubclass
+from tests.helpers import StrSubclass, UnprintableError
 
 import pymizu
 
@@ -207,6 +207,30 @@ def test_closed_sentinel():
     assert ch.close() is True  # idempotent
     with pytest.raises(ValueError):
         ch.send(1)
+
+
+def test_channel_verb_argument_validation(echo):
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        echo.recv_batch(0)
+    with pytest.raises(TypeError):
+        echo.close("x")
+    assert echo.alive() is True
+    assert echo.close() is True
+    assert echo.alive() is False
+
+
+def test_send_error_shim():
+    # the peer shim's err stream: an unprintable exception still frames
+    ch = pymizu.Channel.create("import time; time.sleep(5)")
+    try:
+        with pytest.raises(TypeError, match="expected an exception instance"):
+            ch._send_error(42)
+        assert ch._send_error(UnprintableError("x")) is True
+        assert ch._send_error(ValueError("x")) is True
+    finally:
+        ch._proc.kill()
+        ch.close()
+        ch._proc.wait()
 
 
 def test_peer_ident_after_destroy():
