@@ -5,6 +5,9 @@ round-trips are test_crosslang.py's."""
 
 import gc
 import pickle
+import subprocess
+import sys
+import textwrap
 
 import pytest
 from tests.helpers import foreign_pair
@@ -942,6 +945,150 @@ def test_provenance_pyarrow_string_view_fresh_copies():
     p2.destroy()
     p1.destroy()
     h1.destroy()
+
+
+def test_provenance_polars_string_reverse_copies():
+    # a reversal over equal-length long strings: every re-viewed row is
+    # length-exact but addresses another row's span — the pointer check
+    # fails and the column copies with the values exact
+    pl = pytest.importorskip("polars")
+    n = 20003
+    vals = [f"{k:013d}ab" for k in range(n)]  # all 15 bytes: pointer views
+    h1, p1 = foreign_pair(caps=CAPS_R)
+    h1.send(
+        pa.table(
+            {"i": pa.array(range(n), type=pa.int32()), "s": pa.array(vals)}
+        )
+    )
+    f = p1.recv(10)
+    df = pl.DataFrame(f).reverse()
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R)
+    h2.send(df)
+    got = p2.recv(10)
+    assert got.to_dict()["s"] == vals[::-1]
+    assert src.refcount == rc0
+    assert src.flags & 1 == 0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_tiny_string_column_new_nulls_copies():
+    # a short column (n < 8: the bitmap check is the tail-byte arm): new
+    # nulls over the same values fail the null-free record's all-ones
+    # read and the column copies
+    pl = pytest.importorskip("polars")
+    vals = ["x" * 40000] * 5  # long strings: the frame reaches the region
+    h1, p1 = foreign_pair(caps=CAPS_R)
+    h1.send(
+        pa.table(
+            {"i": pa.array(range(5), type=pa.int32()), "s": pa.array(vals)}
+        )
+    )
+    f = p1.recv(10)
+    df = pl.DataFrame(f).with_columns(
+        pl.when(pl.col("i") < 2).then(None).otherwise(pl.col("s")).name.keep()
+    )
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R)
+    h2.send(df)
+    got = p2.recv(10)
+    assert got.to_dict()["s"] == [None, None] + vals[2:]
+    assert src.refcount == rc0
+    assert src.flags & 1 == 0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_registry_cap_copies():
+    # the registry caps at PYMIZU_PV_MAX live records: an export whose
+    # record drops still sends — the round trip takes the layout write,
+    # never a wrong REF. A subprocess pins the table's starting count.
+    res = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(REGISTRY_CAP_SCRIPT)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+
+
+REGISTRY_CAP_SCRIPT = """
+import resource
+
+import pyarrow as pa
+
+from pymizu import _pymizu
+
+try:
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
+except (OSError, ValueError):
+    pass
+
+
+def foreign_pair(caps=7):
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, caps))
+    p.ready_set()
+    assert h.ready_wait(10)
+    return h, p
+
+
+def big_frame():
+    return pa.table(
+        {
+            "i": pa.array(range(4), type=pa.int32()),
+            "s": pa.array(["x" * 40000] * 4),
+        }
+    )
+
+
+def roundtrip(t):
+    h, p = foreign_pair()
+    h.send(t)
+    got = p.recv(10)
+    assert got.to_dict()["i"].tolist() == [0, 1, 2, 3]
+    p.destroy()
+    h.destroy()
+    return got
+
+
+# one region-backed frame, 256 live exports of it: the registry fills
+h1, p1 = foreign_pair()
+h1.send(big_frame())
+f = p1.recv(10)
+exports = [pa.table(f) for _ in range(256)]
+
+# a registered export's unmodified round trip stages the whole-frame REF
+src = f.to_dict()["i"].base
+rc0 = src.refcount
+got = roundtrip(exports[0])
+assert src.refcount == rc0 + 1
+assert src.flags & 1 == 1
+del got
+
+# the table full, the next export's record drops: its round trip copies
+h2, p2 = foreign_pair()
+h2.send(big_frame())
+f2 = p2.recv(10)
+extra_t = pa.table(f2)
+esrc = f2.to_dict()["i"].base
+erc0 = esrc.refcount
+got = roundtrip(extra_t)
+assert esrc.refcount == erc0
+assert esrc.flags & 1 == 0
+p2.destroy()
+h2.destroy()
+p1.destroy()
+h1.destroy()
+print("OK")
+"""
 
 
 def test_provenance_polars_short_strings_by_value():

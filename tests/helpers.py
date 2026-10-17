@@ -131,16 +131,19 @@ class BadCallable:
 
 
 class BufferFailAfterFirst:
-    """A PEP 688 exporter whose second __buffer__ call fails: the stage
-    size pass succeeds, the write pass declines (P-17)."""
+    """A PEP 688 exporter whose __buffer__ fails past a call budget: the
+    stage size pass succeeds, the write pass declines (P-17). The layout
+    tree's walk probes twice per pass, so its write-pass failure wants
+    fail_after=3."""
 
-    def __init__(self, a):
+    def __init__(self, a, fail_after=1):
         self.a = a
         self.calls = 0
+        self.fail_after = fail_after
 
     def __buffer__(self, flags):
         self.calls += 1
-        if self.calls > 1:
+        if self.calls > self.fail_after:
             raise BufferError("export refused")
         return memoryview(self.a)
 

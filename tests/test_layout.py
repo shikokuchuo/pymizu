@@ -227,6 +227,49 @@ def test_mizl_tree_vetoes():
         # a lone-surrogate str has no home in either tier
         with pytest.raises(pymizu.DeclinedError, match="UTF-8"):
             h.send(["\ud800"] + big_ints())
+        # a lone-surrogate dict key vetoes the layout walk the same way
+        with pytest.raises(pymizu.DeclinedError, match="dict key"):
+            h.send({"\ud800": big_ints()})
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_temporal_nd_declines():
+    # a datetime64 array past 1-D: the layout leaf's counts refuse it
+    # (nd > 1), the 'I' writer declines too — DeclinedError, and the
+    # failed stage leaves the channel consistent
+    import pytest
+
+    h, p = foreign_pair()
+    try:
+        with pytest.raises(pymizu.DeclinedError, match="past 1-D"):
+            h.send(np.full((200, 200), np.datetime64("2020-01-01")))
+        assert h.send({"k": [1, 2, 3]}) is True
+        assert p.recv(5) == {"k": [1, 2, 3]}
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_mizl_tree_write_pass_leaf_failure():
+    # a PEP 688 exporter whose __buffer__ fails on the write pass (the
+    # size pass's probe and classify succeeded): the committed layout
+    # write raises, it never degrades to a partial region — and the
+    # failed stage leaves the channel consistent
+    import pytest
+    from tests.helpers import BufferFailAfterFirst
+
+    h, p = foreign_pair()
+    try:
+        tree = [
+            np.arange(40000, dtype=np.float64),
+            BufferFailAfterFirst(np.arange(3, dtype=np.float64), fail_after=3),
+        ]
+        with pytest.raises(pymizu.MizuError, match="no longer eligible"):
+            h.send(tree)
+        assert h.send({"k": [1, 2, 3]}) is True
+        assert p.recv(5) == {"k": [1, 2, 3]}
     finally:
         p.destroy()
         h.destroy()
