@@ -3425,3 +3425,44 @@ def test_py_peer_polars_relay_string_remote_leaf(r_mizu):
         assert all(ch.recv(60))
     finally:
         ch.close()
+
+
+R_MALFORMED_TREE_SHAPES = r"""
+N <- 100000
+# an NA name on a named list: R's write gate passes it (duplicate names
+# are the gate's refusal), the view tier's re-check declines
+mizu::mizu_send(ch, stats::setNames(list(runif(N), runif(N)), c("a", NA)))
+# an attributed list root: no portable home, never a silent drop
+mizu::mizu_send(ch, structure(list(runif(N), runif(N)), foo = "bar"))
+"""
+
+
+def test_r_peer_malformed_tree_shapes(r_mizu):
+    ch = pymizu.Channel.create(R_MALFORMED_TREE_SHAPES, launcher=r_mizu)
+    try:
+        with pytest.raises(pymizu.MizuError, match="an NA name"):
+            ch.recv(60)
+        with pytest.raises(pymizu.MizuError, match="attributed list"):
+            ch.recv(60)
+    finally:
+        ch.close()
+
+
+R_PATH_VIEW_TEN = r"""
+x <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, x[[10]])
+"""
+
+
+def test_r_peer_path_view_two_digit_index(r_mizu):
+    # an element view at a two-digit path: the identifier's digit loop
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_PATH_VIEW_TEN, launcher=r_mizu)
+    try:
+        big = np.arange(10000)
+        assert ch.send([big + k for k in range(10)]) is True
+        e = ch.recv(30)
+        assert type(e.base).__name__ == "_ShmView"
+        assert np.array_equal(np.asarray(e), big + 9)
+    finally:
+        ch.close()

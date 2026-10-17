@@ -434,3 +434,174 @@ def test_spec_rewrite_when_no_candidate_fits():
         assert out[1] == 3.0
     finally:
         h.destroy()
+
+
+def test_task_run_malformed_streams():
+    # the worker's task decode refusals, each crossing as the task's error
+    base = _pymizu._write_task("math.sqrt", 0, (), {"a": 1, "b": 2}, 3, 7)
+    cases = []
+    b = bytearray(base)
+    b[29] = 0x0D  # the positional field as a dict
+    cases.append((bytes(b), "positional field is not a list"))
+    b = bytearray(base)
+    b[38] = 0x0C  # the named field as a list
+    cases.append((bytes(b), "named field is not a dict"))
+    cases.append((bytes(base[:52]), None))  # ends after the first key
+    cases.append((base + b"\x00", None))  # trailing garbage
+    with pymizu.Pool.create(1) as p:
+        for raw, match in cases:
+            t = p._h.submit(raw, None)
+            with pytest.raises(pymizu.TaskError, match=match):
+                t.collect(timeout=15)
+
+
+def test_read_task_malformed_named():
+    # the same arms on the _read_task hook, plus the duplicate-key check
+    base = _pymizu._write_task("math.sqrt", 0, (), {"a": 1, "b": 2}, 3, 7)
+    with pytest.raises(pymizu.MizuError):
+        _pymizu._read_task(bytes(base[:52]))
+    with pytest.raises(pymizu.MizuError):
+        _pymizu._read_task(base + b"\x00")
+    b = bytearray(base)
+    b[65] = ord("a")  # two "a" keys
+    with pytest.raises(pymizu.MizuError, match="a duplicate dict key"):
+        _pymizu._read_task(bytes(b))
+
+
+def test_runner_run_malformed_streams():
+    # the kind-2 decode refusals: name, generation, seed, trailing bytes
+    base = _pymizu._write_runner("/mizu_xyz", 5, None, 3, 7)
+    cases = []
+    b = bytearray(base)
+    b[15] = 0x02  # the name as an int
+    cases.append((bytes(b), "region name is not a string"))
+    b = bytearray(base)
+    b[29] = 0x00  # the generation as nil
+    cases.append((bytes(b), "generation is not an integer"))
+    # the seed as an int
+    seed_int = base[:-1] + b"\x02" + (1).to_bytes(8, "little")
+    cases.append((seed_int, "seed is not nil or an i64 pair"))
+    cases.append((base + b"\x00", None))  # trailing garbage
+    with pymizu.Pool.create(1) as p:
+        for raw, match in cases:
+            t = p._h.submit(raw, None)
+            with pytest.raises(pymizu.TaskError, match=match):
+                t.collect(timeout=15)
+
+
+def test_runner_frame_stage_gates():
+    # the runner submit's local gates, ahead of any worker
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        with pytest.raises(UnicodeEncodeError):
+            h.submit(_pymizu._runner_frame("\ud800", 0, None), None)
+        with pytest.raises(OverflowError, match="int64 range"):
+            h.submit(_pymizu._runner_frame("n", 2**63, None), None)
+        with pytest.raises(pymizu.MizuError, match="malformed map runner"):
+            h.submit(_pymizu._runner_frame("n", 0, ("a", "b")), None)
+        with pytest.raises(pymizu.MizuError, match="no worker has joined"):
+            h.submit(_pymizu._runner_frame("n", 0, None), None)
+    finally:
+        h.destroy()
+
+
+def test_spec_strided_array_arg_declines():
+    # a non-contiguous argument: the plan's candidate probe clears the
+    # buffer refusal, and the value walk's nested-strided decline stands
+    import numpy as np
+
+    with pymizu.Pool.create(1) as pool:
+        with pytest.raises(pymizu.DeclinedError, match="strided"):
+            pool.submit(pymizu.call("numpy.sum", np.arange(64.0)[::2]))
+
+
+def test_spec_view_arg_pinned_on_the_zc_path():
+    # a re-sendable view beside the zc candidate: the ref leaf's emission
+    # pins the spec until the claim-side release (D4)
+    import numpy as np
+    from tests.helpers import foreign_pair
+
+    h1, p1 = foreign_pair()
+    p1.send(np.arange(200_000, dtype=np.float64))
+    v = h1.recv(10)
+    try:
+        with pymizu.Pool.create(1) as pool:
+            buf = np.arange(200_000, dtype=np.float64)
+            out = pool.submit(pymizu.call("numpy.add", v, buf)).collect(
+                timeout=30
+            )
+            assert out[1] == 2.0
+    finally:
+        h1.destroy()
+        p1.destroy()
+
+
+def test_spec_view_arg_pinned_on_the_rewrite():
+    # the same pin when no candidate fits and the by-value rewrite rides
+    # the reservation
+    import numpy as np
+    from tests.helpers import foreign_pair
+
+    h1, p1 = foreign_pair()
+    p1.send(np.arange(70_000, dtype=np.float64) * 3)
+    v = h1.recv(10)
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    pymizu._default_worker_launcher()(h.token, 0)
+    try:
+        pool = pymizu.Pool._wrap(h)
+        assert pool.submit(abs, -1).collect(timeout=10) == 1  # the join
+        a = np.arange(70_000, dtype=np.float64)
+        b = np.arange(70_000, dtype=np.float64) * 2
+        out = pool.submit(
+            pymizu.call(source="x + y + z", x=v, y=a, z=b)
+        ).collect(timeout=30)
+        assert out[1] == 3.0 + 1.0 + 2.0
+    finally:
+        h.destroy()
+        h1.destroy()
+        p1.destroy()
+
+
+def test_spec_zc_checkout_failure_abandons_to_value():
+    # a failed spill checkout abandons the by-reference write: the task
+    # falls back to by-value, never a partial stream — the failure here
+    # (fd exhaustion) also fails the reservation, surfacing the ShmError
+    import fcntl
+    import resource
+
+    import numpy as np
+
+    def open_fds():
+        n = 0
+        for fd in range(256):
+            try:
+                fcntl.fcntl(fd, fcntl.F_GETFD)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    pymizu._default_worker_launcher()(h.token, 0)
+    try:
+        pool = pymizu.Pool._wrap(h)
+        assert pool.submit(abs, -1).collect(timeout=10) == 1  # the join
+        small = np.arange(12_000, dtype=np.float64)
+        assert (
+            pool.submit(pymizu.call("numpy.size", small)).collect(timeout=30)
+            == 12_000
+        )  # the free list holds only the small region
+        big = np.arange(200_000, dtype=np.float64)
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+        try:
+            with pytest.raises(pymizu.ShmError, match="payload region"):
+                pool.submit(pymizu.call("numpy.size", big))
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        assert (
+            pool.submit(pymizu.call("numpy.size", big)).collect(timeout=30)
+            == 200_000
+        )
+    finally:
+        h.destroy()

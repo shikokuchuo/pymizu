@@ -1197,3 +1197,35 @@ def test_region_frame_scalar_string_column_reemits():
     finally:
         p.destroy()
         h.destroy()
+
+
+def test_provenance_remote_leaf_two_digit_index():
+    # a remote leaf's path index past one digit: the [10] column's
+    # resolution walks the identifier's digit loop
+    pl = pytest.importorskip("polars")
+    cols = {
+        f"c{k}": pa.array(range(20000), type=pa.int32()) for k in range(10)
+    }
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(pa.table(cols))
+    f = p1.recv(10)
+    df = pl.DataFrame(f).with_columns((pl.col("c0") * 2).alias("c0"))
+    src = f.to_dict()["c1"].base  # a view over the source region
+    rc0 = src.refcount
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(df)
+    got = p2.recv(10)
+    assert src.refcount == rc0 + 1
+    assert src.flags & 1 == 1
+    d = got.to_dict()
+    # the [10] remote column: the source region's refcount word, exact
+    assert d["c9"].base.refcount == src.refcount
+    assert d["c9"][1:4].tolist() == [1, 2, 3]
+    assert d["c0"][1:4].tolist() == [2.0, 4.0, 6.0]  # the computed column
+    del d, got
+    gc.collect()
+    assert src.refcount == rc0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()

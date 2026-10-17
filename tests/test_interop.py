@@ -9,12 +9,14 @@ import os
 import pathlib
 import pickle
 import struct
+import subprocess
 import sys
+import textwrap
 import warnings
 
 import pytest
 from tests import ix_notation as ixn
-from tests.helpers import foreign_pair
+from tests.helpers import BufferFailAfterFirst, foreign_pair
 
 import pymizu
 from pymizu import _pymizu
@@ -1856,3 +1858,205 @@ def test_frame_emit_overflow_arms():
     finally:
         p.destroy()
         h.destroy()
+
+
+def test_datetime_probe_before_any_datetime_import():
+    # the datetime module probe's miss arm: a process that never imported
+    # datetime stages a foreign value — the probe finds nothing in
+    # sys.modules (never imports it) and the type gates fall through
+    script = """
+        import sys
+        from pymizu import _pymizu
+
+        sys.modules.pop("datetime", None)  # transitively imported already
+        assert "datetime" not in sys.modules
+        try:
+            _pymizu._write_stream(object())
+            raise SystemExit("no decline")
+        except Exception as e:
+            assert "no portable home" in str(e), e
+        assert "datetime" not in sys.modules
+        """
+    out = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, out.stderr
+
+
+def test_dict_stream_duplicate_key():
+    # the dict reader's duplicate-key refusal
+    b = bytearray(_pymizu._write_stream({"a": 1, "b": 2}))
+    b[b.rfind(ord("b"))] = ord("a")
+    with pytest.raises(pymizu.MizuError, match="duplicate dict key"):
+        _read(bytes(b))
+
+
+def test_frame_names_malformed_forms():
+    # the names block's refusals: a count that is not the column count, an
+    # NA name, a duplicate name
+    col = _ix_int(5)
+    with pytest.raises(pymizu.MizuError, match="do not match its columns"):
+        _read(_ix_frame([col], ["a", "b"], 1))
+    na_names = (
+        b"\x0b"
+        + (2).to_bytes(8, "little")
+        + _ix_strelt("a")
+        + (-1).to_bytes(4, "little", signed=True)
+    )
+    s = bytearray(b"I\x01\x0f")
+    s += b"\x0c" + (2).to_bytes(8, "little") + col + col
+    s += b"\x0d" + (3).to_bytes(8, "little")
+    s += _ix_key("names") + na_names
+    s += _ix_key("class") + _ix_sval("data.frame")
+    s += _ix_key("row.names")
+    s += _ix_vec(
+        0x07,
+        (-(2**31)).to_bytes(4, "little", signed=True)
+        + (-1).to_bytes(4, "little", signed=True),
+        2,
+    )
+    with pytest.raises(pymizu.MizuError, match="an NA column name"):
+        _read(bytes(s))
+    with pytest.raises(pymizu.MizuError, match="duplicate column names"):
+        _read(_ix_frame([col, col], ["a", "a"], 1))
+
+
+def test_overflow_temporal_realv_body():
+    # a datetime64 array's 'I' stream past the slot payload: the REALV body
+    # straddles the inline limit, the reservation writes it whole
+    h, p = foreign_pair()
+    try:
+        a = np.datetime64("2024-01-01") + np.arange(
+            2000, dtype="timedelta64[us]"
+        )
+        assert h.send(a) is True
+        got = p.recv(5)
+        assert got.dtype == "datetime64[us]"
+        assert (got == a).all()
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_overflow_masked_frame_column():
+    # an adopted column's nulls are bitmap-only: the masked emit walks per
+    # element, the body straddling the inline limit past the slot payload —
+    # the frame nested (a top-level frame takes the Arrow front-ends)
+    h, p = foreign_pair()
+    try:
+        vals = [float(k) for k in range(300)]
+        vals[7] = None
+        f = pymizu.Frame.from_arrow(pa.table({"a": pa.array(vals)}))
+        assert h.send([f]) is True
+        d = p.recv(5)[0].to_dict()["a"]
+        assert np.isnan(d[7])
+        assert d[[0, 1, 2]].tolist() == [0.0, 1.0, 2.0]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_overflow_dim_intv_body():
+    # the dim attr's intv is the stream's last bytes: one shape in the
+    # bracket straddles the inline limit with the nd body still fitting
+    h, p = foreign_pair()
+    try:
+        for k in range(119, 124):
+            a = np.arange(2 * k, dtype=np.int32).reshape(k, 2)
+            assert h.send(a) is True
+            got = p.recv(5)
+            assert got.shape == (k, 2)
+            assert (got == a).all()
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_write_hooks_write_pass_failure():
+    # a PEP 688 exporter whose __buffer__ fails on the write pass: both
+    # buffer requests decline the leaf, the deterministic second pass then
+    # disagrees with the first — the write-mismatch error, never a wedge
+    a = np.arange(16, dtype=np.float64)
+    with pytest.raises(pymizu.MizuError, match="interop write mismatch"):
+        _pymizu._write_stream(BufferFailAfterFirst(a, fail_after=1))
+    with pytest.raises(pymizu.MizuError, match="interop write mismatch"):
+        _pymizu._write_task(
+            "f", 0, (BufferFailAfterFirst(a, fail_after=2),), {}, 3, 7
+        )
+
+
+def test_write_hooks_warn_as_error():
+    # the conversion-warning record raises as error after the write pass,
+    # on each two-pass writer
+    a = np.array([2**60], dtype=np.uint64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="uint64"):
+            _pymizu._write_stream(a)
+        with pytest.raises(RuntimeWarning, match="uint64"):
+            _pymizu._write_task("f", 0, (a,), {}, 3, 7)
+        with pytest.raises(RuntimeWarning, match="uint64"):
+            _pymizu._map_desc_write("f", 0, (a,), {}, None, 3)
+
+
+def test_arrow_pair_bad_capsule_names():
+    # __arrow_c_array__ serving capsules under the wrong names: the
+    # interface claim fails standing, the channel unharmed
+    import ctypes
+
+    buf = ctypes.create_string_buffer(16)
+    new_capsule = ctypes.pythonapi.PyCapsule_New
+    new_capsule.restype = ctypes.py_object
+    new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+
+    class BadPair:
+        def __arrow_c_array__(self):
+            return (
+                new_capsule(ctypes.addressof(buf), b"not_arrow_schema", None),
+                new_capsule(ctypes.addressof(buf), b"arrow_array", None),
+            )
+
+    class BadPair2:
+        def __arrow_c_array__(self):
+            return (
+                new_capsule(ctypes.addressof(buf), b"arrow_schema", None),
+                new_capsule(ctypes.addressof(buf), b"not_arrow_array", None),
+            )
+
+    h, p = foreign_pair()
+    try:
+        for bad in (BadPair(), BadPair2()):
+            with pytest.raises(ValueError, match="incorrect name"):
+                h.send(bad)
+        assert h.send({"k": [1, 2, 3]}) is True
+        assert p.recv(5) == {"k": [1, 2, 3]}
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_map_desc_read_malformed_forms():
+    # the descriptor reader's refusals past the header checks
+    base = _pymizu._map_desc_write("math.sqrt", 0, (), {"a": 1}, [1, 2], 3)
+    b = bytearray(base)
+    b[47] = 0x0C  # the named field as a list
+    with pytest.raises(pymizu.MizuError, match="named field"):
+        _pymizu._map_desc_read(bytes(b))
+    with pytest.raises(pymizu.MizuError):  # ends after the first key
+        _pymizu._map_desc_read(bytes(base[:61]))
+    with pytest.raises(pymizu.MizuError):  # trailing garbage
+        _pymizu._map_desc_read(base + b"\x00")
+
+
+def test_frame_column_truncated_forms():
+    # the column reader's cursor failures: a vector claiming more than
+    # the stream holds, at the column's first item and inside the attr
+    # wrapper's value item
+    col = b"\x08" + (2**40).to_bytes(8, "little")
+    with pytest.raises(pymizu.MizuError, match="truncated"):
+        _read(_ix_frame([col], ["a"], 1))
+    col_attr = b"\x0f" + b"\x08" + (2**40).to_bytes(8, "little")
+    with pytest.raises(pymizu.MizuError, match="truncated"):
+        _read(_ix_frame([col_attr], ["a"], 1))
