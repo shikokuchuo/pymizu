@@ -3744,44 +3744,29 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
        scales; a double second carries ns resolution to ~104 days */
     const double scale = unit == TU_DAY ? 86400.0 :
       unit == TU_WEEK ? 604800.0 : mizu_py_temporal_scale(unit);
+    /* .view("int64") and the ND|FORMAT export cannot fail for a
+       classified object (an exact ndarray or a numpy scalar views
+       same-itemsize, and numpy scalars export the buffer protocol) — a
+       failure would be a numpy change, not user input; decline as
+       today */
     PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
-    if (view == NULL) {
-      PyErr_Clear();
-      view = PyObject_CallMethod(obj, "astype", "s", "int64");
-      if (view == NULL) {
-        PyErr_Clear();
-        ixw_decline_type(w, obj, "a timedelta64 value that cannot cross");
-        return;
-      }
-    }
-    int64_t one = 0;
-    const int64_t *counts = &one;
-    uint64_t n = 1;
     Py_buffer bv;
-    int got = PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) == 0;
-    if (got && bv.ndim > 1) {
+    if (view == NULL ||
+        PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) != 0) {
+      PyErr_Clear();
+      Py_XDECREF(view);
+      ixw_decline_type(w, obj, "a timedelta64 value that cannot cross");
+      return;
+    }
+    if (bv.ndim > 1) {
       PyBuffer_Release(&bv);
       Py_DECREF(view);
       ixw_decline(w, "a timedelta64 array past 1-D has no portable home");
       return;
     }
-    if (got) {
-      counts = (const int64_t *) bv.buf;
-      n = (uint64_t) (bv.len / 8);
-    } else {
-      PyErr_Clear();
-      PyObject *i = PyNumber_Index(view);
-      if (i == NULL) {
-        PyErr_Clear();
-        Py_DECREF(view);
-        ixw_decline_type(w, obj, "a timedelta64 value that cannot cross");
-        return;
-      }
-      one = PyLong_AsLongLong(i);
-      Py_DECREF(i);
-    }
-    ixe_difftime(w, counts, NULL, n, scale);
-    if (got) PyBuffer_Release(&bv);
+    ixe_difftime(w, (const int64_t *) bv.buf, NULL,
+                 (uint64_t) (bv.len / 8), scale);
+    PyBuffer_Release(&bv);
     Py_DECREF(view);
     return;
   }
@@ -3795,50 +3780,30 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
                 "has no portable home");
     return;
   }
-  /* the int64 counts: an ndarray views int64 and exports a buffer; a
-     scalar converts through astype */
+  /* the int64 counts: the timedelta arm's view-and-export */
   PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
-  if (view == NULL) {
-    PyErr_Clear();
-    view = PyObject_CallMethod(obj, "astype", "s", "int64");
-    if (view == NULL) {
-      PyErr_Clear();
-      ixw_decline_type(w, obj, "a datetime64 value that cannot cross");
-      return;
-    }
-  }
-  int64_t one = 0;
-  const int64_t *counts = &one;
-  uint64_t n = 1;
   Py_buffer bv;
-  int got = PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) == 0;
-  if (got && bv.ndim > 1) {
+  if (view == NULL ||
+      PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) != 0) {
+    PyErr_Clear();
+    Py_XDECREF(view);
+    ixw_decline_type(w, obj, "a datetime64 value that cannot cross");
+    return;
+  }
+  if (bv.ndim > 1) {
     PyBuffer_Release(&bv);
     Py_DECREF(view);
     ixw_decline(w, "a datetime64 array past 1-D has no portable home");
     return;
   }
-  if (got) {
-    counts = (const int64_t *) bv.buf;
-    n = (uint64_t) (bv.len / 8);
-  } else {
-    PyErr_Clear();
-    PyObject *i = PyNumber_Index(view);
-    if (i == NULL) {
-      PyErr_Clear();
-      Py_DECREF(view);
-      ixw_decline_type(w, obj, "a datetime64 value that cannot cross");
-      return;
-    }
-    one = PyLong_AsLongLong(i);
-    Py_DECREF(i);
-  }
+  const int64_t *counts = (const int64_t *) bv.buf;
+  const uint64_t n = (uint64_t) (bv.len / 8);
   if (unit == TU_DAY || unit == TU_WEEK) {
     ixe_date(w, counts, n, unit == TU_WEEK ? 7.0 : 1.0);
   } else {
     ixe_posixct(w, counts, NULL, n, "UTC", mizu_py_temporal_scale(unit));
   }
-  if (got) PyBuffer_Release(&bv);
+  PyBuffer_Release(&bv);
   Py_DECREF(view);
 }
 

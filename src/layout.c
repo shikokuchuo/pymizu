@@ -123,11 +123,10 @@ typedef struct {
   int64_t strides[32];  /* bytes */
   uint64_t total;
   int f_contig;         /* the F-order verdict (length-1 axes exempt) */
-  /* temporal: the held int64 counts (the .view / .astype dance) */
+  /* temporal: the held int64 counts (the .view form) */
   PyObject *tview;
   Py_buffer tbv;
   int tgot;
-  int64_t tone;
   const int64_t *counts;
   uint64_t nat;         /* the write's NaT count (roots' validity stamp) */
 } pymizu_leaf;
@@ -144,37 +143,24 @@ static void leaf_release(pymizu_leaf *lf) {
 }
 
 /* The int64 counts behind a temporal array or scalar: .view("int64")
-   with the .astype fallback, the buffer or the index value off the
-   result (ixw_numpy_temporal's dance). 0 ok, -1 a value that cannot
-   cross (nd > 1 included — the 'I' writer's decline set). */
+   and the ND|FORMAT export cannot fail for a classified object (an exact
+   ndarray or a numpy scalar — the np_kind gate — views same-itemsize,
+   and numpy scalars export the buffer protocol) — a failure would be a
+   numpy change, not user input; decline as today. 0 ok, -1 a value that
+   cannot cross (nd > 1 included — the 'I' writer's decline set). */
 static int temporal_counts(PyObject *obj, pymizu_leaf *lf) {
   PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
-  if (view == NULL) {
+  if (view == NULL ||
+      PyObject_GetBuffer(view, &lf->tbv, PyBUF_ND | PyBUF_FORMAT) != 0) {
     PyErr_Clear();
-    view = PyObject_CallMethod(obj, "astype", "s", "int64");
-    if (view == NULL) {
-      PyErr_Clear();
-      return -1;
-    }
+    Py_XDECREF(view);
+    return -1;
   }
   lf->tview = view;
-  lf->counts = &lf->tone;
-  lf->total = 1;
-  if (PyObject_GetBuffer(view, &lf->tbv, PyBUF_ND | PyBUF_FORMAT) == 0) {
-    lf->tgot = 1;
-    if (lf->tbv.ndim > 1) return -1;
-    lf->counts = (const int64_t *) lf->tbv.buf;
-    lf->total = (uint64_t) (lf->tbv.len / 8);
-  } else {
-    PyErr_Clear();
-    PyObject *i = PyNumber_Index(view);
-    if (i == NULL) {
-      PyErr_Clear();
-      return -1;
-    }
-    lf->tone = PyLong_AsLongLong(i);
-    Py_DECREF(i);
-  }
+  lf->tgot = 1;
+  if (lf->tbv.ndim > 1) return -1;
+  lf->counts = (const int64_t *) lf->tbv.buf;
+  lf->total = (uint64_t) (lf->tbv.len / 8);
   return 0;
 }
 
