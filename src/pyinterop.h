@@ -323,14 +323,11 @@ PyObject *mizu_py_view_resolve(const char *id, size_t id_len,
 /* The remote-leaf (MIZL tag 33) resolve: mizu_py_view_resolve's wrap plus
    the referencing entry's claim validation — the terminal leaf's
    descriptor read off the opened region and compared against length /
-   attrs_size / na_claim before the wrap. NULL with an exception: a
-   malformed identifier or gone region (the open's own error), a
-   descriptor or claim mismatch (the corrupt-or-newer shape). */
-PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
-                                       mizu_read_ctx *ctx, int64_t length,
-                                       int64_t attrs_size, int na_claim);
-/* The depth-carrying form: the MIZL walk's remote-leaf resolve — chained
-   references count against MIZU_IX_DEPTH_MAX with the nested-list walk. */
+   attrs_size / na_claim before the wrap. The depth carries the MIZL
+   walk's chained references against MIZU_IX_DEPTH_MAX with the nested-
+   list walk. NULL with an exception: a malformed identifier or gone
+   region (the open's own error), a descriptor or claim mismatch (the
+   corrupt-or-newer shape). */
 PyObject *mizu_py_view_resolve_checked_depth(const char *id, size_t id_len,
                                              mizu_read_ctx *ctx,
                                              int64_t length,

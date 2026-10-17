@@ -1041,14 +1041,15 @@ static int stage_scalar_fast(PyObject *obj, mizu_slot_hdr *hdr,
 static int fn_ref_parts(PyObject *fn, PyObject **mod_out, PyObject **qual_out) {
   if (!PyFunction_CheckExact(fn) && !PyCFunction_CheckExact(fn)) return -1;
   PyObject *mod = PyObject_GetAttrString(fn, "__module__");
-  if (mod == NULL) {
-    PyErr_Clear();
-    return -1;
-  }
   PyObject *qual = PyObject_GetAttrString(fn, "__qualname__");
-  if (qual == NULL) {
+  /* the fetches cannot fail on the exact types: the getsets always supply
+     both (the type's own name is __module__'s fallback, and __qualname__
+     rejects deletion and non-string assignment) — a failure would be a
+     CPython change, not user input; decline as today */
+  if (mod == NULL || qual == NULL) {
+    Py_XDECREF(mod);
+    Py_XDECREF(qual);
     PyErr_Clear();
-    Py_DECREF(mod);
     return -1;
   }
   int ok = PyUnicode_CheckExact(mod) && PyUnicode_CheckExact(qual);
@@ -3698,13 +3699,6 @@ PyObject *mizu_py_view_resolve_checked_depth(const char *id, size_t id_len,
   Py_DECREF(loan);
   Py_DECREF(owner);
   return out;
-}
-
-PyObject *mizu_py_view_resolve_checked(const char *id, size_t id_len,
-                                       mizu_read_ctx *ctx, int64_t length,
-                                       int64_t attrs_size, int na_claim) {
-  return mizu_py_view_resolve_checked_depth(id, id_len, ctx, length,
-                                            attrs_size, na_claim, 0);
 }
 
 /* Codec read side: strict bounds throughout; anything torn or trailing is

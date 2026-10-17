@@ -1,3 +1,9 @@
+# Count partially-covered lines as hits, matching the R package's
+# line-only covr coverage.
+parsers:
+  lcov:
+    partials_as_hits: true
+
 coverage:
   status:
     project:
