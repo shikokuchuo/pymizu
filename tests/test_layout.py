@@ -9,6 +9,7 @@ import sys
 import textwrap
 
 import numpy as np
+import pytest
 
 import pymizu
 from pymizu import _pymizu
@@ -252,6 +253,9 @@ def test_temporal_nd_declines():
         h.destroy()
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
+)
 def test_mizl_tree_write_pass_leaf_failure():
     # a PEP 688 exporter whose __buffer__ fails on the write pass (the
     # size pass's probe and classify succeeded): the committed layout

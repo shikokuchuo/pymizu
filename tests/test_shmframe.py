@@ -1019,17 +1019,21 @@ def test_provenance_registry_cap_copies():
 
 
 REGISTRY_CAP_SCRIPT = """
-import resource
+try:
+    import resource
+except ImportError:  # Windows: no fd table to guard
+    resource = None
 
 import pyarrow as pa
 
 from pymizu import _pymizu
 
-try:
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
-except (OSError, ValueError):
-    pass
+if resource is not None:
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
+    except (OSError, ValueError):
+        pass
 
 
 def foreign_pair(caps=7):
