@@ -6,6 +6,7 @@ in the test module. The repo-root conftest.py puts the root on sys.path in
 the test process; a spawned worker's sys.path[0] is the repo root already.
 """
 
+import array
 import ctypes
 import os
 import random
@@ -337,6 +338,15 @@ class StrSubclass(str):
     checks route it past STR1 and the codec)."""
 
 
+class BytesSubclass(bytes):
+    """A bytes subclass: same pickle-semantics rule as StrSubclass."""
+
+
+class ArraySubclass(array.array):
+    """An array.array subclass: the raw buffer tier is exact-type only,
+    so the subclass keeps its pickle semantics."""
+
+
 if np is not None:
 
     class CarryArray(np.ndarray):
@@ -373,6 +383,21 @@ def is_readonly(a):
 def sum_mixed(xs):
     """A flat container with a buffer leaf: an array and a scalar."""
     return float(xs[0].sum()) + xs[1]
+
+
+def sum_pair(xs):
+    """Two buffer leaves in one flat container: both sums."""
+    return float(xs[0].sum() + xs[1].sum())
+
+
+def sum_pair_flaky(xs):
+    """A buffer leaf and a BufferFailAfterFirst in one flat container."""
+    return float(xs[0].sum() + xs[1].a.sum())
+
+
+def sum_dict(d):
+    """Two buffer leaves in a dict container: both sums."""
+    return float(d["a"].sum() + d["b"].sum())
 
 
 def mul_add(a, b, c=0):

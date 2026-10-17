@@ -5,6 +5,7 @@ staging order, the decline set, the Frame export machinery, and the
 Arrow stream front-end."""
 
 import datetime
+import os
 import pathlib
 import pickle
 import struct
@@ -1565,6 +1566,39 @@ def test_map_desc_hooks():
         _pymizu._map_desc_read(b"")
     with pytest.raises(pymizu.MizuError, match="truncated"):
         _pymizu._map_desc_read(b"I\x01\x0c")
+
+
+MAP_DESC_PEER = """
+import time
+import numpy as np
+ch.send(np.arange(200000, dtype=np.float64))
+time.sleep(30)
+"""
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="no unlink on Windows: the name resolves while a handle lives",
+)
+def test_map_desc_view_ref_resolve_and_gone():
+    # a re-sendable view rides the descriptor as one REF leaf (D6): the
+    # read resolves it while the region lives; once a dead producer's
+    # verdict unlinked the name the resolve is the clean "not found"
+    # (the descriptor reader carries no gone signal)
+    ch = pymizu.Channel.create(MAP_DESC_PEER)
+    view = ch.recv(30).base
+    b = _pymizu._map_desc_write("os.getpid", 0, (), {}, view, 1)
+    kind, code, pos, kw, x = _pymizu._map_desc_read(b)
+    assert (kind, code, pos, kw) == (0, "os.getpid", [], {})
+    assert pymizu._pymizu._view_check(x)
+    assert np.asarray(x)[3] == 3.0
+    ch._proc.kill()
+    assert ch.close() is True
+    ch._proc.wait()
+    pymizu.prune()
+    with pytest.raises(pymizu.MizuError, match="not found"):
+        _pymizu._map_desc_read(b)
+    ch.destroy()
 
 
 def test_write_runner_hook():

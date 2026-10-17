@@ -7,6 +7,7 @@ skip_if_no_child_mizu() mirror); the rest use a Python echo peer."""
 
 import ctypes
 import gc
+import os
 import warnings
 
 import pytest
@@ -825,6 +826,34 @@ def test_export_complex_rejected(echo):
     assert echo.send(a) is True
     view = _exporter(echo.recv(timeout=5))
     with pytest.raises(TypeError, match="complex"):
+        view.__arrow_c_array__()
+
+
+VIEW_PEER = """
+import time
+import numpy as np
+ch.send(np.arange(200000, dtype=np.float64))
+time.sleep(30)
+"""
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="no unlink on Windows: the name resolves while a handle lives",
+)
+def test_view_export_after_producer_death():
+    # the export's own fresh open of the region fails once a dead
+    # producer's verdict unlinked the name — a clean MizuError, the view
+    # itself still readable off its surviving mapping
+    ch = pymizu.Channel.create(VIEW_PEER)
+    view = _exporter(ch.recv(30))
+    ch._proc.kill()
+    assert ch.close() is True
+    ch._proc.wait()
+    pymizu.prune()  # a killed producer runs no teardown: the reaper
+    # unlinks its orphaned regions
+    assert view.to_numpy()[3] == 3.0
+    with pytest.raises(pymizu.MizuError):
         view.__arrow_c_array__()
 
 

@@ -11,7 +11,12 @@ import sys
 import threading
 
 import pytest
-from tests.helpers import StrSubclass, UnprintableError
+from tests.helpers import (
+    ArraySubclass,
+    BytesSubclass,
+    StrSubclass,
+    UnprintableError,
+)
 
 import pymizu
 
@@ -434,6 +439,16 @@ def test_ndarray_subclasses_keep_pickle(echo):
     assert type(r) is CarryArray
     assert r.tag == "kept"
     assert list(r) == [1.0, 2.0]
+
+
+def test_bytes_and_array_subclasses_keep_pickle(echo):
+    # bytes / array.array subclasses leave the buffer branch for pickle:
+    # the raw tier is exact-type only, same as the ndarray subclasses
+    for x in (BytesSubclass(b"abc"), ArraySubclass("i", [1, 2, 3])):
+        assert echo.send(x) is True
+        r = echo.recv(timeout=5)
+        assert type(r) is type(x)
+        assert r == x
 
 
 def test_memmap_roundtrips_as_memmap(echo, tmp_path):

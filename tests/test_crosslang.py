@@ -13,7 +13,7 @@ import time
 import warnings
 
 import pytest
-from tests.helpers import foreign_pair
+from tests.helpers import foreign_pair, frames_report
 
 import pymizu
 
@@ -951,6 +951,22 @@ def test_py_peer_dim_array_retain_balance(r_mizu):
         ch.close()
 
 
+def test_r_peer_latin1_string(r_mizu):
+    # a latin1-marked string scalar translates to the Unicode scalar;
+    # CE_BYTES and invalid native marks decline at the R send instead
+    src = r"""
+x <- rawToChar(as.raw(0xe9)); Encoding(x) <- "latin1"
+mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        assert ch.recv(60) == "é"
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
 def test_r_peer_copied_read_na_rules(r_mizu):
     # the copied-read rule (3.2): a foreign INT with NAs reads float64
     # with NA_real_-payload NaNs on the raw tiers; LGL reads bool_ when
@@ -1218,6 +1234,251 @@ mizu::mizu_recv(ch, timeout = 60)
         assert list(b) == [1, 2]
     finally:
         ch.close()
+
+
+def test_r_peer_int64_na_warn_error_consumes(r_mizu):
+    # warnings-as-errors against the int64 copy's NA scan: the recv
+    # fails on the warning, the slot consumed behind it (never wedged)
+    src = r"""
+fromle <- function(r) readBin(r, "double", size = 8L, endian = "little",
+                              n = length(r) %/% 8L)
+x <- structure(fromle(as.raw(c(0, 0, 0, 0, 0, 0, 0xf0, 0x3f,
+                               0, 0, 0, 0, 0, 0, 0, 0x80,
+                               0, 0, 0, 0, 0, 0, 0x08, 0x40))),
+               class = "integer64")
+mizu::mizu_send(ch, x)
+mizu::mizu_send(ch, 42)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(UserWarning, match="to_arrow"):
+                ch.recv(30)
+        assert ch.recv(30) == 42
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_view_arrow_lazy_bitmap_tail(r_mizu):
+    # the lazy validity build masks the tail byte's unused bits: an INT
+    # with NA at a length that is not a multiple of 8
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+i <- rep(1:100, length.out = 99999); i[3] <- NA_integer_
+mizu::mizu_send(ch, i)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        a = pa.array(ch.recv(30).base)
+        assert a.type == pa.int32() and a.null_count == 1
+        assert a.slice(0, 4).to_pylist() == [1, 2, None, 4]
+        del a
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_column_arrow_lazy_bitmap(r_mizu):
+    # a frame's borrowed column view with NA builds its validity bitmap
+    # off the sentinels at export (the {0, 0} claim)
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+mizu::mizu_send(ch, data.frame(i = c(1L, NA, 3:40000), x = as.double(1:40000)))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        col = ch.recv(30).to_dict()["i"]
+        a = pa.array(col.base)
+        assert a.type == pa.int32() and a.null_count == 1
+        assert a.slice(0, 3).to_pylist() == [1, None, 3]
+        del a, col
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_lgl_view_to_numpy_clean_twice(r_mizu):
+    # an NA-free LGL view: the first to_numpy() scans and caches the
+    # clean verdict, the second takes the cached branch's plain loop
+    np = pytest.importorskip("numpy")
+    src = r"""
+l <- rep(c(TRUE, FALSE), length.out = 99999)
+mizu::mizu_send(ch, l)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        view = ch.recv(30).base
+        a = view.to_numpy()
+        b = view.to_numpy()
+        assert a.dtype == np.bool_ and b.dtype == np.bool_
+        assert a[:2].tolist() == [True, False]
+        assert b[:2].tolist() == [True, False]
+        del a, b
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_int64_frame_column_to_numpy(r_mizu):
+    # an int64 frame column with NA: the borrowed view's to_numpy()
+    # warns off the leaf's own claim, and raises under warnings-as-errors
+    np = pytest.importorskip("numpy")
+    if (
+        subprocess.run(
+            [
+                RSCRIPT,
+                "-e",
+                "if (!length(find.package('bit64', quiet = TRUE))) "
+                "quit('no', 1)",
+            ],
+            capture_output=True,
+        ).returncode
+        != 0
+    ):
+        pytest.skip("R bit64 package not available")
+    src = r"""
+mizu::mizu_send(ch, data.frame(u = bit64::as.integer64(c(1, NA, 3:40000))))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(30)
+        view = f.to_dict()["u"].base
+        with pytest.warns(UserWarning, match="int64 view carries NA"):
+            out = view.to_numpy()
+        assert out.dtype == np.int64 and out[1] == -(2**63)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(UserWarning):
+                view.to_numpy()
+        del f, out
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+R_TREE_ELEMENT_VIEWS = r"""
+mizu::mizu_send(ch, list(v = rep(1.5, 100000), s = rep(c("x", "y"), 50000)))
+v <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, identical(v, rep(1.5, 100000)))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_r_peer_tree_element_views_resend(r_mizu):
+    # a tree-borrowed element view is not REF-able (its loan anchors it
+    # to the tree's region): the numeric view re-sends by value, not by
+    # reference; the borrowed string leaf exports to Arrow, and nested
+    # in a foreign tree it declines rather than copy silently
+    np = pytest.importorskip("numpy")
+    pa = pytest.importorskip("pyarrow")
+    ch = pymizu.Channel.create(R_TREE_ELEMENT_VIEWS, launcher=r_mizu)
+    try:
+        got = ch.recv(60)
+        view = got["v"].base
+        sview = got["s"]
+        arr = pa.array(sview)  # the borrowed leaf's own export
+        assert arr.to_pylist()[:3] == ["x", "y", "x"]
+        del arr
+        assert not pymizu._pymizu._view_check(view)
+        assert ch.send(view) is True  # by value, never REF
+        assert ch.recv(60) is True
+        big = np.arange(200000, dtype=np.float64)
+        with pytest.raises(pymizu.DeclinedError, match="no portable home"):
+            ch.send({"a": sview, "b": big})
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_task_arg_str64(r_mizu):
+    # an R character column arrives as the STR64 block: re-staged as a
+    # pool task argument it walks the FRAMEREF size gate's per-kind sums
+    src = r"""
+mizu::mizu_send(ch, data.frame(s = c("a", NA, paste0("s", 3:40000))))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(30)
+        with pymizu.Pool.create(1) as pool:
+            report = pool.submit(frames_report, f).collect(timeout=10)
+        _, head = report[0]
+        assert head["s"] == ["a", None, "s3"]
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+R_FRAME_REMOTE_COLUMNS = r"""
+r <- mizu::mizu_recv(ch, timeout = 60)
+z <- mizu::mizu_recv(ch, timeout = 60)
+mizu::mizu_send(ch, data.frame(r = r, z = z, x = runif(3e5)))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_r_peer_frame_remote_columns(r_mizu):
+    # R's frame writer emits a view column as a remote leaf (tag 33):
+    # the read borrows a view over the referenced region — REFHELD, one
+    # counted add — and an unlinked name degrades the column to the
+    # copy forms off the frame's own holds
+    np = pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_FRAME_REMOTE_COLUMNS, launcher=r_mizu)
+    raw = bytes(range(250)) * 1200  # exactly 300000 elements
+    cplx = np.arange(300000, dtype=np.complex128) + 2j
+    try:
+        assert ch.send(raw) is True
+        assert ch.send(cplx) is True
+        f = ch.recv(60)
+        d = f.to_dict()
+        assert type(d["r"].base).__name__ == "_ShmView"
+        assert type(d["z"].base).__name__ == "_ShmView"
+        assert d["r"].base.flags & 1  # REFHELD
+        assert bytes(d["r"])[:4] == raw[:4]
+        assert np.array_equal(np.asarray(d["z"])[:3], cplx[:3])
+        rc = d["r"].base.refcount
+        ch.send(b"")
+    finally:
+        ch.close()
+    ch.destroy()  # the names unlink: the copy forms off the holds
+    d2 = f.to_dict()
+    assert getattr(d2["r"], "base", None) is None
+    assert getattr(d2["z"], "base", None) is None
+    assert bytes(d2["r"])[:4] == raw[:4]
+    assert np.array_equal(np.asarray(d2["z"])[:3], cplx[:3])
+    assert d["r"].base.refcount == rc - 1  # the producer loan released
+
+
+R_STRVIEW_DEATH = r"""
+mizu::mizu_send(ch, rep(c("x", "y"), 50000))
+mizu::mizu_recv(ch, timeout = 30)
+"""
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="no unlink on Windows: the name resolves while a handle lives",
+)
+def test_r_peer_strview_export_after_producer_death(r_mizu):
+    # the string view's Arrow export opens its own fresh mapping: once a
+    # dead producer's verdict unlinked the name it fails cleanly — the
+    # view itself still readable off its surviving mapping
+    ch = pymizu.Channel.create(R_STRVIEW_DEATH, launcher=r_mizu)
+    sview = ch.recv(30)
+    ch._proc.kill()
+    assert ch.close() is True
+    ch._proc.wait()
+    pymizu.prune()
+    assert sview.to_list()[3] == "y"
+    with pytest.raises(pymizu.MizuError):
+        sview.__arrow_c_array__()
 
 
 def test_py_peer_int_sentinels_stay_exact():

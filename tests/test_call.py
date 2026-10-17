@@ -306,6 +306,16 @@ def test_spec_on_a_channel_fails():
         h.destroy()
 
 
+def test_spec_ident_override_needs_a_pair():
+    # the test-only identity override is validated at stage time, not by
+    # the _call_frame factory
+    with pymizu.Pool.create(1) as pool:
+        with pytest.raises(TypeError, match="identity pair"):
+            pool._h.submit(
+                _pymizu._call_frame(pymizu.call("math.sqrt", 16), [2, 7])
+            )
+
+
 def test_spec_malformed_gates():
     # the spec components are duck-read at stage: missing attributes
     # propagate, wrong shapes are the local malformed error

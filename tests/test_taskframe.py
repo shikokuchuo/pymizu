@@ -21,7 +21,10 @@ from tests.helpers import (
     frames_report,
     is_readonly,
     square,
+    sum_dict,
     sum_mixed,
+    sum_pair,
+    sum_pair_flaky,
     sum_two,
 )
 
@@ -159,6 +162,12 @@ def test_container_with_buffer_leaves(pool):
     assert out == 11.0
 
 
+def test_dict_arg_non_str_key_pickles(pool):
+    # a task frame's dict keys must be codec strings: anything else
+    # declines to the whole-tuple pickle
+    assert pool.submit(len, {1: "x", 2: "y"}).collect(timeout=5) == 2
+
+
 def test_submit_batch_frames(pool):
     tasks = pool.submit_batch([partial(square, i) for i in range(4)])
     assert [t.collect(timeout=5) for t in tasks] == [0, 1, 4, 9]
@@ -206,6 +215,12 @@ def big_frame(n=20000, with_nulls=True):
         ],
         None,
     )
+
+
+def dict_frame(n=24000):
+    """A Frame with a factor (dict) column, past the zero-copy floor."""
+    codes = [None if k % 10 == 0 else k % 2 for k in range(n)]
+    return _frame_rebuild(["d"], [("d", codes, ["x", "y"])], None)
 
 
 def test_frame_rebuild_complex_na():
@@ -258,6 +273,51 @@ def test_frame_args_one_region_budget(pool):
     assert r1[0]["i"] != "_ShmView" and r2[0]["i"] != "_ShmView"
     assert math.isnan(r1[1]["i"][0]) and r1[1]["i"][1:] == [1.0, 2.0]
     assert r2[1]["s"] == [None, "s1", "s2"]
+
+
+def test_dict_frame_arg(pool):
+    # a factor column walks the size gate's per-kind sums, then crosses
+    report = pool.submit(frames_report, dict_frame()).collect(timeout=10)
+    _, head = report[0]
+    assert head["d"] == [None, "y", "x"]
+
+
+def test_large_string_frame_arg(pool):
+    # a large_utf8 column builds the 64-bit string block: the size gate's
+    # STR64 row, then the crossing itself
+    pa = pytest.importorskip("pyarrow")
+    t = pa.table({"s": pa.array(["x" * 100] * 70000, type=pa.large_string())})
+    report = pool.submit(frames_report, pymizu.Frame.from_arrow(t)).collect(
+        timeout=10
+    )
+    backing, head = report[0]
+    assert head["s"] == ["x" * 100] * 3
+
+
+def test_two_buffer_leaves_one_region_budget(pool):
+    # a second region-sized buffer leaf inside a flat container declines:
+    # the whole task tuple pickles, values exact on the copies
+    a = np.arange(20000, dtype=np.float64)
+    b = np.arange(20000, dtype=np.float64) * 2
+    out = pool.submit(sum_pair, [a, b]).collect(timeout=10)
+    assert out == float(a.sum() + b.sum())
+
+
+def test_two_buffer_leaves_dict_one_region_budget(pool):
+    # the dict container arm of the same size-pass decline
+    a = np.arange(20000, dtype=np.float64)
+    b = np.arange(20000, dtype=np.float64) * 2
+    out = pool.submit(sum_dict, {"a": a, "b": b}).collect(timeout=10)
+    assert out == float(a.sum() + b.sum())
+
+
+def test_container_leaf_write_decline_pickles(pool):
+    # a container element whose write-pass buffer export fails (the size
+    # pass passed): the whole task tuple pickles, values exact
+    a = np.full(16000, 1.0)
+    flaky = BufferFailAfterFirst(np.full(10, 2.0))
+    out = pool.submit(sum_pair_flaky, [a, flaky]).collect(timeout=10)
+    assert out == 16020.0
     a = np.arange(1000000, dtype=np.float64)
     (backing, head), writable, total = pool.submit(
         frame_and_buffer, big_frame(), a
