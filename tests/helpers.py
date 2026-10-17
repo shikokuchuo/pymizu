@@ -79,6 +79,14 @@ def raise_with_surrogate_message():
     raise ValueError("x" * 600 + "\udcff")
 
 
+def raise_with_nonint_map_index():
+    # a _pymizu_map_index that is not an int: the error publish drops the
+    # annotation silently rather than carrying it as the runner's index
+    e = ValueError("boom")
+    e._pymizu_map_index = 1.5
+    raise e
+
+
 class Unpicklable:
     def __reduce__(self):
         raise TypeError("cannot pickle Unpicklable")

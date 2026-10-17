@@ -390,6 +390,22 @@ def test_py_peer_str_list_retain_balance(r_mizu):
         ch.close()
 
 
+R_MIZS_ATTRS = r"""
+mizu::mizu_send(ch, setNames(paste0("s", 1:30000), paste0("n", 1:30000)))
+"""
+
+
+def test_r_peer_attributed_strings_error(r_mizu):
+    # an attributed string vector crosses as MIZS with the attrs blob:
+    # the view tier declines it informatively, never a silent drop
+    ch = pymizu.Channel.create(R_MIZS_ATTRS, launcher=r_mizu)
+    try:
+        with pytest.raises(pymizu.MizuError, match="do not cross"):
+            ch.recv(60)
+    finally:
+        ch.close()
+
+
 R_MIZH_ECHO = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))

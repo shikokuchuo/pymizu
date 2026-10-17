@@ -433,6 +433,30 @@ def test_nested_uint64_converts_with_a_warning():
     assert np.isnan(got[0][0])
 
 
+def test_buffer_conversion_rows():
+    # the conversion table's prefixed-longlong and uint64 rows: ctypes
+    # buffers export '<q' and array's uint64 exports 'Q', both missing the
+    # identity dtype map, so the foreign buffer tier converts them
+    import array
+    import ctypes
+
+    h, p = foreign_pair()
+    try:
+        mv = memoryview((ctypes.c_longlong * 3)(1, -2, 3))
+        assert h.send(mv) is True
+        got = p.recv(10)
+        assert got.dtype == np.int64
+        assert got.tolist() == [1, -2, 3]
+        with pytest.warns(RuntimeWarning, match="beyond"):
+            assert h.send(array.array("Q", [1, 2**60])) is True
+        got = p.recv(10)
+        assert got.dtype == np.float64
+        assert got[0] == 1.0 and np.isnan(got[1])
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_temporal_shapes():
     # datetime64 both directions: [W] converts to days (exact), the time
     # units to epoch-seconds doubles (sub-us resolution rounds)
@@ -766,6 +790,25 @@ def test_corrupt_and_unknown_streams():
     ]:
         with pytest.raises(pymizu.MizuError, match="pymizu"):
             _read(hexstream)
+
+
+def test_read_stream_codec_corrupt():
+    # the compact codec's own corrupt arms: an empty stream, an unknown
+    # scalar tag inside a container, and invalid UTF-8 (a real decode
+    # error, not the generic corrupt verdict)
+    with pytest.raises(pymizu.MizuError, match="corrupt payload slot"):
+        _pymizu._read_stream(b"")
+    with pytest.raises(pymizu.MizuError, match="corrupt payload slot"):
+        _pymizu._read_stream(b"P" + b"l" + (1).to_bytes(4, "little") + b"z")
+    with pytest.raises(UnicodeDecodeError):
+        _pymizu._read_stream(
+            b"P"
+            + b"l"
+            + (1).to_bytes(4, "little")
+            + b"s"
+            + (1).to_bytes(4, "little")
+            + b"\xff"
+        )
 
 
 def test_random_corrupt_streams():

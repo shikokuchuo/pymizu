@@ -31,6 +31,7 @@ from tests.helpers import (
     raise_long_named_short_message,
     raise_system_exit,
     raise_unprintable,
+    raise_with_nonint_map_index,
     raise_with_surrogate_message,
     takes_timeout,
     trace_to_file,
@@ -56,6 +57,27 @@ def test_submit_collect(pool):
 def test_task_result_alias(pool):
     t = pool.submit(pow, 2, 10)
     assert t.result(timeout=5) == 1024
+
+
+def test_submit_argument_validation(pool):
+    with pytest.raises(TypeError):
+        pool._h.submit()
+    with pytest.raises(TypeError):
+        pool._h.stop(1, 2)
+    with pytest.raises(TypeError):
+        pool._h.ready_wait()
+    with pytest.raises(TypeError):
+        _pymizu._pool_worker_join("x")
+    t = pool.submit(len, [1])
+    with pytest.raises(TypeError):
+        t.collect(1, 2)
+    assert t.collect(timeout=5) == 1
+
+
+def test_submit_on_destroyed_pool(pool):
+    pool.destroy()
+    with pytest.raises(ValueError, match="pool handle is closed"):
+        pool.submit(len, [1])
 
 
 def test_submit_kwargs(pool):
@@ -184,6 +206,17 @@ def test_task_error_surrogate_message_blanks(pool):
     assert str(exc) == "ValueError: "
 
 
+def test_task_error_nonint_map_index_dropped(pool):
+    # a user exception's non-int _pymizu_map_index is dropped silently —
+    # it never masquerades as a runner's element index
+    with pytest.raises(pymizu.TaskError) as exc_info:
+        pool.submit(raise_with_nonint_map_index).collect(timeout=10)
+    exc = exc_info.value
+    assert exc.remote_type == "ValueError"
+    assert "boom" in str(exc)
+    assert not hasattr(exc, "index")
+
+
 def test_task_warning_passes_through(pool):
     assert pool.submit(warn_then, 21).collect(timeout=5) == 42
 
@@ -247,6 +280,23 @@ def test_submit_ring_full_raises():
         blocker.collect(timeout=10)
         for t in fills:  # accepted handles stay valid and collectible
             assert t.collect(timeout=5) == 1
+    finally:
+        p.stop()
+
+
+def test_submit_runner_ring_full_raises():
+    # a runner submission polls the same ring and raises the same error
+    p = pymizu.Pool.create(1, injection_cap=2)
+    try:
+        blocker = p.submit(time.sleep, 2)
+        runner = _pymizu._runner_frame("/mizu_x", 0, None)
+        with pytest.raises(pymizu.SubmitTimeoutError):
+            for _ in range(8):
+                p._h._submit_runner(runner, timeout=0)
+        blocker.collect(timeout=10)
+        p.stop()
+        with pytest.raises(pymizu.MizuError, match="pool handle is closed"):
+            p._h._submit_runner(runner, timeout=0)
     finally:
         p.stop()
 
@@ -858,6 +908,26 @@ def test_fork_guard(pool):
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 0
     assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_child_stop():
+    # the child's stop() detaches its own copy as a no-op, never stopping
+    # the parent's pool
+    pool = pymizu.Pool.create(1)
+    try:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os._exit(0 if pool.stop() is True else 1)
+            except Exception:
+                os._exit(1)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
+    finally:
+        pool.stop()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")

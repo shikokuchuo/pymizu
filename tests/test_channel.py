@@ -218,8 +218,13 @@ def test_channel_verb_argument_validation(echo):
     with pytest.raises(ValueError, match="n must be at least 1"):
         echo.recv_batch(0)
     with pytest.raises(TypeError):
+        echo.recv_batch("x")
+    with pytest.raises(TypeError):
+        echo._h.recv(1, 2)
+    with pytest.raises(TypeError):
         echo.close("x")
     assert echo.alive() is True
+    assert echo._h.close() is True  # no timeout: the C-level default arm
     assert echo.close() is True
     assert echo.alive() is False
 
@@ -301,8 +306,12 @@ def test_validation():
         pymizu.Channel.create("pass", capacity=3)
     with pytest.raises(ValueError):
         pymizu.Channel.create("pass", slot_size=100)
+    with pytest.raises(ValueError):
+        pymizu.Channel.create("pass", arena_size=100)
     with pytest.raises(TypeError):
         pymizu.Channel.create("")
+    with pytest.raises(TypeError):
+        pymizu._pymizu._channel_new(8, 64, 0)  # missing spin/drop
 
 
 @pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
