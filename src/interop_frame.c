@@ -1517,6 +1517,8 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     Py_ssize_t len;
     const char *u = PyUnicode_AsUTF8AndSize(s, &len);
     if (u == NULL) goto fc_malformed;
+    /* stamp name_off[i] ahead of the scan: the span of name i-1 ends at it */
+    fc->name_off[i] = (int32_t) name_len;
     for (int j = 0; j < i; j++)
       if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) ==
             (size_t) len &&
@@ -1526,7 +1528,6 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     if (nb == NULL) goto fc_nomem;
     fc->names = nb;
     memcpy(fc->names + name_len, u, (size_t) len);
-    fc->name_off[i] = (int32_t) name_len;
     name_len += (size_t) len;
   }
   fc->name_off[ncols] = (int32_t) name_len;

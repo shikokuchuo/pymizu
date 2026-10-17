@@ -919,8 +919,8 @@ def test_frame_rebuild_rejects_malformed_states():
         (["a"], [("b", [1])], None),  # a non-bool in a bool column
         (["a"], [("i", [2**40])], None),  # an int32 overflow
         (["a"], [("t", [0], "UTC", "X")], None),  # a bad unit byte
-        # duplicate names (non-adjacent; an adjacent dup slips the check —
-        # name_off[i] is written after the scan in its own iteration)
+        # duplicate names, adjacent and not
+        (["a", "a"], [("i", [1]), ("i", [2])], None),
         (["a", "b", "a"], [("i", [1]), ("i", [2]), ("i", [3])], None),
         (["a"], [("i", [1, 2])], ["r1", 2]),  # a non-str row name
         (["a"], [("i", [1, 2])], ["bad\udce9r", "r2"]),  # a surrogate one

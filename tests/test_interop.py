@@ -549,6 +549,29 @@ def test_frame_scalar_int_column():
     assert _pymizu._write_stream(f)  # re-emits without a NULL memcpy
 
 
+def test_frame_adjacent_duplicate_names_rejected():
+    # no real producer sends duplicate names; a torn stream could, and an
+    # adjacent pair must trip the same check as a non-adjacent one
+    def key(s):
+        return len(s).to_bytes(4, "little") + s.encode()
+
+    def sval(s):
+        return b"\x04" + key(s)
+
+    s = bytearray(b"I\x01")
+    s += b"\x0f"  # ATTR
+    s += b"\x0c" + (2).to_bytes(8, "little")  # LIST n=2
+    s += b"\x02" + (1).to_bytes(8, "little", signed=True)  # INT 1
+    s += b"\x02" + (2).to_bytes(8, "little", signed=True)  # INT 2
+    s += b"\x0d" + (3).to_bytes(8, "little")  # DICT n=3
+    names = b"\x0b" + (2).to_bytes(8, "little") + key("a") + key("a")
+    s += key("names") + names
+    s += key("class") + sval("data.frame")
+    s += key("row.names") + b"\x02" + (1).to_bytes(8, "little", signed=True)
+    with pytest.raises(pymizu.MizuError, match="duplicate column names"):
+        _pymizu._read_stream(bytes(s))
+
+
 def test_arrow_temporal_columns():
     h, p = foreign_pair()
     t = pa.table(

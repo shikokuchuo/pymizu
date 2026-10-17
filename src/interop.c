@@ -2151,6 +2151,8 @@ static int frame_names_build(frame_cols *fc, const attr_ent *nm) {
       s = PyUnicode_AsUTF8AndSize(o, &len);
       if (s == NULL) return -1;
     }
+    /* stamp name_off[i] ahead of the scan: the span of name i-1 ends at it */
+    fc->name_off[i] = (int32_t) name_len;
     for (int j = 0; j < i; j++)
       if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) ==
             (size_t) len &&
@@ -2171,7 +2173,6 @@ static int frame_names_build(frame_cols *fc, const attr_ent *nm) {
     }
     fc->names = nb;
     memcpy(fc->names + name_len, s, (size_t) len);
-    fc->name_off[i] = (int32_t) name_len;
     name_len += (size_t) len;
   }
   fc->name_off[ncols] = (int32_t) name_len;
