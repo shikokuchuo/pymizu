@@ -1031,7 +1031,7 @@ def _ix_vec(tag, data, count):
     return bytes([tag]) + count.to_bytes(8, "little") + data
 
 
-def _ix_frame(cols, names, nrow):
+def _ix_frame(cols, names, nrow, rownames=None):
     s = bytearray(b"\x0f")
     s += b"\x0c" + len(cols).to_bytes(8, "little")
     for c in cols:
@@ -1046,12 +1046,15 @@ def _ix_frame(cols, names, nrow):
             s += _ix_strelt(nm)
     s += _ix_key("class") + _ix_sval("data.frame")
     s += _ix_key("row.names")
-    s += _ix_vec(
-        0x07,
-        (-(2**31)).to_bytes(4, "little", signed=True)
-        + (-nrow).to_bytes(4, "little", signed=True),
-        2,
-    )
+    if rownames is not None:
+        s += rownames
+    else:
+        s += _ix_vec(
+            0x07,
+            (-(2**31)).to_bytes(4, "little", signed=True)
+            + (-nrow).to_bytes(4, "little", signed=True),
+            2,
+        )
     return b"I\x01" + bytes(s)
 
 
@@ -1518,3 +1521,207 @@ def test_write_runner_hook():
     assert len(b2) > len(b)
     with pytest.raises(TypeError):
         _pymizu._write_runner(42, 1, None, 1, 0)
+
+
+def test_container_truncated_forms():
+    # the strv/dict readers' cursor-failure arms (the cursor owns UTF-8
+    # validity, so malformed bytes land on the same arms)
+    cases = [
+        # a strv short an element
+        b"I\x01\x0b" + (2).to_bytes(8, "little") + _ix_strelt("a"),
+        # an invalid-UTF-8 strv element
+        b"I\x01\x0b"
+        + (2).to_bytes(8, "little")
+        + _ix_strelt("a")
+        + b"\x01\x00\x00\x00\xff",
+        # a dict key short of its declared length
+        b"I\x01\x0d" + (1).to_bytes(8, "little") + b"\x05\x00\x00\x00ab",
+        # an invalid-UTF-8 dict key
+        b"I\x01\x0d"
+        + (1).to_bytes(8, "little")
+        + b"\x01\x00\x00\x00\xff"
+        + _ix_int(1),
+        # a value missing after its key
+        b"I\x01\x0d" + (1).to_bytes(8, "little") + _ix_key("a"),
+        # a key item that is not a string
+        b"I\x01\x0d" + (1).to_bytes(8, "little") + _ix_int(1) + _ix_int(2),
+    ]
+    for s in cases:
+        with pytest.raises(pymizu.MizuError):
+            _read(s)
+
+
+def test_attr_dict_truncated_forms():
+    # the attr dict reader's cursor-failure arms
+    def attr_val(body):
+        return b"I\x01\x0f" + _ix_real(1.5) + body
+
+    # a key item that is not a string
+    with pytest.raises(pymizu.MizuError):
+        _read(attr_val(b"\x0d" + (1).to_bytes(8, "little") + _ix_int(1)))
+    # a value missing after its key
+    with pytest.raises(pymizu.MizuError):
+        _read(attr_val(b"\x0d" + (1).to_bytes(8, "little") + _ix_key("k")))
+
+
+def test_attr_strv_dim_no_home():
+    # an attributed character vector declines (a character matrix's shape)
+    s = bytearray(b"I\x01\x0f")
+    s += _ix_vec(0x0B, _ix_strelt("a") + _ix_strelt("b"), 2)
+    s += b"\x0d" + (1).to_bytes(8, "little")
+    s += _ix_key("dim") + _ix_vec(0x07, struct.pack("<i", 2), 1)
+    with pytest.raises(pymizu.MizuError, match="attributed character vector"):
+        _read(bytes(s))
+
+
+def test_difftime_out_of_range_no_home():
+    # 1e13 seconds is past the timedelta64[us] span
+    s = bytearray(b"I\x01\x0f")
+    s += _ix_vec(0x08, struct.pack("<d", 1e13), 1)
+    s += b"\x0d" + (2).to_bytes(8, "little")
+    s += _ix_key("class") + _ix_sval("difftime")
+    s += _ix_key("units") + _ix_sval("secs")
+    with pytest.raises(
+        pymizu.MizuError, match="no portable home for this difftime value"
+    ):
+        _read(bytes(s))
+
+
+def test_frame_row_names_malformed():
+    intv3 = _ix_vec(0x07, struct.pack("<3i", 1, 2, 3), 3)
+    strv3 = _ix_vec(
+        0x0B, _ix_strelt("a") + _ix_strelt("b") + _ix_strelt("c"), 3
+    )
+    cases = [
+        (intv3, "not the row count"),  # 3 int row names, 2 rows
+        (_ix_int(5), "not the row count"),  # a scalar row name, 2 rows
+        (strv3, "not int or character"),  # 3 string row names, 2 rows
+    ]
+    col = _ix_vec(0x07, struct.pack("<2i", 1, 2), 2)
+    for rn, match in cases:
+        with pytest.raises(pymizu.MizuError, match=match):
+            _read(_ix_frame([col], ["a"], 2, rownames=rn))
+    # an NA in a character row.names
+    s = bytearray(b"\x0f")
+    s += b"\x0c" + (1).to_bytes(8, "little") + col
+    s += b"\x0d" + (3).to_bytes(8, "little")
+    s += _ix_key("names") + _ix_sval("a")
+    s += _ix_key("class") + _ix_sval("data.frame")
+    s += _ix_key("row.names")
+    s += (
+        b"\x0b"
+        + (2).to_bytes(8, "little")
+        + _ix_strelt("x")
+        + _ix_strelt(None)
+    )
+    with pytest.raises(pymizu.MizuError, match="an NA row name"):
+        _read(b"I\x01" + bytes(s))
+
+
+def test_frame_attributed_list_no_home():
+    # a list with names/class/row.names but not the data.frame class
+    s = bytearray(b"\x0f")
+    s += b"\x0c" + (1).to_bytes(8, "little")
+    s += _ix_vec(0x07, struct.pack("<2i", 1, 2), 2)
+    s += b"\x0d" + (3).to_bytes(8, "little")
+    s += _ix_key("names") + _ix_sval("a")
+    s += _ix_key("class") + _ix_sval("foo")
+    s += _ix_key("row.names") + _ix_int(5)
+    with pytest.raises(pymizu.MizuError, match="an attributed list"):
+        _read(b"I\x01" + bytes(s))
+
+
+def test_frame_dict_scalar_column_reemits():
+    # a 1-row frame's factor column homes the scalar-code emit; the NA code
+    # crosses as the int64 sentinel
+    def factor(code):
+        s = bytearray(b"\x0f")
+        s += _ix_int(code)
+        s += b"\x0d" + (2).to_bytes(8, "little")
+        s += _ix_key("class") + _ix_sval("factor")
+        s += _ix_key("levels")
+        s += (
+            b"\x0b"
+            + (2).to_bytes(8, "little")
+            + _ix_strelt("a")
+            + _ix_strelt("b")
+        )
+        return bytes(s)
+
+    f = _read(_ix_frame([factor(2), factor(-(2**63))], ["a", "b"], 1))
+    assert f.to_dict() == {"a": ["b"], "b": [None]}
+    out = _read(_pymizu._write_stream(f))
+    assert out.to_dict() == {"a": ["b"], "b": [None]}
+
+
+def test_frame_u64_clean_reemit():
+    # the 'I' frame emit's uint64 conversion: lanes within 2^53 convert
+    # exact (past-2^53 lanes NA with a warning, covered elsewhere)
+    t = pa.table({"u": pa.array([1, 2, 3], type=pa.uint64())})
+    f = pymizu.Frame.from_arrow(t)
+    out = _read(_pymizu._write_stream(f))
+    assert out.to_dict()["u"].tolist() == [1.0, 2.0, 3.0]
+
+
+def test_writer_declines_buffer_forms():
+    with pytest.raises(pymizu.DeclinedError, match="past 32 dimensions"):
+        _pymizu._write_stream(np.zeros([1] * 33))
+    with pytest.raises(pymizu.DeclinedError, match="below microsecond"):
+        _pymizu._write_stream(np.array([1], dtype="M8[ps]"))
+    # a lone-surrogate dict key
+    with pytest.raises(pymizu.DeclinedError, match="not writable as UTF-8"):
+        _pymizu._write_stream({"\ud800": 1})
+    # a strided array is the top-level F-order form only — never nested
+    with pytest.raises(pymizu.DeclinedError, match="strided array nested"):
+        _pymizu._write_stream([np.arange(10)[::2]])
+
+
+def test_frame_row_names_reemit_forms():
+    # a 1-row frame's character row name re-emits as the scalar form
+    f = _pymizu._frame_rebuild(["a"], [("i", [5])], ["x"])
+    assert f.row_names == ["x"]
+    out = _read(_pymizu._write_stream(f))
+    assert out.row_names == ["x"] and out.to_dict()["a"].tolist() == [5]
+    # a lone-surrogate row name declines the emit (the row_names getter
+    # hands out the live list)
+    f.row_names[0] = "\ud800"
+    with pytest.raises(pymizu.DeclinedError, match="not writable as UTF-8"):
+        _pymizu._write_stream(f)
+    g = _pymizu._frame_rebuild(["a"], [("i", [1, 2])], ["x", "y"])
+    g.row_names[1] = "\ud800"
+    with pytest.raises(pymizu.DeclinedError, match="not writable as UTF-8"):
+        _pymizu._write_stream(g)
+
+
+def test_frame_emit_overflow_arms():
+    # the inline-budget pass of a foreign send: a column body past the slot
+    # payload flips the walk to count-only (the reservation's second walk
+    # writes it whole) — one frame per overflowing column kind
+    h, p = foreign_pair()
+    try:
+        t = pa.table(
+            {
+                "f": pa.array(
+                    [["u", "v"][k % 2] for k in range(300)]
+                ).dictionary_encode()
+            }
+        )
+        assert h.send(pymizu.Frame.from_arrow(t)) is True
+        d = p.recv(5).to_dict()
+        assert d["f"][:3] == ["u", "v", "u"] and len(d["f"]) == 300
+        t = pa.table(
+            {"d": pa.array([19000 + k for k in range(300)], type=pa.date32())}
+        )
+        assert h.send(pymizu.Frame.from_arrow(t)) is True
+        assert p.recv(5).to_dict()["d"][0] == np.datetime64("2022-01-08")
+        # int32 row names: the buffer form's vec body overflows likewise
+        g = _pymizu._frame_rebuild(
+            ["a"], [("i", list(range(200)))], list(range(200))
+        )
+        assert h.send(g) is True
+        out = p.recv(5)
+        assert out.to_dict()["a"].tolist() == list(range(200))
+        assert list(out.row_names) == list(range(200))
+    finally:
+        p.destroy()
+        h.destroy()

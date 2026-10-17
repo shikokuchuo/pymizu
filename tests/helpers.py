@@ -477,7 +477,9 @@ def foreign_pair(caps=0):
 _RELEASE = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 _GET_SCHEMA = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 _GET_NEXT = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
-_GET_LAST_ERROR = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p)
+# c_void_p, not c_char_p: a bytes return warns "memory leak in callback
+# function" (the char* points into a conversion buffer ctypes drops)
+_GET_LAST_ERROR = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)
 
 
 class _ArrowSchema(ctypes.Structure):
@@ -534,10 +536,14 @@ class RawArrowStream:
     valid). released_batches / released_stream count the release callbacks.
     """
 
-    def __init__(self, columns):
+    def __init__(self, columns, *, fail=None):
+        """fail: None, or "schema" (get_schema errors with a message),
+        "schema_silent" (get_schema errors, get_last_error NULL), or
+        "bad_schema" (get_schema serves a NULL-format schema)."""
         self.released_batches = 0
         self.released_stream = 0
         self._served = 0
+        self._fail = fail
         self._keep = []
         ncols = len(columns)
         nbatches = len(columns[0][2])
@@ -581,6 +587,7 @@ class RawArrowStream:
                     ctype = {
                         "i": ctypes.c_int32,
                         "l": ctypes.c_int64,
+                        "L": ctypes.c_uint64,
                         "g": ctypes.c_double,
                         "tss:": ctypes.c_int64,
                     }[fmt]
@@ -616,10 +623,21 @@ class RawArrowStream:
             self._keep.extend(children)
             self._keep.extend([child_ptrs, root_buf, root_cb])
         # the stream struct and its capsule
+        self._err_buf = (
+            None
+            if fail in (None, "schema_silent")
+            else ctypes.create_string_buffer(b"boom")
+        )
         self._schema_cb = _GET_SCHEMA(self._get_schema)
         self._next_cb = _GET_NEXT(self._get_next)
         self._error_cb = _GET_LAST_ERROR(self._get_last_error)
-        self._release_cb = _RELEASE(self._on_stream_release)
+        # a failing producer's releases are NULL: a Python callback would
+        # run with the decline in flight (the SystemError clobbers it)
+        self._release_cb = (
+            _RELEASE()
+            if fail is not None
+            else _RELEASE(self._on_stream_release)
+        )
         self._stream = _ArrowArrayStream()
         self._stream.get_schema = self._schema_cb
         self._stream.get_next = self._next_cb
@@ -657,13 +675,19 @@ class RawArrowStream:
         self.released_stream += 1
 
     def _get_schema(self, st, out):
+        if self._fail in ("schema", "schema_silent"):
+            return 1
         s = _ArrowSchema.from_address(out)
-        s.format = b"+s"
+        s.format = None if self._fail == "bad_schema" else b"+s"
         s.name = b""
         s.flags = 0
         s.n_children = len(self._schema_children)
         s.children = self._schema_children
-        s.release = _RELEASE(self._on_schema_release)
+        s.release = (
+            _RELEASE()
+            if self._fail is not None
+            else _RELEASE(self._on_schema_release)
+        )
         self._keep.append(s.release)
         return 0
 
@@ -680,7 +704,9 @@ class RawArrowStream:
         return 0
 
     def _get_last_error(self, st):
-        return b""
+        if self._err_buf is None:
+            return None
+        return ctypes.addressof(self._err_buf)
 
     def __arrow_c_stream__(self):
         return self._capsule

@@ -1702,6 +1702,70 @@ report2(c(1L, NA), c(1, NA))
         ch.close()
 
 
+def test_r_region_readers(r_mizu):
+    np = pytest.importorskip("numpy")
+    # the region-tier readers (and two copy-tier dim arms): R sends, Python
+    # asserts the home or the read error and acks, R stopifnot()s the ack
+    src = r"""
+report <- function(x) {
+  mizu::mizu_send(ch, x)
+  stopifnot(isTRUE(mizu::mizu_recv(ch, timeout = 60)))
+}
+report(matrix(c(TRUE, NA), 2))
+report(matrix(c(1L, NA), 2))
+report(structure(runif(40000) * 1e9, class = c("POSIXct", "POSIXt")))
+report(structure(runif(40000) * 100, class = "difftime", units = "hours"))
+report(array(runif(40000), dim = c(40000L, rep(1L, 39L))))
+report(data.frame(z = complex(40000)))
+report(structure(as.list(runif(40000)), names = paste0("k", 1:40000),
+                 class = "foo"))
+report(data.frame(t = structure(rep(1e13, 40000),
+                                class = c("POSIXct", "POSIXt"))))
+report(data.frame(u = structure(rep(1e13, 40000), class = "difftime",
+                                units = "secs")))
+report(data.frame(d = structure(rep(3e9, 40000), class = "Date")))
+report(data.frame(x = 1:40000, l = I(as.list(1:40000))))
+report(structure(1e13, class = "difftime", units = "secs"))
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        m = ch.recv(60)  # a logical matrix with NA: int32, the sentinel
+        assert m.dtype == np.int32 and m.shape == (2, 1)
+        assert m[0, 0] == 1 and m[1, 0] == -(2**31)
+        ch.send(True)
+        m = ch.recv(60)  # an integer matrix with NA: float64, NA_real_
+        assert m.dtype == np.float64 and m.shape == (2, 1)
+        assert m[0, 0] == 1 and np.isnan(m[1, 0])
+        ch.send(True)
+        m = ch.recv(60)  # a region POSIXct leaf
+        assert m.dtype == np.dtype("datetime64[us]") and m.shape == (40000,)
+        ch.send(True)
+        m = ch.recv(60)  # a region difftime leaf, hours to µs
+        assert m.dtype == np.dtype("timedelta64[us]") and m.shape == (40000,)
+        ch.send(True)
+        with pytest.raises(pymizu.MizuError, match="a dim past 32 axes"):
+            ch.recv(60)
+        ch.send(True)
+        # the complex column of a region frame
+        f = ch.recv(60)
+        assert f.to_dict()["z"].dtype == np.complex128
+        ch.send(True)
+        # the read errors (each payload consumed, the channel unharmed)
+        for msg in [
+            "attributed list",
+            "POSIXct value",
+            "difftime value",
+            "fractional Date",
+            "frame column of this form",
+            "difftime value",
+        ]:
+            with pytest.raises(pymizu.MizuError, match=msg):
+                ch.recv(60)
+            ch.send(True)
+    finally:
+        ch.close()
+
+
 def test_crosslang_negative_rows(r_mizu):
     np = pytest.importorskip("numpy")
     # R-side send-time declines (mizu_error_not_portable), reported back

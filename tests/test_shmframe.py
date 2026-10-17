@@ -1020,3 +1020,29 @@ def test_provenance_polars_short_strings_by_value():
     p2.destroy()
     p1.destroy()
     h1.destroy()
+
+
+def test_region_frame_scalar_string_column_reemits():
+    # a 1-row region-backed frame's string column (FCOL_STR64, n == 1)
+    # re-emits through the 'I' writer's MIZS-block walk — the valid and
+    # NA lanes alike; a masked region bool column walks its bitmap
+    t = pa.table(
+        {
+            "s": pa.array([None], type=pa.utf8()),
+            "p": pa.array(["y" * 40000]),
+            "b": pa.array([None], type=pa.bool_()),
+        }
+    )
+    h, p = same_pair()
+    try:
+        h.send(pymizu.Frame.from_arrow(t))
+        f = p.recv(10)
+        assert f.to_dict()["p"] == ["y" * 40000]
+        out = _pymizu._read_stream(_pymizu._write_stream(f))
+        d = out.to_dict()
+        assert d["s"] == [None]
+        assert d["p"] == ["y" * 40000]
+        assert d["b"].tolist() == [-(2**31)]
+    finally:
+        p.destroy()
+        h.destroy()

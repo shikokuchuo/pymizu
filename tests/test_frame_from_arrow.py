@@ -762,9 +762,97 @@ def test_from_arrow_producer_failures():
     with pytest.raises(pymizu.MizuError, match="no stream today"):
         pymizu.Frame.from_arrow(BadExport())
 
+    # the export raising ImportError names the missing pyarrow
+    class NoPyArrow:
+        def __arrow_c_stream__(self):
+            raise ImportError("No module named 'pyarrow'")
+
+    with pytest.raises(pymizu.MizuError, match="needs pyarrow"):
+        pymizu.Frame.from_arrow(NoPyArrow())
+
+    # a non-capsule return
+    class BadCapsule:
+        def __arrow_c_stream__(self):
+            return 42
+
+    with pytest.raises(ValueError, match="PyCapsule"):
+        pymizu.Frame.from_arrow(BadCapsule())
+
+    # get_schema fails, with and without an error string
+    prod = RawArrowStream([("i", "i", [([1], None)])], fail="schema")
+    with pytest.raises(pymizu.MizuError, match="Arrow export failed: boom"):
+        pymizu.Frame.from_arrow(prod)
+    prod = RawArrowStream([("i", "i", [([1], None)])], fail="schema_silent")
+    with pytest.raises(pymizu.MizuError, match="unknown error"):
+        pymizu.Frame.from_arrow(prod)
+
     # a non-struct root (a bare array, not a table)
     with pytest.raises(pymizu.MizuError, match="not a struct"):
         pymizu.Frame.from_arrow(pa.chunked_array([[1.5, 2.5]]))
+
+
+def test_from_arrow_dict_index_widths():
+    # every dictionary index width: int32 adopts, the rest take the copy
+    # arm's per-width reads; the values read back identical
+    for it, adopts in [
+        (pa.int8(), False),
+        (pa.uint8(), False),
+        (pa.int16(), False),
+        (pa.uint16(), False),
+        (pa.int32(), True),
+        (pa.uint32(), False),
+        (pa.int64(), False),
+        (pa.uint64(), False),
+    ]:
+        arr = pa.DictionaryArray.from_arrays(
+            pa.array([0, 1, 0, 1], type=it), pa.array(["a", "b"])
+        )
+        f = pymizu.Frame.from_arrow(pa.table({"f": arr}))
+        assert _pymizu._frame_debug(f)["adopted"] == (adopts,)
+        assert f.to_dict()["f"] == ["a", "b", "a", "b"]
+
+
+def test_from_arrow_sliced_u64_with_nulls():
+    # the uint64 copy arm's owned-bitmap form (the adoption's offset gate
+    # declines): the null converts to NaN in the float64 home
+    big = pa.array([2**63 + 1, 5, None, 7], type=pa.uint64())
+    f = pymizu.Frame.from_arrow(pa.table({"u": big}).slice(1))
+    assert not any(_pymizu._frame_debug(f)["adopted"])
+    d = f.to_dict()["u"]
+    assert d[0] == 5.0 and np.isnan(d[1]) and d[2] == 7.0
+
+
+def test_from_arrow_masked_i64_sentinel_warns():
+    # a genuine INT64_MIN on a valid lane is indistinguishable from a null
+    # in the masked read — the fused rule's warning, honored as an error
+    t = pa.table({"i": pa.array([-(2**63), None], type=pa.int64())})
+    f = pymizu.Frame.from_arrow(t)
+    with pytest.warns(RuntimeWarning, match="NA_integer64_"):
+        assert f.to_dict()["i"].tolist() == [-(2**63), -(2**63)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="NA_integer64_"):
+            f.to_dict()
+
+
+def test_frame_region_stage_malformed_row_names_falls_back():
+    # a Frame whose row_names no longer matches the row count: the MIZL
+    # stage's blob writer declines it, and the pickle fallback carries the
+    # malformed state to the receiver (the row_names getter is live)
+    f = _pymizu._frame_rebuild(
+        ["a"],
+        [("i", list(range(20000)))],
+        [f"r{k}" for k in range(20000)],
+    )
+    f.row_names.pop()
+    h, p = same_pair()
+    try:
+        assert h.send(f) is True
+        with pytest.raises(ValueError, match="malformed frame rebuild"):
+            p.recv(10)
+    finally:
+        p.destroy()
+        h.destroy()
 
 
 class UnknownNullsStream(RawArrowStream):

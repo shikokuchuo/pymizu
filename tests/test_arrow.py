@@ -504,6 +504,115 @@ def test_arrow_probe_error_propagates():
     h.destroy()
 
 
+def test_arrow_stream_schema_failures():
+    # a producer whose get_schema fails surfaces its error (or the neutral
+    # one); a NULL-format schema is the export-contract decline
+    h, p = foreign_pair()
+    try:
+        prod = RawArrowStream([("i", "x", [([1], None)])], fail="schema")
+        with pytest.raises(
+            pymizu.MizuError, match="Arrow export failed: boom"
+        ):
+            h.send(prod)
+        prod = RawArrowStream(
+            [("i", "x", [([1], None)])], fail="schema_silent"
+        )
+        with pytest.raises(pymizu.MizuError, match="unknown error"):
+            h.send(prod)
+        prod = RawArrowStream([("i", "x", [([1], None)])], fail="bad_schema")
+        with pytest.raises(pymizu.DeclinedError, match="invalid Arrow"):
+            h.send(prod)
+
+        # a non-capsule return
+        class BadCapsule:
+            def __arrow_c_stream__(self):
+                return 42
+
+        with pytest.raises(ValueError, match="PyCapsule"):
+            h.send(BadCapsule())
+
+        # the dunder raising ImportError names the missing pyarrow
+        class NoPyArrow:
+            def __arrow_c_stream__(self):
+                raise ImportError("No module named 'pyarrow'")
+
+        with pytest.raises(pymizu.DeclinedError, match="needs pyarrow"):
+            h.send(NoPyArrow())
+
+        # any other exception crosses as the export's failure message
+        class BadExport:
+            def __arrow_c_stream__(self):
+                raise RuntimeError("no stream today")
+
+        with pytest.raises(pymizu.DeclinedError, match="no stream today"):
+            h.send(BadExport())
+        # the channel still flows
+        assert h.send(1) is True
+        assert p.recv(5) == 1
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_arrow_array_pair_contract_violations():
+    # __arrow_c_array__ must return a (schema, array) capsule pair: the
+    # send fails informatively otherwise, on the first call or on the
+    # stream front-end's re-call (a string array's pair declines there)
+
+    class BadPair:
+        def __init__(self, result):
+            self._result = result
+
+        def __arrow_c_array__(self):
+            return self._result
+
+    class FlakyPair:
+        def __init__(self, second):
+            self._caps = pa.array(["a"]).__arrow_c_array__()
+            self._second = second
+            self._calls = 0
+
+        def __arrow_c_array__(self):
+            self._calls += 1
+            return self._caps if self._calls == 1 else self._second
+
+    class BoomArray:
+        def __getattr__(self, name):
+            raise RuntimeError("boom")
+
+    h, p = foreign_pair()
+    try:
+        with pytest.raises(TypeError, match="capsule pair"):
+            h.send(BadPair(42))
+        with pytest.raises(ValueError, match="PyCapsule"):
+            h.send(BadPair((None, None)))
+        with pytest.raises(TypeError, match="capsule pair"):
+            h.send(FlakyPair(42))
+        with pytest.raises(ValueError, match="PyCapsule"):
+            h.send(FlakyPair((None, None)))
+        with pytest.raises(RuntimeError, match="boom"):
+            h.send(BoomArray())
+        # the channel still flows
+        assert h.send(1) is True
+        assert p.recv(5) == 1
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_chunked_string_array_spills():
+    # a single-column stream past the inline budget: the 'I' value form is
+    # built into one malloc'd buffer, then staged over the bytes tiers
+    vals = [f"v{k}" * 20 for k in range(6000)]
+    h, p = foreign_pair()
+    try:
+        assert h.send(pa.chunked_array([vals[:3000], vals[3000:]])) is True
+        assert p.recv(5) == vals
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 # -- the channel gate ------------------------------------------------------
 
 

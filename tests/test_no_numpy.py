@@ -268,6 +268,33 @@ def test_interop_temporal_frame_without_numpy(tmp_path):
     )
 
 
+def test_difftime_read_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import struct
+
+        from pymizu import _pymizu
+
+        def sval(v):
+            b = v.encode()
+            return bytes([0x04]) + len(b).to_bytes(4, "little") + b
+
+        # a difftime realv: the temporal homes need numpy
+        s = bytearray([0x49, 0x01, 0x0F])
+        s += bytes([0x08]) + (1).to_bytes(8, "little") + struct.pack("<d", 1.5)
+        s += bytes([0x0D]) + (2).to_bytes(8, "little")
+        s += (5).to_bytes(4, "little") + b"class" + sval("difftime")
+        s += (5).to_bytes(4, "little") + b"units" + sval("secs")
+        try:
+            _pymizu._read_stream(bytes(s))
+            raise SystemExit("no decline")
+        except Exception as e:
+            assert "numpy" in str(e)
+        """,
+    )
+
+
 def test_tree_wrap_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,
@@ -419,6 +446,7 @@ def test_from_arrow_without_numpy(tmp_path):
             [
                 ("i", "i", [([10, 20, 30], [1, 0, 1])]),
                 ("l", "l", [([10, 20, 30], [1, 0, 1])]),
+                ("L", "u", [([10, 20, 30], [1, 0, 1])]),
                 ("g", "x", [([1.5, 2.5, 3.5], [0, 1, 1])]),
                 ("u", "s", [(([0, 1, 2, 3], b"abc"), [1, 1, 0])]),
             ]
@@ -429,6 +457,7 @@ def test_from_arrow_without_numpy(tmp_path):
         # garbage from the producer's buffers
         assert list(d["i"].cast("i")) == [10, -2147483648, 30]
         assert list(d["l"].cast("q")) == [10, -9223372036854775808, 30]
+        assert list(d["u"].cast("q")) == [10, -9223372036854775808, 30]
         xv = d["x"].cast("d")
         assert xv[0] != xv[0] and xv[1] == 2.5  # the NA_real_ payload
         assert d["s"] == ["a", "b", None]
