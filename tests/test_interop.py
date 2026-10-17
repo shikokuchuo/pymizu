@@ -1974,6 +1974,9 @@ def test_overflow_dim_intv_body():
         h.destroy()
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
+)
 def test_write_hooks_write_pass_failure():
     # a PEP 688 exporter whose __buffer__ fails on the write pass: both
     # buffer requests decline the leaf, the deterministic second pass then

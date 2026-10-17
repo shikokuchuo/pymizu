@@ -151,7 +151,8 @@ def test_nested_submit_keeps_the_foreign_result_policy(r_pool):
 
 def test_collect_any_all_cross_language(r_pool):
     t1 = r_pool.submit(pymizu.call(source="1 + 1"))
-    t2 = r_pool.submit(pymizu.call(source='stop("boom")'))
+    # the sleep keeps the error from winning the collect_any race
+    t2 = r_pool.submit(pymizu.call(source='Sys.sleep(0.1)\nstop("boom")'))
     idx, value = r_pool.collect_any([t1, t2])
     assert (idx, value) == (0, 2)
     t3 = r_pool.submit(pymizu.call(source="1 + 1"))

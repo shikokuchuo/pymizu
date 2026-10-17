@@ -1,3 +1,4 @@
+import os
 import pickle
 import threading
 import warnings
@@ -566,8 +567,8 @@ def test_spec_zc_checkout_failure_abandons_to_value():
     # a failed spill checkout abandons the by-reference write: the task
     # falls back to by-value, never a partial stream — the failure here
     # (fd exhaustion) also fails the reservation, surfacing the ShmError
-    import fcntl
-    import resource
+    fcntl = pytest.importorskip("fcntl", reason="POSIX only")
+    resource = pytest.importorskip("resource", reason="POSIX only")
 
     import numpy as np
 
@@ -592,9 +593,20 @@ def test_spec_zc_checkout_failure_abandons_to_value():
             == 12_000
         )  # the free list holds only the small region
         big = np.arange(200_000, dtype=np.float64)
+        # arm the starvation: the fd count can drift, so probe each try
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+        armed = False
+        for _ in range(8):
+            resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+            try:
+                fd = os.open("/dev/null", os.O_RDONLY)
+            except OSError:
+                armed = True
+                break
+            os.close(fd)
         try:
+            if not armed:
+                pytest.skip("fd starvation not effective on this platform")
             with pytest.raises(pymizu.ShmError, match="payload region"):
                 pool.submit(pymizu.call("numpy.size", big))
         finally:
