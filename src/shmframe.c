@@ -169,7 +169,7 @@ static int pv_bitmap_eq(const uint8_t *x, const uint8_t *y, int64_t n) {
 }
 
 /* A returned `vu` (string_view) column verified read-only against a
-   recorded `u`/`U` column — the polars round trip, whose export re-views
+   recorded `U` column — the polars round trip, whose export re-views
    the strings: <= 12-byte values inline in the 16-byte views, longer ones
    pointing into the recorded leaf's packed bytes. Every check fails
    closed: a miss is the layout write, never wrong data. A pass proves the
@@ -183,16 +183,11 @@ static int pv_col_match_strview(const pv_col *c, const ArrowArray *a) {
     return 0;
   const uint8_t *offs = (const uint8_t *) c->bufs[1];
   const uint8_t *data = (const uint8_t *) c->bufs[2];
-  const int i64 = c->fmt[0] == 'U';   /* the caller pinned u/U */
-  /* the recorded data span: the offsets array's last entry */
+  /* the recorded column is always a region MIZS block (i64 offsets): a
+     copy-backed frame's 'u' column never registers — its export carries
+     no acquisition */
   int64_t span;
-  if (i64) {
-    memcpy(&span, offs + 8 * c->length, 8);
-  } else {
-    int32_t v;
-    memcpy(&v, offs + 4 * c->length, 4);
-    span = v;
-  }
+  memcpy(&span, offs + 8 * c->length, 8);
   if (data == NULL && span != 0) return 0;
   /* The variadic data buffers: slots [2, n_buffers - 1) — the last slot
      is the sizes array the re-viewing producers append (an all-inline
@@ -228,16 +223,8 @@ static int pv_col_match_strview(const pv_col *c, const ArrowArray *a) {
     if (!mizu_arrow_valid(a, k)) continue;   /* the bitmaps proved the set */
     /* the expected span, off the recorded offsets */
     int64_t lo, hi;
-    if (i64) {
-      memcpy(&lo, offs + 8 * k, 8);
-      memcpy(&hi, offs + 8 * k + 8, 8);
-    } else {
-      int32_t l, h;
-      memcpy(&l, offs + 4 * k, 4);
-      memcpy(&h, offs + 4 * k + 4, 4);
-      lo = l;
-      hi = h;
-    }
+    memcpy(&lo, offs + 8 * k, 8);
+    memcpy(&hi, offs + 8 * k + 8, 8);
     const uint8_t *vw = views + 16 * k;
     int32_t len;
     memcpy(&len, vw, 4);
@@ -281,7 +268,7 @@ static int pv_col_pins(const pv_col *c, const ArrowSchema *sc,
 /* One column's match against a registered record: name, format, length,
    offset, null count, every buffer pointer, and the dictionary
    sub-record. A format mismatch on a string column dispatches to the
-   read-only verification: the export's u/U re-viewed by polars comes
+   read-only verification: the export's U re-viewed by polars comes
    back vu. */
 static int pv_col_match(const pv_col *c, const char *name,
                         const ArrowSchema *sc, const ArrowArray *a) {
@@ -289,7 +276,7 @@ static int pv_col_match(const pv_col *c, const char *name,
     return 0;
   if (sc->format == NULL || c->fmt == NULL) return 0;
   if (strcmp(sc->format, c->fmt) != 0)
-    return (c->fmt[0] == 'u' || c->fmt[0] == 'U') && c->fmt[1] == '\0' &&
+    return c->fmt[0] == 'U' && c->fmt[1] == '\0' &&
       strcmp(sc->format, "vu") == 0 ? pv_col_match_strview(c, a) : 0;
   if ((sc->dictionary != NULL) != c->has_dict) return 0;
   if (a->length != c->length || a->offset != c->offset ||
