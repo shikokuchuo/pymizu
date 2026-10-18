@@ -152,7 +152,6 @@ enum { TU_DAY, TU_WEEK, TU_HOUR, TU_MIN, TU_SEC, TU_MS, TU_US, TU_NS,
    Date form wants days, the difftime form seconds). */
 static inline double mizu_py_temporal_scale(int unit) {
   switch (unit) {
-  case TU_WEEK: return 7.0;
   case TU_HOUR: return 3600.0;
   case TU_MIN: return 60.0;
   case TU_SEC: return 1.0;
