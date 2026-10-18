@@ -1037,6 +1037,19 @@ def test_int64_frame_column_genuine_sentinel_warns_foreign():
     h.destroy()
 
 
+def test_int64_frame_column_sentinel_warn_as_error():
+    # warnings-as-error: the masked walk's int64 collision warning raises
+    # out of the send (the conversion verdict declines the write)
+    h, p = foreign_pair(caps=63)
+    t = pa.table({"l": pa.array([-(2**63), None] * 10000, type=pa.int64())})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(RuntimeWarning, match="NA_integer64_ in R"):
+            h.send(t)
+    p.destroy()
+    h.destroy()
+
+
 def test_export_polars_smoke(echo):
     pl = pytest.importorskip("polars", reason="polars not installed")
     a = np.arange(100000, dtype=np.float64)

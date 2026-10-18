@@ -93,6 +93,16 @@ def test_pool_attach_bad_token():
         pymizu.Pool.attach("nope!")
 
 
+def test_channel_attach_unknown_token():
+    with pytest.raises(pymizu.MizuError):
+        pymizu.Channel.attach("0_1")
+
+
+def test_pool_attach_unknown_token():
+    with pytest.raises(pymizu.MizuError):
+        pymizu.Pool.attach("0_1")
+
+
 def test_channel_attach_peer():
     def launch(token):
         return subprocess.Popen([sys.executable, "-c", ATTACH_PEER, token])

@@ -274,6 +274,140 @@ def test_c_attach_validation():
         h.destroy()
 
 
+def test_c_attach_unknown_token():
+    from pymizu import _pymizu
+
+    with pytest.raises(pymizu.MizuError):
+        _pymizu._channel_attach("0_1")
+    with pytest.raises(TypeError):
+        _pymizu._channel_attach()
+
+
+def test_close_bad_timeout_type():
+    from pymizu import _pymizu
+
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    try:
+        with pytest.raises(TypeError):
+            h.close("soon")
+        with pytest.raises(TypeError):
+            h.close(1, 2)
+    finally:
+        h.destroy()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="RLIMIT_NOFILE is Unix-only")
+def test_send_spill_region_failure_raises():
+    # fd starvation fails the spill region create: the verb surfaces the
+    # handle's error, and the channel stays usable once it lifts
+    resource = pytest.importorskip("resource")
+    np = pytest.importorskip("numpy")
+    import fcntl
+
+    from pymizu import _pymizu
+
+    def open_fds():
+        n = 0
+        for fd in range(256):
+            try:
+                fcntl.fcntl(fd, fcntl.F_GETFD)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    try:
+        p.ready_set()
+        assert h.ready_wait(10)
+        big = np.arange(200_000, dtype=np.float64)
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        armed = False
+        for _ in range(8):
+            resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+            try:
+                fd = os.open("/dev/null", os.O_RDONLY)
+            except OSError:
+                armed = True
+                break
+            os.close(fd)
+        try:
+            if not armed:
+                pytest.skip("fd starvation not effective on this platform")
+            with pytest.raises(pymizu.MizuError):
+                h.send(big)
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        assert h.send(big) is True  # still usable
+        assert np.array_equal(np.asarray(p.recv(10)), big)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_unhashable_scalar_subclass_declines_the_buffer_gate():
+    # a numpy scalar subtype whose metaclass breaks __hash__: the known-
+    # scalar set probe errors, clears, and declines the rejection — the
+    # value still crosses the codec's numpy row as the base scalar
+    np = pytest.importorskip("numpy")
+    from tests.helpers import UnhashableScalar
+
+    from pymizu import _pymizu
+
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    try:
+        p.ready_set()
+        assert h.ready_wait(10)
+        assert h.send(UnhashableScalar(1.5)) is True
+        back = p.recv(10)
+        assert type(back) is np.float64
+        assert back == 1.5
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
+)
+def test_view_behind_hop_cap_re_sends_by_value():
+    # a .base chain that does not reach the view inside 8 hops declines
+    # the REF probe; the buffer crosses by value
+    np = pytest.importorskip("numpy")
+    from pymizu import _pymizu
+
+    class Link:
+        def __init__(self, base):
+            self.base = base
+
+        def __buffer__(self, flags):
+            return memoryview(self.base)
+
+        def __release_buffer__(self, view):
+            view.release()
+
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    try:
+        p.ready_set()
+        assert h.ready_wait(10)
+        a = np.arange(200_000, dtype=np.float64)
+        assert h.send(a) is True
+        view = p.recv(10)
+        link = view
+        for _ in range(9):
+            link = Link(link)
+        assert p.send(link) is True
+        back = h.recv(10)
+        assert isinstance(back, np.ndarray)
+        assert np.array_equal(back, a)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_peer_gone():
     ch = pymizu.Channel.create("import os; os._exit(0)")
     try:

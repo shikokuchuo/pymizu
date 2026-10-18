@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from functools import partial
 
 import pytest
@@ -520,6 +521,65 @@ def test_task_lost():
         h.destroy()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="RLIMIT_NOFILE is Unix-only")
+def test_task_lost_on_a_transient_region_open_failure():
+    # the real ctx->gone arm: fd starvation fails the worker's open of a
+    # spilled task region; the task fails as LOST, the worker lives on
+    resource = pytest.importorskip("resource")
+    np = pytest.importorskip("numpy")
+    import fcntl
+
+    def open_fds():
+        n = 0
+        for fd in range(256):
+            try:
+                fcntl.fcntl(fd, fcntl.F_GETFD)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        pool = pymizu.Pool._wrap(h)
+        # the worker joins (mapping its regions) and the tasks stage ahead
+        # of the starvation: only the worker's region *reads* starve
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        big = np.arange(200_000, dtype=np.float64)
+        t1 = pool.submit(identity, big)  # a BUFREF leaf (inline frame)
+        t2 = pool.submit(partial(identity, big))  # a spilled (SHM_RAW) entry
+        # arm the starvation: the fd count can drift, so probe each try
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        armed = False
+        for _ in range(8):
+            resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+            try:
+                fd = os.open("/dev/null", os.O_RDONLY)
+            except OSError:
+                armed = True
+                break
+            os.close(fd)
+        try:
+            if not armed:
+                pytest.skip("fd starvation not effective on this platform")
+            loop = threading.Thread(
+                target=lambda: (wk.run(), wk.leave()), daemon=True
+            )
+            loop.start()
+            with pytest.raises(pymizu.TaskLostError):
+                t1.collect(timeout=10)
+            with pytest.raises(pymizu.TaskLostError):
+                t2.collect(timeout=10)
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        assert pool.submit(identity, 2).collect(timeout=10) == 2
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
 def test_task_decode_failure_is_the_task_error():
     # the _exec_fail(1) arm stands in for a corrupt task payload: the
     # decode failure publishes as the task's ERR, and the worker lives on
@@ -537,6 +597,86 @@ def test_task_decode_failure_is_the_task_error():
             t.collect(timeout=10)
         wk._exec_fail(0)
         assert pool.submit(identity, 2).collect(timeout=10) == 2
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+def test_task_corrupt_shape_is_the_task_error():
+    # a payload that decodes but is no (fn, args, kwargs) triple fails the
+    # shape check and publishes as the task's ERR; the worker lives on
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        pool = pymizu.Pool._wrap(h)
+        t = pool._h.submit(pickle.dumps(["not", "a", "task"]), None)
+        with pytest.raises(pymizu.TaskError, match="corrupt task payload"):
+            t.collect(timeout=10)
+        assert pool.submit(identity, 2).collect(timeout=10) == 2
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+def _phantom_fn():
+    return 42  # never runs: its reference must not resolve on the worker
+
+
+def test_task_fn_reference_module_gone():
+    # a by-reference task fn whose module the worker cannot import
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        pool = pymizu.Pool._wrap(h)
+        module = _phantom_fn.__module__
+        _phantom_fn.__module__ = "mizu_phantom_mod"
+        try:
+            t = pool.submit(_phantom_fn)
+        finally:
+            _phantom_fn.__module__ = module
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        with pytest.raises(pymizu.TaskError, match="mizu_phantom_mod"):
+            t.collect(timeout=10)
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+def test_task_fn_reference_attr_gone():
+    # the module imports on the worker but the qualname's attribute is gone
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        pool = pymizu.Pool._wrap(h)
+        sys.modules["mizu_phantom_mod"] = types.ModuleType("mizu_phantom_mod")
+        module = _phantom_fn.__module__
+        _phantom_fn.__module__ = "mizu_phantom_mod"
+        try:
+            t = pool.submit(_phantom_fn)
+        finally:
+            _phantom_fn.__module__ = module
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        try:
+            with pytest.raises(pymizu.TaskError, match="AttributeError"):
+                t.collect(timeout=10)
+        finally:
+            del sys.modules["mizu_phantom_mod"]
         pool.stop()
         loop.join(timeout=10)
         wk.destroy()
@@ -871,6 +1011,33 @@ def test_pool_new_geometry_validation():
         _pymizu._pool_attach("not-a-token")
     with pytest.raises(ValueError, match="malformed join token"):
         _pymizu._pool_worker_join("not-a-token", 0)
+
+
+def test_pool_attach_unknown_token():
+    with pytest.raises(pymizu.MizuError):
+        _pymizu._pool_attach("0_1")
+    with pytest.raises(pymizu.MizuError):
+        _pymizu._pool_worker_join("0_1", 0)
+
+
+def test_retire_slot_out_of_range(pool):
+    with pytest.raises(pymizu.MizuError, match="out of range"):
+        pool.retire(3)
+
+
+def test_ready_wait_bad_slot_type(pool):
+    with pytest.raises(TypeError):
+        pool._h.ready_wait(["x"])
+
+
+def test_collect_any_on_a_closed_pool():
+    p = pymizu.Pool.create(1)
+    t = p.submit(identity, 1)
+    assert t.collect(timeout=10) == 1
+    assert p.stop() is True
+    p._h.destroy()
+    with pytest.raises(ValueError, match="closed"):
+        p.collect_any([t])
 
 
 def test_task_state(pool):

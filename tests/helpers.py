@@ -360,6 +360,16 @@ class ArraySubclass(array.array):
 
 if np is not None:
 
+    class _UnhashableMeta(type):
+        __hash__ = None
+
+    class UnhashableScalar(np.float64, metaclass=_UnhashableMeta):
+        """A numpy scalar subtype whose metaclass breaks __hash__: the
+        known-scalar set probe in the buffer gate errors and declines."""
+
+
+if np is not None:
+
     class CarryArray(np.ndarray):
         """An ndarray subclass carrying an attribute through pickle (the
         canonical subclass recipe): the raw buffer tier would stage the

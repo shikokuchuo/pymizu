@@ -1440,6 +1440,81 @@ mizu::mizu_recv(ch, timeout = 60)
 """
 
 
+def test_r_peer_view_arrow_export_na_section(r_mizu):
+    # an R vector with NAs arrives with a validity section: the view's
+    # Arrow export maps the section as the bitmap (NA -> Arrow null)
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+mizu::mizu_recv(ch, timeout = 60)
+x <- runif(2e5)
+x[10000] <- NA
+mizu::mizu_send(ch, x)
+y <- rep(TRUE, 200001)
+y[10000] <- NA
+mizu::mizu_send(ch, y)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        ch.send(b"")
+        for want_type in (pa.float64(), pa.bool_()):
+            arr = ch.recv(30)
+            view = getattr(arr, "base", None)
+            while view is not None and not hasattr(view, "refcount"):
+                view = getattr(view, "base", None)
+            assert view is not None  # a view, not a copy
+            a = pa.array(view)
+            assert a.type == want_type and a.null_count == 1
+            assert a[9999].as_py() is None
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_tree_leaf_view_arrow_export(r_mizu):
+    # a list-tree element with NAs arrives as a borrowed leaf view with
+    # the no-claim verdict: the Arrow export builds the bitmap lazily
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+x <- runif(2e5)
+x[10000] <- NA
+mizu::mizu_send(ch, list(x, rep("s", 100000)))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        back = ch.recv(30)
+        view = getattr(back[0], "base", None)
+        while view is not None and not hasattr(view, "refcount"):
+            view = getattr(view, "base", None)
+        assert view is not None  # a borrowed leaf view, not a copy
+        assert pa.array(view).null_count == 1
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_arrow_export_lazy_bitmap(r_mizu):
+    # an R frame column's {0, 0} claim: the frame's Arrow stream export
+    # scans the sentinels and builds the column's bitmap lazily
+    pa = pytest.importorskip("pyarrow")
+    src = r"""
+mizu::mizu_send(ch, data.frame(i = c(1L, NA, 3:40000), x = as.double(1:40000)))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(30)
+        t = pa.RecordBatchStreamReader.from_stream(f).read_all()
+        assert t.column("i").null_count == 1
+        assert t.column("i").slice(0, 3).to_pylist() == [1, None, 3]
+        del f, t
+        gc.collect()
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
 def test_r_peer_frame_remote_columns(r_mizu):
     # R's frame writer emits a view column as a remote leaf (tag 33):
     # the read borrows a view over the referenced region — REFHELD, one
