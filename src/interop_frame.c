@@ -474,17 +474,12 @@ static int64_t fcol_ensure_export(fcol *c) {
     int any = 0;
     for (int64_t i = 0; i < n; i++) {
       int na;
+      /* FCOL_C128 has no case: the export loop declines complex first */
       switch (c->kind) {
       case FCOL_F64: {
         uint64_t b;
         memcpy(&b, c->values + 8 * i, 8);
         na = is_na_r(b);
-        break;
-      }
-      case FCOL_C128: {
-        uint64_t b[2];
-        memcpy(b, c->values + 16 * i, 16);
-        na = is_na_r(b[0]) && is_na_r(b[1]);
         break;
       }
       case FCOL_I64: case FCOL_TS: case FCOL_TD: {
@@ -1073,13 +1068,8 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
       }
       case FCOL_STR: {
         const int32_t *offs = (const int32_t *) c->values;
-        if (c->valid != NULL && !bitmap_at(c->valid, j)) {
-          Py_INCREF(Py_None);
-          v = Py_None;
-        } else {
-          v = PyUnicode_DecodeUTF8((const char *) c->bytes + offs[j],
-                                   offs[j + 1] - offs[j], NULL);
-        }
+        v = PyUnicode_DecodeUTF8((const char *) c->bytes + offs[j],
+                                 offs[j + 1] - offs[j], NULL);
         break;
       }
       case FCOL_STR64: {
