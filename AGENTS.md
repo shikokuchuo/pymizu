@@ -131,8 +131,9 @@ tree is format-clean under the pinned version (keep it that way: run
 
 `tools/vendor-libmizu.sh` (pin in the script) flattens libmizu's `mizu.h`,
 `mizu_ext.h`, `internal.h`, and all core TUs except `bytes.c` (upstream's C
-reference binding, which this binding replaces — nothing references its
-symbols) into `src/vendor/libmizu/`,
+reference binding, which this binding replaces) and `ext.c` (the exported
+FFI half of `mizu_ext.h` — TUs inline their own copies from the header) —
+nothing references either's symbols — into `src/vendor/libmizu/`,
 with a VENDOR shasum record and a self-grep gate for stray sora/mori
 remnants. The pin tracks the R package's pin. The package's own TUs
 (`_pymizu.c`, `map.c`) compile against `mizu_ext.h` (the binding-author
