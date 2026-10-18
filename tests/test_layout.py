@@ -3,6 +3,7 @@ the 'I' writer's vector body for the same value, an attrs blob equals
 the 'I' writer's dict portion, an MIZS block carries the string bytes —
 value-exactness by construction, pinned here."""
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -446,3 +447,52 @@ def test_np_type_probe_reprobes_after_numpy_import(tmp_path):
         text=True,
     )
     assert res.returncode == 0, res.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="RLIMIT_NOFILE is Unix-only")
+def test_layout_roots_decline_to_copy_under_fd_starvation():
+    # a failed spill checkout declines each layout root to the 'I' copy:
+    # the values cross intact through the arena
+    resource = pytest.importorskip("resource")
+    import fcntl
+
+    def open_fds():
+        n = 0
+        for fd in range(256):
+            try:
+                fcntl.fcntl(fd, fcntl.F_GETFD)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    h = _pymizu._channel_new(64, 1024, 1 << 20, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, CAPS_R))
+    p.ready_set()
+    assert h.ready_wait(10)
+    strs = [f"value-{k}-{'x' * 40}" for k in range(3000)]
+    arr = np.arange(16000, dtype=np.float64).reshape(80, 200)
+    tree = {f"k{k}": k for k in range(4000)}
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    armed = False
+    for _ in range(8):
+        resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+        try:
+            fd = os.open("/dev/null", os.O_RDONLY)
+        except OSError:
+            armed = True
+            break
+        os.close(fd)
+    try:
+        if not armed:
+            pytest.skip("fd starvation not effective on this platform")
+        for v in (strs, arr, tree):
+            h.send(v)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert p.recv(10) == strs
+    got = p.recv(10)
+    assert isinstance(got, np.ndarray) and np.array_equal(got, arr)
+    assert p.recv(10) == tree
+    p.destroy()
+    h.destroy()

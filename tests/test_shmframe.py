@@ -731,6 +731,36 @@ def test_provenance_remote_leaf_dictionary():
     h1.destroy()
 
 
+def test_provenance_remote_leaf_dictionary_releveled_copies():
+    # the same codes under a re-leveled dictionary: the sub-record
+    # mismatch falls to the layout write; the values cross unchanged
+    h1, p1 = foreign_pair(caps=CAPS_R33)
+    h1.send(big_table(with_nulls=False).select(["i", "f"]))
+    f = p1.recv(10)
+    t = pa.table(f)
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    col = t.column("f").chunk(0)
+    levels = pa.array(col.dictionary.to_pylist() + ["unused"])
+    mod = t.set_column(
+        1, "f", pa.DictionaryArray.from_arrays(col.indices, levels)
+    )
+    h2, p2 = foreign_pair(caps=CAPS_R33)
+    h2.send(mod)
+    got = p2.recv(10)
+    assert src.refcount == rc0 + 1  # i remote, f laid out
+    d = got.to_dict()
+    assert d["f"][:3] == ["u", "v", "w"]
+    assert d["i"][1:4].tolist() == [1, 2, 3]
+    del d, got
+    gc.collect()
+    assert src.refcount == rc0
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
 # F3: the polars string-column REF verification
 
 
@@ -856,6 +886,32 @@ def test_provenance_polars_string_modifications_copy():
         assert len(got) == len(mod) and check(d)
         assert src.refcount == rc0  # never the REF
         assert src.flags & 1 == 0  # no REFHELD
+    h2.destroy()
+    p2.destroy()
+    p1.destroy()
+    h1.destroy()
+
+
+def test_provenance_polars_string_null_growth_copies():
+    # the recorded column has nulls; more on top fail the null-set
+    # equivalence by exact count: the layout write, the values intact
+    pl = pytest.importorskip("polars")
+    h1, p1, f, df, h2, p2, vals = str_provenance_setup(with_nulls=True)
+    src = f.to_dict()["i"].base
+    rc0 = src.refcount
+    mod = df.with_columns(
+        pl.when(pl.col("i") % 7 == 1)
+        .then(None)
+        .otherwise(pl.col("s"))
+        .name.keep()
+    )
+    h2.send(mod)
+    got = p2.recv(10)
+    d = got.to_dict()
+    want = [None if k % 7 in (0, 1) else v for k, v in enumerate(vals)]
+    assert d["s"] == want
+    assert src.refcount == rc0
+    assert src.flags & 1 == 0
     h2.destroy()
     p2.destroy()
     p1.destroy()

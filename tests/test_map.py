@@ -1094,6 +1094,66 @@ def test_map_stage_conversion_warning_as_error():
             pymizu._pymizu._map_stage(desc, x, 2, 1, None, True, 2)
 
 
+def test_map_stage_region_too_large():
+    # the pre-validated geometry leaves only size to the layout: the
+    # output area's overflow refusal
+    import pickle
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    with pytest.raises(pymizu.ShmError, match="map region too large"):
+        pymizu._pymizu._map_stage(
+            desc, None, 2**43 + 1, 1, np.zeros(1), False, 1
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="RLIMIT_NOFILE is Unix-only")
+def test_map_stage_under_fd_starvation():
+    # region creation needs an fd: the stage raises, nothing half-created
+    resource = pytest.importorskip("resource")
+    import fcntl
+    import pickle
+
+    def open_fds():
+        n = 0
+        for fd in range(256):
+            try:
+                fcntl.fcntl(fd, fcntl.F_GETFD)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    desc = pickle.dumps((identity, (), {}), 4)
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    armed = False
+    for _ in range(8):
+        resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+        try:
+            fd = os.open("/dev/null", os.O_RDONLY)
+        except OSError:
+            armed = True
+            break
+        os.close(fd)
+    try:
+        if not armed:
+            pytest.skip("fd starvation not effective on this platform")
+        with pytest.raises(pymizu.ShmError, match="cannot create map region"):
+            pymizu._pymizu._map_stage(desc, None, 4, 1, None, False, 1)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_map_open_rejects_a_non_map_region():
+    # a live region of the wrong kind fails the map header check
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    try:
+        prefix = "Local\\mizu_" if os.name == "nt" else "/mizu_"
+        with pytest.raises(pymizu.MizuError, match="invalid map region"):
+            pymizu._pymizu._map_open(prefix + h.token)
+    finally:
+        h.destroy()
+
+
 def test_map_capsule_lifecycle():
     import pickle
 
