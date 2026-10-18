@@ -521,6 +521,154 @@ def test_task_lost():
         h.destroy()
 
 
+def test_sweep_hook_error_is_unraisable():
+    # the idle sweep hook (pymizu._map._sweep_ctx_cache) reports a failure
+    # as unraisable, never into the core; a fresh process so the monkeypatch
+    # lands before the binding's one-time function lookup caches it
+    import textwrap
+
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                """
+                import threading
+                import time
+
+                import pymizu
+                import pymizu._map
+                from pymizu import _pymizu
+
+
+                def boom():
+                    raise RuntimeError("sweep boom")
+
+
+                pymizu._map._sweep_ctx_cache = boom
+
+                h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+                try:
+                    wk = _pymizu._pool_worker_join(h.token, 0)
+                    loop = threading.Thread(
+                        target=lambda: (wk.run(), wk.leave()), daemon=True
+                    )
+                    loop.start()
+                    # the idle worker's empty step fires the sweep hook
+                    time.sleep(2)
+                    pool = pymizu.Pool._wrap(h)
+                    pool.stop()
+                    loop.join(timeout=10)
+                    wk.destroy()
+                finally:
+                    h.destroy()
+                """
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "sweep boom" in res.stderr
+
+
+def _run_err_envelope_script(script):
+    # a fresh process driving an in-process worker: the err envelope's
+    # helpers run with the script's own module state, never this suite's
+    import textwrap
+
+    res = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    return res
+
+
+_ERR_POOL_PROLOG = """
+import threading
+
+import pymizu
+from pymizu import _pymizu
+
+
+def fail():
+    raise ValueError("boom")
+
+
+h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+try:
+    wk = _pymizu._pool_worker_join(h.token, 0)
+    loop = threading.Thread(
+        target=lambda: (wk.run(), wk.leave()), daemon=True
+    )
+    loop.start()
+    pool = pymizu.Pool._wrap(h)
+
+
+    def check():
+        try:
+            pool.submit(fail).collect(timeout=10)
+            raise SystemExit("expected TaskError")
+        except pymizu.TaskError as e:
+            assert e.remote_type == "ValueError"
+            assert e.remote_traceback == "", repr(e.remote_traceback)
+"""
+
+_ERR_POOL_EPILOG = """
+    pool.stop()
+    loop.join(timeout=10)
+    wk.destroy()
+finally:
+    h.destroy()
+"""
+
+
+def test_err_envelope_traceback_import_degrades():
+    # a blocked traceback import, then a missing format_exception, then a
+    # raising one: the envelope's traceback text degrades to empty, the
+    # worker publishes on (the one-time resolve stays unset until a
+    # format_exception exists, so one process serves all three)
+    _run_err_envelope_script(
+        _ERR_POOL_PROLOG
+        + """
+    import sys
+    import types
+
+    sys.modules["traceback"] = None
+    check()
+    mod = types.ModuleType("traceback")
+    sys.modules["traceback"] = mod
+    check()
+
+
+    def boom(*a):
+        raise RuntimeError("no traceback")
+
+
+    mod.format_exception = boom
+    check()
+"""
+        + _ERR_POOL_EPILOG
+    )
+
+
+def test_err_envelope_traceback_join_degrades():
+    # a format_exception whose parts are not all str: the join fails and
+    # the traceback text degrades to empty, never into the worker
+    _run_err_envelope_script(
+        _ERR_POOL_PROLOG
+        + """
+    import traceback
+
+    traceback.format_exception = lambda *a: ["boom: ", 42]
+    check()
+"""
+        + _ERR_POOL_EPILOG
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="RLIMIT_NOFILE is Unix-only")
 def test_task_lost_on_a_transient_region_open_failure():
     # the real ctx->gone arm: fd starvation fails the worker's open of a
@@ -572,6 +720,64 @@ def test_task_lost_on_a_transient_region_open_failure():
                 t2.collect(timeout=10)
         finally:
             resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        assert pool.submit(identity, 2).collect(timeout=10) == 2
+        pool.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="RLIMIT_NOFILE is Unix-only")
+def test_create_and_stage_under_fd_starvation():
+    # region creation needs an fd: the create verbs raise MizuShmError,
+    # and a task frame's BUFREF leaf degrades to a pickle that cannot
+    # spill either — the submit raises, the staged handle stays consistent
+    resource = pytest.importorskip("resource")
+    np = pytest.importorskip("numpy")
+    import fcntl
+
+    def open_fds():
+        n = 0
+        for fd in range(256):
+            try:
+                fcntl.fcntl(fd, fcntl.F_GETFD)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        pool = pymizu.Pool._wrap(h)
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        armed = False
+        for _ in range(8):
+            resource.setrlimit(resource.RLIMIT_NOFILE, (open_fds(), hard))
+            try:
+                fd = os.open("/dev/null", os.O_RDONLY)
+            except OSError:
+                armed = True
+                break
+            os.close(fd)
+        try:
+            if not armed:
+                pytest.skip("fd starvation not effective on this platform")
+            with pytest.raises(pymizu.MizuError):
+                _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+            with pytest.raises(pymizu.MizuError):
+                _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+            # the BUFREF leaf's spill checkout fails, then pickle's
+            big = np.arange(200_000, dtype=np.float64)
+            with pytest.raises(pymizu.MizuError):
+                pool.submit(identity, big)
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
         assert pool.submit(identity, 2).collect(timeout=10) == 2
         pool.stop()
         loop.join(timeout=10)

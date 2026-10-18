@@ -194,6 +194,8 @@ def test_write_runner_validation():
         _pymizu._write_runner("/mizu_abc", 0, None, 256, 0)
     with pytest.raises(TypeError):
         _pymizu._write_runner("/mizu_abc", "x", None, 2, 0)
+    with pytest.raises(TypeError):
+        _pymizu._write_runner("/mizu_abc", 0, None, "x", 0)
 
 
 def test_task_hook_validation():

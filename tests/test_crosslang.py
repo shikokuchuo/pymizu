@@ -1515,6 +1515,25 @@ mizu::mizu_recv(ch, timeout = 60)
         ch.close()
 
 
+def test_r_peer_frame_str64_null_pickle_round_trip(r_mizu):
+    # an R character column arrives as the STR64 block: its null rides
+    # the pickle form's payload list as None
+    import pickle
+
+    src = r"""
+mizu::mizu_send(ch, data.frame(s = c("a", NA, paste0("s", 3:40000))))
+mizu::mizu_recv(ch, timeout = 60)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(30)
+        g = pickle.loads(pickle.dumps(f))
+        assert g.to_dict()["s"][:3] == ["a", None, "s3"]
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
 def test_r_peer_frame_remote_columns(r_mizu):
     # R's frame writer emits a view column as a remote leaf (tag 33):
     # the read borrows a view over the referenced region — REFHELD, one
@@ -3398,6 +3417,61 @@ def test_py_peer_frame_with_view_column_remote_leaf(r_mizu):
         assert d["b"][0:3].tolist() == x[0:3].tolist()  # the view's values
         assert d["a"].dtype == np.float64
         assert ch.recv(60) is True
+    finally:
+        ch.close()
+
+
+R_VIEW_COLUMN_FRAME_NA = r"""
+x <- runif(300000)
+x[5] <- NA
+mizu::mizu_send(ch, x)
+v <- mizu::mizu_recv(ch, timeout = 60)   # the REF echo's view of x's region
+df <- data.frame(a = runif(300000), b = seq_len(300000) + 0)
+df[["b"]] <- v
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 60)
+"""
+
+
+def test_py_peer_frame_remote_column_lazy_bitmap_free(r_mizu):
+    # the {0, 0}-claimed remote column carries a real NA: the Arrow
+    # export scans the sentinels and builds the borrowed column's bitmap
+    # lazily — freed in-process when a promptly released consumer and the
+    # frame both let go (pyarrow's tables pin the release chain)
+    import ctypes
+
+    from tests.helpers import _ArrowArray, _ArrowArrayStream, _ArrowSchema
+
+    ch = pymizu.Channel.create(R_VIEW_COLUMN_FRAME_NA, launcher=r_mizu)
+    try:
+        x = ch.recv(60)
+        assert ch.send(x) is True
+        f = ch.recv(60)
+        cap = f.__arrow_c_stream__()
+        get_ptr = ctypes.pythonapi.PyCapsule_GetPointer
+        get_ptr.restype = ctypes.c_void_p
+        get_ptr.argtypes = [ctypes.py_object, ctypes.c_char_p]
+        addr = get_ptr(cap, b"arrow_array_stream")
+        st = _ArrowArrayStream.from_address(addr)
+        schema = _ArrowSchema()
+        assert st.get_schema(addr, ctypes.byref(schema)) == 0
+        assert schema.n_children == 2
+        schema.release(ctypes.byref(schema))
+        nulls = {}
+        while True:
+            arr = _ArrowArray()
+            assert st.get_next(addr, ctypes.byref(arr)) == 0
+            if not arr.release:
+                break
+            for i in range(arr.n_children):
+                kid = arr.children[i].contents
+                nulls[i] = nulls.get(i, 0) + kid.null_count
+            arr.release(ctypes.byref(arr))
+        st.release(addr)
+        assert nulls == {0: 0, 1: 1}  # the scanned bitmap: x[5] was NA
+        del cap, f, x
+        gc.collect()
+        ch.send(b"")
     finally:
         ch.close()
 

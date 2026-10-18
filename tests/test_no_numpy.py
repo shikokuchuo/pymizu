@@ -26,6 +26,21 @@ def _run_without_numpy(tmp_path, script):
     assert res.returncode == 0, res.stderr
 
 
+def _run_with_numpy_stub(tmp_path, stub, script):
+    # a partial numpy: the shim is a stub module carrying only selected
+    # attributes, so pymizu's lazy lookups take their missing-attr arms
+    (tmp_path / "numpy.py").write_text(textwrap.dedent(stub))
+    env = {**os.environ, "PYTHONPATH": str(tmp_path)}
+    res = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        env=env,
+        cwd=pathlib.Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+
+
 def test_map_int64_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,
@@ -509,5 +524,198 @@ def test_numpy_row_reads_as_python_scalar_without_numpy(tmp_path):
         assert rd(row(15, 0, struct.pack("<dd", 1.0, 2.0))) == 1 + 2j
         # form 1 (a 0-d array) degrades likewise
         assert rd(row(14, 1, struct.pack("<d", 2.5))) == 2.5
+        """,
+    )
+
+
+def test_buffer_gate_partial_numpy(tmp_path):
+    # a numpy stub without ndarray: the buffer gates' cached type probe
+    # and the 0-d form probe clear the missing-attribute error and stage
+    _run_with_numpy_stub(
+        tmp_path,
+        "",
+        """
+        import array
+
+        import numpy  # the stub
+        import pymizu
+
+        assert numpy.__file__.endswith("numpy.py")  # the shim took
+
+        peer = '''
+        for _ in range(2):
+            try:
+                ch.recv(timeout=30)
+            except Exception:
+                pass
+        '''
+        ch = pymizu.Channel.create(peer)
+        try:
+            # the type probe's missing-ndarray arm: an ordinary buffer
+            assert ch.send(array.array("d", [1.0, 2.0])) is True
+            # the 0-d form probe's missing-ndarray arm
+            z = memoryview(b"12345678").cast("d", [])
+            assert ch.send(z) is True
+        finally:
+            ch.close()
+        """,
+    )
+
+
+def test_numpy_row_read_partial_numpy(tmp_path):
+    # the codec's numpy row against a partial numpy: a missing scalar
+    # class and a missing array constructor fail the read informatively
+    _run_with_numpy_stub(
+        tmp_path,
+        "float64 = float\n",
+        """
+        import struct
+
+        import numpy  # the stub: float64 only
+        from pymizu import _pymizu
+
+        assert numpy.__file__.endswith("numpy.py")  # the shim took
+
+        # a form-0 row whose scalar class the stub lacks (int64)
+        row = bytes([0x50, 0x61, 32, 0]) + struct.pack("<q", 7)
+        try:
+            _pymizu._read_stream(row)
+            raise SystemExit("expected AttributeError")
+        except AttributeError:
+            pass
+        # a form-1 row: the scalar builds, the array constructor is
+        # missing
+        row = bytes([0x50, 0x61, 14, 1]) + struct.pack("<d", 1.5)
+        try:
+            _pymizu._read_stream(row)
+            raise SystemExit("expected AttributeError")
+        except AttributeError:
+            pass
+        """,
+    )
+
+
+def test_view_read_partial_numpy(tmp_path):
+    # a numpy stub whose frombuffer raises, then none at all: the SHM_VEC
+    # read falls back to the bare view
+    _run_with_numpy_stub(
+        tmp_path,
+        """
+        def frombuffer(*a, **k):
+            raise RuntimeError("boom")
+        """,
+        """
+        import numpy  # the stub
+        import pymizu
+
+        assert numpy.__file__.endswith("numpy.py")  # the shim took
+
+        src = (
+            "ch.send(bytes(range(256)) * 1200); "
+            "ch.send(bytes(range(256)) * 1200); "
+            "ch.recv(timeout=30)"
+        )
+        ch = pymizu.Channel.create(src)
+        try:
+            v1 = ch.recv(timeout=30)
+            assert type(v1).__name__ == "_ShmView"  # frombuffer raised
+            del numpy.frombuffer
+            v2 = ch.recv(timeout=30)
+            assert type(v2).__name__ == "_ShmView"  # frombuffer missing
+            ch.send(b"")
+        finally:
+            ch.close()
+        """,
+    )
+
+
+def test_raw_read_sink_partial_numpy(tmp_path):
+    # a numpy stub whose empty returns a non-buffer: the copied-read
+    # sinks' buffer request fails the read informatively, never a crash
+    _run_with_numpy_stub(
+        tmp_path,
+        """
+        def empty(n, dtype):
+            return object()
+        """,
+        """
+        import pymizu
+
+        try:
+            launcher = pymizu.r_launcher(stdout=None, stderr=None)
+        except pymizu.MizuError:
+            print("no Rscript/mizu — skipping")
+            raise SystemExit(0)
+        src = r'''
+        mizu::mizu_send(ch, c(1L, NA, 3L))
+        x <- rep(1L, 200000)
+        x[10000] <- NA
+        mizu::mizu_send(ch, x)
+        mizu::mizu_recv(ch, timeout = 60)
+        '''
+        ch = pymizu.Channel.create(src, launcher=launcher)
+        try:
+            try:
+                ch.recv(timeout=30)  # the int32 copy's first sink
+                raise SystemExit("expected the raw-read TypeError")
+            except TypeError:
+                pass
+            v = ch.recv(timeout=30)
+            try:
+                v.to_numpy()  # the float64 view sink
+                raise SystemExit("expected the to_numpy TypeError")
+            except TypeError:
+                pass
+            ch.send(b"")
+        finally:
+            ch.close()
+        """,
+    )
+
+
+def test_raw_read_f64_sink_partial_numpy(tmp_path):
+    # the int32-with-NAs read converts its copy to float64: the second
+    # sink's alloc failure and buffer failure both surface as the read's
+    # error
+    _run_with_numpy_stub(
+        tmp_path,
+        """
+        def empty(n, dtype):
+            if dtype == "int32":
+                return bytearray(n * 4)
+            raise RuntimeError("boom")
+        """,
+        """
+        import numpy  # the stub
+        import pymizu
+
+        try:
+            launcher = pymizu.r_launcher(stdout=None, stderr=None)
+        except pymizu.MizuError:
+            print("no Rscript/mizu — skipping")
+            raise SystemExit(0)
+        src = r'''
+        mizu::mizu_send(ch, c(1L, NA, 3L))
+        mizu::mizu_send(ch, c(4L, NA, 6L))
+        mizu::mizu_recv(ch, timeout = 60)
+        '''
+        ch = pymizu.Channel.create(src, launcher=launcher)
+        try:
+            try:
+                ch.recv(timeout=30)  # the float64 sink's alloc raises
+                raise SystemExit("expected RuntimeError")
+            except RuntimeError:
+                pass
+            numpy.empty = lambda n, dtype: (
+                bytearray(n * 4) if dtype == "int32" else object()
+            )
+            try:
+                ch.recv(timeout=30)  # the float64 sink's buffer request
+                raise SystemExit("expected TypeError")
+            except TypeError:
+                pass
+            ch.send(b"")
+        finally:
+            ch.close()
         """,
     )

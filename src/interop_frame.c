@@ -1075,19 +1075,17 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
       case FCOL_STR64: {
         mizu_mizs_geom g = mizu_mizs_geometry(c->n);
         const uint8_t *block = c->values;
-        if (!(block[g.validity + j / 8] & (1u << (j % 8)))) {
-          Py_INCREF(Py_None);
-          v = Py_None;
+        /* the in-block validity section IS c->valid for a region string
+           column (tree_column_fill sets it unconditionally): a null rode
+           the pre-switch bitmap check */
+        const int64_t *offs = (const int64_t *) (block + g.offsets);
+        int64_t lo = offs[j], hi = offs[j + 1];
+        if (lo < 0 || hi < lo || hi > c->bytes_len) {
+          PyErr_SetString(MizuError, "pymizu: invalid string data in "
+                          "shared region");
         } else {
-          const int64_t *offs = (const int64_t *) (block + g.offsets);
-          int64_t lo = offs[j], hi = offs[j + 1];
-          if (lo < 0 || hi < lo || hi > c->bytes_len) {
-            PyErr_SetString(MizuError, "pymizu: invalid string data in "
-                            "shared region");
-          } else {
-            v = PyUnicode_DecodeUTF8((const char *) block + g.data + lo,
-                                     (Py_ssize_t) (hi - lo), NULL);
-          }
+          v = PyUnicode_DecodeUTF8((const char *) block + g.data + lo,
+                                   (Py_ssize_t) (hi - lo), NULL);
         }
         break;
       }

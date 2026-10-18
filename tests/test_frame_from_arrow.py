@@ -1108,3 +1108,45 @@ def test_frame_type_not_constructible():
 def test_frame_debug_type_error():
     with pytest.raises(TypeError, match="needs a Frame"):
         _pymizu._frame_debug(42)
+
+
+def test_from_arrow_invalid_utf8_names():
+    # the name store is bytes until a decode: an invalid-UTF8 column name
+    # surfaces at the names property, never silently mangled
+    prod = RawArrowStream([("i", b"\xffname", [([1, 2, 3], None)])])
+    f = pymizu.Frame.from_arrow(prod)
+    with pytest.raises(UnicodeDecodeError):
+        _ = f.names
+
+
+def test_from_arrow_invalid_utf8_string_bytes():
+    # an adopted string column's bytes are trusted until the read: an
+    # invalid-UTF8 element fails the list and pickle forms' decode
+    prod = RawArrowStream([("u", "s", [(([0, 2, 3], b"a\xffb"), None)])])
+    f = pymizu.Frame.from_arrow(prod)
+    with pytest.raises(UnicodeDecodeError):
+        f.to_dict()
+    with pytest.raises(UnicodeDecodeError):
+        pickle.dumps(f)
+
+
+def test_from_arrow_invalid_utf8_dict_levels():
+    # an adopted dictionary's levels are trusted until the read: an
+    # invalid-UTF8 level fails the list and pickle forms' decode
+    levels = pa.Array.from_buffers(
+        pa.string(),
+        2,
+        [
+            None,
+            pa.py_buffer(np.array([0, 1, 2], "int32").tobytes()),
+            pa.py_buffer(b"a\xff"),
+        ],
+    )
+    d = pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, 1], type=pa.int32()), levels
+    )
+    f = pymizu.Frame.from_arrow(pa.table({"d": d}))
+    with pytest.raises(UnicodeDecodeError):
+        f.to_dict()
+    with pytest.raises(UnicodeDecodeError):
+        pickle.dumps(f)
