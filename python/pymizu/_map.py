@@ -1456,6 +1456,7 @@ def _map_region(
     tprobe = plan.tprobe
     out = _collect_region(
         pymizu,
+        pool,
         capsule,
         handles,
         n,
@@ -1465,6 +1466,7 @@ def _map_region(
         0,
         plan.lang,
         morsel,
+        live,
     )
     if out is pymizu.TIMEOUT or tprobe is None:
         return out
@@ -1531,8 +1533,20 @@ def _runs_to_spans(runs: list, ms: int, n: int) -> list:
     return out
 
 
+def _map_workers_gone(pool: pymizu.Pool) -> bool:
+    """The pending loop's registry-read death verdict: the workers are
+    all gone from the registry and no shutdown was broadcast (a clean
+    stop surfaces through the handles). "claiming" counts as live — a
+    joining worker is about to claim."""
+    st = pool.status()
+    return not st["shutdown"] and not any(
+        w in ("live", "claiming") for w in st["workers"]
+    )
+
+
 def _collect_region(
     pymizu,
+    pool: pymizu.Pool,
     capsule: _Any,
     handles: list,
     n: int,
@@ -1542,6 +1556,7 @@ def _collect_region(
     gen: int = 0,
     lang: int = 3,
     morsel: int = 1,
+    live0: int = 0,
 ) -> list | _pymizu.Sentinel | None:
     """Collect the runner handles under the exhausted-runner trim, in a
     deferred collection order. A runner carries no work of its own, so
@@ -1553,6 +1568,12 @@ def _collect_region(
     bounded slices, re-scanning on each return."""
     errs = []
     died: pymizu.WorkerDiedError | None = None
+    # the death exit's state: a verdict that never surfaces on a handle
+    # (the workers all died with the pending runners unclaimed — a queued
+    # runner's slot has no reaper) is read off the registry instead,
+    # polled at most once a second while the loop makes no progress
+    doomed = False
+    last_live_scan = 0.0
     runs = []
 
     def consume(k: int, t: float | None) -> bool:
@@ -1619,6 +1640,18 @@ def _collect_region(
             # while parked — is picked up within a slice
             if expired():
                 return pymizu.TIMEOUT
+            # with the workers live at submit all gone (and no shutdown
+            # broadcast, which surfaces through the handles), nothing
+            # will ever claim the pending runners: arm the trim so they
+            # abandon, and let the drain raise the documented
+            # WorkerDiedError below. A map submitted with no live worker
+            # keeps waiting — one may join
+            now = _time.monotonic()
+            if live0 > 0 and now - last_live_scan >= 1:
+                last_live_scan = now
+                if _map_workers_gone(pool):
+                    _pymizu._map_cancel_set(capsule)
+                    doomed = True
             t = remaining()
             if t is None or t > 0.05:
                 t = 0.05
@@ -1626,6 +1659,14 @@ def _collect_region(
                 pending.pop(0)
     if lang == 2:  # R workers publish morsel-pair histories: normalize
         runs = _runs_to_spans(runs, morsel, n)
+    if died is None and doomed:
+        # the registry-read verdict carries no claimant record: None
+        # slot/pid, as a no-claim reap reports
+        died = pymizu.WorkerDiedError(
+            "pymizu: worker died while executing this task"
+        )
+        died.slot = None
+        died.pid = None
     if died is not None:
         # the lost set is arithmetic over the collected histories:
         # issued = [0, cursor), lost = issued minus their union
@@ -1938,6 +1979,7 @@ class PreparedMap:
                 return pymizu.TIMEOUT
             out = _collect_region(
                 pymizu,
+                pool,
                 self._capsule,
                 handles,
                 self._n,
@@ -1947,6 +1989,7 @@ class PreparedMap:
                 self._gen,
                 self._lang,
                 self._morsel,
+                live,
             )
             if out is not pymizu.TIMEOUT:
                 unclean = False

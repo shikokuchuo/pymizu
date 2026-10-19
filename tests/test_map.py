@@ -226,6 +226,56 @@ def test_map_worker_died():
         p.stop()
 
 
+def test_map_queued_behind_a_dead_worker_fails_not_hangs():
+    # the lone worker is inside the blocker, so the map's runners only
+    # ever queue: the kill strands them with no claimant and no announce,
+    # so no result slot ever carries the death verdict — before the
+    # registry read in the collect loop this map parked to its timeout
+    import numpy as np
+
+    p = pymizu.Pool.create(1)
+    try:
+        pid = p.dump()["workers"][0]["pid"]
+        blocker = p.submit(sleep_ident, 30.0)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if any(w["in_flight"] != -1 for w in p.dump()["workers"]):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("worker did not claim the blocker")
+        x = np.arange(1000.0)  # a raw x section: the region path
+        # the map submits its runners while the worker is pinned: they
+        # queue, and the kill strands them
+        out, err = [], []
+
+        def run():
+            try:
+                out.append(p.map(identity, x, timeout=15))
+            except Exception as e:  # noqa: BLE001
+                err.append(e)
+
+        t = threading.Thread(target=run)
+        t.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if any(s["queued"] for s in p.dump()["submitters"]):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("map runners did not queue")
+        # SIGTERM on Windows: TerminateProcess, a hard kill either way
+        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        t.join()
+        assert not out
+        assert len(err) == 1 and isinstance(err[0], pymizu.WorkerDiedError)
+        assert err[0].slot is None
+        assert err[0].pid is None
+        blocker.cancel()
+    finally:
+        p.stop()
+
+
 def test_map_seed_determinism(pool):
     a = pool.map(rand_elt, list(range(50)), seed=42)
     b = pool.map(rand_elt, list(range(50)), seed=42, n_chunks=7)
@@ -829,7 +879,9 @@ def test_collect_region_fatal_runner_error(pool):
         h = pool.submit(fail_at, 0, 0)
         remaining, expired = _map._deadline(10)
         with pytest.raises(pymizu.TaskError) as exc_info:
-            _map._collect_region(pymizu, capsule, [h], 6, remaining, expired)
+            _map._collect_region(
+                pymizu, pool, capsule, [h], 6, remaining, expired
+            )
         assert not hasattr(exc_info.value, "index")
     finally:
         _map._ctx_cache.pop(name, None)
@@ -852,6 +904,7 @@ def test_collect_region_deferral_timeout(pool):
         checks = iter([False, True])
         out = _map._collect_region(
             pymizu,
+            pool,
             capsule,
             [h],
             6,

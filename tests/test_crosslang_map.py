@@ -199,6 +199,68 @@ def test_a_dead_r_workers_lost_set_scan():
         p.stop()
 
 
+def test_map_queued_behind_a_dead_r_worker_fails_not_hangs():
+    # the lone R worker is inside the blocker, so the map's runners only
+    # ever queue: the kill strands them with no claimant and no announce,
+    # so no result slot ever carries the death verdict — before the
+    # registry read in the collect loop this map parked to its timeout
+    try:
+        launcher = pymizu.r_pool_launcher(
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except pymizu.MizuError:
+        pytest.skip("Rscript with the mizu package not available")
+    p = pymizu.Pool.create(1, launcher=launcher)
+    try:
+        pid = p.dump()["workers"][0]["pid"]
+        blocker = p.submit(pymizu.call(source="Sys.sleep(30)"))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if any(w["in_flight"] != -1 for w in p.dump()["workers"]):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("worker did not claim the blocker")
+        # the map submits its runners while the worker is pinned: they
+        # queue, and the kill strands them
+        import threading
+
+        out, err = [], []
+
+        def run():
+            try:
+                out.append(
+                    p.map(
+                        pymizu.call("base::identity"),
+                        list(range(40)),
+                        timeout=15,
+                    )
+                )
+            except Exception as e:  # noqa: BLE001
+                err.append(e)
+
+        t = threading.Thread(target=run)
+        t.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if any(s["queued"] for s in p.dump()["submitters"]):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("map runners did not queue")
+        # SIGTERM on Windows: TerminateProcess, a hard kill either way
+        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        t.join(20)
+        assert not t.is_alive()
+        assert not out
+        assert len(err) == 1 and isinstance(err[0], pymizu.WorkerDiedError)
+        assert err[0].slot is None
+        assert err[0].pid is None
+        blocker.cancel()
+    finally:
+        p.stop()
+
+
 def test_map_spec_converted_dtypes(r_pool):
     # non-identity dtypes convert once at stage time into the region's raw
     # x section (the channel's conversion table), not the list fallback
