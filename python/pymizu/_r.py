@@ -9,6 +9,7 @@ and the probed library paths carried hex-encoded in argv.
 
 from __future__ import annotations
 
+import os as _os
 import shutil as _shutil
 import subprocess as _subprocess
 from collections.abc import Callable as _Callable
@@ -35,9 +36,13 @@ _cache: dict[str, tuple[str, str]] = {}
 
 def _find_mizu(rscript: str) -> tuple[str, str] | None:
     """(child script, libpaths) of an installed mizu with the source-drop
-    path, else None. Successful probes are cached per Rscript."""
-    if rscript in _cache:
-        return _cache[rscript]
+    path, else None. Successful probes are cached per Rscript; a hit
+    revalidates against the child script with one exists check, so an
+    uninstalled or replaced mizu re-probes (and the launcher errors
+    early) instead of failing only at spawn with a startup timeout."""
+    hit = _cache.get(rscript)
+    if hit is not None and _os.path.exists(hit[0]):
+        return hit
     try:
         probe = _subprocess.run(
             [rscript, "--vanilla", "-e", _PROBE],

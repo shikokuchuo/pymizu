@@ -426,6 +426,26 @@ def test_startup_error():
         pymizu.Channel.create("pass", startup_timeout=1.0, launcher=launcher)
 
 
+def test_raising_launcher_destroys_the_channel():
+    tokens = []
+
+    def launcher(token):
+        tokens.append(token)
+        raise RuntimeError("boom")
+
+    exc = None
+    try:
+        pymizu.Channel.create("pass", launcher=launcher)
+    except RuntimeError as e:
+        exc = e
+    assert exc is not None
+    # the caught exception's traceback pins create()'s frame (and the
+    # handle with it): the destroy must already have run, not ride the
+    # handle's finalizer
+    with pytest.raises(pymizu.MizuError):
+        pymizu.Channel.attach(tokens[0])
+
+
 def test_info(echo):
     info = echo.info()
     assert info["side"] == "host"

@@ -1127,6 +1127,23 @@ def test_startup_error():
         pymizu.Pool.create(1, startup_timeout=1.0, launcher=launcher)
 
 
+def test_raising_launcher_destroys_the_pool():
+    tokens = []
+
+    def launcher(token, slot):
+        tokens.append(token)
+        raise RuntimeError("boom")
+
+    exc = None
+    try:
+        pymizu.Pool.create(1, launcher=launcher)
+    except RuntimeError as e:
+        exc = e
+    assert exc is not None
+    with pytest.raises(pymizu.MizuError):
+        pymizu.Pool.attach(tokens[0])
+
+
 def test_pool_repr(pool):
     assert re.fullmatch(
         rf"<pymizu\.Pool {re.escape(pool.token)} \(controller\)>",

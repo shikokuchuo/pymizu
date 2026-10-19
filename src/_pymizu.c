@@ -4224,41 +4224,47 @@ static int read_foreign(const mizu_read_ctx *ctx) {
 
 static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
                             size_t limit, mizu_read_ctx *ctx) {
-  switch (hdr->kind) {
+  /* The header words live in the shared slot: read them once into locals,
+     so a misbehaving peer cannot change the answer between a bound check
+     and its use (mizu's read-hook discipline) */
+  const uint32_t kind = hdr->kind;
+  const uint32_t len = hdr->len;
+  const uint64_t aux = hdr->aux;
+  switch (kind) {
   case MIZU_KIND_NIL:
     Py_RETURN_NONE;
   case MIZU_KIND_RAWVEC:
-    if (hdr->len > limit) break;
-    return read_raw(payload, hdr->len, (int) hdr->aux, read_foreign(ctx));
+    if (len > limit) break;
+    return read_raw(payload, len, (int) aux, read_foreign(ctx));
   case MIZU_KIND_RAWSPILL:
-    if (mizu_aux_hi(hdr->aux)) {
+    if (mizu_aux_hi(aux)) {
       /* pool framing: the region name in the payload, its length and the
          wire type packed in aux (the channel's arena framing of this kind
          is resolved by the transport, never reaching here) */
-      uint32_t name_len = (uint32_t) mizu_aux_hi(hdr->aux);
-      int type = mizu_aux_type(hdr->aux);
+      uint32_t name_len = (uint32_t) mizu_aux_hi(aux);
+      int type = mizu_aux_type(aux);
       if (name_len == 0 || name_len >= MIZU_NAME_MAX) break;
       mizu_shm *shm = mizu_read_region(ctx, payload, name_len);
       if (shm == NULL) return NULL;          /* ctx->gone set */
-      if ((uint64_t) hdr->len > (uint64_t) shm->size) break;
-      return read_raw((const uint8_t *) shm->addr, hdr->len, type,
+      if ((uint64_t) len > (uint64_t) shm->size) break;
+      return read_raw((const uint8_t *) shm->addr, len, type,
                       read_foreign(ctx));
     }
     /* the channel's arena framing is resolved to its byte range by the
        transport before the call */
-    if (hdr->len > limit) break;
-    return read_raw(payload, hdr->len, (int) hdr->aux, read_foreign(ctx));
+    if (len > limit) break;
+    return read_raw(payload, len, (int) aux, read_foreign(ctx));
   case MIZU_KIND_STR1: {
-    if (hdr->aux == MIZU_STR1_NA) {
-      if (hdr->len != 0) break;
+    if (aux == MIZU_STR1_NA) {
+      if (len != 0) break;
       Py_RETURN_NONE;   /* R's missing string reads as None */
     }
-    if (hdr->len > limit || hdr->aux > MIZU_CE_BYTES) break;
-    switch ((int) hdr->aux) {
+    if (len > limit || aux > MIZU_CE_BYTES) break;
+    switch ((int) aux) {
     case MIZU_CE_NATIVE:
     case MIZU_CE_UTF8: {
       PyObject *s = PyUnicode_DecodeUTF8((const char *) payload,
-                                         (Py_ssize_t) hdr->len, NULL);
+                                         (Py_ssize_t) len, NULL);
       if (s == NULL) {
         PyErr_Clear();
         PyErr_SetString(MizuError, "pymizu: R string payload is not valid "
@@ -4268,35 +4274,35 @@ static PyObject *read_frame(const mizu_slot_hdr *hdr, const uint8_t *payload,
     }
     case MIZU_CE_LATIN1:
       return PyUnicode_DecodeLatin1((const char *) payload,
-                                    (Py_ssize_t) hdr->len, NULL);
+                                    (Py_ssize_t) len, NULL);
     default:   /* MIZU_CE_BYTES */
       return PyBytes_FromStringAndSize((const char *) payload,
-                                       (Py_ssize_t) hdr->len);
+                                       (Py_ssize_t) len);
     }
   }
   case MIZU_KIND_INLINE:
-    if (hdr->len > limit) break;
-    return read_stream(payload, hdr->len, ctx);
+    if (len > limit) break;
+    return read_stream(payload, len, ctx);
   case MIZU_KIND_ARENA:
     /* resolved stream bytes; limit is the arena-validated length */
     return read_stream(payload, limit, ctx);
   case MIZU_KIND_SHM_RAW: {
-    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) break;
-    mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
+    if (len == 0 || len >= MIZU_NAME_MAX) break;
+    mizu_shm *shm = mizu_read_region(ctx, payload, len);
     if (shm == NULL) return NULL;          /* ctx->gone set */
     /* aux is the exact stream length: a recycled region is larger than the
        stream it carries, and the slack bytes are a previous payload's */
-    size_t n = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
-      (size_t) hdr->aux : shm->size;
+    size_t n = aux != 0 && aux <= (uint64_t) shm->size ?
+      (size_t) aux : shm->size;
     return read_stream((const uint8_t *) shm->addr, n, ctx);
   }
   case MIZU_KIND_SHM_VEC:
-    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) break;
-    return read_shm_vec(payload, hdr->len, hdr->aux, ctx);
+    if (len == 0 || len >= MIZU_NAME_MAX) break;
+    return read_shm_vec(payload, len, aux, ctx);
   case MIZU_KIND_REF:
     /* the identifier cap, but never past the slot's own span */
-    if (hdr->len == 0 || hdr->len > limit || hdr->len > 1024) break;
-    return mizu_py_view_resolve((const char *) payload, hdr->len, ctx);
+    if (len == 0 || len > limit || len > 1024) break;
+    return mizu_py_view_resolve((const char *) payload, len, ctx);
   }
   PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
   return NULL;
@@ -4806,21 +4812,25 @@ infra:
 static const uint8_t *pool_entry_bytes(const mizu_slot_hdr *hdr,
                                        const uint8_t *payload, size_t limit,
                                        mizu_read_ctx *ctx, size_t *out_len) {
-  switch (hdr->kind) {
+  /* the same one-read discipline as read_frame */
+  const uint32_t kind = hdr->kind;
+  const uint32_t len = hdr->len;
+  const uint64_t aux = hdr->aux;
+  switch (kind) {
   case MIZU_KIND_INLINE:
   case MIZU_KIND_RAWVEC:
   case MIZU_KIND_STR1:
     /* every inline tier is bounded to the slot — the dispatch reads
        stream offsets off this span */
-    if (hdr->len > limit) return NULL;
-    *out_len = hdr->len;
+    if (len > limit) return NULL;
+    *out_len = len;
     return payload;
   case MIZU_KIND_SHM_RAW: {
-    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) return NULL;
-    mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
+    if (len == 0 || len >= MIZU_NAME_MAX) return NULL;
+    mizu_shm *shm = mizu_read_region(ctx, payload, len);
     if (shm == NULL) return NULL;          /* ctx->gone set */
-    *out_len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
-      (size_t) hdr->aux : (size_t) shm->size;
+    *out_len = aux != 0 && aux <= (uint64_t) shm->size ?
+      (size_t) aux : (size_t) shm->size;
     return (const uint8_t *) shm->addr;
   }
   default:

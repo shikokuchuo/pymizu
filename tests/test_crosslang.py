@@ -90,6 +90,46 @@ def test_r_launcher_probe_malformed_output(tmp_path):
         pymizu.r_launcher(rscript=str(fake))
 
 
+def test_r_launcher_probe_cache_hit(tmp_path, monkeypatch):
+    # a live cache entry is served without running the probe: the bogus
+    # interpreter would fail it, so a returned launcher proves the hit
+    script = tmp_path / "mizu-child.R"
+    script.write_text("")
+    monkeypatch.setitem(
+        pymizu._r._cache, "/nonexistent/Rscript", (str(script), "/lib")
+    )
+    launcher = pymizu.r_launcher(rscript="/nonexistent/Rscript")
+    assert callable(launcher)
+
+
+def test_r_launcher_stale_probe_cache(tmp_path, monkeypatch):
+    # a cache entry whose child script has vanished re-probes and fails
+    # fast, rather than returning a launcher that dies at spawn
+    monkeypatch.setitem(
+        pymizu._r._cache,
+        "/nonexistent/Rscript",
+        (str(tmp_path / "gone.R"), "/lib"),
+    )
+    with pytest.raises(pymizu.MizuError, match="mizu"):
+        pymizu.r_launcher(rscript="/nonexistent/Rscript")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake is a shell script")
+def test_r_launcher_stale_cache_reprobes(tmp_path, monkeypatch):
+    # a stale entry falls through to a fresh probe, which re-caches
+    script = tmp_path / "mizu-child.R"
+    script.write_text("")
+    fake = tmp_path / "Rscript"
+    fake.write_text(f'#!/bin/sh\nprintf "%s\\n%s\\n" "{script}" "/lib"\n')
+    fake.chmod(0o755)
+    monkeypatch.setitem(
+        pymizu._r._cache, str(fake), (str(tmp_path / "gone.R"), "/old")
+    )
+    launcher = pymizu.r_launcher(rscript=str(fake))
+    assert callable(launcher)
+    assert pymizu._r._cache[str(fake)] == (str(script), "/lib")
+
+
 def _settled_refcount(view, timeout=10.0):
     """The region's refcount with R's producer loan waited out.
 

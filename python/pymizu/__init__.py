@@ -169,13 +169,19 @@ class Channel:
         drop = bytes([_DROP_SOURCE]) + peer.encode("utf-8")
         h = _channel_new(capacity, slot_size, arena_size, spin, drop)
         token = h.token
-        proc = (launcher or _default_launcher())(token)
-        if not h.ready_wait(startup_timeout):
+        # a channel that never comes up is destroyed, not left to its
+        # finalizer — on any error exit (a raising launcher, an
+        # interrupt), not just a startup timeout
+        try:
+            proc = (launcher or _default_launcher())(token)
+            if not h.ready_wait(startup_timeout):
+                raise StartupError(
+                    "pymizu: child failed to attach within "
+                    f"{startup_timeout} seconds"
+                )
+        except BaseException:
             h.destroy()
-            raise StartupError(
-                "pymizu: child failed to attach within "
-                f"{startup_timeout} seconds"
-            )
+            raise
         ch = cls._wrap(h)
         ch._proc = proc if isinstance(proc, _subprocess.Popen) else None
         return ch
@@ -594,7 +600,9 @@ class Pool:
                 slots,
                 startup_timeout,
             )
-        except StartupError:
+        except BaseException:
+            # as at Channel.create: any failure before the pool serves
+            # destroys it, not just a startup timeout
             h.destroy()
             raise
         return cls._wrap(h)
