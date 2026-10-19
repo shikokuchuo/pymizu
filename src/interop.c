@@ -4475,8 +4475,8 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
       }
     }
     /* the by-value 'I' form: one core write straight off the Arrow
-       buffers (dst NULL sizes), inline within the budget, else the
-       bytes tiers */
+       buffers (dst NULL sizes), inline within the budget, else into the
+       reservation — no scratch copy */
     const size_t n = mizu_arrow_write_ix(ar, NULL, &x->warn);
     if (n <= (size_t) inline_max) {
       mizu_arrow_write_ix(ar, payload, &x->warn);
@@ -4485,14 +4485,10 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
       rc = 0;
     } else {
-      uint8_t *buf = malloc(n);
-      if (buf == NULL) {
-        PyErr_NoMemory();
-        goto done;
-      }
-      mizu_arrow_write_ix(ar, buf, &x->warn);
-      rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
-      free(buf);
+      uint8_t *dst = mizu_py_stage_reserve(n, hdr, payload, h);
+      if (dst == NULL) goto done;
+      mizu_arrow_write_ix(ar, dst, &x->warn);
+      rc = 0;
     }
   }
 done:
@@ -4548,7 +4544,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   {
     /* the 'I' value form: the header, then the column's value form off
        the core writer (dst NULL sizes) — inline within the budget, else
-       the bytes tiers */
+       into the reservation */
     const size_t n = mizu_ix_put_header(NULL) +
       mizu_arrow_write_ix_col(ar, 0, NULL, &x->warn);
     if (n <= (size_t) inline_max) {
@@ -4559,15 +4555,11 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
       rc = 0;
     } else {
-      uint8_t *buf = malloc(n);
-      if (buf == NULL) {
-        PyErr_NoMemory();
-        goto done;
-      }
-      size_t off = mizu_ix_put_header(buf);
-      off += mizu_arrow_write_ix_col(ar, 0, buf + off, &x->warn);
-      rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
-      free(buf);
+      uint8_t *dst = mizu_py_stage_reserve(n, hdr, payload, h);
+      if (dst == NULL) goto done;
+      size_t off = mizu_ix_put_header(dst);
+      off += mizu_arrow_write_ix_col(ar, 0, dst + off, &x->warn);
+      rc = 0;
     }
     rc = rc == 0 && mizu_py_cvt_warn(&x->warn, x->lang) != 0 ? 1 : rc;
   }

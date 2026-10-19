@@ -944,7 +944,9 @@ static void codec_put(uint8_t **p, PyObject *o) {
 }
 
 /* Try the codec; returns 0 staged, 1 error, -1 fall back to pickle. The
-   inline path encodes straight into the slot payload — no allocation. */
+   inline path encodes straight into the slot payload, the spill path
+   straight into the reservation — no scratch copy (the size pass already
+   validated everything, so the write cannot fail). */
 static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                        uint32_t inline_max, mizu_handle *h) {
   uint64_t sz = 1;   /* the magic byte */
@@ -958,14 +960,12 @@ static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a flat codec stream references nothing */
     return 0;
   }
-  uint8_t *buf = (uint8_t *) malloc((size_t) sz);
-  if (buf == NULL) return -1;   /* pickle's own allocation failure reports */
-  buf[0] = MIZU_PYMIZU_CODEC_MAGIC;
-  uint8_t *p = buf + 1;
+  uint8_t *dst = mizu_py_stage_reserve((size_t) sz, hdr, payload, h);
+  if (dst == NULL) return 1;
+  dst[0] = MIZU_PYMIZU_CODEC_MAGIC;
+  uint8_t *p = dst + 1;
   codec_put(&p, obj);
-  int rc = stage_bytes(buf, (size_t) sz, hdr, payload, inline_max, h);
-  free(buf);
-  return rc;
+  return 0;
 }
 
 /* Same-language exact-type scalars: the codec's bool/int/float rows
@@ -1343,11 +1343,15 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
   int rc = frame_size(frame, &fp, inline_max, h);
   if (rc != 0) return rc;
   uint8_t *buf = payload;
-  if (fp.sz > (uint64_t) inline_max) {
-    buf = (uint8_t *) malloc((size_t) fp.sz);
+  const int spilled = fp.sz > (uint64_t) inline_max;
+  if (spilled) {
+    /* no by-reference leaf rides along (frame_size rejects ref + spill):
+       the reservation's single checkout is the stream's own, and the
+       write below is pure byte emission */
+    buf = mizu_py_stage_reserve((size_t) fp.sz, hdr, payload, h);
     if (buf == NULL) {
       frame_plan_clear(&fp);
-      return -1;   /* pickle's own allocation failure reports */
+      return 1;
     }
   }
   uint8_t *p = buf;
@@ -1378,24 +1382,25 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
       rc = frame_leaf_write(&p, v, &fp, h);
     }
   }
-  if (rc == 0) {
-    size_t n = (size_t) (p - buf);
-    if (buf == payload) {
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) n;
-      /* keeperless even with a by-reference leaf: its zc loan rides the
-         claim-side release machinery, not the keeper-drop reap */
-      hdr->aux = MIZU_AUX_F_KEEPERLESS;
-    } else {
-      rc = stage_bytes(buf, n, hdr, payload, inline_max, h);
-    }
-  } else {
+  if (rc == 0 && !spilled) {
+    hdr->kind = MIZU_KIND_INLINE;
+    hdr->len = (uint32_t) (p - buf);
+    /* keeperless even with a by-reference leaf: its zc loan rides the
+       claim-side release machinery, not the keeper-drop reap */
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;
+  } else if (rc == 0 && (size_t) (p - buf) != (size_t) fp.sz) {
+    /* the reservation is stamped with fp.sz up front: a count
+       disagreement leaves stale bytes under it — abandon, never publish */
+    mizu_stage_rollback(h);
+    PyErr_SetString(MizuError, "pymizu: task frame write mismatch");
+    rc = 1;
+  } else if (rc != 0) {
     /* a write-pass failure can follow a by-reference leaf's retain: roll
        the abandoned checkout back before the caller's pickle fallback
-       re-reserves (its spill_get would orphan the region) */
+       re-reserves (its spill_get would orphan the region). A spilled
+       stream's reservation is the checkout this releases. */
     mizu_stage_rollback(h);
   }
-  if (buf != payload) free(buf);
   frame_plan_clear(&fp);
   return rc;
 }

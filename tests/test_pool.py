@@ -23,6 +23,7 @@ from tests.helpers import (
     fanout,
     fanout_with_thread,
     identity,
+    large_args_integrity,
     make_fail_on_unpickle,
     make_unpicklable,
     raise_deep,
@@ -92,6 +93,16 @@ def test_submit_container_args(pool):
     assert pool.submit(sum, (1, 2, 3)).collect(timeout=5) == 6
     t = pool.submit(sorted, {"b": 1, "a": 2})
     assert t.collect(timeout=5) == ["a", "b"]
+
+
+def test_submit_large_by_value_args(pool):
+    # arguments past the entry inline budget stage the task frame's
+    # by-value spill: the payload crosses intact
+    b = bytes(range(256)) * 4096  # 1 MiB
+    s = "mizu-" * 200_000  # 1 MB
+    t = pool.submit(large_args_integrity, b, s)
+    want = (len(b), sum(b), b[:8], b[-8:], len(s), s[:8], s[-8:])
+    assert t.collect(timeout=15) == want
 
 
 def test_submit_rawspill_result(pool):

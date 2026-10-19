@@ -396,6 +396,11 @@ def echo(*a, **k):
     return a, k
 
 
+def large_args_integrity(b, s):
+    """Large by-value arguments' arrival integrity (the task-frame spill)."""
+    return len(b), sum(b), b[:8], b[-8:], len(s), s[:8], s[-8:]
+
+
 def is_readonly(a):
     """True when the argument arrived as a read-only zero-copy view."""
     return not a.flags.writeable

@@ -603,7 +603,7 @@ def test_arrow_array_pair_contract_violations():
 
 def test_chunked_string_array_spills():
     # a single-column stream past the inline budget: the 'I' value form is
-    # built into one malloc'd buffer, then staged over the bytes tiers
+    # written straight into the staged reservation
     vals = [f"v{k}" * 20 for k in range(6000)]
     h, p = foreign_pair()
     try:
@@ -612,6 +612,29 @@ def test_chunked_string_array_spills():
     finally:
         p.destroy()
         h.destroy()
+
+
+def test_mid_size_frame_spills_by_value():
+    # a frame under the zero-copy floor but past the inline budget: the
+    # by-value 'I' form is written straight into the staged reservation,
+    # for a full-caps peer (the size band) and a caps-short one alike
+    n = 4000
+    t = pa.table(
+        {
+            "x": pa.array(range(n), type=pa.int32()),
+            "y": pa.array([k * 0.5 for k in range(n)]),
+        }
+    )
+    for caps in (0, 63):
+        h, p = foreign_pair(caps=caps)
+        try:
+            assert h.send(t) is True
+            d = p.recv(5).to_dict()
+            assert d["x"].tolist() == list(range(n))
+            assert d["y"][1:4].tolist() == [0.5, 1.0, 1.5]
+        finally:
+            p.destroy()
+            h.destroy()
 
 
 # -- the channel gate ------------------------------------------------------
