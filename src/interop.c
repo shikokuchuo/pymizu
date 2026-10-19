@@ -4414,8 +4414,6 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   int rc = 1;
   char **names = NULL;
   ixs_plans_fill(x, ar);
-  if ((names = ixs_names_collect(x)) == NULL)
-    goto done;
   {
     /* the MIZL tier (3.6/3.8) decides on the memoized frame span — the
        'I' sizing's per-element string walk runs only on the by-value
@@ -4436,6 +4434,10 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
       const uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL |
         (any_str ? MIZU_CAP_MIZS : 0u);
       if ((x->caps & need) == need) {
+        /* the names array serves the provenance matches alone: collect it
+           only on the MIZL attempt, off the by-value paths */
+        if ((names = ixs_names_collect(x)) == NULL)
+          goto done;
         rc = pymizu_shmframe_pv_match(x, names, hdr, payload,
                                       inline_max);
         if (rc == 0) goto done;
@@ -4733,8 +4735,6 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   ar = ixs_arrow_open(x, peer_caps, &keep1, &keep2);
   if (ar == NULL) goto out;
   ixs_plans_fill(x, ar);
-  if ((names = ixs_names_collect(x)) == NULL)
-    goto out;
   /* the overrides feed the memoized span (the size pass re-runs after
      each), so they precede the gate: the tzone verbatim (the
      naivety-preserving form), and a custom row_names as the root blob */
@@ -4742,6 +4742,9 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     if (x->cols[i].kind == PC_TS)
       mizu_arrow_tz(ar, i, x->schema.children[i]->format + 4);
   if (x->row_names != NULL && x->row_names != Py_None) {
+    /* the names array serves the blob alone */
+    if ((names = ixs_names_collect(x)) == NULL)
+      goto out;
     size_t bn = mizu_py_blob_frame(NULL, names, x->ncols, x->hold.rows,
                                    x->row_names);
     if (bn == 0) goto out;
