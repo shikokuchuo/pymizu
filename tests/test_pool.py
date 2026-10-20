@@ -82,6 +82,45 @@ def test_submit_on_destroyed_pool(pool):
         pool.submit(len, [1])
 
 
+def test_destroy_defers_to_in_flight_collect(pool):
+    # a collect parked in another thread pins the core handle past
+    # destroy(); teardown completes when the collect returns
+    t = pool.submit(time.sleep, 0.3)
+    got = []
+    th = threading.Thread(
+        target=lambda: got.append(t.collect(timeout=5)), daemon=True
+    )
+    th.start()
+    time.sleep(0.1)  # the collect is parked with the GIL released
+    pool.destroy()
+    th.join(timeout=5)
+    assert got == [None]
+    with pytest.raises(ValueError, match="pool handle is closed"):
+        pool.submit(len, [1])
+    pool.destroy()  # idempotent
+
+
+def test_destroy_defers_to_worker_run():
+    # an idle worker's run() parks with the GIL dropped by the park hook:
+    # destroying the worker handle defers teardown to run()'s return
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        got = []
+        th = threading.Thread(target=lambda: got.append(wk.run()), daemon=True)
+        th.start()
+        time.sleep(0.1)  # the worker is parked idle
+        wk.destroy()
+        h.destroy()  # the worker observes the shutdown broadcast and exits
+        th.join(timeout=5)
+        assert got == [0]  # MIZU_EXIT_SHUTDOWN
+        with pytest.raises(ValueError, match="pool handle is closed"):
+            wk.run()
+        wk.destroy()  # idempotent
+    finally:
+        h.destroy()
+
+
 def test_submit_kwargs(pool):
     t = pool.submit(round, 3.14159, ndigits=2)
     assert t.collect(timeout=5) == 3.14
@@ -1358,6 +1397,23 @@ def test_fork_child_dealloc():
         assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
     finally:
         pool.stop()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_child_destroy():
+    pool = pymizu.Pool.create(1)
+    try:
+        pid = os.fork()
+        if pid == 0:
+            # the child's destroy releases only its process-local copies
+            pool.destroy()
+            os._exit(0)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert pool.submit(len, [1, 2]).collect(timeout=5) == 2
+    finally:
+        pool.destroy()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGINT differs on Windows")

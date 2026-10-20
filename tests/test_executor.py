@@ -175,6 +175,20 @@ def test_broken_executor_fails_and_blocks_submit(pool, monkeypatch):
         assert exc_info.value is err
 
 
+def test_destroy_racing_drain_fails_cleanly():
+    # destroy while the drain is parked in collect_any: the in-flight
+    # collect pins the core handle past destroy(), and the drain's next
+    # collect raises the closed-handle error
+    p = pymizu.Pool.create(1)
+    ex = pymizu.PoolExecutor(p)
+    fut = ex.submit(sleep_ident, 0.5)
+    time.sleep(0.1)
+    p.destroy()
+    with pytest.raises(ValueError, match="closed"):
+        fut.result(timeout=5)
+    ex.shutdown(wait=False)
+
+
 def test_shutdown_cancel_futures():
     p = pymizu.Pool.create(1)
     try:

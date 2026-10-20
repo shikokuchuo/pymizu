@@ -290,7 +290,9 @@ class Channel:
 
     def destroy(self) -> None:
         """Tear down the handle immediately, without the close
-        handshake. The peer sees PEER_GONE."""
+        handshake. The peer sees PEER_GONE. Safe from any thread: a
+        verb in flight on another thread pins the handle, and teardown
+        completes when the last one returns."""
         return self._h.destroy()
 
     def alive(self) -> bool:
@@ -1156,7 +1158,9 @@ class Pool:
     def destroy(self) -> None:
         """Tear down the pool handle immediately, without the shutdown
         broadcast or the wait. Workers exit once they observe the
-        controller gone."""
+        controller gone. Safe from any thread: a verb in flight on
+        another thread pins the handle, and teardown completes when the
+        last one returns."""
         return self._h.destroy()
 
     def status(self) -> dict:

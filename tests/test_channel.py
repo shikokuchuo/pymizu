@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 from tests.helpers import (
@@ -249,6 +250,60 @@ def test_peer_ident_after_destroy():
     h.destroy()
     with pytest.raises(pymizu.MizuError, match="closed"):
         h._peer_ident()
+
+
+def test_destroy_defers_to_in_flight_recv():
+    # a recv parked in another thread pins the core handle past
+    # destroy(); teardown completes when the recv returns
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    got = []
+    th = threading.Thread(
+        target=lambda: got.append(h.recv(timeout=0.5)), daemon=True
+    )
+    th.start()
+    time.sleep(0.1)  # the recv is parked with the GIL released
+    h.destroy()
+    th.join(timeout=5)
+    assert got == [pymizu.TIMEOUT]
+    with pytest.raises(ValueError, match="channel handle is closed"):
+        h.send(None)
+    h.destroy()  # idempotent
+
+
+def test_destroy_racing_close():
+    # destroy landing while close is parked in the rendezvous wait: the
+    # deferred teardown and close's success must not destroy the handle
+    # twice (crashed at introduction of the in-flight fence)
+    for _ in range(50):
+        h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+        p, _ = pymizu._pymizu._channel_attach(h.token)
+        th = threading.Thread(
+            target=lambda h=h: h.close(timeout=5), daemon=True
+        )
+        th.start()
+        time.sleep(0.02)  # close is parked in the rendezvous wait
+        p.close_signal()
+        h.destroy()
+        th.join(timeout=5)
+        p.destroy()
+
+
+def test_destroy_defers_to_in_flight_ready_wait():
+    # a ready_wait parked in another thread pins the core handle past
+    # destroy(); teardown completes when the wait returns
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    got = []
+    th = threading.Thread(
+        target=lambda: got.append(h.ready_wait(0.5)), daemon=True
+    )
+    th.start()
+    time.sleep(0.1)  # the wait is parked with the GIL released
+    h.destroy()
+    th.join(timeout=5)
+    assert got == [False]
+    with pytest.raises(ValueError, match="channel handle is closed"):
+        h.send(None)
+    h.destroy()  # idempotent
 
 
 def test_channel_repr():
@@ -495,6 +550,24 @@ def test_fork_child_dealloc():
             # the child's dealloc abandons only its own copies
             del ch
             gc.collect()
+            os._exit(0)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert ch.send(1) is True  # the parent's channel is unaffected
+        assert ch.recv(timeout=5) == 1
+    finally:
+        ch.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no fork on Windows")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_child_destroy():
+    ch = pymizu.Channel.create(ECHO_PEER)
+    try:
+        pid = os.fork()
+        if pid == 0:
+            # the child's destroy releases only its process-local copies
+            ch.destroy()
             os._exit(0)
         _, status = os.waitpid(pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0

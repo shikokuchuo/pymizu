@@ -4988,8 +4988,10 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
 typedef struct {
   PyObject_HEAD
   mizu_channel *core;
+  mizu_channel *zombie;  /* a destroy deferred to the last in-flight verb */
   long self_pid;
-  MizuViewCache *vcache;   /* the binding.ctx view cache, for teardown */
+  unsigned in_flight;    /* core calls with the GIL dropped (GIL-guarded) */
+  MizuViewCache *vcache; /* the binding.ctx view cache, for teardown */
 } MizuChannel;
 
 /* The pin release (F1's D4): a ref-carrying task stream pins the spec
@@ -5030,10 +5032,10 @@ static mizu_channel *chan_get(MizuChannel *self) {
 
 /* Raise a MIZU_ERR from a handle verb. A callback that already set a Python
    error (the check hook's KeyboardInterrupt, a stage/read failure) wins. */
-static PyObject *raise_handle(MizuChannel *self) {
+static PyObject *raise_handle(mizu_channel *c) {
   if (PyErr_Occurred()) return NULL;
-  mizu_errcat cat = mizu_channel_errcat(self->core);
-  const char *msg = mizu_channel_error(self->core);
+  mizu_errcat cat = mizu_channel_errcat(c);
+  const char *msg = mizu_channel_error(c);
   switch (cat) {
   case MIZU_ERRCAT_INTERRUPTED:
     PyErr_SetNone(PyExc_KeyboardInterrupt);
@@ -5050,7 +5052,7 @@ static PyObject *raise_handle(MizuChannel *self) {
   return NULL;
 }
 
-static PyObject *status_or_raise(MizuChannel *self, mizu_status st,
+static PyObject *status_or_raise(mizu_channel *c, mizu_status st,
                                  PyObject *on_ok) {
   switch (st) {
   case MIZU_OK:        Py_INCREF(on_ok); return on_ok;
@@ -5058,8 +5060,42 @@ static PyObject *status_or_raise(MizuChannel *self, mizu_status st,
   case MIZU_TIMEOUT:   Py_INCREF(SentTimeout); return SentTimeout;
   case MIZU_CLOSED:    Py_INCREF(SentClosed); return SentClosed;
   case MIZU_PEER_GONE: Py_INCREF(SentGone); return SentGone;
-  default:            return raise_handle(self);
+  default:            return raise_handle(c);
   }
+}
+
+/* The destroy half of the in-flight fence: the core handle and the
+   binding ctx its callbacks consult release together (destroy first —
+   the core's teardown read paths may consult the binding). Runs only
+   with the count at zero — no core call can be inside, and chan_get
+   fails every later one. */
+static void chan_teardown(MizuChannel *self, mizu_channel *c) {
+  mizu_channel_destroy(c);
+  view_cache_free(self->vcache);
+  self->vcache = NULL;
+}
+
+/* The matching decrement of a verb's in-flight count: the last verb out
+   runs a deferred teardown (Channel_destroy's, or Channel_close's
+   completed rendezvous). */
+static void chan_in_flight_done(MizuChannel *self) {
+  assert(self->in_flight > 0);   /* an unbalanced verb leaks the teardown */
+  if (--self->in_flight == 0 && self->zombie != NULL) {
+    mizu_channel *z = self->zombie;
+    self->zombie = NULL;
+    chan_teardown(self, z);
+  }
+}
+
+/* Close out a GIL-released core call: read the handle's error record
+   while the in-flight count still pins it, then drop the count (a
+   deferred teardown may run here). True on MIZU_ERR, with the exception
+   set. */
+static int chan_call_done(MizuChannel *self, mizu_channel *c,
+                          mizu_status st) {
+  if (st == MIZU_ERR) raise_handle(c);
+  chan_in_flight_done(self);
+  return st == MIZU_ERR;
 }
 
 /* seconds (None waits indefinitely) to the core's timeout_ms; the
@@ -5103,10 +5139,12 @@ static PyObject *Channel_send(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_send(c, (void *) arg);
   Py_END_ALLOW_THREADS
-  return status_or_raise(self, st, Py_True);
+  if (chan_call_done(self, c, st)) return NULL;
+  return status_or_raise(c, st, Py_True);
 }
 
 PyDoc_STRVAR(send_error_doc,
@@ -5129,11 +5167,12 @@ static PyObject *Channel_send_error(MizuChannel *self, PyObject *arg) {
   MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
   hctx->err_exc = arg;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_send(c, (void *) arg);
   Py_END_ALLOW_THREADS
   hctx->err_exc = NULL;
-  if (st == MIZU_ERR) return raise_handle(self);
+  if (chan_call_done(self, c, st)) return NULL;
   return PyBool_FromLong(st == MIZU_OK);
 }
 
@@ -5161,12 +5200,13 @@ static PyObject *Channel_send_batch(MizuChannel *self, PyObject *arg) {
     objs[i] = (void *) items[i];
   size_t accepted = 0;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_send_batch(c, objs, (size_t) n, &accepted);
   Py_END_ALLOW_THREADS
   PyMem_Free(objs);
   Py_DECREF(seq);
-  if (st == MIZU_ERR) return raise_handle(self);
+  if (chan_call_done(self, c, st)) return NULL;
   return PyLong_FromSize_t(accepted);
 }
 
@@ -5188,11 +5228,13 @@ static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   void *obj = NULL;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_recv(c, &obj, ms);
   Py_END_ALLOW_THREADS
+  if (chan_call_done(self, c, st)) return NULL;
   if (st == MIZU_OK) return (PyObject *) obj;
-  return status_or_raise(self, st, Py_None);
+  return status_or_raise(c, st, Py_None);
 }
 
 PyDoc_STRVAR(recv_batch_doc,
@@ -5222,9 +5264,14 @@ static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
   if (out == NULL) return NULL;
   size_t count = 0;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_recv_batch_fn(c, (size_t) n, &count, list_sink, out, ms);
   Py_END_ALLOW_THREADS
+  if (chan_call_done(self, c, st)) {
+    Py_DECREF(out);
+    return NULL;
+  }
   if (st == MIZU_OK) {
     /* the batch ended early at a declining read: the prefix is real, and
        the slot stays for the next receive to reproduce the failure — so
@@ -5250,7 +5297,7 @@ static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
     return out;
   }
   Py_DECREF(out);
-  return status_or_raise(self, st, Py_None);
+  return status_or_raise(c, st, Py_None);
 }
 
 PyDoc_STRVAR(close_doc,
@@ -5279,15 +5326,18 @@ static PyObject *Channel_close(MizuChannel *self, PyObject *args,
   }
   mizu_channel *c = self->core;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_close(c, ms);
   Py_END_ALLOW_THREADS
-  if (st == MIZU_ERR) return raise_handle(self);
   if (st == MIZU_OK) {
-    mizu_channel_destroy(c);
+    /* the rendezvous released the handle: claim its teardown through the
+       same deferral as destroy() (a destroy's claim is the same pointer) */
     self->core = NULL;
-    Py_RETURN_TRUE;
+    self->zombie = c;
   }
+  if (chan_call_done(self, c, st)) return NULL;
+  if (st == MIZU_OK) Py_RETURN_TRUE;
   Py_RETURN_FALSE;   /* MIZU_TIMEOUT: destroy retries the rendezvous */
 }
 
@@ -5310,12 +5360,21 @@ non-blocking rendezvous check completes. The finalizer target.");
 
 static PyObject *Channel_destroy(MizuChannel *self,
                                  PyObject *Py_UNUSED(args)) {
-  if (self->core != NULL && self->self_pid == mizu_self_pid())
-    mizu_channel_destroy(self->core);
+  mizu_channel *c = self->core;
   self->core = NULL;
-  /* destroy first: the core's teardown read paths may consult the binding */
-  view_cache_free(self->vcache);
-  self->vcache = NULL;
+  if (c != NULL && self->self_pid != mizu_self_pid()) {
+    /* a forked child's copy never touches the shared region; its view
+       cache is process-local, so release it here as the dealloc does */
+    view_cache_free(self->vcache);
+    self->vcache = NULL;
+  } else if (c != NULL) {
+    /* a verb mid-call on another thread pins the handle: the last one
+       out runs the teardown (the count is GIL-guarded) */
+    if (self->in_flight == 0)
+      chan_teardown(self, c);
+    else
+      self->zombie = c;
+  }
   Py_RETURN_NONE;
 }
 
@@ -5338,7 +5397,7 @@ static PyObject *Channel_ready_set(MizuChannel *self,
                                    PyObject *Py_UNUSED(args)) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
-  if (mizu_channel_ready_set(c) != MIZU_OK) return raise_handle(self);
+  if (mizu_channel_ready_set(c) != MIZU_OK) return raise_handle(c);
   Py_RETURN_NONE;
 }
 
@@ -5353,10 +5412,10 @@ static PyObject *Channel_ready_wait(MizuChannel *self, PyObject *tmo) {
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_channel_ready_wait(c, ms);
   Py_END_ALLOW_THREADS
-  if (st == MIZU_ERR) return raise_handle(self);
   if (st == MIZU_OK) {
     /* the peer's identity word is on the region once it attached: the
        reader-language policy's input, cached on the handle */
@@ -5365,6 +5424,7 @@ static PyObject *Channel_ready_wait(MizuChannel *self, PyObject *tmo) {
     hc->peer_lang = (uint32_t) (ident & 0xff);
     hc->peer_caps = (uint32_t) (ident >> 32);
   }
+  if (chan_call_done(self, c, st)) return NULL;
   return PyBool_FromLong(st == MIZU_OK);
 }
 
@@ -5401,7 +5461,7 @@ static PyObject *Channel_info(MizuChannel *self, PyObject *Py_UNUSED(args)) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
   mizu_channel_info info;
-  if (mizu_channel_info_get(c, &info) != MIZU_OK) return raise_handle(self);
+  if (mizu_channel_info_get(c, &info) != MIZU_OK) return raise_handle(c);
   PyObject *name = PyUnicode_FromString(info.name);
   PyObject *side = PyUnicode_FromString(info.side == MIZU_ENTITY_HOST ?
                                         "host" : "peer");
@@ -5445,7 +5505,7 @@ static PyObject *Channel_token_get(MizuChannel *self,
   if (c == NULL) return NULL;
   char buf[64];
   if (mizu_channel_token(c, buf, sizeof(buf)) != MIZU_OK)
-    return raise_handle(self);
+    return raise_handle(c);
   return PyUnicode_FromString(buf);
 }
 
@@ -5520,7 +5580,9 @@ static PyTypeObject MizuChannelType = {
 typedef struct {
   PyObject_HEAD
   mizu_pool *core;
+  mizu_pool *zombie;   /* a destroy deferred to the last in-flight verb */
   long self_pid;
+  unsigned in_flight;  /* core calls with the GIL dropped (GIL-guarded) */
   int role;            /* MIZU_ROLE_* */
   MizuViewCache *vcache;
   PyObject *trace_fn;  /* the registered trace callable, or NULL */
@@ -5534,8 +5596,12 @@ typedef struct {
 
 /* Submitter/controller handles release the GIL around every verb; worker
    handles hold it (exec_fn reentry) and drop it only around bounded sleeps
-   via the park hook. */
+   via the park hook. The in-flight count pins the core handle against a
+   Pool_destroy on another thread (an unmap under an in-flight call is a
+   segv): the GIL itself serializes the count, and the matching
+   pool_call_done must run once the GIL is back. */
 #define POOL_ALLOW_THREADS(self) \
+  (self)->in_flight++; \
   PyThreadState *_save = \
     (self)->role == MIZU_ROLE_WORKER ? NULL : PyEval_SaveThread()
 #define POOL_RESUME() \
@@ -5572,10 +5638,10 @@ static mizu_pool *pool_get(MizuPool *self) {
 
 /* Raise a pool verb's MIZU_ERR. A callback that already set a Python error
    (the check hook's KeyboardInterrupt, a stage/read failure) wins. */
-static PyObject *pool_raise(MizuPool *self) {
+static PyObject *pool_raise(mizu_pool *p) {
   if (PyErr_Occurred()) return NULL;
-  mizu_errcat cat = mizu_pool_errcat(self->core);
-  const char *msg = mizu_pool_error(self->core);
+  mizu_errcat cat = mizu_pool_errcat(p);
+  const char *msg = mizu_pool_error(p);
   switch (cat) {
   case MIZU_ERRCAT_INTERRUPTED:
     PyErr_SetNone(PyExc_KeyboardInterrupt);
@@ -5596,6 +5662,37 @@ static PyObject *pool_raise(MizuPool *self) {
     break;
   }
   return NULL;
+}
+
+/* The destroy half of the in-flight fence: the core handle and the
+   binding ctx its callbacks consult release together. Runs only with the
+   count at zero — no core call can be inside, and pool_get fails every
+   later one. */
+static void pool_teardown(MizuPool *self, mizu_pool *p) {
+  mizu_pool_destroy(p);
+  view_cache_free(self->vcache);
+  self->vcache = NULL;
+}
+
+/* The matching decrement of POOL_ALLOW_THREADS' count: the last verb out
+   runs a deferred Pool_destroy's teardown. */
+static void pool_in_flight_done(MizuPool *self) {
+  assert(self->in_flight > 0);   /* an unbalanced verb leaks the teardown */
+  if (--self->in_flight == 0 && self->zombie != NULL) {
+    mizu_pool *z = self->zombie;
+    self->zombie = NULL;
+    pool_teardown(self, z);
+  }
+}
+
+/* Close out a GIL-released core call: read the handle's error record
+   while the in-flight count still pins it, then drop the count (a
+   deferred destroy's teardown may run here). True on MIZU_ERR, with the
+   exception set. */
+static int pool_call_done(MizuPool *self, mizu_pool *p, mizu_status st) {
+  if (st == MIZU_ERR) pool_raise(p);
+  pool_in_flight_done(self);
+  return st == MIZU_ERR;
 }
 
 static MizuPool *pool_wrap(mizu_pool *p, int role, MizuViewCache *vc) {
@@ -5767,13 +5864,11 @@ static PyObject *Pool_submit(MizuPool *self, PyObject *args, PyObject *kw) {
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_submit(p, (void *) payload, &t, ms);
   POOL_RESUME();
+  if (pool_call_done(self, p, st)) return NULL;
   if (st == MIZU_OK) return (PyObject *) task_wrap(self, &t);
-  if (st == MIZU_FULL) {
-    PyErr_SetString(MizuSubmitTimeoutError,
-                    "pymizu: submission timed out (injection ring full)");
-    return NULL;
-  }
-  return pool_raise(self);
+  PyErr_SetString(MizuSubmitTimeoutError,   /* st == MIZU_FULL */
+                  "pymizu: submission timed out (injection ring full)");
+  return NULL;
 }
 
 PyDoc_STRVAR(pool_worker_ident_doc,
@@ -5851,14 +5946,13 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   POOL_RESUME();
   PyMem_Free(objs);
   Py_DECREF(fast);
-  if (st == MIZU_ERR) {
+  if (pool_call_done(self, p, st)) {
     if (done == 0) {
       PyMem_Free(ts);
-      return pool_raise(self);
+      return NULL;
     }
     /* a mid-batch failure: the accepted tasks run regardless — wrap their
        handles onto the exception instead of orphaning the result slots */
-    pool_raise(self);
     PyObject *et, *ev, *tb;
     PyErr_Fetch(&et, &ev, &tb);
     PyErr_NormalizeException(&et, &ev, &tb);
@@ -5928,15 +6022,16 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *args,
   void *v = NULL;
   size_t idx = 0;
   mizu_status st;
+  mizu_pool *p = self->core;
   POOL_ALLOW_THREADS(self);
-  st = mizu_pool_collect_any(self->core, ts, n, &idx, &v, ms);
+  st = mizu_pool_collect_any(p, ts, n, &idx, &v, ms);
   POOL_RESUME();
   PyMem_Free(ts);
+  if (pool_call_done(self, p, st)) return NULL;
   if (st == MIZU_TIMEOUT) {
     Py_INCREF(SentTimeout);
     return SentTimeout;
   }
-  if (st == MIZU_ERR) return pool_raise(self);
   PyObject *val = caught_or_value((PyObject *) v, idx, 1);
   if (val == NULL) return NULL;
   PyObject *i = PyLong_FromSize_t(idx);
@@ -5986,25 +6081,20 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
   }
   size_t err_idx = 0, consumed = 0;
   mizu_status st;
+  mizu_pool *p = self->core;
   POOL_ALLOW_THREADS(self);
-  st = mizu_pool_collect_all_fn(self->core, ts, n, list_sink, out, &err_idx,
+  st = mizu_pool_collect_all_fn(p, ts, n, list_sink, out, &err_idx,
                                &consumed, ms);
   POOL_RESUME();
   PyMem_Free(ts);
-  if (st == MIZU_TIMEOUT) {
-    Py_DECREF(out);
-    Py_INCREF(SentTimeout);
-    return SentTimeout;
-  }
-  if (st == MIZU_ERR) {
+  if (pool_call_done(self, p, st)) {
     if (consumed == 0) {
       Py_DECREF(out);
-      return pool_raise(self);
+      return NULL;
     }
     /* a mid-batch read failure: the consumed prefix's slots are already
        freed, so the values live only here — attach them (and the failing
        slot's 0-based index) to the exception rather than dropping them */
-    pool_raise(self);
     PyObject *et, *ev, *tb;
     PyErr_Fetch(&et, &ev, &tb);
     PyErr_NormalizeException(&et, &ev, &tb);
@@ -6021,6 +6111,11 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
     Py_DECREF(out);
     PyErr_Restore(et, ev, tb);
     return NULL;
+  }
+  if (st == MIZU_TIMEOUT) {
+    Py_DECREF(out);
+    Py_INCREF(SentTimeout);
+    return SentTimeout;
   }
   if (err_idx < n) {
     /* the first non-OK by position: its box, with the 0-based index */
@@ -6078,11 +6173,12 @@ static PyObject *Pool_ready_wait(MizuPool *self, PyObject *args,
   }
   Py_DECREF(fast);
   mizu_status st;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
   st = mizu_pool_ready_wait(p, slots, (size_t) n, ms);
   Py_END_ALLOW_THREADS
   PyMem_Free(slots);
-  if (st == MIZU_ERR) return pool_raise(self);
+  if (pool_call_done(self, p, st)) return NULL;
   return PyBool_FromLong(st == MIZU_OK);
 }
 
@@ -6106,7 +6202,7 @@ static PyObject *Pool_retire(MizuPool *self, PyObject *arg) {
     return NULL;
   }
   if (mizu_pool_retire(p, (uint32_t) slot) != MIZU_OK)
-    return pool_raise(self);
+    return pool_raise(p);
   Py_RETURN_NONE;
 }
 
@@ -6139,10 +6235,12 @@ static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
     return NULL;
   }
   mizu_status st;
+  mizu_pool *p = self->core;
+  self->in_flight++;
   Py_BEGIN_ALLOW_THREADS
-  st = mizu_pool_stop(self->core, ms);
+  st = mizu_pool_stop(p, ms);
   Py_END_ALLOW_THREADS
-  if (st == MIZU_ERR) return pool_raise(self);
+  if (pool_call_done(self, p, st)) return NULL;
   /* the handle stays alive (a post-stop submit reads the shutdown flag as
      StoppedError); the finalizer's destroy is a no-op after */
   return PyBool_FromLong(st == MIZU_OK);
@@ -6154,11 +6252,21 @@ Idempotent, never blocks: a controller broadcasts shutdown without the\n\
 wait; a participant releases its slot. The finalizer target.");
 
 static PyObject *Pool_destroy(MizuPool *self, PyObject *Py_UNUSED(args)) {
-  if (self->core != NULL && self->self_pid == mizu_self_pid())
-    mizu_pool_destroy(self->core);
+  mizu_pool *p = self->core;
   self->core = NULL;
-  view_cache_free(self->vcache);
-  self->vcache = NULL;
+  if (p != NULL && self->self_pid != mizu_self_pid()) {
+    /* a forked child's copy never touches the shared region; its view
+       cache is process-local, so release it here as the dealloc does */
+    view_cache_free(self->vcache);
+    self->vcache = NULL;
+  } else if (p != NULL) {
+    /* a verb mid-call on another thread pins the handle: the last one
+       out runs the teardown (the count is GIL-guarded) */
+    if (self->in_flight == 0)
+      pool_teardown(self, p);
+    else
+      self->zombie = p;
+  }
   Py_CLEAR(self->trace_fn);
   Py_RETURN_NONE;
 }
@@ -6177,9 +6285,11 @@ static PyObject *Pool_run(MizuPool *self, PyObject *Py_UNUSED(args)) {
     PyErr_SetString(MizuError, "pymizu: not a worker handle");
     return NULL;
   }
+  self->in_flight++;
   mizu_worker_exit ex = mizu_pool_worker_run(p);
+  if (pool_call_done(self, p, ex == MIZU_EXIT_ERROR ? MIZU_ERR : MIZU_OK))
+    return NULL;
   if (PyErr_Occurred()) return NULL;   /* a BaseException escaped a task */
-  if (ex == MIZU_EXIT_ERROR) return pool_raise(self);
   return PyLong_FromLong((long) ex);
 }
 
@@ -6194,7 +6304,7 @@ static PyObject *Pool_leave(MizuPool *self, PyObject *Py_UNUSED(args)) {
     PyErr_SetString(MizuError, "pymizu: not a worker handle");
     return NULL;
   }
-  if (mizu_pool_leave(p) != MIZU_OK) return pool_raise(self);
+  if (mizu_pool_leave(p) != MIZU_OK) return pool_raise(p);
   Py_RETURN_NONE;
 }
 
@@ -6259,7 +6369,7 @@ static PyObject *Pool_status(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   mizu_pool_status st;
-  if (mizu_pool_status_get(p, &st) != MIZU_OK) return pool_raise(self);
+  if (mizu_pool_status_get(p, &st) != MIZU_OK) return pool_raise(p);
   PyObject *d = PyDict_New();
   if (d == NULL) return NULL;
   const char *role = st.role == MIZU_ROLE_CONTROLLER ? "controller" :
@@ -6384,7 +6494,7 @@ static PyObject *Pool_dump(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   mizu_pool_dump d;
-  if (mizu_pool_dump_get(p, &d) != MIZU_OK) return pool_raise(self);
+  if (mizu_pool_dump_get(p, &d) != MIZU_OK) return pool_raise(p);
   PyObject *out = PyDict_New();
   PyObject *workers = NULL, *submitters = NULL, *tasks = NULL, *local = NULL;
   if (out == NULL) return NULL;
@@ -6418,7 +6528,7 @@ static PyObject *Pool_dump(MizuPool *self, PyObject *Py_UNUSED(args)) {
     mizu_status st = mizu_pool_tasks_get(p, rows, cap, &n);
     if (st != MIZU_OK) {
       PyMem_Free(rows);
-      pool_raise(self);
+      pool_raise(p);
       goto fail_no_raise;
     }
     for (uint32_t m = 0; m < n; m++) {
@@ -6483,7 +6593,7 @@ static PyObject *Pool_stats(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   mizu_pool_dump d;
-  if (mizu_pool_dump_get(p, &d) != MIZU_OK) return pool_raise(self);
+  if (mizu_pool_dump_get(p, &d) != MIZU_OK) return pool_raise(p);
   PyObject *out = PyDict_New();
   PyObject *workers = NULL, *submitters = NULL;
   if (out == NULL) return NULL;
@@ -6575,7 +6685,7 @@ static PyObject *Pool_set_trace(MizuPool *self, PyObject *fn) {
   if (mizu_pool_set_trace(p, pool_trace_cb, self) != MIZU_OK) {
     mizu_pool_set_trace(p, NULL, NULL);
     Py_CLEAR(self->trace_fn);
-    return pool_raise(self);
+    return pool_raise(p);
   }
   Py_RETURN_NONE;
 }
@@ -6585,7 +6695,7 @@ static PyObject *Pool_token_get(MizuPool *self, void *Py_UNUSED(closure)) {
   if (p == NULL) return NULL;
   char buf[64];
   if (mizu_pool_token(p, buf, sizeof(buf)) != MIZU_OK)
-    return pool_raise(self);
+    return pool_raise(p);
   return PyUnicode_FromString(buf);
 }
 
@@ -6639,9 +6749,9 @@ static PyObject *Pool_map_caps(MizuPool *self, PyObject *Py_UNUSED(args)) {
   if (p == NULL) return NULL;
   uint32_t free_rs, inj_cap, inline_entry;
   if (mizu_pool_map_caps(p, &free_rs, &inj_cap, &inline_entry) != 0)
-    return pool_raise(self);
+    return pool_raise(p);
   mizu_pool_status st;
-  if (mizu_pool_status_get(p, &st) != MIZU_OK) return pool_raise(self);
+  if (mizu_pool_status_get(p, &st) != MIZU_OK) return pool_raise(p);
   uint32_t live = 0;
   for (uint32_t i = 0; i < st.max_workers; i++)
     live += st.worker_state[i] == MIZU_WK_LIVE;
@@ -6684,7 +6794,7 @@ static PyObject *Pool_help_once(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   int rc = mizu_pool_help_once(p);
-  if (rc < 0) return pool_raise(self);
+  if (rc < 0) return pool_raise(p);
   return PyBool_FromLong(rc);
 }
 
@@ -6710,13 +6820,11 @@ static PyObject *Pool_submit_runner(MizuPool *self, PyObject *args,
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_submit_flags(p, (void *) payload, MIZU_ENTRY_RUNNER, &t, ms);
   POOL_RESUME();
+  if (pool_call_done(self, p, st)) return NULL;
   if (st == MIZU_OK) return (PyObject *) task_wrap(self, &t);
-  if (st == MIZU_FULL) {
-    PyErr_SetString(MizuSubmitTimeoutError,
-                    "pymizu: submission timed out (injection ring full)");
-    return NULL;
-  }
-  return pool_raise(self);
+  PyErr_SetString(MizuSubmitTimeoutError,   /* st == MIZU_FULL */
+                  "pymizu: submission timed out (injection ring full)");
+  return NULL;
 }
 
 static PyMethodDef Pool_methods[] = {
@@ -6798,14 +6906,15 @@ static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   void *v = NULL;
   mizu_status st;
+  mizu_pool *p = pool->core;
   POOL_ALLOW_THREADS(pool);
-  st = mizu_pool_collect(pool->core, &t, &v, ms);
+  st = mizu_pool_collect(p, &t, &v, ms);
   POOL_RESUME();
+  if (pool_call_done(pool, p, st)) return NULL;
   if (st == MIZU_TIMEOUT) {
     Py_INCREF(SentTimeout);
     return SentTimeout;
   }
-  if (st == MIZU_ERR) return pool_raise(pool);
   return caught_or_value((PyObject *) v, 0, 0);
 }
 

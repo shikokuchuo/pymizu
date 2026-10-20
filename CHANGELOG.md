@@ -48,6 +48,16 @@ Initial pre-release.
 
 ### Fixed
 
+- `Pool.destroy()` no longer crashes the process when another thread is
+  inside a verb on the same handle (the classic shape: a `PoolExecutor`
+  drain thread parked in `collect_any`): the core handle was unmapped
+  and freed under the in-flight call. Teardown now defers to the last
+  in-flight verb's return — the count is guarded by the GIL itself —
+  and later verbs raise `ValueError` on the closed handle.
+- `Channel.destroy()` gets the same in-flight fence: a destroy racing a
+  verb on another thread (e.g. a blocking `recv()`) no longer unmaps
+  the core handle under the call — teardown defers to the last verb's
+  return, as does `Channel.close()`'s once its rendezvous completes.
 - A `NaN` timeout is rejected with `ValueError` on every verb and on
   `Pool.map()`: the wait verbs previously mapped it to an indefinite
   wait (a park that never wakes), while the map layer raced it as a
