@@ -117,6 +117,13 @@ Initial pre-release.
   contain the NA sentinel now rejects as corrupt at export.
 - A channel peer calling `sys.exit()` now exits 0 without a traceback —
   an orderly exit, not a remote error.
+- `r_launcher()` / `r_pool_launcher()`: a library path containing the
+  platform path separator now reaches the R child intact — each probed
+  `.libPaths()` element crosses as its own hex-encoded argv entry. The
+  argv layout changed with it, so spawning R processes needs the mizu
+  release carrying the matching runner. A nonexistent `rscript=` now
+  raises an error naming the interpreter instead of blaming a missing
+  mizu.
 
 ### Changed
 

@@ -63,7 +63,8 @@ def r_mizu():
 
 
 def test_r_launcher_missing_rscript():
-    with pytest.raises(pymizu.MizuError):
+    # the error names the interpreter, not the mizu package
+    with pytest.raises(pymizu.MizuError, match="Rscript interpreter"):
         pymizu.r_launcher(rscript="/nonexistent/Rscript")
 
 
@@ -91,14 +92,15 @@ def test_r_launcher_probe_malformed_output(tmp_path):
 
 
 def test_r_launcher_probe_cache_hit(tmp_path, monkeypatch):
-    # a live cache entry is served without running the probe: the bogus
-    # interpreter would fail it, so a returned launcher proves the hit
+    # a live cache entry is served without running the probe: a real
+    # interpreter that cannot answer it, so a returned launcher proves
+    # the hit
     script = tmp_path / "mizu-child.R"
     script.write_text("")
     monkeypatch.setitem(
-        pymizu._r._cache, "/nonexistent/Rscript", (str(script), "/lib")
+        pymizu._r._cache, sys.executable, (str(script), ("/lib",))
     )
-    launcher = pymizu.r_launcher(rscript="/nonexistent/Rscript")
+    launcher = pymizu.r_launcher(rscript=sys.executable)
     assert callable(launcher)
 
 
@@ -107,11 +109,11 @@ def test_r_launcher_stale_probe_cache(tmp_path, monkeypatch):
     # fast, rather than returning a launcher that dies at spawn
     monkeypatch.setitem(
         pymizu._r._cache,
-        "/nonexistent/Rscript",
-        (str(tmp_path / "gone.R"), "/lib"),
+        sys.executable,
+        (str(tmp_path / "gone.R"), ("/lib",)),
     )
     with pytest.raises(pymizu.MizuError, match="mizu"):
-        pymizu.r_launcher(rscript="/nonexistent/Rscript")
+        pymizu.r_launcher(rscript=sys.executable)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the fake is a shell script")
@@ -123,11 +125,33 @@ def test_r_launcher_stale_cache_reprobes(tmp_path, monkeypatch):
     fake.write_text(f'#!/bin/sh\nprintf "%s\\n%s\\n" "{script}" "/lib"\n')
     fake.chmod(0o755)
     monkeypatch.setitem(
-        pymizu._r._cache, str(fake), (str(tmp_path / "gone.R"), "/old")
+        pymizu._r._cache, str(fake), (str(tmp_path / "gone.R"), ("/old",))
     )
     launcher = pymizu.r_launcher(rscript=str(fake))
     assert callable(launcher)
-    assert pymizu._r._cache[str(fake)] == (str(script), "/lib")
+    assert pymizu._r._cache[str(fake)] == (str(script), ("/lib",))
+
+
+def test_r_spawn_libpaths_each_own_argv_entry(tmp_path, monkeypatch):
+    # each library path crosses as its own hex argv entry: a joined
+    # path.sep blob would break an element containing the separator
+    script = tmp_path / "mizu-child.R"
+    script.write_text("")
+    monkeypatch.setitem(
+        pymizu._r._cache,
+        sys.executable,
+        (str(script), ("/a:b", "/c")),
+    )
+    seen = {}
+
+    class _Popen:
+        def __init__(self, argv, stdout=None, stderr=None):
+            seen["argv"] = argv
+
+    monkeypatch.setattr(pymizu._r._subprocess, "Popen", _Popen)
+    launcher = pymizu.r_launcher(rscript=sys.executable)
+    launcher("1a2b_3c4d")
+    assert seen["argv"][3:] == [b"/a:b".hex(), b"/c".hex()]
 
 
 def _settled_refcount(view, timeout=10.0):

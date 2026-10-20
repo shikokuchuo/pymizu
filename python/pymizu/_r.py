@@ -4,7 +4,7 @@
 launcher that spawns the peer as an R process through the package's
 static Rscript runner — the same spawn path an R host uses: no
 per-spawn command file (Rscript -e writes one), the entry expression
-and the probed library paths carried hex-encoded in argv.
+and each probed library path carried hex-encoded in argv.
 """
 
 from __future__ import annotations
@@ -26,15 +26,15 @@ _PROBE = (
     'collapse = " ")); '
     "if (ok) cat("
     'system.file("scripts", "mizu-child.R", package = "mizu"), "\\n", '
-    "paste(.libPaths(), collapse = .Platform$path.sep), "
+    'paste(.libPaths(), collapse = "\\n"), '
     '"\\n", sep = ""); '
     "quit(status = !ok)"
 )
 
-_cache: dict[str, tuple[str, str]] = {}
+_cache: dict[str, tuple[str, tuple[str, ...]]] = {}
 
 
-def _find_mizu(rscript: str) -> tuple[str, str] | None:
+def _find_mizu(rscript: str) -> tuple[str, tuple[str, ...]] | None:
     """(child script, libpaths) of an installed mizu with the source-drop
     path, else None. Successful probes are cached per Rscript; a hit
     revalidates against the child script with one exists check, so an
@@ -57,12 +57,14 @@ def _find_mizu(rscript: str) -> tuple[str, str] | None:
     lines = probe.stdout.splitlines()
     if len(lines) < 2 or not lines[0]:
         return None
-    found = (lines[0], lines[1])
+    found = (lines[0], tuple(lines[1:]))
     _cache[rscript] = found
     return found
 
 
-def _resolve(rscript: str | None, verb: str) -> tuple[str, str, str]:
+def _resolve(
+    rscript: str | None, verb: str
+) -> tuple[str, str, tuple[str, ...]]:
     """Resolve Rscript and probe it for an installed mizu with the
     source-drop path; MizuError before any channel region exists
     otherwise. Returns (rscript, child script, libpaths)."""
@@ -73,6 +75,14 @@ def _resolve(rscript: str | None, verb: str) -> tuple[str, str, str]:
                 f"pymizu: {verb}() needs Rscript on the PATH "
                 "(or pass rscript=)"
             )
+    else:
+        resolved = _shutil.which(rscript)
+        if resolved is None:
+            raise MizuError(
+                f"pymizu: {verb}() cannot find the Rscript "
+                f"interpreter '{rscript}'"
+            )
+        rscript = resolved
     found = _find_mizu(rscript)
     if found is None:
         raise MizuError(
@@ -87,18 +97,19 @@ def _spawn(
     rscript: str,
     script: str,
     expr: str,
-    libs: str,
+    libs: tuple[str, ...],
     stdout: _Any,
     stderr: _Any,
 ) -> _subprocess.Popen:
-    """Spawn the static runner with the entry expression and library
-    paths hex-encoded in argv."""
+    """Spawn the static runner with the entry expression and each library
+    path hex-encoded as its own argv entry, so a path separator inside
+    one survives."""
     return _subprocess.Popen(
         [
             rscript,
             script,
             expr.encode("utf-8").hex(),
-            libs.encode("utf-8").hex(),
+            *(lib.encode("utf-8").hex() for lib in libs),
         ],
         stdout=stdout,
         stderr=stderr,
