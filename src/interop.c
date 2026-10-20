@@ -6244,13 +6244,22 @@ int pymizu_ix_stage_runner(PyObject *frame, mizu_slot_hdr *hdr,
   return rc;
 }
 
-/* The runner writer as bytes (the test hook's half). */
+/* The runner writer as bytes (the test hook's half). The seed shape check
+   mirrors pymizu_ix_stage_runner's: ixw_runner reads the pair without
+   checks, so every caller validates. */
 PyObject *pymizu_ix_write_runner_stream(PyObject *name, int64_t gen_field,
                                         PyObject *seed, uint32_t target,
                                         uint64_t ident) {
   Py_ssize_t name_n;
   const char *name_s = PyUnicode_AsUTF8AndSize(name, &name_n);
   if (name_s == NULL) return NULL;
+  if (seed != Py_None &&
+      (!PyTuple_CheckExact(seed) || PyTuple_GET_SIZE(seed) != 2 ||
+       !PyLong_CheckExact(PyTuple_GET_ITEM(seed, 0)) ||
+       !PyLong_CheckExact(PyTuple_GET_ITEM(seed, 1)))) {
+    PyErr_SetString(MizuError, "pymizu: a malformed map runner frame");
+    return NULL;
+  }
   size_t n = ixw_runner(NULL, name_s, name_n, gen_field, seed, target,
                         ident);
   uint8_t *buf = malloc(n);

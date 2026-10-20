@@ -192,6 +192,14 @@ def test_write_runner_validation():
         _pymizu._write_runner(b"n", 0, None, 2, 0)
     with pytest.raises(ValueError, match="language byte"):
         _pymizu._write_runner("/mizu_abc", 0, None, 256, 0)
+    # the seed shape mirrors the stage path's check: the writer reads the
+    # pair without checks, so a short or non-tuple seed must raise here
+    with pytest.raises(pymizu.MizuError, match="malformed map runner frame"):
+        _pymizu._write_runner("/mizu_abc", 0, (5,), 2, 0)
+    with pytest.raises(pymizu.MizuError, match="malformed map runner frame"):
+        _pymizu._write_runner("/mizu_abc", 0, 5, 2, 0)
+    with pytest.raises(pymizu.MizuError, match="malformed map runner frame"):
+        _pymizu._write_runner("/mizu_abc", 0, (5, 7.0), 2, 0)
     with pytest.raises(TypeError):
         _pymizu._write_runner("/mizu_abc", "x", None, 2, 0)
     with pytest.raises(TypeError):
