@@ -72,6 +72,17 @@ Initial pre-release.
   is single-threaded per side, and the caller thread's `submit` and the
   drain thread's `collect_any` could otherwise race the shared spill
   free list with the GIL released.
+- `PoolExecutor` throughput no longer degrades as outstanding futures
+  pile up: the drain thread resolved each task against a fresh copy of
+  the outstanding set, so a burst of n completions cost O(n^2) list
+  churn (~13K tasks/s at 4,000 outstanding). The drain's snapshot is now
+  persistent — submissions merge in bulk, resolves swap-remove in O(1),
+  and bursts of at most 256 completions resolve before the pending
+  submissions merge, bounding how long a submission waits to join the
+  collect set — sustaining ~40K tasks/s at the same depth.
+- `PoolExecutor`: when the drain thread fails every outstanding future
+  on an infrastructure error, later submissions raise that error
+  instead of silently queueing onto the dead drain thread.
 - Conversion warnings (e.g. uint64 past 2^53, the missing-value
   sentinels) now fire for `pymizu.call` spec tasks whose stream is
   rewritten past the inline budget — previously the warning record was

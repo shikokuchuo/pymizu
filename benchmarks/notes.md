@@ -923,3 +923,33 @@ send + recv round trips, best of 5 x 20000): int 0.405 -> 0.278 us/rt,
 ~0.13-0.15 us off every probed non-buffer send.
 
 Status: full suite 593 pass, 6 skip (pandas/duckdb-absence).
+
+## 2026-10-20 — PoolExecutor drain: persistent snapshot, bounded bursts
+
+The executor adapter's drain thread resolved each task against a fresh
+copy of the outstanding set, so a burst of n completions cost O(n^2)
+Python list churn — per-task cost grew 26 -> 75 us from 500 to 4,000
+outstanding. The drain's snapshot is now persistent (submissions merge
+in bulk from a pending list, resolves swap-remove in O(1)) and
+completions drain in bursts of up to 256 per verbs-lock hold. Not the
+canonical suite: an A/B probe through the asyncio harness of
+examples/shiny/bench.py — trivial ~5 us tasks (mc_pi(100)) fanned out n
+at a time, futures awaited via asyncio.wrap_future + gather, 4 workers.
+
+Results (this build vs pre-change, tasks/s by outstanding count):
+
+| outstanding | before | after |
+|----|----|----|
+| 500 | 38.6k | 53.1k |
+| 1,000 | 31.7k | 57.0k |
+| 2,000 | 24.8k | 46.2k |
+| 4,000 | 13.3k | 37.2k |
+
+The shiny bench's granularity row (4,000 x ~5 us tasks, against
+ProcessPoolExecutor's 0.31 s) went 0.254 -> 0.100 s and its 39 ms
+event-loop stall is gone. The residual per-task growth is the core's
+O(n) collect_any scan per resolution — a batch-collect verb is the only
+further headroom.
+
+Status: full suite 890 pass, 7 skip (pandas/duckdb-absence, one
+platform skip); ruff + pyrefly clean.

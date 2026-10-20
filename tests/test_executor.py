@@ -11,6 +11,7 @@ import pytest
 from tests.helpers import fail_at, sleep_ident, square
 
 import pymizu
+from pymizu._executor import _BURST_MAX
 
 
 @pytest.fixture
@@ -49,6 +50,17 @@ def test_wait_and_as_completed(pool):
         futs = [ex.submit(sleep_ident, 0.5), ex.submit(square, 3)]
         first = next(concurrent.futures.as_completed(futs, timeout=5))
         assert first.result() == 9
+
+
+def test_burst_rollover(pool):
+    # more completions than the drain's burst bound: bursts roll over and
+    # submissions merge across them, resolving every future
+    n = _BURST_MAX + 44
+    with pymizu.PoolExecutor(pool) as ex:
+        futs = [ex.submit(square, i) for i in range(n)]
+        assert {f.result(timeout=10) for f in futs} == {
+            i * i for i in range(n)
+        }
 
 
 def test_future_timeout(pool):
@@ -140,6 +152,27 @@ def test_stale_handle_recovers(pool):
     with pytest.raises(pymizu.MizuError, match="already collected"):
         f1.result(timeout=5)
     ex.shutdown()
+
+
+def test_broken_executor_fails_and_blocks_submit(pool, monkeypatch):
+    # the drain's collect fails with an infrastructure error not
+    # attributable to a handle: every outstanding future fails with it
+    # and later submissions raise it instead of queueing onto the dead
+    # drain thread
+    err = pymizu.MizuError("infrastructure failure")
+
+    def fail_collect(tasks, timeout=None):
+        raise err
+
+    with pymizu.PoolExecutor(pool) as ex:
+        fut = ex.submit(sleep_ident, 0.5)
+        monkeypatch.setattr(ex._pool, "collect_any", fail_collect)
+        with pytest.raises(pymizu.MizuError) as exc_info:
+            fut.result(timeout=5)
+        assert exc_info.value is err
+        with pytest.raises(pymizu.MizuError) as exc_info:
+            ex.submit(square, 2)
+        assert exc_info.value is err
 
 
 def test_shutdown_cancel_futures():
