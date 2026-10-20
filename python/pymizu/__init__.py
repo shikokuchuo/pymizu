@@ -290,9 +290,13 @@ class Channel:
 
     def destroy(self) -> None:
         """Tear down the handle immediately, without the close
-        handshake. The peer sees PEER_GONE. Safe from any thread: a
-        verb in flight on another thread pins the handle, and teardown
-        completes when the last one returns."""
+        handshake: the peer observes the channel closed (PEER_GONE is
+        the hard-death outcome). Safe from any thread: a verb in
+        flight on another thread pins the handle, and teardown
+        completes when the last one returns — an indefinite wait
+        (recv, recv_batch, ready_wait, close) breaks out within a
+        bounded slice, so the teardown (and the peer's observation of
+        it) follows promptly."""
         return self._h.destroy()
 
     def alive(self) -> bool:
@@ -1160,7 +1164,11 @@ class Pool:
         broadcast or the wait. Workers exit once they observe the
         controller gone. Safe from any thread: a verb in flight on
         another thread pins the handle, and teardown completes when the
-        last one returns."""
+        last one returns — an indefinite wait (submit, collect,
+        collect_any, collect_all, ready_wait) breaks out within a
+        bounded slice; stop() instead waits out its own deadline, and
+        a worker's idle run() can delay the teardown (and the shutdown
+        observation) until it returns."""
         return self._h.destroy()
 
     def status(self) -> dict:

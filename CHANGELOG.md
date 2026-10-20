@@ -53,11 +53,19 @@ Initial pre-release.
   drain thread parked in `collect_any`): the core handle was unmapped
   and freed under the in-flight call. Teardown now defers to the last
   in-flight verb's return — the count is guarded by the GIL itself —
-  and later verbs raise `ValueError` on the closed handle.
+  and later verbs raise `ValueError` on the closed handle. Indefinite
+  waits (`submit()`, `collect()`, `collect_any()`, `collect_all()`,
+  `ready_wait()`) slice into bounded core calls and break out on the
+  destroy (the closed-handle `ValueError`, or `False` for
+  `ready_wait()`), so the teardown runs promptly; a `stop()` wait and
+  a worker's idle `run()` still delay it until they return.
 - `Channel.destroy()` gets the same in-flight fence: a destroy racing a
   verb on another thread (e.g. a blocking `recv()`) no longer unmaps
   the core handle under the call — teardown defers to the last verb's
   return, as does `Channel.close()`'s once its rendezvous completes.
+  Indefinite waits (`recv()`, `recv_batch()`, `ready_wait()`,
+  `close()`) slice into bounded core calls and break out on the
+  destroy (`CLOSED` / `False`), so the teardown runs promptly.
 - A `NaN` timeout is rejected with `ValueError` on every verb and on
   `Pool.map()`: the wait verbs previously mapped it to an indefinite
   wait (a park that never wakes), while the map layer raced it as a

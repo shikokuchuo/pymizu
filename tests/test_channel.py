@@ -306,6 +306,72 @@ def test_destroy_defers_to_in_flight_ready_wait():
     h.destroy()  # idempotent
 
 
+def test_destroy_breaks_indefinite_recv():
+    # an indefinite recv slices into bounded waits: a destroy on another
+    # thread breaks it out as CLOSED, and the teardown runs promptly
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = pymizu._pymizu._channel_attach(h.token)
+    got = []
+    th = threading.Thread(target=lambda: got.append(h.recv()), daemon=True)
+    th.start()
+    time.sleep(0.1)  # the recv is parked with the GIL released
+    h.destroy()
+    th.join(timeout=5)
+    assert got == [pymizu.CLOSED]
+    assert p.send(1) is pymizu.CLOSED  # the teardown ran: the peer sees it
+    p.destroy()
+
+
+def test_destroy_breaks_indefinite_ready_wait():
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    got = []
+    th = threading.Thread(
+        target=lambda: got.append(h.ready_wait(None)), daemon=True
+    )
+    th.start()
+    time.sleep(0.1)  # the wait is parked with the GIL released
+    h.destroy()
+    th.join(timeout=5)
+    assert got == [False]
+    h.destroy()  # idempotent
+
+
+def test_destroy_breaks_indefinite_close():
+    # a close parked in the rendezvous breaks out False on destroy; the
+    # teardown still completes the close for the peer
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = pymizu._pymizu._channel_attach(h.token)
+    got = []
+    th = threading.Thread(
+        target=lambda: got.append(h.close(None)), daemon=True
+    )
+    th.start()
+    time.sleep(0.1)  # close is parked in the rendezvous wait
+    h.destroy()
+    th.join(timeout=5)
+    assert got == [False]
+    assert p.send(1) is pymizu.CLOSED
+    p.destroy()
+
+
+def test_destroy_breaks_indefinite_recv_batch():
+    # an indefinite recv_batch slices like recv: the wait covers only the
+    # first message, so a destroy breaks it out as CLOSED
+    h = pymizu._pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = pymizu._pymizu._channel_attach(h.token)
+    got = []
+    th = threading.Thread(
+        target=lambda: got.append(h.recv_batch(4)), daemon=True
+    )
+    th.start()
+    time.sleep(0.1)  # the batch wait is parked with the GIL released
+    h.destroy()
+    th.join(timeout=5)
+    assert got == [pymizu.CLOSED]
+    assert p.send(1) is pymizu.CLOSED
+    p.destroy()
+
+
 def test_channel_repr():
     ch = pymizu.Channel.create(ECHO_PEER)
     assert re.fullmatch(r"<pymizu\.Channel [0-9a-f]+_[0-9a-f]+>", repr(ch._h))

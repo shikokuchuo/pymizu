@@ -121,6 +121,111 @@ def test_destroy_defers_to_worker_run():
         h.destroy()
 
 
+def test_destroy_breaks_indefinite_collect(pool):
+    # an indefinite collect slices into bounded waits: a destroy on
+    # another thread breaks it out with the closed-handle error
+    t = pool.submit(time.sleep, 1)
+    got = []
+
+    def collect():
+        try:
+            got.append(t.collect())
+        except ValueError as e:
+            got.append(e)
+
+    th = threading.Thread(target=collect, daemon=True)
+    th.start()
+    time.sleep(0.1)  # the collect is parked with the GIL released
+    pool.destroy()
+    th.join(timeout=5)
+    assert len(got) == 1
+    assert isinstance(got[0], ValueError)
+    assert "pool handle is closed" in str(got[0])
+
+
+def test_destroy_breaks_indefinite_collect_any(pool):
+    t = pool.submit(time.sleep, 1)
+    got = []
+
+    def collect():
+        try:
+            pool.collect_any([t])
+        except ValueError as e:
+            got.append(e)
+
+    th = threading.Thread(target=collect, daemon=True)
+    th.start()
+    time.sleep(0.1)  # the collect is parked with the GIL released
+    pool.destroy()
+    th.join(timeout=5)
+    assert len(got) == 1
+    assert isinstance(got[0], ValueError)
+    assert "pool handle is closed" in str(got[0])
+
+
+def test_destroy_breaks_indefinite_submit():
+    # an indefinite submit parked on ring space slices like collect: a
+    # destroy breaks it out with the closed-handle error
+    h = _pymizu._pool_new(1, 1, 64, 64, 128, 512)
+    try:
+        frame = _pymizu._task_frame(len, (1,), {})
+        with pytest.raises(pymizu.SubmitTimeoutError):
+            for _ in range(128):
+                h.submit(frame, 0)  # fill the injection ring (no workers)
+        got = []
+
+        def sub():
+            try:
+                h.submit(frame)
+            except ValueError as e:
+                got.append(e)
+
+        th = threading.Thread(target=sub, daemon=True)
+        th.start()
+        time.sleep(0.1)  # the submit is parked on ring space
+        h.destroy()
+        th.join(timeout=5)
+        assert len(got) == 1
+        assert "pool handle is closed" in str(got[0])
+    finally:
+        h.destroy()
+
+
+def test_destroy_breaks_indefinite_collect_all(pool):
+    t = pool.submit(time.sleep, 1)
+    got = []
+
+    def collect():
+        try:
+            pool.collect_all([t])
+        except ValueError as e:
+            got.append(e)
+
+    th = threading.Thread(target=collect, daemon=True)
+    th.start()
+    time.sleep(0.1)  # the collect is parked with the GIL released
+    pool.destroy()
+    th.join(timeout=5)
+    assert len(got) == 1
+    assert "pool handle is closed" in str(got[0])
+
+
+def test_destroy_breaks_indefinite_ready_wait():
+    h = _pymizu._pool_new(1, 1, 64, 64, 128, 512)
+    try:
+        got = []
+        th = threading.Thread(
+            target=lambda: got.append(h.ready_wait([0], None)), daemon=True
+        )
+        th.start()
+        time.sleep(0.1)  # the wait is parked with the GIL released
+        h.destroy()
+        th.join(timeout=5)
+        assert got == [False]
+    finally:
+        h.destroy()
+
+
 def test_submit_kwargs(pool):
     t = pool.submit(round, 3.14159, ndigits=2)
     assert t.collect(timeout=5) == 3.14

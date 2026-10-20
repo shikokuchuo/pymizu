@@ -92,7 +92,13 @@ ch.close()
 
 A channel is also a context manager — the `with` block closes it on exit.
 `close_signal()` signals without waiting.
-`destroy()` tears the handle down immediately, and the peer sees `PEER_GONE`.
+`destroy()` tears the handle down immediately, without the close handshake —
+the peer observes the channel closed (`PEER_GONE` is the hard-death outcome).
+A destroy is safe from any thread: a verb in flight on another thread pins
+the handle, and teardown completes when the last one returns — an indefinite
+wait (`recv()`, `recv_batch()`, `ready_wait()`, `close()`) breaks out within
+a bounded slice, so the teardown and the peer's observation of it follow
+promptly.
 
 ## What crosses a channel
 
