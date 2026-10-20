@@ -137,7 +137,7 @@ squared
 
 # Growing, shrinking, and joining a pool
 
-A pool can grow and shrink while it runs. `pool.spawn_workers(n)` adds workers, up to the `max_workers` limit set at create. `pool.retire(slot)` asks a worker to exit cleanly: it finishes its current task, and the remaining workers take over anything still queued to it.
+A pool can grow and shrink while it runs. `pool.spawn_workers(n)` adds workers, up to the `max_workers` limit set at create. `pool.retire(slot)` asks a worker to exit cleanly: it finishes its current task, and the remaining workers take over anything still queued to it. Only the pool's creator resizes it -- an attached submitter gets [MizuError](../reference/MizuError.md#pymizu.MizuError).
 
 Other processes join a running pool as submitters with `Pool.attach(token)` -- the token is `pool.token` on the creator -- and submit and collect exactly as the creator does.
 

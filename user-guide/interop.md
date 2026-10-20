@@ -69,7 +69,7 @@ pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
 pool.stop()
 ```
 
-Each element fills the spec's first positional argument (a named spec) or binds as `x` (a `source=` spec). Put constant arguments in the spec itself: the map's own `args=`/`kwargs=` must stay empty. `template=` and `collect=` work unchanged, and a per-element error crosses with its `index`. Spec maps take integer seeds only (within R's 32-bit range when the workers are R). Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.
+Each element fills the spec's first positional argument (a named spec) or binds as `x` (a `source=` spec). Put constant arguments in the spec itself: the map's own `args=`/`kwargs=` must stay empty. `template=` and `collect=` work unchanged, and a per-element error crosses with its `index`. Spec maps take integer seeds only (when the workers are R, the seed within R's 32-bit range and the offset at most 2^53). Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.
 
 
 # What crosses the language boundary

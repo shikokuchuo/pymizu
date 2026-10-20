@@ -117,7 +117,7 @@ Map `fn` over `x`, unpacking each element as the call's
 Stage a map once for repeated runs; return a
 
 [Pool.retire()](Pool.retire.md#pymizu.Pool.retire)  
-Ask the worker in `slot` to exit cleanly (non-blocking).
+Ask the worker in `slot` to exit cleanly (non-blocking,
 
 [Pool.spawn_workers()](Pool.spawn_workers.md#pymizu.Pool.spawn_workers)  
 Spawn `n` additional workers into free registry slots and

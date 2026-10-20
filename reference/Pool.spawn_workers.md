@@ -16,7 +16,7 @@ Pool.spawn_workers(
 ```
 
 
-wait for them to join.
+wait for them to join (controller only).
 
 
 ## Parameters
