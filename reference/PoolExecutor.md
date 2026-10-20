@@ -30,7 +30,7 @@ When True, `shutdown()` stops the wrapped pool.
 
 ## Notes
 
-Deltas from stdlib semantics: a task's failure surfaces as [pymizu.TaskError](TaskError.md#pymizu.TaskError) (the remote error envelope); `Future.running()` is always False (futures resolve at completion); cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> -- and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). [map](Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit` -- for bulk maps, [Pool.map](Pool.map.md#pymizu.Pool.map) is the faster path.
+Deltas from stdlib semantics: a task's failure surfaces as [pymizu.TaskError](TaskError.md#pymizu.TaskError) (the remote error envelope); `Future.running()` is always False (futures resolve at completion); cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> -- and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An infrastructure failure (e.g. the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a dead drain. [map](Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit` -- for bulk maps, [Pool.map](Pool.map.md#pymizu.Pool.map) is the faster path.
 
 
 ## Examples
@@ -172,3 +172,6 @@ Keyword arguments for `fn`.
 
 `RuntimeError`  
 After shutdown.
+
+`pymizu.MizuError`  
+The infrastructure failure that broke the executor (its drain thread failed every outstanding future on it).

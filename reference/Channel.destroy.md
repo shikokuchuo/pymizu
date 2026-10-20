@@ -11,4 +11,4 @@ Channel.destroy()
 ```
 
 
-handshake. The peer sees PEER_GONE.
+handshake: the peer observes the channel closed (PEER_GONE is the hard-death outcome). Safe from any thread: a verb in flight on another thread pins the handle, and teardown completes when the last one returns -- an indefinite wait (recv, recv_batch, ready_wait, close) breaks out within a bounded slice, so the teardown (and the peer's observation of it) follows promptly.

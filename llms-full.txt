@@ -151,7 +151,13 @@ CLOSED once the ring drains).
 destroy(self) -> 'None'
 
 Tear down the handle immediately, without the close
-handshake. The peer sees PEER_GONE.
+handshake: the peer observes the channel closed (PEER_GONE is
+the hard-death outcome). Safe from any thread: a verb in
+flight on another thread pins the handle, and teardown
+completes when the last one returns — an indefinite wait
+(recv, recv_batch, ready_wait, close) breaks out within a
+bounded slice, so the teardown (and the peer's observation of
+it) follows promptly.
 
 alive(self) -> 'bool'
 
@@ -280,9 +286,12 @@ Deltas from stdlib semantics: a task's failure surfaces as
 cancellation is advisory, mirroring [`Task.cancel()`](`pymizu.Task`)
 — and `shutdown(cancel_futures=True)` cancels every outstanding
 future, since the pool exposes no queued-versus-running signal (a
-running task completes, but its result is discarded). `map` is the
-stdlib base implementation over `submit` — for bulk maps, `Pool.map`
-is the faster path.
+running task completes, but its result is discarded). An
+infrastructure failure (e.g. the wrapped pool is stopped from under
+the executor) fails every outstanding future; later submissions
+raise instead of queueing onto a dead drain.
+`map` is the stdlib base implementation over `submit` — for bulk
+maps, `Pool.map` is the faster path.
 
 Examples
 --------
@@ -715,7 +724,13 @@ destroy(self) -> 'None'
 
 Tear down the pool handle immediately, without the shutdown
 broadcast or the wait. Workers exit once they observe the
-controller gone.
+controller gone. Safe from any thread: a verb in flight on
+another thread pins the handle, and teardown completes when the
+last one returns — an indefinite wait (submit, collect,
+collect_any, collect_all, ready_wait) breaks out within a
+bounded slice; stop() instead waits out its own deadline, and
+a worker's idle run() can delay the teardown (and the shutdown
+observation) until it returns.
 
 status(self) -> 'dict'
 
@@ -1515,7 +1530,13 @@ ch.close()
 
 A channel is also a context manager — the `with` block closes it on exit.
 `close_signal()` signals without waiting.
-`destroy()` tears the handle down immediately, and the peer sees `PEER_GONE`.
+`destroy()` tears the handle down immediately, without the close handshake —
+the peer observes the channel closed (`PEER_GONE` is the hard-death outcome).
+A destroy is safe from any thread: a verb in flight on another thread pins
+the handle, and teardown completes when the last one returns — an indefinite
+wait (`recv()`, `recv_batch()`, `ready_wait()`, `close()`) breaks out within
+a bounded slice, so the teardown and the peer's observation of it follow
+promptly.
 
 ## What crosses a channel
 

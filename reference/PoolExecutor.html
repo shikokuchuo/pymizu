@@ -83,7 +83,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-e075a6adad56b92100e5fb84d28eba79.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-a699add0f2108d88e1df4312b71c9091.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -736,7 +736,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L47-L259" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L63-L322" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.CLASS">
 <div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="sig-name">PoolExecutor</span>(</span>
@@ -765,12 +765,12 @@ When True, <code>shutdown()</code> stops the wrapped pool.
 </section>
 <section id="notes" class="level2 doc-notes">
 <h2 class="doc-notes anchored" data-anchor-id="notes">Notes</h2>
-<p>Deltas from stdlib semantics: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> (the remote error envelope); <code>Future.running()</code> is always False (futures resolve at completion); cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> — and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code> — for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a> is the faster path.</p>
+<p>Deltas from stdlib semantics: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> (the remote error envelope); <code>Future.running()</code> is always False (futures resolve at completion); cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> — and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An infrastructure failure (e.g.&nbsp;the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a dead drain. <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code> — for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a> is the faster path.</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Use as a drop-in <code>concurrent.futures.Executor</code>:</p>
-<div id="99eef1d8" class="cell" data-execution_count="1">
+<div id="b3633dc1" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">2</span>) <span class="im">as</span> ex:</span>
@@ -784,41 +784,25 @@ When True, <code>shutdown()</code> stops the wrapped pool.
 </section>
 <section id="methods" class="level2 doc-methods">
 <h2 class="doc-methods anchored" data-anchor-id="methods">Methods</h2>
-<table class="gd-summary-table">
+<table class="gd-summary-table caption-top table">
 <thead>
-<tr>
-<th>
-Name
-</th>
-<th>
-Description
-</th>
+<tr class="header">
+<th>Name</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
-<tr>
-<td>
-<a href="#create" class="doc-function doc-label doc-label-method">create()</a>
-</td>
-<td>
-Spawn an owned pool —
-</td>
+<tr class="odd">
+<td><a href="#create" class="doc-function doc-label doc-label-method">create()</a></td>
+<td>Spawn an owned pool —</td>
 </tr>
-<tr>
-<td>
-<a href="#shutdown" class="doc-function doc-label doc-label-method">shutdown()</a>
-</td>
-<td>
-Stdlib shutdown.
-</td>
+<tr class="even">
+<td><a href="#shutdown" class="doc-function doc-label doc-label-method">shutdown()</a></td>
+<td>Stdlib shutdown.</td>
 </tr>
-<tr>
-<td>
-<a href="#submit" class="doc-function doc-label doc-label-method">submit()</a>
-</td>
-<td>
-Schedule <code>fn(*args, **kwargs)</code> on the pool.
-</td>
+<tr class="odd">
+<td><a href="#submit" class="doc-function doc-label doc-label-method">submit()</a></td>
+<td>Schedule <code>fn(*args, **kwargs)</code> on the pool.</td>
 </tr>
 </tbody>
 </table>
@@ -830,7 +814,7 @@ Schedule <code>fn(*args, **kwargs)</code> on the pool.
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L103-L122" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L124-L143" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>create(</span>
@@ -876,7 +860,7 @@ Forwarded to <a href="../reference/Pool.create.html#pymizu.Pool.create" class="g
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L167-L189" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L194-L216" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>shutdown(</span>
@@ -909,7 +893,7 @@ Cancel the not-yet-started futures. Stops the pool only when <code>stop_pool</co
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L124-L165" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L145-L192" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-Kind.FUNCTION">
 <div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>submit(</span>
@@ -955,7 +939,11 @@ Keyword arguments for <code>fn</code>.
 <dl>
 <dt><code> <span class="doc-parameter-annotation">RuntimeError</span></code></dt>
 <dd>
-After shutdown.
+<p>After shutdown.</p>
+</dd>
+<dt><code> <span class="doc-parameter-annotation">pymizu.MizuError</span></code></dt>
+<dd>
+The infrastructure failure that broke the executor (its drain thread failed every outstanding future on it).
 </dd>
 </dl>
 </div>
