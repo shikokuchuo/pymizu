@@ -116,8 +116,8 @@ Put constant arguments in the spec itself: the map's own `args=`/`kwargs=`
 must stay empty.
 `template=` and `collect=` work unchanged, and a per-element error crosses
 with its `index`.
-Spec maps take integer seeds only (within R's 32-bit range when the workers
-are R).
+Spec maps take integer seeds only (when the workers are R, the seed within
+R's 32-bit range and the offset at most 2^53).
 Each language derives its own random streams from the seed, so results are
 reproducible for a given worker language but not identical across languages.
 

@@ -189,8 +189,9 @@ def _seed_wire(
     """The spec-map seed gate: the kind-2 runner fields carry the
     language-neutral `(seed, offset)` i64 pair, so a spec map takes int
     seeds only — a bytes seed has no i64 form. On R workers the int must
-    fit R's 32-bit derivation range; the local error beats one per
-    runner."""
+    fit R's 32-bit derivation range and the offset must not exceed 2^53
+    (R derives per-element streams in doubles, exact only to 2^53); the
+    local error beats one per runner."""
     pair = _seed_pair(seed)
     if pair is None:
         return None
@@ -206,6 +207,11 @@ def _seed_wire(
         raise TypeError(
             "pymizu: an int seed on R workers must fit R's 32-bit "
             "derivation range"
+        )
+    if lang == 2 and offset > 2**53:  # 2 = R
+        raise TypeError(
+            "pymizu: a seed offset on R workers must not exceed 2^53 — "
+            "doubles cannot represent larger integers exactly"
         )
     return (seed, offset)
 

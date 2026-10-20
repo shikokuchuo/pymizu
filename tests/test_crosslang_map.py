@@ -114,6 +114,16 @@ def test_seed_outside_int32_on_r_workers_errors_locally(r_pool):
         r_pool.map(pymizu.call("stats::median"), [1.0], seed=-(2**31) - 1)
 
 
+def test_seed_offset_past_exact_range_on_r_workers_errors_locally(r_pool):
+    with pytest.raises(TypeError, match=r"2\^53"):
+        r_pool.map(pymizu.call("stats::median"), [1.0], seed=(7, 2**53 + 1))
+    # the boundary itself crosses and derives deterministically
+    fn = pymizu.call(source="runif(1)")
+    assert r_pool.map(fn, [1, 2], seed=(7, 2**53)) == r_pool.map(
+        fn, [1, 2], seed=(7, 2**53)
+    )
+
+
 def test_prepared_spec_map_re_arms_without_restage(r_pool):
     pm = r_pool.map_prepare(
         pymizu.call(source="runif(1)"), list(range(12)), seed=7

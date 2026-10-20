@@ -899,8 +899,9 @@ class Pool:
         one raises [`DeclinedError`](`pymizu.DeclinedError`) at stage
         time. ``seed=`` carries as a language-neutral pair and each
         worker language derives its own streams, so a spec map takes int
-        seeds only (32-bit-ranged on R workers); invariance holds within
-        a worker language, never identical draws across languages.
+        seeds only (on R workers, the seed 32-bit-ranged and the offset
+        at most 2^53); invariance holds within a worker language, never
+        identical draws across languages.
 
         ``template`` declares that every ``fn`` result is ``m`` values
         of the exemplar's dtype: results are written in place into a

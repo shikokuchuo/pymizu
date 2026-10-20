@@ -113,6 +113,12 @@ Initial pre-release.
 
 ### Changed
 
+- A spec map's `seed=(seed, offset)` on R workers now rejects an offset
+  past 2^53 at `Pool.map()` call time with a local `TypeError`, matching
+  the existing 32-bit seed gate — previously every runner failed
+  remotely with R's own validation error. R derives per-element streams
+  in doubles, exact only to 2^53, so no map that could succeed is
+  affected.
 - Spec maps to R workers now convert fixed-width non-identity numpy
   dtypes once at stage time, through the same table channel sends use:
   int8/16, uint16/32/64, float16/32, bool, and complex64 `x` buffers
