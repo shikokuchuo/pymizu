@@ -48,6 +48,13 @@ Initial pre-release.
 
 ### Fixed
 
+- A `NaN` timeout is rejected with `ValueError` on every verb and on
+  `Pool.map()`: the wait verbs previously mapped it to an indefinite
+  wait (a park that never wakes), while the map layer raced it as a
+  non-blocking collect.
+- `Pool.spawn_workers()` gates the caller's role before launching any
+  process: an attached (submitter) handle previously spawned real
+  workers and errored only at the join wait.
 - A straggler of an unclean `PreparedMap.run()` (timeout, error, worker
   death) can no longer write its in-flight batch into the re-armed
   region's output area after a later run has collected: the unclean run

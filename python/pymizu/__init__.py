@@ -1078,7 +1078,8 @@ class Pool:
         )
 
     def retire(self, slot: int) -> None:
-        """Ask the worker in ``slot`` to exit cleanly (non-blocking)."""
+        """Ask the worker in ``slot`` to exit cleanly (non-blocking,
+        controller only)."""
         return self._h.retire(slot)
 
     def spawn_workers(
@@ -1089,7 +1090,7 @@ class Pool:
         startup_timeout: float = 30.0,
     ) -> list[int]:
         """Spawn ``n`` additional workers into free registry slots and
-        wait for them to join.
+        wait for them to join (controller only).
 
         Parameters
         ----------
@@ -1107,9 +1108,13 @@ class Pool:
         """
         if n < 1:
             raise ValueError("pymizu: n must be at least 1")
-        free = [
-            i for i, s in enumerate(self.status()["workers"]) if s == "free"
-        ]
+        # the role gate precedes the launcher: a non-controller's spawn
+        # would error only at the join wait, after real worker processes
+        # had started
+        st = self.status()
+        if st["role"] != "controller":
+            raise MizuError("pymizu: only the controller can resize a pool")
+        free = [i for i, s in enumerate(st["workers"]) if s == "free"]
         if len(free) < n:
             raise MizuError(
                 f"pymizu: not enough free worker slots ({len(free)} free)"

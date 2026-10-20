@@ -37,6 +37,7 @@ restarting the stream instead of continuing it.
 from __future__ import annotations
 
 import hashlib as _hashlib
+import math as _math
 import random as _random
 import time as _time
 from collections.abc import Callable as _Callable
@@ -579,6 +580,12 @@ def _seed_spec(
 def _deadline(
     timeout: float | None,
 ) -> tuple[_Callable[[], float | None], _Callable[[], bool]]:
+    # as the verbs' timeout_ms_of: a NaN must not reach the deadline math
+    # (it never expires, and remaining() degrades to a non-blocking poll)
+    if timeout is not None and _math.isnan(timeout):
+        raise ValueError(
+            "pymizu: timeout must be a number of seconds, not NaN"
+        )
     deadline = None if timeout is None else _time.monotonic() + timeout
 
     def remaining() -> float | None:

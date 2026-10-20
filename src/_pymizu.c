@@ -5071,6 +5071,13 @@ static int timeout_ms_of(PyObject *arg, double *out) {
   }
   double t = PyFloat_AsDouble(arg);
   if (t == -1 && PyErr_Occurred()) return -1;
+  /* the core maps non-finite input to an indefinite wait: a NaN would
+     park forever where a 0 or a negative returns at once */
+  if (isnan(t)) {
+    PyErr_SetString(PyExc_ValueError,
+                    "pymizu: timeout must be a number of seconds, not NaN");
+    return -1;
+  }
   *out = mizu_timeout_ms(t);
   return 0;
 }

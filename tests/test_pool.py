@@ -120,6 +120,17 @@ def test_collect_timeout(pool):
     assert t.collect(timeout=5) is None
 
 
+def test_nan_timeout_rejected(pool):
+    t = pool.submit(time.sleep, 1.5)
+    with pytest.raises(ValueError, match="not NaN"):
+        t.collect(timeout=float("nan"))
+    with pytest.raises(ValueError, match="not NaN"):
+        pool.submit(len, [1], timeout=float("nan"))
+    with pytest.raises(ValueError, match="not NaN"):
+        pool.stop(timeout=float("nan"))
+    assert t.collect(timeout=5) is None
+
+
 def test_collect_exactly_once(pool):
     t = pool.submit(len, [1, 2])
     assert t.collect(timeout=5) == 2

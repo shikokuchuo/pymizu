@@ -83,6 +83,11 @@ def test_starmap_empty(pool):
     assert pool.starmap(pow, []) == []
 
 
+def test_map_nan_timeout_rejected(pool):
+    with pytest.raises(ValueError, match="not NaN"):
+        pool.map(square, [1, 2, 3], timeout=float("nan"))
+
+
 def test_starmap_spec_rejected(pool):
     with pytest.raises(TypeError, match="starmap"):
         pool.starmap(pymizu.call("math.sqrt"), [(1.0,)])

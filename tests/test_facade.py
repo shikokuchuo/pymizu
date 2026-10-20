@@ -175,6 +175,23 @@ def test_pool_spawn_workers_validation():
             pool.spawn_workers(1)
 
 
+def test_pool_spawn_workers_controller_only():
+    with pymizu.Pool.create(1, max_workers=2) as pool:
+        attached = pymizu.Pool.attach(pool.token)
+        calls = []
+        try:
+            with pytest.raises(pymizu.MizuError, match="only the controller"):
+                attached.spawn_workers(
+                    1,
+                    launcher=lambda token, slot: calls.append(1),
+                    startup_timeout=0.2,
+                )
+            assert calls == []
+            assert pool.status()["workers"] == ["live", "free"]
+        finally:
+            attached.destroy()
+
+
 def test_pool_status_dump():
     with pymizu.Pool.create(1) as pool:
         assert isinstance(pool.status(), dict)
