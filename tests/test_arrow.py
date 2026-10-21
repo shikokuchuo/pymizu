@@ -137,8 +137,8 @@ def rcheck(r_mizu):
 
 
 def r_case(ch, spec, payload):
-    assert ch.send(spec) is True
-    assert ch.send(payload) is True
+    assert ch.send(spec) is None
+    assert ch.send(payload) is None
     got = ch.recv(timeout=30)
     if isinstance(got, str):
         raise AssertionError(f"R check failed for {spec!r}: {got}")
@@ -166,7 +166,7 @@ def _settle_producer(ch):
     # the producer's loan on the view's region releases at the peer's
     # first reap after consumer-done — one echo round-trip forces it, so
     # the refcount baseline in the export tests is the view's loan alone
-    assert ch.send(0) is True
+    assert ch.send(0) is None
     assert ch.recv(timeout=5) == 0
 
 
@@ -275,7 +275,7 @@ def test_range_warning_as_error():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
             h.send(np.array([2**53 + 1], dtype=np.uint64))
-    assert h.send(np.array([1.0, 2.0])) is True
+    assert h.send(np.array([1.0, 2.0])) is None
     assert np.array_equal(p.recv(timeout=5), [1.0, 2.0])
     p.destroy()
     h.destroy()
@@ -286,12 +286,12 @@ def test_uint64_frame_columns_convert_with_a_warning():
     # doubles, past 2^53 converts to NA with one warning
     h, p = foreign_pair()
     t = pa.table({"a": pa.array([1, 2], type=pa.uint64())})
-    assert h.send(t) is True
+    assert h.send(t) is None
     got = p.recv(5)
     assert list(got.to_dict()["a"]) == [1.0, 2.0]
     t2 = pa.table({"a": pa.array([2**62], type=pa.uint64())})
     with pytest.warns(RuntimeWarning, match="beyond"):
-        assert h.send(t2) is True
+        assert h.send(t2) is None
     got = p.recv(5)
     assert np.isnan(got.to_dict()["a"][0])
     # raised as an error it rolls back: the channel stages on
@@ -299,7 +299,7 @@ def test_uint64_frame_columns_convert_with_a_warning():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
             h.send(t2)
-    assert h.send({"ok": 1}) is True
+    assert h.send({"ok": 1}) is None
     assert p.recv(5) == {"ok": 1}
     p.destroy()
     h.destroy()
@@ -312,7 +312,7 @@ def test_int32_frame_column_genuine_intmin_warns():
     h, p = foreign_pair()
     t = pa.table({"a": pa.array([-(2**31), None], type=pa.int32())})
     with pytest.warns(RuntimeWarning, match="-2147483648"):
-        assert h.send(t) is True
+        assert h.send(t) is None
     p.destroy()
     h.destroy()
 
@@ -324,7 +324,7 @@ def test_prefixed_buffer_formats():
     h, p = foreign_pair()
     buf = (ctypes.c_int32 * 3)(7, 8, 9)
     assert memoryview(buf).format in ("<i", "<l")
-    assert h.send(buf) is True
+    assert h.send(buf) is None
     assert list(p.recv(timeout=5)) == [7, 8, 9]
     p.destroy()
     h.destroy()
@@ -430,9 +430,9 @@ def test_arrow_rejections_foreign():
         h.send(pa.table({"d": pa.array([1], type=pa.decimal128(5, 2))}))
     # strings, timestamps and chunked producers cross now (the stream
     # front-end): a string array as 0x0b, a timestamp as POSIXct
-    assert h.send(pa.array(["a", "b"])) is True
+    assert h.send(pa.array(["a", "b"])) is None
     assert p.recv(timeout=5) == ["a", "b"]
-    assert h.send(pa.chunked_array([[1, 2], [3]])) is True
+    assert h.send(pa.chunked_array([[1, 2], [3]])) is None
     assert list(p.recv(timeout=5)) == [1, 2, 3]
     p.destroy()
     h.destroy()
@@ -443,7 +443,7 @@ def test_arrow_invalid_capsules():
     # semantics): the first send consumes it, the replay rejects
     h, p = foreign_pair()
     patched = _PatchedArray(pa.array([1, 2, 3], type=pa.int32()))
-    assert h.send(patched) is True
+    assert h.send(patched) is None
     assert list(p.recv(timeout=5)) == [1, 2, 3]
     with pytest.raises(TypeError, match="invalid Arrow"):
         h.send(patched)
@@ -481,7 +481,7 @@ def test_arrow_probes_look_up_once():
     prod = CountingStream(
         RawArrowStream([("i", "x", [([1, 2], None)])]),  # one batch
     )
-    assert h.send(prod) is True
+    assert h.send(prod) is None
     assert prod.lookups == ["__arrow_c_array__", "__arrow_c_stream__"]
     assert list(p.recv(timeout=5).to_dict()["x"]) == [1, 2]
     p.destroy()
@@ -548,7 +548,7 @@ def test_arrow_stream_schema_failures():
         with pytest.raises(pymizu.DeclinedError, match="no stream today"):
             h.send(BadExport())
         # the channel still flows
-        assert h.send(1) is True
+        assert h.send(1) is None
         assert p.recv(5) == 1
     finally:
         p.destroy()
@@ -594,7 +594,7 @@ def test_arrow_array_pair_contract_violations():
         with pytest.raises(RuntimeError, match="boom"):
             h.send(BoomArray())
         # the channel still flows
-        assert h.send(1) is True
+        assert h.send(1) is None
         assert p.recv(5) == 1
     finally:
         p.destroy()
@@ -607,7 +607,7 @@ def test_chunked_string_array_spills():
     vals = [f"v{k}" * 20 for k in range(6000)]
     h, p = foreign_pair()
     try:
-        assert h.send(pa.chunked_array([vals[:3000], vals[3000:]])) is True
+        assert h.send(pa.chunked_array([vals[:3000], vals[3000:]])) is None
         assert p.recv(5) == vals
     finally:
         p.destroy()
@@ -628,7 +628,7 @@ def test_mid_size_frame_spills_by_value():
     for caps in (0, 63):
         h, p = foreign_pair(caps=caps)
         try:
-            assert h.send(t) is True
+            assert h.send(t) is None
             d = p.recv(5).to_dict()
             assert d["x"].tolist() == list(range(n))
             assert d["y"][1:4].tolist() == [0.5, 1.0, 1.5]
@@ -663,14 +663,14 @@ def test_py_py_channel_exactness(echo):
         np.array([1, 2, 3], dtype=np.float32),
         np.array([1, 2, 3], dtype=np.int64),
     ]:
-        assert echo.send(a) is True
+        assert echo.send(a) is None
         b = echo.recv(timeout=5)
         assert b.dtype == a.dtype and np.array_equal(b, a)
     # Arrow producers pickle unchanged too
     t = pa.table({"a": [1, None, 3]})
-    assert echo.send(t) is True
+    assert echo.send(t) is None
     assert echo.recv(timeout=5).equals(t)
-    assert echo.send(pa.chunked_array([[1, 2], [3]])) is True
+    assert echo.send(pa.chunked_array([[1, 2], [3]])) is None
     assert echo.recv(timeout=5).to_pylist() == [1, 2, 3]
 
 
@@ -697,7 +697,7 @@ mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
         v = ch.recv(timeout=30)
         assert isinstance(v, np.ndarray) and v.dtype == np.float64
         assert np.isnan(v[1]) and np.isnan(v[2])
-        assert ch.send(v) is True
+        assert ch.send(v) is None
         assert ch.recv(timeout=30) == "OK"
     finally:
         ch.close()
@@ -723,7 +723,7 @@ mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
         v = ch.recv(timeout=30)
         with np.errstate(invalid="ignore"):
             computed = v + 0
-        assert ch.send(computed) is True
+        assert ch.send(computed) is None
         assert ch.recv(timeout=30) == "OK"
     finally:
         ch.close()
@@ -746,7 +746,7 @@ mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
     try:
         v = ch.recv(timeout=30)
         assert v.dtype == np.int32
-        assert ch.send(v) is True
+        assert ch.send(v) is None
         assert ch.recv(timeout=30) == "OK"
     finally:
         ch.close()
@@ -757,7 +757,7 @@ mizu::mizu_send(ch, if (isTRUE(ok)) "OK" else ok)
 
 def test_export_roundtrip(echo):
     a = np.arange(100000, dtype=np.float64)  # past the zc floor: a view
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     view = _exporter(b)
     assert view is not None
@@ -776,7 +776,7 @@ def test_export_types(echo):
         (bytes(range(256)) * 2000, pa.uint8()),  # past the channel raw floor
     ]
     for payload, ptype in cases:
-        assert echo.send(payload) is True
+        assert echo.send(payload) is None
         view = _exporter(echo.recv(timeout=5))
         arr = pa.array(view)
         assert arr.type == ptype
@@ -789,7 +789,7 @@ def test_export_lifetime(echo):
     # the export holds its own mapping and its own zc loan: +1 on the
     # region refcount, back to baseline after the consumer releases
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     view = _exporter(b)
     _settle_producer(echo)
@@ -808,7 +808,7 @@ def test_export_lifetime(echo):
 def test_export_unconsumed_gc(echo):
     # an export never consumed: the capsule destructors call release
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     view = _exporter(echo.recv(timeout=5))
     _settle_producer(echo)
     rc0 = view.refcount
@@ -822,7 +822,7 @@ def test_export_unconsumed_gc(echo):
 def test_export_outlives_view(echo):
     # the export's own mapping pins the pages after the view is gone
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     view = _exporter(echo.recv(timeout=5))
     caps = view.__arrow_c_array__()
     del view
@@ -835,7 +835,7 @@ def test_export_requested_schema_ignored(echo):
     # an unsupported-but-compatible request gets the default export (the
     # spec's sanctioned fallback); the requested capsule is borrowed
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     view = _exporter(echo.recv(timeout=5))
     f32 = pa.array([1.0], type=pa.float32()).__arrow_c_array__()[0]
     arr = pa.Array._import_from_c_capsule(
@@ -846,7 +846,7 @@ def test_export_requested_schema_ignored(echo):
 
 def test_export_complex_rejected(echo):
     a = np.arange(100000, dtype=np.complex128)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     view = _exporter(echo.recv(timeout=5))
     with pytest.raises(TypeError, match="complex"):
         view.__arrow_c_array__()
@@ -986,7 +986,7 @@ def test_export_double_known_free_no_bitmap(echo):
     # NaN values export as values — no bitmap, no scan
     a = np.arange(100000, dtype=np.float64)
     a[1] = np.nan
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     view = _exporter(echo.recv(timeout=5))
     arr = pa.array(view)
     assert arr.type == pa.float64()
@@ -1005,7 +1005,7 @@ def test_uint64_frame_exact_py_py(echo):
     f = pymizu.Frame.from_arrow(pa.table({"u": u}))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert echo.send(f) is True
+        assert echo.send(f) is None
         g = echo.recv(timeout=10)
     out = pa.table(g)
     assert out.schema.field("u").type == pa.uint64()
@@ -1013,7 +1013,7 @@ def test_uint64_frame_exact_py_py(echo):
     small = pymizu.Frame.from_arrow(
         pa.table({"u": pa.array([2**63, None], type=pa.uint64())})
     )
-    assert echo.send(small) is True
+    assert echo.send(small) is None
     g2 = echo.recv(timeout=5)
     assert pa.table(g2).column("u").to_pylist() == [2**63, None]
 
@@ -1041,7 +1041,7 @@ def test_py_py_frame_genuine_sentinels_no_warning(echo):
     f = pymizu.Frame.from_arrow(t)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert echo.send(f) is True
+        assert echo.send(f) is None
         g = echo.recv(timeout=10)
     out = pa.table(g)
     assert out.column("i").to_pylist()[:4] == [-(2**31), None] * 2
@@ -1055,7 +1055,7 @@ def test_int64_frame_column_genuine_sentinel_warns_foreign():
     h, p = foreign_pair(caps=63)
     t = pa.table({"l": pa.array([-(2**63), None] * 10000, type=pa.int64())})
     with pytest.warns(RuntimeWarning, match="NA_integer64_ in R"):
-        assert h.send(t) is True
+        assert h.send(t) is None
     p.destroy()
     h.destroy()
 
@@ -1076,7 +1076,7 @@ def test_int64_frame_column_sentinel_warn_as_error():
 def test_export_polars_smoke(echo):
     pl = pytest.importorskip("polars", reason="polars not installed")
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     view = _exporter(echo.recv(timeout=5))
     # the Arrow-array entry point for a flat producer (from_arrow builds a
     # DataFrame and demands a struct)

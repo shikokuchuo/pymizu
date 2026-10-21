@@ -157,10 +157,10 @@ def test_scalar_and_container_roundtrips():
         2**53,
         -(2**53),
     ]:
-        assert h.send(x) is True
+        assert h.send(x) is None
         assert p.recv(5) == x
     # top-level bytes stage raw and read back as a uint8 array
-    assert h.send(b"\x00\xff") is True
+    assert h.send(b"\x00\xff") is None
     assert np.array_equal(p.recv(5), [0, 255])
     # scalar NAs read as None (documented lossy)
     p.destroy()
@@ -263,7 +263,7 @@ def test_spilled_streams_roundtrip_on_each_carrier():
             assert size > (1 << 16)
         else:
             assert size <= band
-        assert h.send(x) is True
+        assert h.send(x) is None
         assert p.recv(5) == x
     p.destroy()
     h.destroy()
@@ -278,7 +278,7 @@ def test_arena_pressure_forces_the_region_carrier():
     assert size < (1 << 16)
     n = (1 << 16) // size + 4  # cumulatively past the arena
     for _ in range(n):
-        assert h.send(x) is True
+        assert h.send(x) is None
     for _ in range(n):
         assert p.recv(5) == x
     p.destroy()
@@ -294,7 +294,7 @@ def test_decline_mid_write_leaves_the_slot_unwedged():
     with pytest.raises(pymizu.DeclinedError) as ei:
         h.send(bad)
     assert ei.value.path == "x[100]"
-    assert h.send({"ok": 1}) is True
+    assert h.send({"ok": 1}) is None
     assert p.recv(5) == {"ok": 1}
     p.destroy()
     h.destroy()
@@ -314,11 +314,11 @@ def test_cvt_warning_raises_after_the_spilled_write():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
             h.send(a)
-    assert h.send({"ok": 1}) is True
+    assert h.send({"ok": 1}) is None
     assert p.recv(5) == {"ok": 1}
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter("always")
-        assert h.send(a) is True
+        assert h.send(a) is None
     assert any(w.category is RuntimeWarning for w in seen)
     got = p.recv(5)
     assert isinstance(got, np.ndarray) and np.isnan(got).all()
@@ -330,14 +330,14 @@ def test_top_level_scalars_stay_scalars():
     # a Python scalar crosses as the scalar tag, a length-1 array as the
     # vector tag (the pinned split)
     h, p = foreign_pair()
-    assert h.send(1.5) is True
+    assert h.send(1.5) is None
     assert p.recv(5) == 1.5
     a = np.array([1.5])
-    assert h.send(a) is True
+    assert h.send(a) is None
     got = p.recv(5)
     assert isinstance(got, np.ndarray) and got.dtype == np.float64
     i = np.array([5], dtype=np.int64)
-    assert h.send(i) is True
+    assert h.send(i) is None
     got = p.recv(5)
     assert isinstance(got, np.ndarray) and got.dtype == np.int64
     p.destroy()
@@ -455,12 +455,12 @@ def test_buffer_conversion_rows():
     h, p = foreign_pair()
     try:
         mv = memoryview((ctypes.c_longlong * 3)(1, -2, 3))
-        assert h.send(mv) is True
+        assert h.send(mv) is None
         got = p.recv(10)
         assert got.dtype == np.int64
         assert got.tolist() == [1, -2, 3]
         with pytest.warns(RuntimeWarning, match="beyond"):
-            assert h.send(array.array("Q", [1, 2**60])) is True
+            assert h.send(array.array("Q", [1, 2**60])) is None
         got = p.recv(10)
         assert got.dtype == np.float64
         assert got[0] == 1.0 and np.isnan(got[1])
@@ -625,7 +625,7 @@ def test_arrow_temporal_columns():
             "n": pa.array([250000, 1000000], type=pa.duration("ns")),
         }
     )
-    assert h.send(t) is True
+    assert h.send(t) is None
     f = p.recv(5)
     d = f.to_dict()
     assert d["d"].dtype == np.dtype("datetime64[D]")
@@ -649,7 +649,7 @@ def test_arrow_duration_single():
     h, p = foreign_pair()
     assert (
         h.send(pa.chunked_array([[250, None], [500]], type=pa.duration("ms")))
-        is True
+        is None
     )
     got = p.recv(5)
     assert got.dtype == np.dtype("timedelta64[us]")
@@ -772,9 +772,9 @@ def test_region_frame_with_strings_resends():
     h1, p1 = foreign_pair(7)  # MIZS | ATTRS | MIZL: the frame arrives
     h2, p2 = foreign_pair()  # region-backed; caps-0: the 'I' writer path
     try:
-        assert h1.send(tbl) is True
+        assert h1.send(tbl) is None
         f = p1.recv(5)
-        assert h2.send(f) is True
+        assert h2.send(f) is None
         d = p2.recv(5).to_dict()
         assert len(d["s"]) == 8000
         assert d["s"][0] == "x" * 10
@@ -782,7 +782,7 @@ def test_region_frame_with_strings_resends():
         assert d["s"][-1] == "x" * 10
         assert float(d["v"][-1]) == 7999.0
         # nested in a list: the same writer path even with caps
-        assert h1.send([f]) is True
+        assert h1.send([f]) is None
         [g] = p1.recv(5)
         assert len(g) == 8000
     finally:
@@ -877,12 +877,12 @@ def test_a_declined_write_pass_fails_the_send():
 
     h, p = foreign_pair()
     try:
-        assert h.send([b"A" * 2000, np.full(10, 7.0), [9, 9, 9]]) is True
+        assert h.send([b"A" * 2000, np.full(10, 7.0), [9, 9, 9]]) is None
         p.recv(5)
         with pytest.raises(pymizu.MizuError, match="interop write mismatch"):
             h.send([b"B" * 2000, Flaky(np.full(10, 1.0)), [1, 2, 3]])
         # the ring still flows
-        assert h.send([1, 2]) is True
+        assert h.send([1, 2]) is None
         assert p.recv(5) == [1, 2]
     finally:
         p.destroy()
@@ -1098,7 +1098,7 @@ def test_err_send_crosses_foreign_and_same_language_channels():
     except RuntimeError as e:
         assert pp._send_error(e) is True
         # a second send of the same exception pickles as an ordinary value
-        assert pp.send(e) is True
+        assert pp.send(e) is None
     v2 = hh.recv(5)
     assert isinstance(v2, pymizu.TaskError)
     assert str(v2) == "RuntimeError: same-lang"
@@ -1849,19 +1849,19 @@ def test_frame_emit_overflow_arms():
                 ).dictionary_encode()
             }
         )
-        assert h.send(pymizu.Frame.from_arrow(t)) is True
+        assert h.send(pymizu.Frame.from_arrow(t)) is None
         d = p.recv(5).to_dict()
         assert d["f"][:3] == ["u", "v", "u"] and len(d["f"]) == 300
         t = pa.table(
             {"d": pa.array([19000 + k for k in range(300)], type=pa.date32())}
         )
-        assert h.send(pymizu.Frame.from_arrow(t)) is True
+        assert h.send(pymizu.Frame.from_arrow(t)) is None
         assert p.recv(5).to_dict()["d"][0] == np.datetime64("2022-01-08")
         # int32 row names: the buffer form's vec body overflows likewise
         g = _pymizu._frame_rebuild(
             ["a"], [("i", list(range(200)))], list(range(200))
         )
-        assert h.send(g) is True
+        assert h.send(g) is None
         out = p.recv(5)
         assert out.to_dict()["a"].tolist() == list(range(200))
         assert list(out.row_names) == list(range(200))
@@ -1941,7 +1941,7 @@ def test_overflow_temporal_realv_body():
         a = np.datetime64("2024-01-01") + np.arange(
             2000, dtype="timedelta64[us]"
         )
-        assert h.send(a) is True
+        assert h.send(a) is None
         got = p.recv(5)
         assert got.dtype == "datetime64[us]"
         assert (got == a).all()
@@ -1959,7 +1959,7 @@ def test_overflow_masked_frame_column():
         vals = [float(k) for k in range(300)]
         vals[7] = None
         f = pymizu.Frame.from_arrow(pa.table({"a": pa.array(vals)}))
-        assert h.send([f]) is True
+        assert h.send([f]) is None
         d = p.recv(5)[0].to_dict()["a"]
         assert np.isnan(d[7])
         assert d[[0, 1, 2]].tolist() == [0.0, 1.0, 2.0]
@@ -1975,7 +1975,7 @@ def test_overflow_dim_intv_body():
     try:
         for k in range(119, 124):
             a = np.arange(2 * k, dtype=np.int32).reshape(k, 2)
-            assert h.send(a) is True
+            assert h.send(a) is None
             got = p.recv(5)
             assert got.shape == (k, 2)
             assert (got == a).all()
@@ -2043,7 +2043,7 @@ def test_arrow_pair_bad_capsule_names():
         for bad in (BadPair(), BadPair2()):
             with pytest.raises(ValueError, match="incorrect name"):
                 h.send(bad)
-        assert h.send({"k": [1, 2, 3]}) is True
+        assert h.send({"k": [1, 2, 3]}) is None
         assert p.recv(5) == {"k": [1, 2, 3]}
     finally:
         p.destroy()

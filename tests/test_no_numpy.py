@@ -552,10 +552,10 @@ def test_buffer_gate_partial_numpy(tmp_path):
         ch = pymizu.Channel.create(peer)
         try:
             # the type probe's missing-ndarray arm: an ordinary buffer
-            assert ch.send(array.array("d", [1.0, 2.0])) is True
+            assert ch.send(array.array("d", [1.0, 2.0])) is None
             # the 0-d form probe's missing-ndarray arm
             z = memoryview(b"12345678").cast("d", [])
-            assert ch.send(z) is True
+            assert ch.send(z) is None
         finally:
             ch.close()
         """,

@@ -67,8 +67,21 @@ def test_echo_roundtrip(echo):
         list(range(100000)),  # past the inline budget: ARENA / SHM_RAW
     ]
     for x in payloads:
-        assert echo.send(x) is True
+        assert echo.send(x) is None
         assert echo.recv(timeout=5) == x
+
+
+def test_send_return_contract(echo):
+    # the documented contract: None on success, an identity-tested sentinel
+    # on a terminal state (a successful send once returned True)
+    assert echo.send(1) is None
+    assert echo.recv(timeout=5) == 1
+    ch = pymizu.Channel.create("pass")
+    try:
+        assert ch.recv(timeout=5) is pymizu.CLOSED
+        assert ch.send(1) is pymizu.CLOSED
+    finally:
+        ch.close()
 
 
 def test_codec_roundtrip(echo):
@@ -96,7 +109,7 @@ def test_codec_roundtrip(echo):
         list(range(1000)),  # codec stream past the inline budget
     ]
     for x in payloads:
-        assert echo.send(x) is True
+        assert echo.send(x) is None
         out = echo.recv(timeout=5)
         assert out == x
         assert type(out) is type(x)
@@ -106,7 +119,7 @@ def test_str1_roundtrip(echo):
     # Python str stages as STR1 within the inline budget (UTF-8 payload,
     # cetype aux) — the mirror of R's length-1 string tier
     for x in ["", "hello", "héllo ☃", "x" * 4096]:
-        assert echo.send(x) is True
+        assert echo.send(x) is None
         out = echo.recv(timeout=5)
         assert out == x
         assert type(out) is str
@@ -117,10 +130,10 @@ def test_str_fallbacks(echo):
     # its pickle semantics (importable from tests.helpers: stock pickle
     # sends it by reference, and the echo peer must import it too)
     big = "abc123 ☃" * 5000  # ~45 KB, past the inline budget
-    assert echo.send(big) is True
+    assert echo.send(big) is None
     assert echo.recv(timeout=5) == big
     sub = StrSubclass("subclass")
-    assert echo.send(sub) is True
+    assert echo.send(sub) is None
     out = echo.recv(timeout=5)
     assert out == sub
     assert type(out) is StrSubclass
@@ -138,13 +151,13 @@ def test_codec_fallback(echo):
         "\ud800",  # lone surrogate: no UTF-8 encoding
     ]
     for x in payloads:
-        assert echo.send(x) is True
+        assert echo.send(x) is None
         assert echo.recv(timeout=5) == x
 
 
 def test_bytes_roundtrip(echo):
     data = bytes(range(256)) * 16
-    assert echo.send(data) is True
+    assert echo.send(data) is None
     out = echo.recv(timeout=5)
     # bytes ride the raw tier and arrive as a uint8 array (numpy) or a
     # memoryview copy — width-compatible with RAWSXP by design
@@ -194,8 +207,8 @@ def test_channel_iter_until_peer_close():
 def test_send_full():
     ch = pymizu.Channel.create("import time; time.sleep(5)", capacity=2)
     try:
-        assert ch.send(1) is True
-        assert ch.send(2) is True
+        assert ch.send(1) is None
+        assert ch.send(2) is None
         assert ch.send(3) is pymizu.FULL
     finally:
         ch._proc.kill()
@@ -460,7 +473,7 @@ def test_send_spill_region_failure_raises():
                 h.send(big)
         finally:
             resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
-        assert h.send(big) is True  # still usable
+        assert h.send(big) is None  # still usable
         assert np.array_equal(np.asarray(p.recv(10)), big)
     finally:
         p.destroy()
@@ -481,7 +494,7 @@ def test_unhashable_scalar_subclass_declines_the_buffer_gate():
     try:
         p.ready_set()
         assert h.ready_wait(10)
-        assert h.send(UnhashableScalar(1.5)) is True
+        assert h.send(UnhashableScalar(1.5)) is None
         back = p.recv(10)
         assert type(back) is np.float64
         assert back == 1.5
@@ -515,12 +528,12 @@ def test_view_behind_hop_cap_re_sends_by_value():
         p.ready_set()
         assert h.ready_wait(10)
         a = np.arange(200_000, dtype=np.float64)
-        assert h.send(a) is True
+        assert h.send(a) is None
         view = p.recv(10)
         link = view
         for _ in range(9):
             link = Link(link)
-        assert p.send(link) is True
+        assert p.send(link) is None
         back = h.recv(10)
         assert isinstance(back, np.ndarray)
         assert np.array_equal(back, a)
@@ -602,7 +615,7 @@ def test_fork_guard(echo):
         os._exit(1)
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 0
-    assert echo.send(1) is True  # the parent's handle is unaffected
+    assert echo.send(1) is None  # the parent's handle is unaffected
     assert echo.recv(timeout=5) == 1
 
 
@@ -619,7 +632,7 @@ def test_fork_child_dealloc():
             os._exit(0)
         _, status = os.waitpid(pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0
-        assert ch.send(1) is True  # the parent's channel is unaffected
+        assert ch.send(1) is None  # the parent's channel is unaffected
         assert ch.recv(timeout=5) == 1
     finally:
         ch.close()
@@ -637,7 +650,7 @@ def test_fork_child_destroy():
             os._exit(0)
         _, status = os.waitpid(pid, 0)
         assert os.waitstatus_to_exitcode(status) == 0
-        assert ch.send(1) is True  # the parent's channel is unaffected
+        assert ch.send(1) is None  # the parent's channel is unaffected
         assert ch.recv(timeout=5) == 1
     finally:
         ch.close()
@@ -668,7 +681,7 @@ from tests.helpers import CarryArray  # noqa: E402
 @pytest.mark.parametrize("dtype", ["float64", "int32", "complex128", "uint8"])
 def test_numpy_rawvec(echo, dtype):
     a = np.arange(12).astype(dtype)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert isinstance(b, np.ndarray)
     assert b.dtype == np.dtype(dtype)
@@ -677,7 +690,7 @@ def test_numpy_rawvec(echo, dtype):
 
 def test_numpy_rawspill(echo):
     a = np.arange(200000, dtype=np.float64)  # 1.6 MB: past the inline budget
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert b.dtype == np.float64
     assert np.array_equal(b, a)
@@ -696,7 +709,7 @@ def test_numpy_scalar_and_0d_roundtrip(echo):
         np.array(7, dtype=np.int32),
     ]
     for v in cases:
-        assert echo.send(v) is True
+        assert echo.send(v) is None
         r = echo.recv(timeout=5)
         assert type(r) is type(v)
         assert getattr(r, "shape", None) == v.shape
@@ -713,14 +726,14 @@ def test_numpy_gate_fallbacks(echo):
         np.arange(20, dtype=np.float64)[::2],
     ]
     for a in cases:
-        assert echo.send(a) is True
+        assert echo.send(a) is None
         b = echo.recv(timeout=5)
         assert b.dtype == a.dtype and b.shape == a.shape
         assert np.array_equal(b, a)
     # a big-endian array is never misread as native: it falls to pickle,
     # and numpy's pickle normalizes the byte order (values stay correct)
     a = np.arange(5, dtype=np.int16).astype(">i2")
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     assert np.array_equal(echo.recv(timeout=5), a)
 
 
@@ -729,14 +742,14 @@ def test_ndarray_subclasses_keep_pickle(echo):
     # raw tier would carry the base buffer only — a MaskedArray would lose
     # its mask, a units-carrying subclass its attribute
     m = np.ma.MaskedArray([1.0, 2.0, 3.0], mask=[True, False, False])
-    assert echo.send(m) is True
+    assert echo.send(m) is None
     r = echo.recv(timeout=5)
     assert isinstance(r, np.ma.MaskedArray)
     assert list(r.mask) == [True, False, False]
     assert list(r.data) == [1.0, 2.0, 3.0]
 
     c = CarryArray([1.0, 2.0], tag="kept")
-    assert echo.send(c) is True
+    assert echo.send(c) is None
     r = echo.recv(timeout=5)
     assert type(r) is CarryArray
     assert r.tag == "kept"
@@ -747,7 +760,7 @@ def test_bytes_and_array_subclasses_keep_pickle(echo):
     # bytes / array.array subclasses leave the buffer branch for pickle:
     # the raw tier is exact-type only, same as the ndarray subclasses
     for x in (BytesSubclass(b"abc"), ArraySubclass("i", [1, 2, 3])):
-        assert echo.send(x) is True
+        assert echo.send(x) is None
         r = echo.recv(timeout=5)
         assert type(r) is type(x)
         assert r == x
@@ -759,7 +772,7 @@ def test_memmap_roundtrips_as_memmap(echo, tmp_path):
     a = np.memmap(tmp_path / "m.dat", dtype=np.float64, mode="w+", shape=4)
     a[:] = [1.5, 2.5, 3.5, 4.5]
     a.flush()
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     r = echo.recv(timeout=5)
     assert isinstance(r, np.memmap)
     assert list(r) == [1.5, 2.5, 3.5, 4.5]
@@ -769,7 +782,7 @@ def test_exact_ndarray_stays_zero_copy(echo):
     # the gate rejects subclasses only: an exact ndarray past the floor
     # still arrives as a view over the shared pages
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert type(b) is np.ndarray
     assert _exporter(b) is not None
@@ -789,7 +802,7 @@ def _exporter(arr):
 def test_shm_vec_roundtrip(echo):
     # past MIZU_ZC_FLOOR_RAW the copy tiers give way to a zero-copy view
     a = np.arange(100000, dtype=np.float64)  # 800 KB
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert isinstance(b, np.ndarray)
     assert b.dtype == np.float64
@@ -800,7 +813,7 @@ def test_shm_vec_roundtrip(echo):
 
 def test_shm_vec_bytes(echo):
     a = bytes(range(256)) * 2000  # 512 KB
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert bytes(b) == a
     assert _exporter(b) is not None
@@ -808,20 +821,20 @@ def test_shm_vec_bytes(echo):
 
 def test_shm_vec_refcount(echo):
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     exp = _exporter(b)
     # our view's loan; the producer's drops at its next reap point
     assert exp.refcount >= 1
     del b, exp
     gc.collect()
-    assert echo.send(a) is True  # the region recycles; the peer lives on
+    assert echo.send(a) is None  # the region recycles; the peer lives on
     assert np.array_equal(echo.recv(timeout=5), a)
 
 
 def test_shm_vec_small_stays_copy(echo):
     a = np.arange(1000, dtype=np.float64)  # 8 KB: below the zc floor
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert np.array_equal(b, a)
     assert _exporter(b) is None  # a plain copy
@@ -844,7 +857,7 @@ def test_view_echo_crosses_by_reference(echo):
     # a received view sent on whole is a REF — the region's name, no
     # payload bytes — and the peer marks the region REFHELD first
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     exp = _exporter(b)
     assert exp is not None
@@ -856,7 +869,7 @@ def test_view_slice_and_dtype_view_go_by_value():
     ch = pymizu.Channel.create(REF_VARIANTS_PEER)
     try:
         a = np.arange(100000, dtype=np.float64)
-        assert ch.send(a) is True
+        assert ch.send(a) is None
         sl = ch.recv(timeout=5)
         dv = ch.recv(timeout=5)
         whole = ch.recv(timeout=5)
@@ -880,7 +893,7 @@ def test_view_cache_recycled_name(echo):
     # name: repeat reads hit the cached mapping and must see new content
     for i in range(10):
         a = np.full(100000, i, dtype=np.float64)
-        assert echo.send(a) is True
+        assert echo.send(a) is None
         b = echo.recv(timeout=5)
         assert _exporter(b) is not None
         assert np.array_equal(b, a)
@@ -894,7 +907,7 @@ def test_view_cache_eviction_with_live_views(echo):
     xs = [np.full(100000, i, dtype=np.float64) for i in range(20)]
     views = []
     for a in xs:
-        assert echo.send(a) is True
+        assert echo.send(a) is None
         views.append(echo.recv(timeout=5))
     for a, b in zip(xs, views, strict=True):
         assert np.array_equal(b, a)
@@ -908,7 +921,7 @@ def test_view_cache_eviction_with_live_views(echo):
 
 def test_view_survives_channel_destroy(echo):
     a = np.arange(100000, dtype=np.float64)
-    assert echo.send(a) is True
+    assert echo.send(a) is None
     b = echo.recv(timeout=5)
     assert _exporter(b) is not None
     echo.destroy()
@@ -1075,7 +1088,7 @@ def test_r_interop_shm_vec_echo():
     ch = _r_channel(_R_ECHO)
     try:
         a = np.arange(1000000, dtype=np.float64)  # 8 MB
-        assert ch.send(a) is True
+        assert ch.send(a) is None
         b = ch.recv(timeout=10)
         assert isinstance(b, np.ndarray)
         assert np.array_equal(b, a)
@@ -1095,7 +1108,7 @@ def test_r_interop_view_cache_sharing():
     )
     try:
         a = np.arange(1000000, dtype=np.float64)
-        assert ch.send(a) is True
+        assert ch.send(a) is None
         b1 = ch.recv(timeout=10)
         b2 = ch.recv(timeout=10)
         assert _exporter(b1) is not None and _exporter(b2) is not None

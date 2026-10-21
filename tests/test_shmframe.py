@@ -184,7 +184,7 @@ def test_strview_resent_to_a_no_mizs_peer_copies():
     sv = p0.recv(10)
     assert type(sv).__name__ == "_ShmStrView"
     h, p = foreign_pair(caps=CAPS_R & ~1)
-    assert h.send(sv) is True
+    assert h.send(sv) is None
     got = p.recv(10)
     assert type(got) is list and got == vals
     p.destroy()

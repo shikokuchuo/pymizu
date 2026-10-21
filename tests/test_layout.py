@@ -152,7 +152,7 @@ def test_mizl_tree_roundtrip():
     h, p = foreign_pair()
     try:
         x = {"a": big_ints(), "b": ["x", "y", None, ""], "c": {"d": 1.5}}
-        assert h.send(x) is True
+        assert h.send(x) is None
         got = p.recv(5)
         assert type(got) is dict
         assert [v.item() for v in got["a"][:3]] == [0, 1, 2]
@@ -168,7 +168,7 @@ def test_mizl_tree_scalar_wire_types():
     # here (R reads the sentinel as NA_integer64_ — the crosslang pin)
     h, p = foreign_pair()
     try:
-        assert h.send([2**40, -(2**31), 5, -(2**63)] + big_ints()) is True
+        assert h.send([2**40, -(2**31), 5, -(2**63)] + big_ints()) is None
         got = p.recv(5)
         assert got[0].item() == 2**40
         assert got[1].item() == -(2**31)
@@ -186,7 +186,7 @@ def test_mizl_tree_buffer_and_temporal_leaves():
         d = np.arange(
             np.datetime64(1700000000, "s"), np.datetime64(1700100000, "s")
         )
-        assert h.send([m, d, "tail"]) is True
+        assert h.send([m, d, "tail"]) is None
         got = p.recv(5)
         assert np.array_equal(np.asarray(got[0]), m)
         assert np.asarray(got[0]).shape == (400, 500)
@@ -201,20 +201,20 @@ def test_mizl_tree_vetoes():
     h, p = foreign_pair()
     try:
         # a None outside a string list vetoes: the whole tree takes 'I'
-        assert h.send([True, None] + big_ints()) is True
+        assert h.send([True, None] + big_ints()) is None
         got = p.recv(5)
         assert got[:2] == [True, None]
         # a conversion dtype vetoes (conversion stays 'I'-only)
-        assert h.send([np.arange(200000, dtype=np.uint64)]) is True
+        assert h.send([np.arange(200000, dtype=np.uint64)]) is None
         got = p.recv(5)
         assert isinstance(got[0], np.ndarray)
         # a tree-borrowed leaf view (a local leaf's element, loan != NULL)
         # never names its region: the tree stages, the leaf by value
-        assert h.send({"k": big_ints()}) is True
+        assert h.send({"k": big_ints()}) is None
         tree = p.recv(5)
         borrowed = tree["k"]
         assert not _pymizu._view_check(borrowed)
-        assert h.send([borrowed, 1] + big_ints()) is True
+        assert h.send([borrowed, 1] + big_ints()) is None
         got = p.recv(5)
         assert not _pymizu._view_check(got[0])
         assert np.array_equal(np.asarray(got[0]), np.asarray(borrowed))
@@ -247,7 +247,7 @@ def test_temporal_nd_declines():
     try:
         with pytest.raises(pymizu.DeclinedError, match="past 1-D"):
             h.send(np.full((200, 200), np.datetime64("2020-01-01")))
-        assert h.send({"k": [1, 2, 3]}) is True
+        assert h.send({"k": [1, 2, 3]}) is None
         assert p.recv(5) == {"k": [1, 2, 3]}
     finally:
         p.destroy()
@@ -273,7 +273,7 @@ def test_mizl_tree_write_pass_leaf_failure():
         ]
         with pytest.raises(pymizu.MizuError, match="no longer eligible"):
             h.send(tree)
-        assert h.send({"k": [1, 2, 3]}) is True
+        assert h.send({"k": [1, 2, 3]}) is None
         assert p.recv(5) == {"k": [1, 2, 3]}
     finally:
         p.destroy()
@@ -289,10 +289,10 @@ def test_mizl_tree_remote_leaves():
     # pair makes a third region send.
     h, p = foreign_pair()
     try:
-        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        assert h.send(np.arange(200000, dtype=np.float64)) is None
         view = p.recv(5)
         assert _pymizu._view_check(view)
-        assert h.send([view, 1] + big_ints()) is True
+        assert h.send([view, 1] + big_ints()) is None
         rc = view.base.refcount
         got = p.recv(5)
         assert _pymizu._view_check(got[0])
@@ -308,9 +308,9 @@ def test_mizl_tree_remote_leaves():
     # a string view remote leaf
     h, p = foreign_pair()
     try:
-        assert h.send(["x", "y"] * 10000) is True
+        assert h.send(["x", "y"] * 10000) is None
         sview = p.recv(5)
-        assert h.send({"s": sview, "v": big_ints()}) is True
+        assert h.send({"s": sview, "v": big_ints()}) is None
         got = p.recv(5)
         assert _pymizu._view_check(got["s"])
         assert got["s"].flags & 1
@@ -321,9 +321,9 @@ def test_mizl_tree_remote_leaves():
     # nested a level down (the child node's own validity tail)
     h, p = foreign_pair()
     try:
-        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        assert h.send(np.arange(200000, dtype=np.float64)) is None
         view = p.recv(5)
-        assert h.send({"a": {"b": view}, "c": big_ints()}) is True
+        assert h.send({"a": {"b": view}, "c": big_ints()}) is None
         got = p.recv(5)
         assert _pymizu._view_check(got["a"]["b"])
         assert np.array_equal(np.asarray(got["a"]["b"]), np.asarray(view))
@@ -333,9 +333,9 @@ def test_mizl_tree_remote_leaves():
     # two leaves referencing one region: one counted add each
     h, p = foreign_pair()
     try:
-        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        assert h.send(np.arange(200000, dtype=np.float64)) is None
         view = p.recv(5)
-        assert h.send([view, view, 1] + big_ints()) is True
+        assert h.send([view, view, 1] + big_ints()) is None
         rc = view.base.refcount
         got = p.recv(5)
         assert _pymizu._view_check(got[0]) and _pymizu._view_check(got[1])
@@ -350,10 +350,10 @@ def test_mizl_tree_remote_leaf_caps_decline():
     # a peer short of MIZU_CAP_MIZL_REF gets the 'I' by-value copy
     h, p = foreign_pair(caps=15)  # all but MIZL_REF (bit 4)
     try:
-        assert h.send(np.arange(200000, dtype=np.float64)) is True
+        assert h.send(np.arange(200000, dtype=np.float64)) is None
         view = p.recv(5)
         assert _pymizu._view_check(view)
-        assert h.send([view, 1] + big_ints()) is True
+        assert h.send([view, 1] + big_ints()) is None
         got = p.recv(5)
         assert not _pymizu._view_check(got[0])
         assert np.array_equal(np.asarray(got[0]), np.asarray(view))
@@ -366,7 +366,7 @@ def test_mizl_tree_caps_decline():
     # a peer short of MIZL takes the 'I' copy (a short-cap strlist too)
     h, p = foreign_pair(caps=3)  # MIZS | ATTRS, no MIZL
     try:
-        assert h.send(big_ints()) is True
+        assert h.send(big_ints()) is None
         got = p.recv(5)
         assert type(got) is list and got[:3] == [0, 1, 2]
     finally:
@@ -374,7 +374,7 @@ def test_mizl_tree_caps_decline():
         h.destroy()
     h, p = foreign_pair(caps=6)  # ATTRS | MIZL, no MIZS
     try:
-        assert h.send(["x"] * 20000) is True
+        assert h.send(["x"] * 20000) is None
         assert p.recv(5) == ["x"] * 20000
     finally:
         p.destroy()
@@ -384,7 +384,7 @@ def test_mizl_tree_caps_decline():
 def test_mizl_tree_below_floor_copies():
     h, p = foreign_pair()
     try:
-        assert h.send({"k": [1, 2, 3]}) is True
+        assert h.send({"k": [1, 2, 3]}) is None
         got = p.recv(5)
         assert got == {"k": [1, 2, 3]}
         assert not _pymizu._view_check(got["k"][0])
@@ -429,12 +429,12 @@ def test_np_type_probe_reprobes_after_numpy_import(tmp_path):
                 p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
                 p.ready_set()
                 assert h.ready_wait(10)
-                assert h.send(True) is True   # the probes run pre-numpy
+                assert h.send(True) is None   # the probes run pre-numpy
                 assert p.recv(5) is True
                 import numpy as np
 
                 d = np.array(["2022-03-21"], dtype="datetime64[D]")
-                assert h.send(d) is True
+                assert h.send(d) is None
                 got = p.recv(5)
                 assert np.asarray(got) == d
                 p.destroy()

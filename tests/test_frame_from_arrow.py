@@ -175,7 +175,7 @@ def test_from_arrow_masked_columns_foreign_send():
     h, p = foreign_pair(
         caps=7
     )  # MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL
-    assert h.send(pymizu.Frame.from_arrow(t)) is True
+    assert h.send(pymizu.Frame.from_arrow(t)) is None
     d = p.recv(30).to_dict()
     h.destroy()
     p.destroy()
@@ -570,7 +570,7 @@ def test_from_arrow_ns_skew_fallback():
     p, _ = _pymizu._channel_attach(h.token, _ident=(3, 31))
     p.ready_set()
     assert h.ready_wait(10)
-    assert h.send(f) is True
+    assert h.send(f) is None
     g = p.recv(10)
     assert _pymizu._frame_debug(g)["units"] == ("u", "u", None)
     d = g.to_dict()
@@ -696,10 +696,10 @@ def test_from_arrow_uint64_past_2_to_53_warns():
     assert f.to_dict()["u"].tolist() == [2**53 + 1] * 20000
     h, p = foreign_pair(caps=63)
     with pytest.warns(RuntimeWarning, match=r"2\^53"):
-        assert h.send(t) is True
+        assert h.send(t) is None
     assert np.isnan(p.recv(30).to_dict()["u"][0])
     with pytest.warns(RuntimeWarning, match=r"2\^53"):
-        assert h.send(f) is True
+        assert h.send(f) is None
     assert np.isnan(p.recv(30).to_dict()["u"][0])
     p.destroy()
     h.destroy()
@@ -848,7 +848,7 @@ def test_frame_region_stage_malformed_row_names_falls_back():
     f.row_names.pop()
     h, p = same_pair()
     try:
-        assert h.send(f) is True
+        assert h.send(f) is None
         with pytest.raises(ValueError, match="malformed frame rebuild"):
             p.recv(10)
     finally:
@@ -974,7 +974,7 @@ def test_frame_pickle_region_backed():
     )
     h, p = same_pair()
     try:
-        assert h.send(pymizu.Frame.from_arrow(t)) is True
+        assert h.send(pymizu.Frame.from_arrow(t)) is None
         f = p.recv(10)
     finally:
         p.destroy()
@@ -1000,14 +1000,14 @@ def test_frame_stage_sizes_dict_and_borrowed_str_columns():
                 }
             )
         )
-        assert h.send(f) is True
+        assert h.send(f) is None
         assert p.recv(10).to_dict()["d"][:2] == ["v0", "v1"]
         f = pymizu.Frame.from_arrow(
             pa.table({"s": pa.array([f"s{k % 100}" for k in range(20000)])})
         )
-        assert h.send(f) is True
+        assert h.send(f) is None
         g = p.recv(10)
-        assert p.send(g) is True  # the region-backed frame re-stages
+        assert p.send(g) is None  # the region-backed frame re-stages
         assert h.recv(10).to_dict()["s"][:2] == ["s0", "s1"]
     finally:
         p.destroy()

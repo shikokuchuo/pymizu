@@ -5149,10 +5149,10 @@ static MizuChannel *chan_wrap(mizu_channel *c, MizuViewCache *vc) {
 // Verbs ----------------------------------------------------------------------------
 
 PyDoc_STRVAR(send_doc,
-"send(x) -> True | sentinel\n\n\
+"send(x) -> None | sentinel\n\n\
 Publish a message to the peer. Never blocks for ring space: returns\n\
 pymizu.FULL when the ring is full, pymizu.CLOSED / pymizu.PEER_GONE on a\n\
-closed or dead peer.");
+closed or dead peer; None on a successful publish.");
 
 static PyObject *Channel_send(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
@@ -5162,7 +5162,7 @@ static PyObject *Channel_send(MizuChannel *self, PyObject *arg) {
   st = mizu_channel_send(c, (void *) arg);
   CHAN_RESUME();
   if (chan_call_done(self, c, st)) return NULL;
-  return status_or_sentinel(st, Py_True);
+  return status_or_sentinel(st, Py_None);
 }
 
 PyDoc_STRVAR(send_error_doc,

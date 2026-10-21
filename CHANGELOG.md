@@ -48,6 +48,11 @@ Initial pre-release.
 
 ### Fixed
 
+- `Channel.send()` now returns `None` on a successful publish, as
+  documented (it returned `True`): a `send(...) is None` check written
+  against the documented contract treated every successful send as a
+  failure. Terminal states still return the identity-tested `FULL` /
+  `CLOSED` / `PEER_GONE` sentinels.
 - `Pool.destroy()` no longer crashes the process when another thread is
   inside a verb on the same handle (the classic shape: a `PoolExecutor`
   drain thread parked in `collect_any`): the core handle was unmapped
