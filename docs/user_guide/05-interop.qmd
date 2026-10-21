@@ -71,7 +71,7 @@ A result with no Python equivalent fails the task with an error naming the type.
 The reverse direction mirrors: `mizu::mizu_pool()` with `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
 
 Large arguments cross without copying.
-A fresh array argument past the zero-copy floor (a fixed size threshold) is written to shared memory once, in one layout write.
+A fresh array argument past the zero-copy floor (32 KB) is written to shared memory once, in one layout write.
 The worker reads a view over it.
 An argument that is already a shared view (a `_ShmView`, or a numpy array whose `.base` chain ends in one) crosses as its identifier alone, zero payload bytes.
 If the pool runs workers too old to read such references, the submit fails with an error naming the remedy.
@@ -106,6 +106,7 @@ A portable subset of values crosses in both directions:
 - A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector, and an R vector arrives as a numpy array.
   See the [dtype matrix](#the-dtype-matrix) for the exact correspondence.
 - A large array crosses without copying: each side reads the other's vector as a view over the shared pages.
+  The view threshold is 32 KB, with one exception: a contiguous vector below 256 KB sent on a channel travels as one copy into the channel's spill arena instead — cheaper than region machinery at those sizes — and crosses as a view from 256 KB (pools have no arena, so the 32 KB floor always wins there).
   Without numpy, a received view is a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: `pa.array(view)`, `pl.from_arrow(view)`.
 - A multi-dimensional numpy array arrives as an R array with `dim` set (a matrix is the 2-D case).
   C order, F order, or strided, it crosses value-exact.
