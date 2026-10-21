@@ -1,14 +1,12 @@
 # Installation
 
-
-# Requirements
+## Requirements
 
 - Python 3.10 or later, on a 64-bit platform.
 - Linux: kernel 5.3 or later.
 - Windows: the build requires clang-cl.
 
-
-# Install
+## Install
 
 Install the development version from GitHub:
 
@@ -29,13 +27,11 @@ To request an extra with the GitHub install:
 pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
 ```
 
-
-# Deploying on Linux
+## Deploying on Linux
 
 On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount. Everything pymizu creates must fit in it: pool and channel regions, plus the per-payload regions that carry anything past the in-slot budget. Container runtimes set it to 64 MB by default. Use `docker run --shm-size=4g`, or the equivalent in your orchestrator. Size it to your peak in-flight payload traffic.
 
-
-# Linux memory allocator
+## Linux memory allocator
 
 This section applies only to Linux with glibc.
 

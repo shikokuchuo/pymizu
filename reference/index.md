@@ -1,21 +1,15 @@
 # API Reference
 
-
 ## Channels
 
-
 A two-way message link between a Python process and a helper process that it spawns.
-
 
 [Channel](Channel.md#pymizu.Channel)  
 A shared-memory SPSC channel handle (process-private).
 
-
 ## Channel Methods
 
-
 Methods for the Channel class
-
 
 [Channel.create()](Channel.create.md#pymizu.Channel.create)  
 Create a channel and spawn its peer.
@@ -53,19 +47,16 @@ True while the peer process is alive.
 [Channel.info()](Channel.info.md#pymizu.Channel.info)  
 A read-only wire-state snapshot of the channel (dict).
 
-[Channel.__enter__()](Channel.__enter__.md#pymizu.Channel.__enter__)  
+[Channel.\_\_enter\_\_()](Channel.__enter__.md#pymizu.Channel.__enter__)  
 
-[Channel.__exit__()](Channel.__exit__.md#pymizu.Channel.__exit__)  
+[Channel.\_\_exit\_\_()](Channel.__exit__.md#pymizu.Channel.__exit__)  
 
-[Channel.__iter__()](Channel.__iter__.md#pymizu.Channel.__iter__)  
+[Channel.\_\_iter\_\_()](Channel.__iter__.md#pymizu.Channel.__iter__)  
 Iterate over received payloads until CLOSED or PEER_GONE.
-
 
 ## Task pools
 
-
 A set of worker processes that divide submitted tasks among themselves.
-
 
 [Pool](Pool.md#pymizu.Pool)  
 A shared-memory work-stealing task pool handle (process-private).
@@ -79,12 +70,9 @@ A map staged once into a persistent region, run many times.
 [PoolExecutor](PoolExecutor.md#pymizu.PoolExecutor)  
 A `concurrent.futures.Executor` over a pymizu pool.
 
-
 ## Pool Methods
 
-
 Methods for the Pool class
-
 
 [Pool.create()](Pool.create.md#pymizu.Pool.create)  
 Create a pool and spawn its worker processes.
@@ -126,7 +114,7 @@ Spawn `n` additional workers into free registry slots and
 Orderly shutdown (controller only).
 
 [Pool.shutdown()](Pool.shutdown.md#pymizu.Pool.shutdown)  
-Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> -- the
+Alias for [`stop()`](../reference/Pool.stop.md#pymizu.Pool.stop) -- the
 
 [Pool.destroy()](Pool.destroy.md#pymizu.Pool.destroy)  
 Tear down the pool handle immediately, without the shutdown
@@ -143,35 +131,29 @@ Cumulative per-worker and per-submitter counters since each
 [Pool.trace()](Pool.trace.md#pymizu.Pool.trace)  
 Register a hook called as `fn(event, id)` at each task
 
-[Pool.__enter__()](Pool.__enter__.md#pymizu.Pool.__enter__)  
+[Pool.\_\_enter\_\_()](Pool.__enter__.md#pymizu.Pool.__enter__)  
 
-[Pool.__exit__()](Pool.__exit__.md#pymizu.Pool.__exit__)  
-
+[Pool.\_\_exit\_\_()](Pool.__exit__.md#pymizu.Pool.__exit__)  
 
 ## Cross-language interop
 
-
 R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
-
 
 [call](call.md#pymizu.call)  
 A task specification for a pool of another language's workers.
 
 [r_launcher()](r_launcher.md#pymizu.r_launcher)  
-Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> launcher
+Return a [`Channel.create()`](../reference/Channel.create.md#pymizu.Channel.create) launcher
 
 [r_pool_launcher()](r_pool_launcher.md#pymizu.r_pool_launcher)  
-Return a <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> launcher
+Return a [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) launcher
 
 [Frame](Frame.md#pymizu.Frame)  
 A data.frame's Python home: named columns with a row count.
 
-
 ## Frame Methods
 
-
 Methods for the Frame class
-
 
 [Frame.names](Frame.names.md#pymizu.Frame.names)  
 
@@ -183,20 +165,17 @@ to_dict() -\> dict
 [Frame.from_arrow()](Frame.from_arrow.md#pymizu.Frame.from_arrow)  
 from_arrow(obj) -\> Frame
 
-[Frame.__arrow_c_stream__()](Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__)  
+[Frame.\_\_arrow_c_stream\_\_()](Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__)  
 **arrow_c_stream**(requested_schema=None) -\> capsule
 
-[Frame.__len__()](Frame.__len__.md#pymizu.Frame.__len__)  
+[Frame.\_\_len\_\_()](Frame.__len__.md#pymizu.Frame.__len__)  
 Return len(self).
 
-[Frame.__reduce__()](Frame.__reduce__.md#pymizu.Frame.__reduce__)  
-
+[Frame.\_\_reduce\_\_()](Frame.__reduce__.md#pymizu.Frame.__reduce__)  
 
 ## Outcomes and errors
 
-
 Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
-
 
 [Sentinel](Sentinel.md#pymizu.Sentinel)  
 Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.
@@ -237,12 +216,9 @@ The executing worker died mid-task. Carries 'slot' and 'pid' attributes identify
 [DeclinedError](DeclinedError.md#pymizu.DeclinedError)  
 A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes.
 
-
 ## Housekeeping
 
-
 The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
-
 
 [default_pool()](default_pool.md#pymizu.default_pool)  
 The process-wide default pool, or None when none is set.

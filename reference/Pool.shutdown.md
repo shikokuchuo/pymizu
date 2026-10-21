@@ -1,14 +1,13 @@
 # Pool.shutdown()
 
-
-Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> -- the
-
+Alias for [`stop()`](../reference/Pool.stop.md#pymizu.Pool.stop) -- the
 
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1157-L1160)
 
 ``` python
 Pool.shutdown(timeout=5.0)
 ```
-
 
 `concurrent.futures.Executor` spelling.

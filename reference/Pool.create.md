@@ -1,10 +1,10 @@
 # Pool.create()
 
-
 Create a pool and spawn its worker processes.
 
-
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L533-L614)
 
 ``` python
 Pool.create(
@@ -21,43 +21,38 @@ Pool.create(
 )
 ```
 
-
 ## Parameters
 
-
-`workers: int = ``1`  
+`workers: int = 1`  
 Number of worker processes to spawn; they join the pool's registry (capacity `max_workers`).
 
 `max_workers: int | None = None`  
 Registry capacity; defaults to `workers`.
 
-`max_submitters: int = ``8`  
+`max_submitters: int = 8`  
 Maximum number of submitter processes.
 
-`injection_cap: int = ``1024`  
+`injection_cap: int = 1024`  
 Capacity of the injection ring.
 
-`per_worker_cap: int = ``1024`  
+`per_worker_cap: int = 1024`  
 Capacity of each worker's work-stealing deque.
 
-`result_slots: int = ``4096`  
+`result_slots: int = 4096`  
 Bounds each submitter's outstanding (uncollected) tasks.
 
-`slot_size: int = ``512`  
+`slot_size: int = 512`  
 Bytes per queue entry and result slot -- a payload past the inline budget travels in a fresh region per payload.
 
 `launcher: _Callable[[str, int], _Any] | None = None`  
 A `callable(token, slot)` arranging for a Python process to run `python -m pymizu.worker <token> <slot>`; the default spawns `sys.executable` directly.
 
-`startup_timeout: float = ``30.0`  
+`startup_timeout: float = 30.0`  
 Seconds to wait for the workers to attach.
-
 
 ## Returns
 
-
 `The controller-side pool handle.`  
-
 
 ## Examples
 

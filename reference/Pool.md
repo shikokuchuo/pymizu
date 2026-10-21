@@ -1,16 +1,15 @@
 # Pool
 
-
 A shared-memory work-stealing task pool handle (process-private).
 
-
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L506-L1204)
 
 ``` python
 Pool()
 ```
 
-
-Create the controller side with <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> (which spawns the workers, `python -m pymizu.worker`); other processes join as submitters with <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link"><code>Pool.attach()</code></a>. The pool's lifetime is bound to the creating process: dropping the handle shuts the pool down as <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>Pool.stop()</code></a> does, but without the wait. Handles do not survive `fork()`.
+Create the controller side with [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) (which spawns the workers, `python -m pymizu.worker`); other processes join as submitters with [`Pool.attach()`](../reference/Pool.attach.md#pymizu.Pool.attach). The pool's lifetime is bound to the creating process: dropping the handle shuts the pool down as [`Pool.stop()`](../reference/Pool.stop.md#pymizu.Pool.stop) does, but without the wait. Handles do not survive `fork()`.
 
 Task callables ride pickle: under stock pickle a submitted callable must be an importable reference (the multiprocessing constraint); installing cloudpickle lifts that transparently.

@@ -2,8 +2,7 @@
 
 The process at the other end of a channel does not have to be Python. [mizu](https://github.com/shikokuchuo/mizu) is the R binding of the same shared-memory core, and a channel or pool connects the two languages directly.
 
-
-# R channel peers
+## R channel peers
 
 A channel peer can be an R process with the `mizu` package installed. Pass the peer program as R source, and set the launcher to [pymizu.r_launcher()](../reference/r_launcher.md#pymizu.r_launcher):
 
@@ -30,10 +29,9 @@ ch.close()
 
 [r_launcher()](../reference/r_launcher.md#pymizu.r_launcher) needs R and the `mizu` R package installed. If either is missing, it raises [MizuError](../reference/MizuError.md#pymizu.MizuError) before the channel is created. Pass `rscript=` to use a specific R installation.
 
-To spawn the peer differently, write your own launcher: one callable that takes the channel's token and starts the peer process. The reverse direction works too -- an R session spawns a Python peer with `mizu::mizu_py_launcher()`.
+To spawn the peer differently, write your own launcher: one callable that takes the channel's token and starts the peer process. The reverse direction works too: an R session spawns a Python peer with `mizu::mizu_py_launcher()`.
 
-
-# Mixed-language pools
+## Mixed-language pools
 
 A pool's workers can be R processes. [pymizu.r_pool_launcher()](../reference/r_pool_launcher.md#pymizu.r_pool_launcher) spawns them, and [pymizu.call()](../reference/call.md#pymizu.call) describes the task: a qualified function name (`"pkg::fn"` for R, `"mod.fn"` for Python) or a `source=` string, plus constant arguments:
 
@@ -50,16 +48,15 @@ print(t2.collect())                 # 41
 pool.stop()
 ```
 
-Unnamed arguments become positional arguments, and keyword arguments become named ones, matching R's calling convention. A `source=` task evaluates in a fresh environment with the keyword arguments bound as names and the positional arguments bound as `_1`, `_2`, … The result is the value of the last expression.
+Unnamed arguments become positional arguments, and keyword arguments become named ones. This matches R's calling convention. A `source=` task evaluates in a fresh environment with the keyword arguments bound as names and the positional arguments bound as `_1`, `_2`, … The result is the value of the last expression.
 
-The workers' language comes from the pool itself -- there is no language argument and no override. On an R-worker pool, submitting a plain Python callable raises an error naming [pymizu.call()](../reference/call.md#pymizu.call). An unqualified name errors at submit. An argument that cannot cross the boundary raises [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at submit. An error in the R code crosses as [TaskError](../reference/TaskError.md#pymizu.TaskError) with the R error type preserved in `remote_type`. A result with no Python equivalent fails the task with an error naming the type. The reverse direction mirrors: `mizu::mizu_pool()` with `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
+The workers' language comes from the pool itself: there is no language argument and no override. On an R-worker pool, submitting a plain Python callable raises an error naming [pymizu.call()](../reference/call.md#pymizu.call). An unqualified name errors at submit. An argument that cannot cross the boundary raises [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at submit. An error in the R code crosses as [TaskError](../reference/TaskError.md#pymizu.TaskError) with the R error type preserved in `remote_type`. A result with no Python equivalent fails the task with an error naming the type. The reverse direction mirrors: `mizu::mizu_pool()` with `mizu::mizu_py_pool_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
 
-Large arguments cross without copying. A fresh array argument past the zero-copy floor (a fixed size threshold) is written to shared memory once -- one layout write -- and the worker reads a view over it. An argument that is already a shared view (a `_ShmView`, or a numpy array whose `.base` chain ends in one) crosses as its identifier alone -- zero payload bytes. If the pool runs workers too old to read such references, the submit fails with an error naming the remedy. A pool's workers all run one language: mixing R and Python workers in one pool is not supported.
+Large arguments cross without copying. A fresh array argument past the zero-copy floor (a fixed size threshold) is written to shared memory once, in one layout write. The worker reads a view over it. An argument that is already a shared view (a `_ShmView`, or a numpy array whose `.base` chain ends in one) crosses as its identifier alone, zero payload bytes. If the pool runs workers too old to read such references, the submit fails with an error naming the remedy. A pool's workers all run one language: mixing R and Python workers in one pool is not supported.
 
+## Mapping over a foreign pool
 
-# Mapping over a foreign pool
-
-A [pymizu.call()](../reference/call.md#pymizu.call) spec is also a map's `fn` -- [Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) and [Pool.map_prepare()](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare) on an R-worker pool (and `mizu::mizu_map()` mirrors this in R):
+A [pymizu.call()](../reference/call.md#pymizu.call) spec is also a map's `fn`, with [Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) and [Pool.map_prepare()](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare) on an R-worker pool. `mizu::mizu_map()` mirrors this in R:
 
 ``` python
 pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
@@ -71,48 +68,43 @@ pool.stop()
 
 Each element fills the spec's first positional argument (a named spec) or binds as `x` (a `source=` spec). Put constant arguments in the spec itself: the map's own `args=`/`kwargs=` must stay empty. `template=` and `collect=` work unchanged, and a per-element error crosses with its `index`. Spec maps take integer seeds only (when the workers are R, the seed within R's 32-bit range and the offset at most 2^53). Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.
 
-
-# What crosses the language boundary
+## What crosses the language boundary
 
 A portable subset of values crosses in both directions:
 
 - Python scalars (`bool`, `int`, `float`, `complex`, `str`, `None`), lists, and dicts with `str` keys cross both ways. R sees its own logical, integer, double, complex, character, and list values. A `tuple` arrives as a `list`.
-- A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector, and an R vector arrives as a numpy array. See the [dtype matrix](#the-dtype-matrix) below for the exact correspondence.
+- A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector, and an R vector arrives as a numpy array. See the [dtype matrix](#the-dtype-matrix) for the exact correspondence.
 - A large array crosses without copying: each side reads the other's vector as a view over the shared pages. Without numpy, a received view is a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: `pa.array(view)`, `pl.from_arrow(view)`.
-- A multi-dimensional numpy array arrives as an R array with `dim` set (a matrix is the 2-D case) -- C order, F order, strided, it crosses value-exact. A large array also crosses without copying in any memory order -- F order, C order, or strided: R reads a matrix view over the shared pages. `datetime64` arrays with day or week units arrive as `Date`, and finer units arrive as `POSIXct`; past the zero-copy floor these cross without copying too. `datetime.date` and `datetime.datetime` scalars arrive as the length-1 forms.
+- A multi-dimensional numpy array arrives as an R array with `dim` set (a matrix is the 2-D case). C order, F order, or strided, it crosses value-exact. A large array also crosses without copying in any memory order: F order, C order, or strided. R reads a matrix view over the shared pages. `datetime64` arrays with day or week units arrive as `Date`, and finer units arrive as `POSIXct`. Past the zero-copy floor these cross without copying too. `datetime.date` and `datetime.datetime` scalars arrive as the length-1 forms.
 - An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. Anything with `__arrow_c_array__` works (pyarrow, polars, a duckdb result column).
-- An Arrow stream -- a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with [__arrow_c_stream__](../reference/Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__) -- arrives as an R `data.frame`. Dictionary-encoded columns become factors, and `date32`/`timestamp` columns become `Date`/`POSIXct`. A Series arrives as a plain vector. An R `data.frame` arrives as a [pymizu.Frame](../reference/Frame.md#pymizu.Frame) (below), and a factor as `list[str | None]`.
+- An Arrow stream (a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with [\_\_arrow_c_stream\_\_](../reference/Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__)) arrives as an R `data.frame`. Dictionary-encoded columns become factors, and `date32`/`timestamp` columns become `Date`/`POSIXct`. A Series arrives as a plain vector. An R `data.frame` arrives as a [`pymizu.Frame`](#pymizuframe), and a factor as `list[str | None]`.
 - `bytes` arrives as an R raw vector.
-- Strings cross both ways. R's `NA_character_` arrives as `None`, and a string vector arrives as `list[str | None]`. A large `list[str | None]` sent to R also crosses without copying -- R reads a character vector over the shared pages, with `None` as `NA_character_`.
-- A large nested tree of lists, dicts, arrays, and strings sent to R crosses as one shared-memory region: R reads a list view over the shared pages instead of a copy (dict keys become the list's names). A received view nested inside such a tree crosses by reference -- only its region's name moves, and R resolves it to a view of the original region.
+- Strings cross both ways. R's `NA_character_` arrives as `None`, and a string vector arrives as `list[str | None]`. A large `list[str | None]` sent to R also crosses without copying: R reads a character vector over the shared pages, with `None` as `NA_character_`.
+- A large nested tree of lists, dicts, arrays, and strings sent to R crosses as one shared-memory region: R reads a list view over the shared pages instead of a copy (dict keys become the list's names). A received view nested inside such a tree crosses by reference: only its region's name moves, and R resolves it to a view of the original region.
 - A value outside the portable subset raises [pymizu.DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) (a subclass of `TypeError`) at send time, with `path` and `reason` attributes naming what was rejected and why.
 
+## pymizu.Frame
 
-# pymizu.Frame
+A [pymizu.Frame](../reference/Frame.md#pymizu.Frame) is Python's home for an R `data.frame`: named columns with a row count. `frame.to_dict()` returns the columns as a dict: numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as `list[str | None]`. `frame.names` and `frame.row_names` carry the metadata. Any Arrow consumer takes a frame in one line: `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)` (polars \>= 2.0 returns a struct Series for a streaming producer, and `.struct.unnest()` restores the columns). Factors become dictionary columns, logicals Arrow `bool`, `Date` `date32`, and `POSIXct` `timestamp[us]`. A [Frame](../reference/Frame.md#pymizu.Frame) pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a `data.frame` again.
 
-A [pymizu.Frame](../reference/Frame.md#pymizu.Frame) is Python's home for an R `data.frame`: named columns with a row count. `frame.to_dict()` returns the columns as a dict -- numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as `list[str | None]`. `frame.names` and `frame.row_names` carry the metadata. Any Arrow consumer takes a frame in one line -- `pl.from_arrow(f)`, `pa.table(f)`, `pd.DataFrame.from_arrow(f)` (polars \>= 2.0 returns a struct Series for a streaming producer; `.struct.unnest()` restores the columns). Factors become dictionary columns, logicals Arrow `bool`, `Date` `date32`, and `POSIXct` `timestamp[us]`. A [Frame](../reference/Frame.md#pymizu.Frame) pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a `data.frame` again.
-
-
-# Data frames without copying
+## Data frames without copying
 
 - A large `data.frame` (past 32 KB) crosses as one shared-memory region in either direction. Python receives a region-backed [Frame](../reference/Frame.md#pymizu.Frame): its columns read directly from the shared pages, numeric columns as read-only numpy views. R receives an ordinary `data.frame`, read in place.
-- If the other side is too old to read these regions, the frame crosses as a copy instead -- the value always arrives.
+- If the other side is too old to read these regions, the frame crosses as a copy instead. The value always arrives.
 - Sending a received frame back unmodified moves no data at all: it crosses as a reference to the region it arrived from. This holds through polars or pyarrow (`pl.from_arrow(f)`, `pa.table(f)`) as long as no column was modified.
 - Modifying some columns moves only those columns. Each unmodified column still crosses as a reference, so a relay that adds one computed column pays for one column. R reads the unmodified columns as views of the original region.
 - A polars or pyarrow object that wraps a received frame keeps the frame's shared-memory region alive until it is deleted and garbage-collected. Holding many of them at once can force later sends back to copying, so delete them when they are no longer needed.
 
-
-# Dates, times, and other types
+## Dates, times, and other types
 
 - A factor crosses as `list[str | None]` on its own, or as a dictionary-encoded column inside a frame.
 - A `Date` crosses as `datetime64[D]` or Arrow `date32`. A `POSIXct` crosses as a naive `datetime64[us]` or `timestamp[us, tz]`: microsecond precision, `NaT` read as `NA`. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with `tzone = "UTC"`.
-- A `difftime` crosses as `timedelta64[us]`: microsecond precision, `NA` read as `NaT`. R's five units cross by value; a round trip normalizes them to seconds. `timedelta64` arrays of any non-calendar unit cross likewise (numpy scalars and `datetime.timedelta` included). Inside a frame, a difftime column exports to Arrow as `duration[us]`, and an Arrow `duration` column arrives as a difftime.
+- A `difftime` crosses as `timedelta64[us]`: microsecond precision, `NA` read as `NaT`. R's five units cross by value. A round trip normalizes them to seconds. `timedelta64` arrays of any non-calendar unit cross likewise (numpy scalars and `datetime.timedelta` included). Inside a frame, a difftime column exports to Arrow as `duration[us]`, and an Arrow `duration` column arrives as a difftime.
 - A `POSIXlt`, Arrow `date64`/`time`/`interval`, and ordered dictionaries (polars Enums) are declined at send time.
-- An R vector with [names](../reference/Frame.names.md#pymizu.Frame.names) is declined (numpy has no per-element names). A matrix crosses with values exact -- the data is never transposed. `dimnames` and character matrices are declined.
-- Cross-language sends copy R's ALTREP vectors by value: exact values, the compact representation is not preserved.
+- An R vector with [names](../reference/Frame.names.md#pymizu.Frame.names) is declined (numpy has no per-element names). A matrix crosses with values exact: the data is never transposed. `dimnames` and character matrices are declined.
+- Cross-language sends copy R's ALTREP vectors by value. Values stay exact, but the compact representation is not preserved.
 
-
-# The dtype matrix
+## The dtype matrix
 
 The exact correspondence between Python and R dtypes. Conversion happens once, at send time. The identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.
 
@@ -123,16 +115,16 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | int32 | integer |  |
 | uint32 | double | widened, exact |
 | int64 | integer64 (bit64's layout) | bit-exact; `INT64_MIN` reads as `NA` |
-| uint64 | double + `NA` past 2^53, warned at the read | the frame column crosses exact; `mizu_as_arrow()` is bit-exact |
+| uint64 | double + `NA` past 2^53 (warned) | the frame column and `mizu_as_arrow()` are bit-exact |
 | float16 / float32 / float64 | double | float16 and float32 widened, exact |
 | bool | logical |  |
 | complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
 | Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
-| Arrow strings (utf8 / large_utf8 / string_view) | character | a Series arrives as `list[str \| None]`; a column as a frame column |
+| Arrow strings (utf8 / large_utf8 / string_view) | character | a Series as `list[str \| None]`; a column as a frame column |
 | Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
-| Arrow `duration[u]` | `difftime` (secs) | the unit converts to seconds; the frame column exports back as `duration[us]` |
+| Arrow `duration[u]` | `difftime` (secs) | the frame column exports back as `duration[us]` |
 | timedelta64 (any non-calendar unit) | `difftime` (secs) | `NaT` reads as `NA`; the unit converts to seconds |
-| Arrow dictionary-encoded | factor | an ordered dictionary declines (`polars Enum`: cast to `pl.Categorical`) |
+| Arrow dictionary-encoded | factor | ordered dictionaries decline (`polars Enum`: cast to `pl.Categorical`) |
 | Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks are concatenated |
 | Arrow nested, decimal, time32/64, interval | -- | [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at send time |
 
@@ -140,14 +132,14 @@ Missing values:
 
 - R marks missing values with sentinels inside the data: `INT_MIN` for integer and logical, `INT64_MIN` for integer64, and a special NaN value (`NA_real_`) for double. Arrow nulls convert to these sentinels, so R sees correct `NA`s.
 - Read from Python, the result depends on the accessor:
-  - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)) give honest dtypes: a logical arrives as `bool_` when it has no `NA`, else int32; an integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
-  - Zero-copy views keep the sentinel values in the buffer. `.to_numpy()` applies the same rule, reading NA-freeness off the region's validity section before any data scan.
-  - int64 keeps its dtype in every numpy form and warns when an `NA` is detected on a copied read or `.to_numpy()`. Use `.to_arrow()` for an NA-honest read. A genuine Python `-2^63` value round-trips without a warning.
-  - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap; a double exports as float64 with `NA_real_` slots as Arrow nulls (a genuine NaN stays a valid value).
-- A genuine int32 value of `-2147483648` collides with the `NA` sentinel and reads as `NA` in R. Likewise an int64 value of `-9223372036854775808` reads as `NA_integer64_`. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once -- to an R peer; a Python peer reads the identical columns exactly and stays silent.
-- Python compute treats `NA_real_` as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent -- do not rely on it.
+  - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)) give exact dtypes: a logical arrives as `bool_` when it has no `NA`, else int32. An integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
+  - Zero-copy views keep the sentinel values in the buffer. `.to_numpy()` applies the same rule and reads NA-freeness off the region's validity section before any data scan.
+  - int64 keeps its dtype in every numpy form and warns when an `NA` is detected on a copied read or `.to_numpy()`. Use `.to_arrow()` for an NA-exact read. A genuine Python `-2^63` value round-trips without a warning.
+  - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with `NA_real_` slots as Arrow nulls (a genuine NaN stays a valid value).
+- A genuine int32 value of `-2147483648` collides with the `NA` sentinel and reads as `NA` in R. Likewise an int64 value of `-9223372036854775808` reads as `NA_integer64_`. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once, to an R peer. A Python peer reads the identical columns exactly and stays silent.
+- Python compute treats `NA_real_` as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent. Do not rely on it.
 
-Round trips are stable after the first hop, and a pass-through echo is bit-exact: an untouched received view sent back crosses as a reference to its region -- no data moves -- so even the `NA_real_` value survives a relay. A slice or a dtype view of a received view crosses by value.
+Round trips are stable after the first hop, and a pass-through echo is bit-exact. An untouched received view sent back crosses as a reference to its region, so no data moves and even the `NA_real_` value survives a relay. A slice or a dtype view of a received view crosses by value.
 
 | Python sends | R sees | Back in Python | Notes |
 |----|----|----|----|
@@ -156,7 +148,7 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | int32 | integer | int32 | exact |
 | uint32 | double | float64 | exact |
 | int64 | integer64 | int64 | exact |
-| uint64 | double + `NA` past 2^53, warned at the read | uint64 | the column crosses exact; R's Arrow export is bit-exact |
+| uint64 | double + `NA` past 2^53 (warned) | uint64 | the column and R's Arrow export are bit-exact |
 | float16 | double | float64 | widened, values exact |
 | float32 | double | float64 | widened, values exact |
 | float64 | double | float64 | exact |
@@ -171,7 +163,7 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | double | float64 | double | exact |
 | raw | uint8 | raw | exact |
 | complex | complex128 | complex | exact |
-| logical | `bool_` (int32 with NAs) | **integer** | the logical tag is lost on a Python round trip (the values are not); a whole view sent back crosses by reference and stays logical |
+| logical | `bool_` (int32 with NAs) | **integer** | tag lost on a Python round trip (values kept); a whole view sent back stays logical |
 | difftime | timedelta64\[us\] | difftime (secs) | units normalize to seconds, values exact; `NA` crosses as `NaT` |
 
-Between two Python processes -- a channel or a pool -- the conversions on this page never run: the identity dtypes cross unchanged and everything else pickles, so an exact Python-to-Python send of a non-identity dtype needs no work. They apply only when the other end runs R.
+Between two Python processes, on a channel or a pool, the conversions on this page never run. The identity dtypes cross unchanged, and everything else pickles. An exact Python-to-Python send of a non-identity dtype needs no work. They apply only when the other end runs R.

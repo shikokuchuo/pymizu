@@ -1,10 +1,10 @@
 # Channel.create()
 
-
 Create a channel and spawn its peer.
 
-
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L108-L187)
 
 ``` python
 Channel.create(
@@ -19,37 +19,32 @@ Channel.create(
 )
 ```
 
-
 ## Parameters
-
 
 `peer: str`  
 A Python source string, evaluated in the peer process with `ch` bound to the peer-side handle.
 
-`capacity: int = ``16384`  
+`capacity: int = 16384`  
 Ring capacity in slots; a power of two.
 
-`slot_size: int = ``256`  
+`slot_size: int = 256`  
 Bytes per ring slot; a power of two. The inline payload budget is `slot_size - 16`.
 
 `arena_size: int = 4 * 1024 * 1024`  
 Bytes of shared staging arena for out-of-line payloads.
 
-`spin: bool = ``False`  
+`spin: bool = False`  
 Spin rather than park while waiting.
 
-`startup_timeout: float = ``30.0`  
+`startup_timeout: float = 30.0`  
 Seconds to wait for the peer to attach.
 
 `launcher: _Callable[[str], _Any] | None = None`  
-A `callable(token)` arranging for a Python process to run `python -m pymizu.child <token>`; the default spawns `sys.executable` directly. <a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link"><code>r_launcher()</code></a> returns one spawning an R peer (the R package `mizu`).
-
+A `callable(token)` arranging for a Python process to run `python -m pymizu.child <token>`; the default spawns `sys.executable` directly. [`r_launcher()`](../reference/r_launcher.md#pymizu.r_launcher) returns one spawning an R peer (the R package `mizu`).
 
 ## Returns
 
-
 `The host-side channel handle.`  
-
 
 ## Examples
 

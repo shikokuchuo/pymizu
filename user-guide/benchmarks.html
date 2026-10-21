@@ -49,7 +49,7 @@ ul.task-list li input[type="checkbox"] {
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-a699add0f2108d88e1df4312b71c9091.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-bd54e2ce69989177fd5404fd01f31db8.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -91,6 +91,7 @@ ul.task-list li input[type="checkbox"] {
 <meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.5">
 <link rel="canonical" href="https://shikokuchuo.net/pymizu/user-guide/benchmarks.html">
 <meta property="og:url" content="https://shikokuchuo.net/pymizu/user-guide/benchmarks.html">
+<link rel="alternate" type="text/markdown" href="benchmarks.md">
 
 
 <meta property="og:title" content="Benchmarks | pymizu 水">
@@ -99,7 +100,6 @@ ul.task-list li input[type="checkbox"] {
 <meta name="twitter:title" content="Benchmarks | pymizu 水">
 <meta name="twitter:description" content="Communication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).">
 <meta name="twitter:card" content="summary">
-  <link rel="alternate" type="text/markdown" href="benchmarks.md">
 </head>
 
 <body class="nav-sidebar floating nav-fixed quarto-light">
@@ -216,7 +216,6 @@ ul.task-list li input[type="checkbox"] {
   <li><a href="#process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel" id="toc-process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel" class="nav-link" data-scroll-target="#process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel">Process pools: <code>multiprocessing</code>, <code>concurrent.futures</code>, joblib, ipyparallel</a></li>
   <li><a href="#distributed-frameworks-ray-and-dask" id="toc-distributed-frameworks-ray-and-dask" class="nav-link" data-scroll-target="#distributed-frameworks-ray-and-dask">Distributed frameworks: Ray and Dask</a></li>
   <li><a href="#modern-cpython-free-threading-and-subinterpreters" id="toc-modern-cpython-free-threading-and-subinterpreters" class="nav-link" data-scroll-target="#modern-cpython-free-threading-and-subinterpreters">Modern CPython: free-threading and subinterpreters</a></li>
-  <li><a href="#messaging-zeromq" id="toc-messaging-zeromq" class="nav-link" data-scroll-target="#messaging-zeromq">Messaging: ZeroMQ</a></li>
   <li><a href="#the-one-thing-only-pymizu-does" id="toc-the-one-thing-only-pymizu-does" class="nav-link" data-scroll-target="#the-one-thing-only-pymizu-does">The one thing only pymizu does</a></li>
   </ul></li>
   </ul>
@@ -319,12 +318,11 @@ ul.task-list li input[type="checkbox"] {
 </tr>
 </tbody>
 </table>
-<p>Against <code>InterpreterPoolExecutor</code> (Python 3.14+, subinterpreters with per-interpreter GILs): on the trivial-task rows it lands between the thread and process pools — 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07). The map rows it cannot run at all: task payloads must be shareable — builtin scalars, plain containers, or buffer-protocol objects — so numpy arrays and numpy scalars raise <code>NotShareableError</code>.</p>
-<p>* elt = element; microseconds of wall time per map element.</p>
-<p>These rows measure communication overhead — the cost pymizu is built to remove. The stdlib pools remain the general solution: they run anywhere Python runs, with no platform requirements.</p>
+<p>Against <code>InterpreterPoolExecutor</code> (Python 3.14+, subinterpreters with per-interpreter GILs), the trivial-task rows land between the thread and process pools: 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07). It cannot run the map rows at all. Task payloads must be shareable: builtin scalars, plain containers, or buffer-protocol objects. numpy arrays and numpy scalars raise <code>NotShareableError</code>.</p>
+<p>* elt = element, in microseconds of wall time per map element.</p>
 <section id="how-pymizu-compares" class="level1">
 <h1>How pymizu compares</h1>
-<p>pymizu occupies a specific point in the design space: parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies. The tools below overlap at the edges; the differences are in what has to run, how data moves, and what survives a crash.</p>
+<p>pymizu occupies a specific point in the design space: parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies. The tools in this table overlap at the edges. They differ in what has to run, how data moves, and what survives a crash.</p>
 <table class="caption-top table">
 <thead>
 <tr class="header">
@@ -367,7 +365,7 @@ ul.task-list li input[type="checkbox"] {
 </tr>
 <tr class="even">
 <td>Free-threaded CPython</td>
-<td>Nothing; threads</td>
+<td>Threads</td>
 <td>Nothing; threads share one heap</td>
 <td>CPU work needing no isolation</td>
 </tr>
@@ -378,14 +376,8 @@ ul.task-list li input[type="checkbox"] {
 <td>Process-free isolation (3.14+)</td>
 </tr>
 <tr class="even">
-<td>ZeroMQ</td>
-<td>Nothing; a library</td>
-<td>Socket copies</td>
-<td>General messaging patterns</td>
-</tr>
-<tr class="odd">
 <td>pymizu</td>
-<td>Nothing; a library</td>
+<td>A library</td>
 <td>Shared-memory views, µs handoff</td>
 <td>Fine-grained tasks, large arrays, R interop</td>
 </tr>
@@ -393,26 +385,26 @@ ul.task-list li input[type="checkbox"] {
 </table>
 <section id="process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel" class="level2">
 <h2 class="anchored" data-anchor-id="process-pools-multiprocessing-concurrent.futures-joblib-ipyparallel">Process pools: <code>multiprocessing</code>, <code>concurrent.futures</code>, joblib, ipyparallel</h2>
-<p>The stdlib pools are the baseline the tables above measure. joblib’s <code>Parallel</code>/<code>delayed</code> is the long-standing answer for an embarrassingly parallel loop over numpy data, and its <code>loky</code> backend is the closest in spirit to pymizu: a reusable process pool that memmaps arrays past a size threshold to a temp folder instead of pickling them. That removes the pickle copy, but the array still round-trips through the filesystem and a task round trip stays in the millisecond range. ipyparallel answers the same question for Jupyter: a controller process brokers pickled messages over ZeroMQ sockets to engine processes — a controller in the loop and socket copies are the price of its generality. <code>multiprocessing.shared_memory</code> exposes raw shared buffers and leaves synchronization, lifetime tracking, and crash cleanup to you; pymizu is that idea finished — the same pages, with the waiting, framing, and peer-death detection built in.</p>
+<p>The stdlib pools are the baseline that the benchmark tables measure.</p>
+<p>joblib’s <code>Parallel</code>/<code>delayed</code> is the long-standing answer for an embarrassingly parallel loop over numpy data. Its <code>loky</code> backend is the closest in spirit to pymizu: a reusable process pool that memmaps arrays past a size threshold to a temp folder instead of pickling them. That removes the pickle copy. The array still round-trips through the filesystem, and a task round trip stays in the millisecond range.</p>
+<p>ipyparallel answers the same question for Jupyter. A controller process brokers pickled messages over ZeroMQ sockets to engine processes. A controller in the loop and socket copies are the price of its generality.</p>
+<p><code>multiprocessing.shared_memory</code> exposes raw shared buffers and leaves synchronization, lifetime tracking, and crash cleanup to you. pymizu is that idea finished: the same pages, with the waiting, framing, and peer-death detection built in.</p>
 </section>
 <section id="distributed-frameworks-ray-and-dask" class="level2">
 <h2 class="anchored" data-anchor-id="distributed-frameworks-ray-and-dask">Distributed frameworks: Ray and Dask</h2>
-<p>Ray and Dask answer a bigger question — spreading work across machines — and pay for it on one machine: a local Ray instance still starts a scheduler, object store, and dashboard, and a task round trip costs on the order of a millisecond; Dask’s <code>distributed</code> scheduler is similar, while its process-free threaded scheduler shares memory but is capped by the GIL for Python-level work. Ray’s object store does read numpy arrays without copying on the same node, so the honest difference is not capability but overhead and footprint: for a cluster, actors, or out-of-core dataframes, use them; when the work fits one machine and the tasks are measured in microseconds, the framework overhead dominates the work.</p>
+<p>Ray and Dask are designed to spread work across machines. On one machine you pay for that design. A local Ray instance still starts a scheduler, an object store, and a dashboard. A task round trip costs on the order of a millisecond.</p>
+<p>Dask’s <code>distributed</code> scheduler is similar. Its process-free threaded scheduler shares memory, but the GIL caps it for Python-level work. Ray’s object store does read numpy arrays without copying on the same node. The difference is overhead and footprint. If the work fits one machine and the tasks are measured in microseconds, the framework overhead dominates the work.</p>
 </section>
 <section id="modern-cpython-free-threading-and-subinterpreters" class="level2">
 <h2 class="anchored" data-anchor-id="modern-cpython-free-threading-and-subinterpreters">Modern CPython: free-threading and subinterpreters</h2>
-<p>Python 3.14 officially supports a build with the GIL removed, in which threads share one heap and exchange data with no copies at all. That is the right answer for single-language CPU parallelism when isolation is not needed: a crashing thread takes the process down, C extensions must be built and validated for it, and it does nothing for crossing into R. pymizu targets the standard GIL build and does not yet support the free-threaded one; the two approaches solve different problems — threads trade isolation for sharing, pymizu keeps the isolation and makes the sharing cheap.</p>
-<p>Python 3.14 also added <code>concurrent.interpreters</code> to the stdlib (<a href="https://peps.python.org/pep-0734/">PEP 734</a>): multiple interpreters in one process, each with its own GIL, so CPU work parallelizes without new processes on the standard build. Objects passed between interpreters must be shareable: builtin scalars and plain containers of them cross as copies, buffer-protocol objects can share their underlying memory (synchronization left to you), and anything else — numpy arrays included — is rejected outright. The isolation is real but not OS-level — a fatal error in one interpreter ends the process — and the surrounding machinery (queues, lifetimes, crash handling) is yours to build. It is also 3.14 and later only; pymizu runs on 3.10 and later.</p>
-</section>
-<section id="messaging-zeromq" class="level2">
-<h2 class="anchored" data-anchor-id="messaging-zeromq">Messaging: ZeroMQ</h2>
-<p>ZeroMQ is the canonical answer for moving bytes between processes, and pymizu’s channels play in the same space — but the bytes move over sockets, so every message is copied, and the distribution patterns are yours to design: it is a building block (ipyparallel is built on it), not a task pool. A pymizu channel plays the same role with the copies removed — written once, read in place.</p>
+<p>Python 3.14 officially supports a build with the GIL removed, in which threads share one heap and exchange data with no copies at all. This is the right answer for single-language CPU parallelism when isolation is not needed. A crashing thread takes the process down, C extensions must be built and validated for it, and it does nothing for crossing into R. pymizu targets the standard GIL build and does not yet support the free-threaded one. The two approaches solve different problems: threads trade isolation for sharing, and pymizu keeps the isolation and makes the sharing cheap.</p>
+<p>Python 3.14 also added <code>concurrent.interpreters</code> to the stdlib (<a href="https://peps.python.org/pep-0734/">PEP 734</a>). It runs multiple interpreters in one process, each with its own GIL. CPU work parallelizes without new processes on the standard build. Objects that pass between interpreters must be shareable. Builtin scalars and plain containers of them cross as copies. Buffer-protocol objects can share their underlying memory, with synchronization left to you. Anything else, numpy arrays included, is rejected outright. The isolation is real but not OS-level: a fatal error in one interpreter ends the process. The surrounding machinery (queues, lifetimes, crash handling) is yours to build. <code>concurrent.interpreters</code> is also Python 3.14 and later only. pymizu runs on Python 3.10 and later.</p>
 </section>
 <section id="the-one-thing-only-pymizu-does" class="level2">
 <h2 class="anchored" data-anchor-id="the-one-thing-only-pymizu-does">The one thing only pymizu does</h2>
-<p>A pool whose workers are R processes, exchanging numpy arrays and data frames as shared-memory views (<a href="../user-guide/interop.html">R interop</a>). None of the tools above cross the language boundary.</p>
-<p>The short version: choose pymizu when the work fits one machine, when tasks are fine-grained or arrays large, or when R needs to be in the loop; choose Ray or Dask when you outgrow one machine or need their collections, <code>concurrent.interpreters</code> when you want stdlib-only isolation and can require Python 3.14, and free-threading when one language and shared-everything is acceptable.</p>
-<p><code>benchmarks/mizu-bench.py</code> runs the pymizu rows standalone, <code>benchmarks/mizu-stdlib-bench.py</code> the comparison, and <code>benchmarks/crosslang-map-bench.py</code> the cross-language map comparison. The scripts are report-only and assert nothing about the numbers (CI runner timing is too variable); dated records live in <code>benchmarks/notes.md</code>.</p>
+<p>A pool whose workers are R processes, exchanging numpy arrays and data frames as shared-memory views (<a href="../user-guide/interop.html">R interop</a>). None of the other tools in this guide cross the language boundary.</p>
+<p>The short version: choose pymizu when the work fits one machine, when tasks are fine-grained or arrays large, or when R needs to be in the loop. Choose Ray or Dask when you outgrow one machine. Choose <code>concurrent.interpreters</code> when you want stdlib-only isolation and can require Python 3.14. Choose free-threading when one language and shared-everything is acceptable.</p>
+<p><code>benchmarks/mizu-bench.py</code> runs the pymizu rows standalone, <code>benchmarks/mizu-stdlib-bench.py</code> the comparison, and <code>benchmarks/crosslang-map-bench.py</code> the cross-language map comparison. The scripts are report-only and assert nothing about the numbers: CI runner timing is too variable. Dated records live in <code>benchmarks/notes.md</code>.</p>
 
 
 </section>

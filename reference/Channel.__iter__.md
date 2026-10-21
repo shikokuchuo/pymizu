@@ -1,14 +1,13 @@
 # Channel.\_\_iter\_\_()
 
-
 Iterate over received payloads until CLOSED or PEER_GONE.
 
-
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L317-L328)
 
 ``` python
 Channel.__iter__()
 ```
 
-
-Blocks indefinitely between payloads ([recv()](Channel.recv.md#pymizu.Channel.recv) with no timeout); use <a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="gdls-link"><code>Channel.recv()</code></a> directly when a bound is needed.
+Blocks indefinitely between payloads ([recv()](../reference/Channel.recv.md#pymizu.Channel.recv) with no timeout); use [`Channel.recv()`](../reference/Channel.recv.md#pymizu.Channel.recv) directly when a bound is needed.

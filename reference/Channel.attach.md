@@ -1,28 +1,23 @@
 # Channel.attach()
 
-
 Attach to the channel named by a join token (the peer side).
 
-
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L189-L213)
 
 ``` python
 Channel.attach(token)
 ```
 
-
 ## Parameters
-
 
 `token: str`  
 The join token from the host side's `ch.token`.
 
-
 ## Returns
 
-
 `The peer-side channel handle.`  
-
 
 ## Details
 

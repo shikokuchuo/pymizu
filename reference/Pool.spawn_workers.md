@@ -1,10 +1,10 @@
 # Pool.spawn_workers()
 
-
 Spawn `n` additional workers into free registry slots and
 
-
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1091-L1135)
 
 ``` python
 Pool.spawn_workers(
@@ -15,24 +15,19 @@ Pool.spawn_workers(
 )
 ```
 
-
 wait for them to join (controller only).
-
 
 ## Parameters
 
-
-`n: int = ``1`  
+`n: int = 1`  
 Number of workers to spawn.
 
 `launcher: _Callable[[str, int], _Any] | None = None`  
-As for <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a>; the default spawns `sys.executable` directly.
+As for [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create); the default spawns `sys.executable` directly.
 
-`startup_timeout: float = ``30.0`  
+`startup_timeout: float = 30.0`  
 Seconds to wait for the workers to attach.
-
 
 ## Returns
 
-
-`The slot indices spawned into.`
+`The slot indices spawned into.`  

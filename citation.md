@@ -2,18 +2,15 @@
 
 To cite this package in publications, please use the following citation.
 
-
-# Authors
+## Authors
 
 Charlie Gao. Author.
 
-
-# Citation
+## Citation
 
 **Source:** [`CITATION.cff`](https://github.com/shikokuchuo/pymizu/blob/main/CITATION.cff)
 
-
-## BibTeX
+### BibTeX
 
 ``` bibtex
 @Manual{,
@@ -24,13 +21,11 @@ Charlie Gao. Author.
 }
 ```
 
-
-## APA
+### APA
 
 Gao, C. (2026). *pymizu: Zero-copy shared-memory parallelism across Python and R* (Version ) \[Computer software\]. https://shikokuchuo.net/pymizu/
 
-
-## RIS
+### RIS
 
 ``` ris
 TY  - COMP

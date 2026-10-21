@@ -2,7 +2,6 @@
 
 `Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the results as a list in input order. It is not a loop over `pool.submit()`. The function, its constant `args=`/`kwargs=`, and the data are written to shared memory once, and one *runner* task per worker divides up the elements:
 
-
 ``` python
 import pymizu
 
@@ -12,16 +11,13 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
+## Scheduling
 
-# Scheduling
+Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap `fn` runs in large batches at near-zero scheduling cost. An expensive or uneven one takes smaller batches to keep the workers balanced. `n_chunks=` sets the batch size directly.
 
-Runners self-schedule element batches off a shared cursor, and the batch size adapts. A cheap `fn` runs in large batches at near-zero scheduling cost. An expensive or uneven one automatically takes smaller batches to keep the workers balanced. `n_chunks=` sets the batch size directly.
-
-A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes. Each worker views the same array in shared memory and reads its elements directly -- `x` is never serialized:
-
+A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes. Each worker views the same array in shared memory and reads its elements directly, so `x` is never serialized:
 
 ``` python
 import numpy as np
@@ -31,7 +27,6 @@ with pymizu.Pool.create(4) as pool:
 
 result
 ```
-
 
     [np.float64(5.0),
      np.float64(4.0),
@@ -44,11 +39,9 @@ result
      np.float64(-3.0),
      np.float64(-4.0)]
 
-
-# Unpacked elements (starmap)
+## Unpacked elements (starmap)
 
 `pool.starmap(fn, x)` unpacks each element of `x` as the call's positional arguments: `fn(*element, *args, **kwargs)`. This is the `multiprocessing.Pool.starmap` convention:
-
 
 ``` python
 with pymizu.Pool.create(4) as pool:
@@ -57,17 +50,13 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-
     [1024, 27]
 
+For the multi-iterable shape of `concurrent.futures.Executor.map`, zip the iterables first: `pool.starmap(fn, zip(xs, ys))`. Starmap needs Python workers: a [pymizu.call](../reference/call.md#pymizu.call) spec raises `TypeError`. Everything else (seeding, templates, streaming, the outcome taxonomy) is [Pool.map](../reference/Pool.map.md#pymizu.Pool.map)'s.
 
-For the multi-iterable shape of `concurrent.futures.Executor.map`, zip the iterables first: `pool.starmap(fn, zip(xs, ys))`. Starmap needs Python workers: a [pymizu.call](../reference/call.md#pymizu.call) spec raises `TypeError`. Everything else -- seeding, templates, streaming, the outcome taxonomy -- is [Pool.map](../reference/Pool.map.md#pymizu.Pool.map)'s.
+## Reproducible randomness
 
-
-# Reproducible randomness
-
-`seed=` (an int or bytes) gives every element its own deterministic stream of the stdlib `random` module -- element `i` is seeded from SHA-256 of the seed and `i`. Results are identical for any chunking, worker count, or steal order:
-
+`seed=` (an int or bytes) gives every element its own deterministic stream of the stdlib `random` module. Element `i` is seeded from SHA-256 of the seed and `i`. Results are identical for any chunking, worker count, or steal order:
 
 ``` python
 import random
@@ -81,14 +70,11 @@ with pymizu.Pool.create(4) as pool:
     print(a == b)
 ```
 
-
     True
-
 
 Pass `seed=(seed, offset)` to shift every element's stream by `offset` positions, for maps split across runs or processes.
 
-`seed=` covers the stdlib `random` module only. A task drawing from numpy calls [pymizu.current_rng()](../reference/current_rng.md#pymizu.current_rng) inside the task -- the element's own `numpy.random.Generator`, derived from the same seed and memoized per element:
-
+`seed=` covers the stdlib `random` module only. A task that draws from numpy calls [pymizu.current_rng()](../reference/current_rng.md#pymizu.current_rng) inside the task. This is the element's own `numpy.random.Generator`, derived from the same seed and memoized per element:
 
 ``` python
 def draw_np(i):
@@ -100,17 +86,13 @@ with pymizu.Pool.create(4) as pool:
     print(a == b)
 ```
 
-
     True
 
+The legacy `np.random.*` module functions draw from the worker's shared global `RandomState`. A seeded map does not make them deterministic: results depend on claim and steal order. Other RNG universes (torch, jax) are out of scope. A seeded map element must not nested-submit and collect. Worker helping can run another map's batches mid-element and wipe the element's [current_rng()](../reference/current_rng.md#pymizu.current_rng) stash. The stdlib streams survive.
 
-The legacy `np.random.*` module functions draw from the worker's shared global `RandomState`, so a seeded map does not make them deterministic -- results would depend on claim and steal order. Other RNG universes (torch, jax) are out of scope. A seeded map element must not nested-submit and collect: worker helping can run another map's batches mid-element, wiping the element's [current_rng()](../reference/current_rng.md#pymizu.current_rng) stash (the stdlib streams survive).
+## Templates
 
-
-# Templates
-
-A `template=` exemplar buffer (for example `np.empty(m, dtype=...)`) declares that every `fn` result is `m` values of that dtype. Workers write their results straight into a shared `n x m` output area, so each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer -- or, when `m == 1`, a plain Python scalar:
-
+A `template=` exemplar buffer (for example `np.empty(m, dtype=...)`) declares that every `fn` result is `m` values of that dtype. Workers write their results straight into a shared `n x m` output area, so each result crosses the process boundary exactly once, never serialized. Each result must be a matching buffer. If `m == 1`, a plain Python scalar also works:
 
 ``` python
 import math
@@ -121,17 +103,13 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-
     array([0.69314718, 1.09861229, 1.38629436])
 
+With a template, `collect="copy"` (the default) returns the output as one numpy array of shape `(n, m)`. If `m == 1`, the shape is `(n,)`. If numpy is not installed, the output is a memoryview. `collect="view"` returns the shared output area itself as a read-only zero-copy view. The shared memory is released when the view is garbage-collected. The view exports `__arrow_c_array__`, so an Arrow consumer such as pyarrow or polars wraps it without numpy. With numpy, reach the view through the result's `.base` (`arr.base` when `m == 1`, one link deeper when `m > 1`). Without numpy, it is `mv.obj` on the memoryview.
 
-With a template, `collect="copy"` (the default) returns the output as one numpy array of shape `(n, m)` -- `(n,)` when `m == 1` -- or a memoryview when numpy is not installed. `collect="view"` returns the shared output area itself as a read-only zero-copy view, and the shared memory is released when the view is garbage-collected. The view exports `__arrow_c_array__`, so an Arrow consumer such as pyarrow or polars wraps it without numpy. With numpy, reach the view through the result's `.base` (`arr.base` when `m == 1`, one link deeper when `m > 1`). Without numpy, it is `mv.obj` on the memoryview.
+## Streaming maps
 
-
-# Streaming maps
-
-With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window of at most `min(n_chunks, 2 * live workers, free result slots)` outstanding tasks, so shared-memory residency is bounded by `window x slice` instead of `sizeof(x)`. The chunk count defaults to `min(len(x), 32 * live workers)` and `n_chunks=` overrides it outright.
-
+With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work, and the return value is unchanged. Fixed slices ride ordinary chunk tasks under a sliding submit/collect window. At most `min(n_chunks, 2 * live workers, free result slots)` tasks stay outstanding. Shared-memory residency is bounded by `window x slice` instead of `sizeof(x)`. The chunk count defaults to `min(len(x), 32 * live workers)`, and `n_chunks=` overrides it outright.
 
 ``` python
 with pymizu.Pool.create(4) as pool:
@@ -140,17 +118,13 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
+Everything else (ordering, `template=` and `collect=`, `seed=` invariance, the error taxonomy) is exactly the non-streaming map's. Two trade-offs come with fixed chunks. The adaptive batch sizing is lost: raise `n_chunks=` to mitigate skew. Slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` streams too, over workers of any language. Each chunk in the window stages a small shared region of its own: the slice plus the task that runs on it, one runner task per chunk. The region is removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by `sizeof(x)`. Each chunk also writes its results separately, so they cannot combine into one view. `collect="view"` raises `TypeError` on a streaming spec map, as does preparing one with `pool.map_prepare()`.
 
-Everything else -- ordering, `template=` and `collect=`, `seed=` invariance, the error taxonomy -- is exactly the non-streaming map's. Two trade-offs come with fixed chunks: the adaptive batch sizing is lost (raise `n_chunks=` to mitigate skew), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` streams too, over workers of any language: each chunk in the window stages a small shared region of its own (the slice plus the task that runs on it, one runner task per chunk), removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by `sizeof(x)`. Each chunk also writes its results separately, so they cannot combine into one view: `collect="view"` raises `TypeError` on a streaming spec map, as does preparing one with `pool.map_prepare()`.
-
-
-# Prepared maps
+## Prepared maps
 
 `pool.map_prepare()` prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once. Each `m.run()` then costs only the task submissions and the collection, and reuses each worker's cached map context:
-
 
 ``` python
 with pymizu.Pool.create(4) as pool:
@@ -159,18 +133,14 @@ with pymizu.Pool.create(4) as pool:
         print(m.run())
 ```
 
-
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
+`m.run(x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape re-slices. Only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
 
-`m.run(x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape simply re-slices; only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
-
-
-# Nested maps
+## Nested maps
 
 A map can nest: a task can start a map on the evaluating worker's own pool handle via [pymizu.current_pool()](../reference/current_pool.md#pymizu.current_pool). The runner submissions push straight onto the worker's own deque, and the blocked collect executes its own runners while idle peers steal the rest: nested maps never deadlock the pool.
-
 
 ``` python
 def nested_total(parts):
@@ -184,20 +154,17 @@ with pymizu.Pool.create(4) as pool:
 total
 ```
 
-
     499500
-
 
 (This example needs cloudpickle: `nested_total` is not an importable reference.)
 
-The first nested map of a worker claims a submitter slot, so at the default `max_submitters = 8` -- one held by the creating process -- at most 7 workers can nest concurrently. Raise `max_submitters` for wider nested fan-outs. Do not nest inside the element of a seeded map: worker helping can run another map's batches mid-element, wiping the element's [current_rng()](../reference/current_rng.md#pymizu.current_rng) stash -- see [Reproducible randomness](#reproducible-randomness).
+The first nested map of a worker claims a submitter slot. With the default `max_submitters = 8`, one slot is held by the creating process, so at most 7 workers can nest concurrently. Raise `max_submitters` for wider nested fan-outs. Do not nest inside the element of a seeded map. Worker helping can run another map's batches mid-element and wipe the element's [current_rng()](../reference/current_rng.md#pymizu.current_rng) stash. See [Reproducible randomness](#reproducible-randomness).
 
+## Outcomes
 
-# Outcomes
-
-- An error raised by `fn` re-raises as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) carrying the failing element's 0-based `index`. The map fails fast -- the workers stop within about one batch.
+- An error raised by `fn` re-raises as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) carrying the failing element's 0-based `index`. The map fails fast: the workers stop within about one batch.
 - Worker death raises [pymizu.WorkerDiedError](../reference/WorkerDiedError.md#pymizu.WorkerDiedError) carrying the lost element ranges as `lost` (0-based half-open `(lo, hi)` pairs, conservative).
 - On `timeout=` expiry the outstanding work is cancelled and the `pymizu.TIMEOUT` sentinel is returned, never raised.
 - Ctrl-C during a map cancels its outstanding tasks.
 
-A map started inside a task runs on the worker's own pool handle, via [pymizu.current_pool()](../reference/current_pool.md#pymizu.current_pool). A [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` is the cross-language map -- see [R interop](interop.md#mapping-over-a-foreign-pool).
+A map started inside a task runs on the worker's own pool handle, via [pymizu.current_pool()](../reference/current_pool.md#pymizu.current_pool). A [pymizu.call](../reference/call.md#pymizu.call) spec as `fn` is the cross-language map. See [R interop](interop.md#mapping-over-a-foreign-pool).
