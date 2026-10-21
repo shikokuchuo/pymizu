@@ -167,6 +167,13 @@ char **mizu_shm_reap(int *n) {
 #define MAP_POPULATE 0
 #endif
 
+/* Linux 6.1's MADV_COLLAPSE postdates some shipping libc headers; the
+   number is fixed, and an older kernel EINVALs into the create's
+   populate fallback. */
+#if defined(__linux__) && !defined(MADV_COLLAPSE)
+#define MADV_COLLAPSE 25
+#endif
+
 #ifndef PATH_MAX
 #define PATH_MAX 1024
 #endif
@@ -579,6 +586,38 @@ static int mizu_create_fail(int fd, const char *name, int code) {
   return mizu_err_classify(code);
 }
 
+/* See internal.h. MAP_FIXED over our own PROT_NONE reservation, slop
+   trimmed, so munmap(addr, size) remains the whole teardown. */
+void *mizu_mmap_aligned(int fd, size_t size, int prot, int flags) {
+#ifdef __linux__
+  if (size >= MIZU_HUGE_EXTENT) {
+    void *base = mmap(NULL, size + MIZU_HUGE_EXTENT, PROT_NONE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (base != MAP_FAILED) {
+      const uintptr_t lo = (uintptr_t) base;
+      const uintptr_t at = (lo + MIZU_HUGE_EXTENT - 1) &
+                           ~(uintptr_t) (MIZU_HUGE_EXTENT - 1);
+      void *addr = mmap((void *) at, size, prot, flags | MAP_FIXED, fd, 0);
+      if (addr != MAP_FAILED) {
+        /* the mapping covers whole pages: round the tail edge up before
+           the trim (munmap needs page-aligned addresses) */
+        const long ps = sysconf(_SC_PAGESIZE);
+        const size_t mapped =
+          ps > 0 ? (size + (size_t) ps - 1) / (size_t) ps * (size_t) ps : size;
+        const uintptr_t map_end = at + mapped;
+        const uintptr_t rsv_end = lo + size + MIZU_HUGE_EXTENT;
+        if (at > lo) (void) munmap((void *) lo, at - lo);
+        if (rsv_end > map_end)
+          (void) munmap((void *) map_end, rsv_end - map_end);
+        return addr;
+      }
+      (void) munmap(base, size + MIZU_HUGE_EXTENT);
+    }
+  }
+#endif
+  return mmap(NULL, size, prot, flags, fd, 0);
+}
+
 /* Create a new region under a fresh name. EEXIST means the name is held
    by an orphan from a crashed process that reused this PID — surfaced as
    an error rather than worked around: mizu_shm_reap() reclaims such
@@ -621,10 +660,39 @@ int mizu_shm_create_stack(mizu_shm *shm, size_t size) {
      fallocate + MAP_POPULATE pair below walks the range twice. A full
      tmpfs still fails here with ENOMEM at create: no write fault can
      SIGBUS later. EINVAL means an old kernel (< 5.14): fall back. */
-  void *addr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  void *addr = mizu_mmap_aligned(fd, size, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED);
   if (addr == MAP_FAILED)
     return mizu_create_fail(fd, shm->name, errno);
-  if (madvise(addr, size, MADV_POPULATE_WRITE) != 0) {
+#ifdef MADV_HUGEPAGE
+  /* Ahead of the populate, so an advise/always host allocates the folios
+     at PMD granularity. Inert under the stock shmem_enabled=[never] —
+     the collapse sites are the real path there. */
+  if (size >= MIZU_HUGE_EXTENT)
+    (void) madvise(addr, size, MADV_HUGEPAGE);
+#endif
+  int reserved = 0;
+  /* Huge-folio create (kernel >= 6.1; MADV_COLLAPSE is fallback-defined
+     above): touch one page per 2 MiB extent — a wholly-empty extent
+     fails the collapse (SCAN_TRUNCATED) — then collapse: the kernel
+     zero-fills each extent's holes into a fully-present huge folio, so
+     one fault per extent plus one madvise reserve the region where the
+     populate below faults once per page. A 0 return means the whole
+     extents are backed — no populate, and no write fault can SIGBUS
+     later. Any failure (EINVAL pre-6.1, ENOMEM on a failed huge
+     allocation) falls through to the populate, idempotent over
+     whatever did collapse. The extent-aligned mapping passes the
+     congruence gate; a partial tail stays for the populate. */
+  if (size >= MIZU_HUGE_EXTENT) {
+    const size_t whole = size & ~(MIZU_HUGE_EXTENT - 1);
+    volatile unsigned char *b = (volatile unsigned char *) addr;
+    for (size_t off = 0; off < whole; off += MIZU_HUGE_EXTENT) b[off] = 0;
+    if (madvise(addr, whole, MADV_COLLAPSE) == 0)
+      reserved = whole == size ||
+                 madvise((char *) addr + whole, size - whole,
+                         MADV_POPULATE_WRITE) == 0;
+  }
+  if (!reserved && madvise(addr, size, MADV_POPULATE_WRITE) != 0) {
     int perr = errno;
     munmap(addr, size);
     if (perr != EINVAL)             /* tmpfs full: fail, do not retry */
@@ -633,10 +701,14 @@ int mizu_shm_create_stack(mizu_shm *shm, size_t size) {
     int ferr = posix_fallocate(fd, 0, (off_t) size);
     if (ferr != 0)
       return mizu_create_fail(fd, shm->name, ferr);
-    addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                MAP_SHARED | MAP_POPULATE, fd, 0);
+    addr = mizu_mmap_aligned(fd, size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED | MAP_POPULATE);
     if (addr == MAP_FAILED)
       return mizu_create_fail(fd, shm->name, errno);
+#ifdef MADV_HUGEPAGE
+    if (size >= MIZU_HUGE_EXTENT)   /* pages exist: khugepaged fodder */
+      (void) madvise(addr, size, MADV_HUGEPAGE);
+#endif
   }
   close(fd);
 #else
@@ -651,17 +723,17 @@ int mizu_shm_create_stack(mizu_shm *shm, size_t size) {
     return mizu_create_fail(fd, shm->name, ferr);
 #endif
 
-  void *addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                     MAP_SHARED | MAP_POPULATE, fd, 0);
+  void *addr = mizu_mmap_aligned(fd, size, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED | MAP_POPULATE);
   if (addr == MAP_FAILED)
     return mizu_create_fail(fd, shm->name, errno);
 
   close(fd);
-#endif
 
 #ifdef MADV_HUGEPAGE
-  if (size >= 2 * 1024 * 1024)
-    madvise(addr, size, MADV_HUGEPAGE);
+  if (size >= MIZU_HUGE_EXTENT)
+    (void) madvise(addr, size, MADV_HUGEPAGE);
+#endif
 #endif
   /* No MADV_WILLNEED on macOS: the region is written in full before use, so its
      pages fault in on demand — prefaulting would be a redundant pass + syscall. */
@@ -692,7 +764,7 @@ int mizu_shm_open_stack(mizu_shm *shm, const char *name) {
      them), so populating only installs PTEs eagerly and defeats lazy
      access (reading 1 of 10 list elements would prefault the unread 9).
      Pages fault in on first touch. */
-  void *addr = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
+  void *addr = mizu_mmap_aligned(fd, size, PROT_READ, MAP_SHARED);
   if (addr == MAP_FAILED) {
     close(fd);
     return -1;

@@ -50,6 +50,18 @@ mizu_shm *mizu_shm_open_rw_heap(const char *name, int populate);
    name. The public mizu_shm_close wraps this + free. */
 void mizu_shm_close_stack(mizu_shm *shm, int unlink);
 
+/* The THP extent MADV_COLLAPSE works in (the PMD unit): its congruence
+   gate validates each 2 MiB extent, so collapse lengths round down to
+   whole extents and collapse-worthy mappings must be extent-aligned. */
+#define MIZU_HUGE_EXTENT ((size_t) 2 << 20)
+
+/* mmap `size` bytes of fd (offset 0) — extent-aligned on Linux (shm.c):
+   shmem hands out the kernel's unaligned pick under the stock
+   shmem_enabled=[never], which fails MADV_COLLAPSE's congruence gate.
+   The plain mmap off Linux, for sub-extent sizes, and on any reservation
+   failure: alignment is an optimization, never a failure mode. */
+void *mizu_mmap_aligned(int fd, size_t size, int prot, int flags);
+
 /* The open forms' name copy: fixed-buffer truncate, always
    NUL-terminated, length stamped. */
 static inline MIZU_MAYBE_UNUSED void mizu_shm_set_name(mizu_shm *shm,
@@ -272,6 +284,12 @@ static inline MIZU_MAYBE_UNUSED int mizu_keeperless(uint32_t kind,
 #define MIZU_SPILL_FL_BYTES  ((size_t) 32 << 20)
 #define MIZU_SPILL_FL_FLOOR  ((size_t) 4096)
 #define MIZU_LEDGER_MAX      64
+/* Outstanding lent-region bytes at which the zc churn fallback engages:
+   below it a free-list miss creates fresh (a ~1 ms huge-folio create
+   beats the copy tiers' extra passes); past it the copy tiers'
+   deterministic reuse caps tmpfs growth. 256 MB = 8x the free-list
+   byte cap. */
+#define MIZU_ZC_LENT_BUDGET  ((size_t) 256 << 20)
 
 /* Producer spill-region free list + lent-region ledger. Regions are
    mizu_shm pointers owned by the handle outright: created or popped at
@@ -291,6 +309,8 @@ typedef struct mizu_spill_fl_s {
   int32_t  led_key[MIZU_LEDGER_MAX];      /* consumer identity; -1 channel */
   uint32_t led_n;
   uint32_t sweep_next;                  /* quota-sweep rotation start */
+  size_t   lent_bytes;    /* sizes of lent (ledger) + overflow-dropped
+                             regions: the churn fallback's budget gauge */
   /* ledger-overflow drops: the mapping closes at the drop; the name is
      kept so a REF in flight can still resolve, and unlinks at teardown */
   mizu_shm **dropped;
@@ -305,12 +325,14 @@ typedef struct mizu_spill_fl_s {
   mizu_shm *staging;
   void    *staging_pin;
   uint8_t  staging_kind;              /* MIZU_KEEP_SPILL / _ZC / _PIN */
-  /* set when a spill pop misses with lent regions outstanding (the sweep
-     just proved consumer-side views outlive their traffic): the signal
-     for the binding's copy-tier fallback; cleared when a ledger sweep or
-     force-reclaim returns a lent region. Raised on Linux only (fresh
-     regions pre-fault there; macOS/Windows creates are lazy, so SHM_VEC
-     stays cheaper than the copy tiers even under churn). */
+  /* set when a spill pop misses with lent bytes past MIZU_ZC_LENT_BUDGET
+     (the sweep just proved consumer-side views outlive their traffic,
+     past the volume a fresh create per payload tolerates): the signal
+     for the binding's copy-tier fallback; cleared when a ledger sweep
+     or force-reclaim brings lent bytes back under the budget. Raised
+     on Linux only (fresh regions pre-fault there; macOS/Windows
+     creates are lazy, so SHM_VEC stays cheaper than the copy tiers
+     even under churn). */
   int churn;
 } mizu_spill_fl;
 
