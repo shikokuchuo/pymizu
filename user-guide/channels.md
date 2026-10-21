@@ -73,7 +73,7 @@ A channel is also a context manager: the `with` block closes it on exit. [close_
 pymizu moves each value the cheapest way it can:
 
 1.  `None` crosses as a marker: no data moves.
-2.  Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (`bytes` arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages: no copy, no parse.
+2.  Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (`bytes` arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages: no copy, no parse. A contiguous buffer below 256 KB instead crosses as one copy into the channel's spill arena -- cheaper than region machinery at those sizes; from 256 KB the receive is a view.
 3.  A `str` within the inline budget crosses as raw UTF-8.
 4.  Booleans, numbers, and flat lists or dicts of them cross in a compact binary form.
 5.  Everything else crosses as a pickle (protocol 4).

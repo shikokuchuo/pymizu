@@ -18,7 +18,7 @@ result
 
 ## Task callables
 
-A task callable travels by pickle. With the standard pickle it must be an importable reference, as with `multiprocessing`. Installing cloudpickle lifts that restriction. Task arguments follow the same rules as [channel values](channels.md#what-crosses-a-channel). A buffer-protocol argument past the zero-copy floor (a fixed size threshold) arrives as a read-only view over the shared pages, not a writable copy.
+A task callable travels by pickle. With the standard pickle it must be an importable reference, as with `multiprocessing`. Installing cloudpickle lifts that restriction. Task arguments follow the same rules as [channel values](channels.md#what-crosses-a-channel). A buffer-protocol argument past the zero-copy floor (32 KB) arrives as a read-only view over the shared pages, not a writable copy.
 
 ## Frames as task arguments
 
