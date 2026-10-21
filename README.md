@@ -87,7 +87,7 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
 
 `benchmarks/mizu-bench.py` runs the pymizu rows standalone.
-See [how pymizu compares](https://shikokuchuo.net/pymizu/user-guide/benchmarks.html) with Ray, Dask, joblib, ZeroMQ, and modern CPython.
+See [how pymizu compares](https://shikokuchuo.net/pymizu/user-guide/benchmarks.html) with Ray, Dask, joblib, and modern CPython.
 
 \* elt = element; microseconds of wall time per map element.
 

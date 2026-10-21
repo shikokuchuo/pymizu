@@ -17,14 +17,12 @@ Install the development version from GitHub:
 pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
-The extension compiles the vendored C core, so no system library is
-necessary.
+The extension compiles the vendored C core, so no system library is necessary.
 
 Optional extras:
 
 - `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
-- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool
-  tasks.
+- `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
 To request an extra with the GitHub install:
 
@@ -35,8 +33,7 @@ pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
 ## Deploying on Linux
 
 On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount.
-Everything pymizu creates must fit in it: pool and channel regions, plus the
-per-payload regions that carry anything past the in-slot budget.
+Everything pymizu creates must fit in it: pool and channel regions, plus the per-payload regions that carry anything past the in-slot budget.
 Container runtimes set it to 64 MB by default.
 Use `docker run --shm-size=4g`, or the equivalent in your orchestrator.
 Size it to your peak in-flight payload traffic.
@@ -45,12 +42,10 @@ Size it to your peak in-flight payload traffic.
 
 This section applies only to Linux with glibc.
 
-When pymizu starts a channel peer or a pool worker, that process changes two
-settings of the C memory allocator.
+When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
 It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
 This keeps large payloads in fast memory.
-Without this change, glibc asks the kernel to map and unmap each large
-payload, and that work is slow.
+Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
 
 Your own Python process does not change.
 If you want the same settings there, set them before Python starts:

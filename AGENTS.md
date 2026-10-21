@@ -88,10 +88,14 @@ great-docs preview     # local preview server
 great-docs check-links # validate links in the built site
 ```
 
-Docs: great-docs is installed from git main (unreleased, pinned to commit
-`de82be025039c21fc5bff50f2e55747eb254109a` — the pin is the `docs` extra in
-`pyproject.toml`, which the docs workflow installs; install locally with the
-same `pip install "git+https://github.com/posit-dev/great-docs.git@<sha>"`). The
+Docs: great-docs is installed from git main (unreleased; 0.17.0 lacks
+repo-root config discovery, so the install floats `@main` rather than a
+release pin — the docs workflow and local builds both use
+`pip install "great-docs @ git+https://github.com/posit-dev/great-docs.git@main"`;
+pin a release in the `docs` extra once one has the discovery, as a direct
+reference blocks PyPI uploads). A local install goes stale against main
+silently — compare the installed commit in site-packages' `direct_url.json`
+with `git ls-remote` before a render. The
 build puts `python/` on PYTHONPATH, so the render imports pymizu from the
 source tree — the extension must be built in place (`pip install -e .`, or
 `python setup.py build_ext --inplace` after `pip install setuptools`); a
@@ -112,9 +116,8 @@ string): building from the repo needs git metadata (all CI checkouts use
 `__version__` reads the installed metadata via `importlib.metadata`, with
 a `PackageNotFoundError` fallback to `"0.0.0"`. Extras: `numpy` /
 `cloudpickle` (runtime), `dev` (test/lint/typecheck toolchain), `docs`
-(the pinned great-docs plus the render deps — a git direct reference that
-must become a version pin once great-docs releases, as direct references
-block PyPI uploads), `all` (self-referencing).
+(the render deps only — great-docs itself comes from git main, see the Docs
+note), `all` (self-referencing).
 
 The `.venv` install is non-editable: after editing `python/`, reinstall
 (`pip install .`) or tests import the stale copy.
@@ -496,9 +499,9 @@ the preinstalled LLVM to PATH for clang-cl. Linux legs run the
 cross-language R tests only when the `CROSSLANG_PAT` secret is set (mizu
 is a private repo; without it the steps skip and the tests probe-skip).
 
-`.github/workflows/docs.yml`: on pushes to main, installs the package
-editable with the `docs` extra (which carries the pinned great-docs and
-the render deps), runs `great-docs build`, and publishes `docs/_site` to
+`.github/workflows/docs.yml`: on pushes to main, installs great-docs from
+git main and the package editable with the `docs` extra (the render deps),
+runs `great-docs build`, and publishes `docs/_site` to
 GitHub Pages via the gh-pages branch (Pages must be enabled on the repo;
 the custom domain lives in the repo's Pages settings, canonical URLs come
 from `site_url` + `seo.canonical.base_url` in `docs/great-docs.yml`).
