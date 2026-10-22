@@ -56,6 +56,7 @@ static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max);
 static int stage_ref_str(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max);
+static int buf_f_contig(const Py_buffer *v);
 static PyObject *strview_to_list(PyObject *obj, PyObject *dummy);
 static PyObject *view_to_object(PyObject *view, int type);
 static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
@@ -473,7 +474,8 @@ static int buffer_subclass_reject(PyObject *obj) {
   if (mizu_array_type != NULL && PyType_IsSubtype(tp, mizu_array_type))
     return 1;
   if (mizu_np_ndarray != NULL && PyType_IsSubtype(tp, mizu_np_ndarray))
-    return 1;
+    return !mizu_py_dimarray_check(obj);   /* our own subclass exports
+                                              the plain ndarray buffer */
   if (mizu_np_generic != NULL && mizu_np_scalars != NULL &&
       PyType_IsSubtype(tp, mizu_np_generic)) {
     int known = PySet_Contains(mizu_np_scalars, (PyObject *) tp);
@@ -491,11 +493,12 @@ int mizu_py_buffer_subclass_reject(PyObject *obj) {
   return buffer_subclass_reject(obj);
 }
 
-/* 1 exact ndarray, 2 a numpy scalar, 0 neither (unknown types: 0). */
+/* 1 exact ndarray (our own DimArray subclass included — it exports the
+   plain ndarray buffer), 2 a numpy scalar, 0 neither (unknown types: 0). */
 int mizu_py_np_kind(PyObject *obj) {
   buffer_types_probe();
   PyTypeObject *tp = Py_TYPE(obj);
-  if (tp == mizu_np_ndarray) return 1;
+  if (tp == mizu_np_ndarray || mizu_py_dimarray_check(obj)) return 1;
   if (mizu_np_scalars != NULL &&
       PySet_Contains(mizu_np_scalars, (PyObject *) tp) == 1)
     return 2;
@@ -1518,16 +1521,32 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     Py_buffer v;
     /* not PyBUF_C_CONTIGUOUS (it implies WRITABLE): a read-only buffer —
        a zero-copy view echoing back — stages fine; contiguity is verified
-       as strides == NULL instead */
-    if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
+       as strides == NULL instead. A labeled array takes the strided
+       export too (its F-order whole-region echo REFs) */
+    int got = PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT);
+    /* the labeled verdict once per send (a DimArray's four attr
+       fetches): the strided retry, the F-contiguity REF entry and the
+       raw-tier gate below all key on it */
+    const int labeled = mizu_py_dimarray_labeled(obj);
+    if (got < 0 && labeled) {
+      PyErr_Clear();
+      got = PyObject_GetBuffer(obj, &v, PyBUF_FULL_RO);
+    }
+    if (got == 0) {
       int rc = -1;
-      if (v.strides == NULL) {
+      /* a labeled array enters on F-contiguity too: its whole-region
+         echo REFs (the label compare inside) instead of paying the
+         layout copy — an unlabeled strided array keeps today's order */
+      if (v.strides == NULL || (labeled && buf_f_contig(&v))) {
         /* a read-only buffer may be a received view echoing back: whole,
            it crosses as its region name (REF, zero payload bytes);
            writable buffers — every ordinary send — skip the .base walk */
         if (v.readonly)
           rc = stage_ref(obj, &v, hdr, payload, inline_max);
-        if (rc < 0) {
+        /* a labeled array (a DimArray) never takes the raw tiers on a
+           foreign handle — bare bytes cannot carry the labels (honest
+           loss is the same-language doctrine, never the foreign one) */
+        if (rc < 0 && !(foreign && labeled)) {
           int type = wire_type_of(&v);
           /* a temporal numpy scalar exports its bytes as uint8: the byte
              view is not the value — leave the buffer tiers entirely so
@@ -1579,7 +1598,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                                   peer_caps);
     if (lrc == 0) return 0;
     if (lrc > 0) return 1;   /* the defensive raise, never a decline */
-    return pymizu_ix_stage(obj, hdr, payload, inline_max, h);
+    return pymizu_ix_stage(obj, hdr, payload, inline_max, h, peer_caps);
   }
   if (Py_TYPE(obj) == &MizuCallFrameType) {
     /* the spec submit (Pool.submit of a pymizu.call): the task stream
@@ -2190,19 +2209,57 @@ static int ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
    (R's data2 rule): a view refuses writable buffers, so its bytes are
    never private. 0 staged, -1 not a whole view (the caller falls
    through). */
+/* The F-order contiguity verdict (the region's byte layout): an
+   explicit walk, never a contiguity flag — length-1 axes exempt their
+   stride (numpy's own rule). A C-contiguous buffer (strides NULL, the
+   0-d / 1-D forms) qualifies as ever. */
+static int buf_f_contig(const Py_buffer *v) {
+  if (v->strides == NULL) return 1;
+  int64_t expect = (int64_t) v->itemsize;
+  for (int i = 0; i < v->ndim; i++) {
+    if (v->shape[i] > 1 && (int64_t) v->strides[i] != expect) return 0;
+    expect *= v->shape[i] > 0 ? v->shape[i] : 1;
+  }
+  return 1;
+}
+
+/* The whole-view REF verdict shared by stage_ref and the probe: the
+   buffer is the view's exact bytes at its wire type (an LGL view read
+   as int32 included, so a logical relayed whole returns to R as a
+   logical; the dtype map, not the raw-tier gate's 1-D cap, so an
+   F-order matrix echo identifies by its element type). A bare region
+   (no loan) REFs outright; a tree-borrowed view (a leaf) never names
+   the whole region and goes by value; an attributed root's home (loan
+   set, data the region's start) REFs only when the candidate's labels
+   equal the region blob's — a relabeled or label-stripped send crosses
+   by value with its own labels, never resurrecting the region's. */
+static int ref_whole_view_ok(PyObject *obj, MizuShmView *view,
+                             mizu_shm *shm, const Py_buffer *v) {
+  const int type = wire_type_of_fmt(v->format, v->itemsize);
+  if (shm == NULL ||
+      v->buf != (void *) view->data || v->len != view->len ||
+      (type != view->type &&
+       !(type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL)))
+    return 0;
+  if (view->loan == NULL) return 1;
+  const uint8_t *base = (const uint8_t *) mizu_shm_addr(shm);
+  if (view->data != base + MIZU_HEADER_SIZE) return 0;
+  int64_t attrs;
+  memcpy(&attrs, base + 16, 8);
+  int64_t shape64[32];
+  for (int i = 0; i < v->ndim && i < 32; i++)
+    shape64[i] = (int64_t) v->shape[i];
+  return mizu_py_labels_match(view->data + view->len, (size_t) attrs,
+                              obj, v->ndim, shape64);
+}
+
 static int stage_ref(PyObject *obj, const Py_buffer *v, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max) {
   MizuShmView *view = view_behind(obj);
   if (view == NULL) return -1;
-  int rc = -1;
   mizu_shm *shm = view->owner != NULL ? view->owner->shm : NULL;
-  int type = wire_type_of(v);
-  /* a tree-borrowed view (a leaf) never names the whole region: it goes
-     by value (the path form is the R writer's) */
-  if (view->loan == NULL && shm != NULL &&
-      v->buf == (void *) view->data && v->len == view->len &&
-      (type == view->type ||
-       (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL)))
+  int rc = -1;
+  if (buf_f_contig(v) && ref_whole_view_ok(obj, view, shm, v))
     rc = ref_emit(shm, hdr, payload, inline_max);
   Py_DECREF(view);
   return rc;
@@ -3465,28 +3522,31 @@ int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
     return 0;
   }
   Py_buffer v;
-  if (!PyObject_CheckBuffer(obj) ||
-      PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
+  int got = PyObject_CheckBuffer(obj) ?
+    PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) : -1;
+  if (got < 0) {
     PyErr_Clear();
-    return 0;
+    /* a non-C-contiguous candidate (an F-order echo) rides the strided
+       export; the readonly check below still gates */
+    got = PyObject_CheckBuffer(obj) ?
+      PyObject_GetBuffer(obj, &v, PyBUF_FULL_RO) : -1;
+    if (got < 0) {
+      PyErr_Clear();
+      return 0;
+    }
   }
   int rc = 0;
-  if (v.readonly && v.strides == NULL) {
+  if (v.readonly && buf_f_contig(&v)) {
     MizuShmView *view = view_behind(obj);
     if (view != NULL) {
       mizu_shm *shm = view->owner != NULL ? view->owner->shm : NULL;
-      int type = wire_type_of(&v);
-      if (view->loan == NULL && shm != NULL &&
-          v.buf == (void *) view->data && v.len == view->len &&
-          (type == view->type ||
-           (type == MIZU_TYPE_INT && view->type == MIZU_TYPE_LGL))) {
+      if (ref_whole_view_ok(obj, view, shm, &v)) {
         *out_shm = shm;
         *out_view = (PyObject *) view;
         *out_caps = 0;
         rc = 1;
-      } else {
-        Py_DECREF(view);
       }
+      if (!rc) Py_DECREF(view);
     }
   }
   PyBuffer_Release(&v);

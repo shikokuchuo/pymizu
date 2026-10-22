@@ -509,6 +509,12 @@ static void ixe_difftime(ixw *w, const int64_t *counts,
 
 // The layout attribute blobs (pyshmframe.h's; complete 'I' streams) ----------------
 
+/* The labeled shapes' writer helpers, defined with the writer below:
+   the caps gate, the stashed class vector, and the extras' raw splice. */
+static int ixw_labeled_gate(ixw *w);
+static void ixe_class_tuple(ixw *w, PyObject *kt);
+static void ixe_span(ixw *w, const void *src, size_t n);
+
 /* The frame dict's names value: the corpus's scalar form at length 1. */
 static void ixe_names(ixw *w, char **names, int n) {
   if (n == 1) {
@@ -522,28 +528,55 @@ static void ixe_names(ixw *w, char **names, int n) {
                                   (int32_t) strlen(names[i])));
 }
 
-/* The frame dict {names, class = "data.frame", row.names} with a custom
+/* The frame dict {names, class, row.names[, extras...]} with a custom
    row_names (a same-language Frame's int32 or character form; the
-   automatic c(NA, -n) form is the core writer's). 0 with an exception
-   set on a malformed row_names (never on the size pass's own account).
+   automatic c(NA, -n) form is the core writer's) and, when r_attrs is
+   set, the stashed class vector verbatim plus the extras spliced raw in
+   stored order — the extended frame's blob form (MIZU_CAP_LABELED;
+   caps must carry the bit). 0 with an exception set on a malformed
+   row_names, a malformed stash, or a caps-less peer (never on the size
+   pass's own account — the caller clears and falls to the next tier).
    The attribute-blob emitters for the layout leaves (factor levels,
    Date, POSIXct, difftime) moved upstream to libmizu's arrow.c. */
 size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
-                          PyObject *row_names) {
+                          PyObject *row_names, PyObject *r_attrs,
+                          uint32_t caps) {
   ixw w;
   memset(&w, 0, sizeof(w));
   w.dst = dst;
+  w.caps = caps;
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
+  if (r_attrs != NULL && !ixw_labeled_gate(&w)) {
+    PyErr_SetString(MizuDeclinedError, w.reason);
+    return 0;
+  }
+  const int nex = r_attrs != NULL ?
+    (int) PyList_GET_SIZE(PyTuple_GET_ITEM(r_attrs, 1)) : 0;
   IXW_PUT(&w, mizu_ix_put_header(IXW_DST(&w)));
-  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), 3));
+  IXW_PUT(&w, mizu_ix_put_dict_begin(IXW_DST(&w), (uint64_t) (3 + nex)));
   ixe_key(&w, MIZU_IX_ATTR_NAMES);
   ixe_names(&w, names, ncols);
   ixe_key(&w, MIZU_IX_ATTR_CLASS);
-  {
+  if (r_attrs != NULL) {
+    ixe_class_tuple(&w, PyTuple_GET_ITEM(r_attrs, 0));
+    if (w.decline) {
+      PyErr_SetString(MizuError, w.reason);
+      return 0;
+    }
+  } else {
     static const char *cls[1] = { MIZU_IX_CLASS_DATAFRAME };
     ixe_class(&w, cls, 1);
   }
   ixe_key(&w, MIZU_IX_ATTR_ROWNAMES);
+  if (row_names == Py_None) {
+    /* the automatic c(NA, -n) form (the stash triggers the blob on its
+       own) */
+    int32_t v[2];
+    v[0] = MIZU_NA_INT32;
+    v[1] = rows != 0 ? (int32_t) -rows : 0;
+    IXW_PUT(&w, mizu_ix_put_vec(IXW_DST(&w), MIZU_TYPE_INT, v, 2));
+    goto extras;
+  }
   if (PyList_Check(row_names)) {
     Py_ssize_t nr = PyList_GET_SIZE(row_names);
     if (nr != (Py_ssize_t) rows) goto malformed;
@@ -565,7 +598,7 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
         IXW_PUT(&w, mizu_ix_put_strelt(IXW_DST(&w), u, (int32_t) len));
       }
     }
-    return w.total;
+    goto extras;
   }
   if (PyObject_CheckBuffer(row_names)) {
     Py_buffer v;
@@ -577,12 +610,39 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
     if (ok) ixe_intv_i32(&w, (const int32_t *) v.buf, (Py_ssize_t) rows);
     PyBuffer_Release(&v);
     if (!ok) goto malformed;
-    return w.total;
+    goto extras;
   }
 malformed:
   PyErr_SetString(MizuError, "pymizu: a Frame's row_names are not int32 "
                   "or character of the row count");
   return 0;
+extras:
+  if (w.decline) {
+    PyErr_SetString(MizuError, w.reason);
+    return 0;
+  }
+  /* the extras: (key, raw span) pairs in stored order, spliced verbatim
+     — never decoded */
+  for (int i = 0; i < nex && !w.decline; i++) {
+    PyObject *t = PyList_GET_ITEM(PyTuple_GET_ITEM(r_attrs, 1), i);
+    PyObject *ks = PyTuple_GET_ITEM(t, 0);
+    PyObject *bs = PyTuple_GET_ITEM(t, 1);
+    Py_ssize_t kn;
+    const char *k = PyUnicode_AsUTF8AndSize(ks, &kn);
+    if (k == NULL) {
+      PyErr_Clear();
+      PyErr_SetString(MizuError, "pymizu: a stashed frame extra's key "
+                      "is not writable as UTF-8");
+      return 0;
+    }
+    IXW_PUT(&w, mizu_ix_put_key(IXW_DST(&w), k, (uint32_t) kn));
+    ixe_span(&w, PyBytes_AS_STRING(bs), (size_t) PyBytes_GET_SIZE(bs));
+  }
+  if (w.decline) {
+    PyErr_SetString(MizuError, w.reason);
+    return 0;
+  }
+  return w.total;
 }
 
 // The builder -----------------------------------------------------------------------
@@ -1030,15 +1090,19 @@ static PyObject *ixr_dict(mizu_ix *cur, uint64_t count, const ixr_mode *mode) {
 
 /* The attr dict's raw entries: keys as spans; values a string span (the
    0x04 form), a string list (0x0b), an int span (0x07), an int scalar
-   (0x02), or a built object. The shape readers consume the spans without
-   an intermediate conversion (a compact row.names intv carries an NA the
-   float64 home would hide). */
-enum { AV_OBJ, AV_STR, AV_STRLIST, AV_INTSPAN, AV_INT };
+   (0x02), a built object (the dimnames list, or its (entries,
+   axis_names) tuple for the attr(list, {names}) carrier), or a raw span
+   (an extended frame's extra — skipped whole, never decoded: the
+   pristine echo splices it verbatim). The shape readers consume the
+   spans without an intermediate conversion (a compact row.names intv
+   carries an NA the float64 home would hide). */
+enum { AV_OBJ, AV_STR, AV_STRLIST, AV_INTSPAN, AV_INT, AV_SPAN };
 
 typedef struct {
   PyObject *obj;             /* AV_OBJ / AV_STRLIST */
-  const uint8_t *ptr;        /* AV_STR / AV_INTSPAN */
-  uint64_t count;            /* AV_STR (bytes) / AV_INTSPAN (elements) */
+  const uint8_t *ptr;        /* AV_STR / AV_INTSPAN / AV_SPAN */
+  uint64_t count;            /* AV_STR / AV_SPAN (bytes) /
+                                AV_INTSPAN (elements) */
   int64_t v;                 /* AV_INT */
 } attr_val;
 
@@ -1056,6 +1120,9 @@ static void attr_vals_free(attr_ent *ents, int n) {
   free(ents);
 }
 
+static const attr_ent *attr_find(const attr_ent *ents, int n,
+                                 const char *key);
+
 /* Read the attr's dict (the cursor's next item is the DICT begin). */
 static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
                                const ixr_mode *mode) {
@@ -1066,9 +1133,12 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
     return NULL;
   }
   uint64_t n = it.count;
-  if (n > 16) {
+  /* the bound: the legitimate maximum is the reserved vocabulary plus a
+     frame's extras — it guards the calloc and the O(n^2) duplicate-key
+     scan against a hostile count */
+  if (n > 1024) {
     PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                    "an attribute dict past 16 entries");
+                    "an attribute dict past 1024 entries");
     return NULL;
   }
   attr_ent *ents = calloc(n != 0 ? (size_t) n : 1, sizeof(attr_ent));
@@ -1091,6 +1161,23 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
       }
     ents[i].key = kit.ptr;
     ents[i].key_len = kit.len;
+    if (!mizu_ix_attr_reserved((const char *) kit.ptr,
+                               (size_t) kit.len)) {
+      /* an extended frame's extra: the raw span, skipped whole with the
+         core's verb — never decoded (the pristine echo splices it
+         verbatim); the reserved keys below carry the vocabulary's
+         values */
+      const uint8_t *s;
+      size_t slen;
+      if (mizu_ix_skip(cur, &s, &slen) != MIZU_OK) {
+        PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+        goto fail;
+      }
+      ents[i].kind = AV_SPAN;
+      ents[i].val.ptr = s;
+      ents[i].val.count = (uint64_t) slen;
+      continue;
+    }
     mizu_ix_item vit;
     if (mizu_ix_next(cur, &vit) != MIZU_OK) {
       PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
@@ -1131,6 +1218,79 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
       ents[i].kind = AV_INT;
       ents[i].val.v = (int64_t) vit.u64[0];
       break;
+    case MIZU_IX_LIST:
+      /* the dimnames list form (nil / strv entries) */
+      ents[i].kind = AV_OBJ;
+      ents[i].val.obj = ixr_list(cur, vit.count, mode);
+      if (ents[i].val.obj == NULL) goto fail;
+      break;
+    case MIZU_IX_ATTR: {
+      /* the dimnames carrier attr(list, {names}) — the one nested attr,
+         admitted under the dimnames key alone: an (entries, axis_names)
+         tuple, the dict exactly {names} */
+      if (ents[i].key_len != IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES) ||
+          memcmp(ents[i].key, MIZU_IX_ATTR_DIMNAMES,
+                 IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES)) != 0) {
+        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                        "a nested attr outside the dimnames value");
+        goto fail;
+      }
+      mizu_ix_item v2;
+      if (mizu_ix_next(cur, &v2) != MIZU_OK) {
+        PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+        goto fail;
+      }
+      if (v2.kind != MIZU_IX_LIST) {
+        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                        "a nested attr's value is not a list");
+        goto fail;
+      }
+      PyObject *entries = ixr_list(cur, v2.count, mode);
+      if (entries == NULL) goto fail;
+      int nn = 0;
+      attr_ent *nents = ixr_attr_dict(cur, &nn, mode);
+      if (nents == NULL) {
+        Py_DECREF(entries);
+        goto fail;
+      }
+      const attr_ent *ax = attr_find(nents, nn, MIZU_IX_ATTR_NAMES);
+      if (nn != 1 || ax == NULL ||
+          (ax->kind != AV_STRLIST && ax->kind != AV_STR)) {
+        attr_vals_free(nents, nn);
+        Py_DECREF(entries);
+        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                        "the dimnames carrier's attributes are not "
+                        "{names}");
+        goto fail;
+      }
+      PyObject *axn;
+      if (ax->kind == AV_STR) {
+        axn = PyList_New(1);
+        PyObject *s = PyUnicode_DecodeUTF8((const char *) ax->val.ptr,
+                                           (Py_ssize_t) ax->val.count,
+                                           NULL);
+        if (axn != NULL && s != NULL) PyList_SET_ITEM(axn, 0, s);
+        else {
+          Py_XDECREF(axn);
+          axn = NULL;
+          Py_XDECREF(s);
+        }
+      } else {
+        axn = ax->val.obj;
+        Py_INCREF(axn);
+      }
+      attr_vals_free(nents, nn);
+      if (axn == NULL) {
+        Py_DECREF(entries);
+        goto fail;
+      }
+      ents[i].kind = AV_OBJ;
+      ents[i].val.obj = PyTuple_Pack(2, entries, axn);
+      Py_DECREF(entries);
+      Py_DECREF(axn);
+      if (ents[i].val.obj == NULL) goto fail;
+      break;
+    }
     default:
       /* vit was already consumed by the mizu_ix_next above; anything
          outside the attribute vocabulary is a decline, never a re-read
@@ -1206,6 +1366,429 @@ static int class_is(const attr_ent *e, const char *a, const char *b) {
 static int tscale_ns(const attr_ent *e) {
   return e != NULL && e->kind == AV_STR && e->val.count == 2 &&
     memcmp(e->val.ptr, "ns", 2) == 0;
+}
+
+// The labeled shapes (MIZU_CAP_LABELED) --------------------------------------------
+
+/* The DimArray type from sys.modules only (the fast gates' probe:
+   pymizu._dimarray imports numpy, and the import stays deferred — a
+   DimArray instance cannot exist before its module is imported, so a
+   miss means "no DimArray", never an import). */
+static PyTypeObject *dimarray_type_soft(void) {
+  static PyTypeObject *t;
+  static int probed;
+  if (probed) return t;
+  PyObject *mods = PyImport_GetModuleDict();
+  PyObject *mod = PyMapping_GetItemString(mods, "pymizu._dimarray");
+  if (mod == NULL) {
+    PyErr_Clear();
+    return NULL;
+  }
+  probed = 1;
+  PyObject *o = PyObject_GetAttrString(mod, "DimArray");
+  if (o == NULL || !PyType_Check(o)) {
+    Py_XDECREF(o);
+    PyErr_Clear();
+    return NULL;
+  }
+  t = (PyTypeObject *) o;
+  return t;
+}
+
+/* The DimArray type, imported lazily at need (the read-side wrap:
+   pymizu._dimarray imports numpy — without numpy this fails where any
+   array read already fails today, so the labeled shapes inherit the
+   no-numpy decline path unchanged). */
+static PyTypeObject *dimarray_type(void) {
+  PyTypeObject *t = dimarray_type_soft();
+  if (t != NULL) return t;
+  PyObject *mod = PyImport_ImportModule("pymizu._dimarray");
+  if (mod == NULL) {
+    PyErr_Clear();
+    return NULL;
+  }
+  PyObject *o = PyObject_GetAttrString(mod, "DimArray");
+  Py_DECREF(mod);
+  if (o == NULL || !PyType_Check(o)) {
+    Py_XDECREF(o);
+    PyErr_Clear();
+    return NULL;
+  }
+  return (PyTypeObject *) o;
+}
+
+/* Wrap an array as a DimArray and attach the labels: the .view shares
+   the data, so the base chain (and with it the REF echo's region
+   identity) is preserved. NULL with an exception set. */
+static PyObject *dimarray_attach(PyObject *arr, PyObject *names,
+                                 PyObject *dimnames, PyObject *axis_names,
+                                 int table) {
+  PyTypeObject *t = dimarray_type();
+  if (t == NULL) {
+    PyErr_SetString(MizuError, "pymizu: a labeled array read needs numpy "
+                    "(install it)");
+    return NULL;
+  }
+  PyObject *view = PyObject_CallMethod(arr, "view", "O", t);
+  if (view == NULL) return NULL;
+  /* __array_finalize__ nulled the four slots; attach what crossed */
+  if (names != NULL && PyObject_SetAttrString(view, "names", names) < 0)
+    goto fail;
+  if (dimnames != NULL &&
+      PyObject_SetAttrString(view, "dimnames", dimnames) < 0)
+    goto fail;
+  if (axis_names != NULL &&
+      PyObject_SetAttrString(view, "axis_names", axis_names) < 0)
+    goto fail;
+  if (table) {
+    PyObject *tc = PyUnicode_FromString(MIZU_IX_CLASS_TABLE);
+    if (tc == NULL) goto fail;
+    const int rc = PyObject_SetAttrString(view, "r_class", tc);
+    Py_DECREF(tc);
+    if (rc < 0) goto fail;
+  }
+  return view;
+fail:
+  Py_DECREF(view);
+  return NULL;
+}
+
+/* A names strv as a Python tuple of str | None (AV_STR the length-1
+   form). */
+static PyObject *str_tuple_of(const attr_ent *e) {
+  if (e->kind == AV_STR) {
+    PyObject *s = PyUnicode_DecodeUTF8((const char *) e->val.ptr,
+                                       (Py_ssize_t) e->val.count, NULL);
+    if (s == NULL) return NULL;
+    PyObject *t = PyTuple_Pack(1, s);
+    Py_DECREF(s);
+    return t;
+  }
+  return PyList_AsTuple(e->val.obj);
+}
+
+/* The dimnames value as (entries, axis_names-or-NULL): the AV_OBJ list
+   (nil / strv entries crossing as None / str lists) or the carrier's
+   (entries, axis_names) tuple — every entry a tuple of str | None. */
+static int dimnames_tuples(PyObject *obj, PyObject **out_entries,
+                           PyObject **out_axis) {
+  PyObject *entries = obj;
+  PyObject *axis = NULL;
+  if (PyTuple_Check(obj) && PyTuple_GET_SIZE(obj) == 2) {
+    entries = PyTuple_GET_ITEM(obj, 0);
+    axis = PyTuple_GET_ITEM(obj, 1);
+  }
+  if (!PyList_Check(entries)) return -1;
+  const Py_ssize_t nd = PyList_GET_SIZE(entries);
+  PyObject *et = PyTuple_New(nd);
+  if (et == NULL) return -1;
+  for (Py_ssize_t i = 0; i < nd; i++) {
+    PyObject *e = PyList_GET_ITEM(entries, i);
+    if (e == Py_None) {
+      Py_INCREF(Py_None);
+      PyTuple_SET_ITEM(et, i, Py_None);
+      continue;
+    }
+    if (!PyList_Check(e)) {
+      Py_DECREF(et);
+      return -1;
+    }
+    PyObject *t = PyList_AsTuple(e);
+    if (t == NULL) {
+      Py_DECREF(et);
+      return -1;
+    }
+    PyTuple_SET_ITEM(et, i, t);
+  }
+  if (axis != NULL) {
+    axis = PyList_AsTuple(axis);
+    if (axis == NULL) {
+      Py_DECREF(et);
+      return -1;
+    }
+  }
+  *out_entries = et;
+  *out_axis = axis;
+  return 0;
+}
+
+/* The label stash (pyinterop.h's ix_labels): the validated sequences
+   are owned references, cleared by mizu_py_labels_clear. */
+void mizu_py_labels_clear(ix_labels *lb) {
+  Py_CLEAR(lb->names);
+  Py_CLEAR(lb->dimnames);
+  Py_CLEAR(lb->axis_names);
+  lb->table = 0;
+}
+
+static int labels_str_ok(PyObject *o) {
+  return o == Py_None ||
+    (PyUnicode_CheckExact(o) && PyUnicode_AsUTF8AndSize(o, NULL) != NULL);
+}
+
+/* A labels sequence (a list or tuple of str | None elements) of the
+   wanted length, or the decline. */
+static int labels_seq_ok(PyObject *s, Py_ssize_t n, const char *what) {
+  if ((!PyList_Check(s) && !PyTuple_Check(s)) || PySequence_Size(s) != n) {
+    PyErr_Format(MizuDeclinedError,
+                 "pymizu: %s must have %zd entries of str | None", what, n);
+    return 0;
+  }
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *e = PySequence_GetItem(s, i);
+    const int ok = e != NULL && labels_str_ok(e);
+    Py_XDECREF(e);
+    if (!ok) {
+      PyErr_Format(MizuDeclinedError,
+                   "pymizu: %s must have %zd entries of str | None", what,
+                   n);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* Read and validate the stash off a DimArray: 0 the object carries no
+   labels, 1 a validated stash, -1 with DeclinedError set (names and
+   dimnames mutually exclusive, axis_names requiring dimnames, the
+   lengths against (nd, shape), r_class "table" or absent). The three
+   sequence slots are owned references — the caller clears them
+   (labels_clear). */
+int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
+                     ix_labels *out) {
+  memset(out, 0, sizeof(*out));
+  PyTypeObject *t = dimarray_type_soft();
+  if (t == NULL || !PyObject_TypeCheck(obj, t)) return 0;
+  if (nd < 1 || nd > 32) {
+    PyErr_SetString(MizuDeclinedError,
+                    "pymizu: labels ride a 1..32-dimensional array");
+    return -1;
+  }
+  PyObject *names = PyObject_GetAttrString(obj, "names");
+  PyObject *dimnames = PyObject_GetAttrString(obj, "dimnames");
+  PyObject *axis_names = PyObject_GetAttrString(obj, "axis_names");
+  PyObject *r_class = PyObject_GetAttrString(obj, "r_class");
+  if (names == NULL || dimnames == NULL || axis_names == NULL ||
+      r_class == NULL)
+    goto fail;
+  int rc = 0;
+  if (r_class != Py_None) {
+    if (!str_obj_eq(r_class, MIZU_IX_CLASS_TABLE)) {
+      PyErr_SetString(MizuDeclinedError,
+                      "pymizu: r_class must be \"table\" or None");
+      goto fail;
+    }
+    out->table = 1;
+  }
+  if (names != Py_None && dimnames != Py_None) {
+    PyErr_SetString(MizuDeclinedError,
+                    "pymizu: names and dimnames are mutually exclusive");
+    goto fail;
+  }
+  if (axis_names != Py_None && dimnames == Py_None) {
+    PyErr_SetString(MizuDeclinedError,
+                    "pymizu: axis_names requires dimnames");
+    goto fail;
+  }
+  if (names != Py_None) {
+    if (nd != 1 || !labels_seq_ok(names, shape[0], "names")) {
+      if (!PyErr_Occurred())
+        PyErr_SetString(MizuDeclinedError,
+                        "pymizu: names rides a 1-D array only");
+      goto fail;
+    }
+    out->names = names;
+    Py_INCREF(names);
+    rc = 1;
+  }
+  if (dimnames != Py_None) {
+    if ((!PyList_Check(dimnames) && !PyTuple_Check(dimnames)) ||
+        PySequence_Size(dimnames) != nd) {
+      PyErr_Format(MizuDeclinedError,
+                   "pymizu: dimnames must have %d entries (one per axis)",
+                   nd);
+      goto fail;
+    }
+    for (int i = 0; i < nd; i++) {
+      PyObject *e = PySequence_GetItem(dimnames, i);
+      if (e == NULL) goto fail;
+      int ok = e == Py_None || labels_seq_ok(e, shape[i], "a dimnames entry");
+      const int had = PyErr_Occurred() != NULL;
+      Py_DECREF(e);
+      if (!ok) {
+        if (!had)
+          PyErr_Format(MizuDeclinedError,
+                       "pymizu: a dimnames entry must be None or %lld "
+                       "entries of str | None", (long long) shape[i]);
+        goto fail;
+      }
+    }
+    out->dimnames = dimnames;
+    Py_INCREF(dimnames);
+    rc = 1;
+  }
+  if (axis_names != Py_None) {
+    if (!labels_seq_ok(axis_names, nd, "axis_names")) goto fail;
+    out->axis_names = axis_names;
+    Py_INCREF(axis_names);
+    rc = 1;
+  }
+  if (out->table && out->dimnames == NULL) {
+    PyErr_SetString(MizuDeclinedError,
+                    "pymizu: r_class \"table\" requires dimnames");
+    goto fail;
+  }
+  Py_DECREF(names);
+  Py_DECREF(dimnames);
+  Py_DECREF(axis_names);
+  Py_DECREF(r_class);
+  return rc;
+fail:
+  Py_XDECREF(names);
+  Py_XDECREF(dimnames);
+  Py_XDECREF(axis_names);
+  Py_XDECREF(r_class);
+  mizu_py_labels_clear(out);
+  return -1;
+}
+
+/* The DimArray type check alone: the buffer gates' exemption from the
+   subclass reject (its buffer export is the plain ndarray one — the
+   MaskedArray doctrine does not apply to our own type). */
+int mizu_py_dimarray_check(PyObject *obj) {
+  PyTypeObject *t = dimarray_type_soft();
+  return t != NULL && PyObject_TypeCheck(obj, t);
+}
+
+/* The fast gate for the stage order (skipping the raw tiers): a
+   DimArray carrying any label. */
+int mizu_py_dimarray_labeled(PyObject *obj) {
+  PyTypeObject *t = dimarray_type_soft();
+  if (t == NULL || !PyObject_TypeCheck(obj, t)) return 0;
+  PyObject *a = PyObject_GetAttrString(obj, "names");
+  int yes = a != NULL && a != Py_None;
+  Py_XDECREF(a);
+  if (yes) return 1;
+  a = PyObject_GetAttrString(obj, "dimnames");
+  yes = a != NULL && a != Py_None;
+  Py_XDECREF(a);
+  if (yes) return 1;
+  a = PyObject_GetAttrString(obj, "axis_names");
+  yes = a != NULL && a != Py_None;
+  Py_XDECREF(a);
+  if (yes) return 1;
+  a = PyObject_GetAttrString(obj, "r_class");
+  yes = a != NULL && a != Py_None;
+  Py_XDECREF(a);
+  return yes;
+}
+
+/* A user str | None sequence against the blob's parsed strv (the
+   elements are str or None by construction). */
+static int labels_eq_strseq(PyObject *seq, PyObject *list) {
+  if (!PyList_Check(seq) && !PyTuple_Check(seq)) return 0;
+  const Py_ssize_t n = PySequence_Size(seq);
+  if (n != PyList_GET_SIZE(list)) return 0;
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *u = PySequence_GetItem(seq, i);
+    PyObject *b = PyList_GET_ITEM(list, i);
+    const int eq = (u == Py_None && b == Py_None) ||
+      (u != Py_None && b != Py_None && PyUnicode_Check(u) &&
+       PyUnicode_Compare(u, b) == 0);
+    Py_XDECREF(u);
+    if (!eq) return 0;
+  }
+  return 1;
+}
+
+/* The {names} value against a user sequence: AV_STR the length-1 form,
+   AV_STRLIST otherwise. */
+static int labels_eq_names(PyObject *seq, const attr_ent *nm) {
+  if (nm->kind == AV_STR) {
+    if (!PyList_Check(seq) && !PyTuple_Check(seq)) return 0;
+    if (PySequence_Size(seq) != 1) return 0;
+    PyObject *u = PySequence_GetItem(seq, 0);
+    int eq = 0;
+    if (u != NULL && u != Py_None && PyUnicode_Check(u)) {
+      Py_ssize_t l;
+      const char *s = PyUnicode_AsUTF8AndSize(u, &l);
+      eq = s != NULL && (uint64_t) l == nm->val.count &&
+        memcmp(s, nm->val.ptr, (size_t) l) == 0;
+    }
+    Py_XDECREF(u);
+    return eq;
+  }
+  if (nm->kind != AV_STRLIST) return 0;
+  return labels_eq_strseq(seq, nm->val.obj);
+}
+
+/* The dimnames value against a user's (dimnames, axis_names): the list
+   form (nil entries) or the carrier's (entries, axis_names) tuple. */
+static int labels_eq_dnval(PyObject *dn_user, PyObject *ax_user,
+                           PyObject *blob_dn) {
+  PyObject *entries = blob_dn, *axis = NULL;
+  if (PyTuple_Check(blob_dn) && PyTuple_GET_SIZE(blob_dn) == 2) {
+    entries = PyTuple_GET_ITEM(blob_dn, 0);
+    axis = PyTuple_GET_ITEM(blob_dn, 1);
+  }
+  if (!PyList_Check(entries) ||
+      (!PyList_Check(dn_user) && !PyTuple_Check(dn_user)))
+    return 0;
+  const Py_ssize_t nd = PyList_GET_SIZE(entries);
+  if (PySequence_Size(dn_user) != nd) return 0;
+  for (Py_ssize_t i = 0; i < nd; i++) {
+    PyObject *u = PySequence_GetItem(dn_user, i);
+    PyObject *b = PyList_GET_ITEM(entries, i);
+    const int eq = b == Py_None ? u == Py_None :
+      u != Py_None && labels_eq_strseq(u, b);
+    Py_XDECREF(u);
+    if (!eq) return 0;
+  }
+  if (axis == NULL) return ax_user == NULL;
+  return ax_user != NULL && labels_eq_strseq(ax_user, axis);
+}
+
+/* The REF gates' label compare (pyinterop.h): the region blob's labels
+   against the candidate's stash — a by-reference send requires them
+   equal, else the candidate crosses by value (a relabeled or
+   label-stripped array never resurrects the region's labels; a plain
+   array over a labeled region copies: honest loss). 1 equal, 0 differ
+   or malformed (the by-value paths re-validate and decline there). */
+int mizu_py_labels_match(const uint8_t *blob, size_t blob_size,
+                         PyObject *obj, int nd, const int64_t *shape) {
+  int nent = 0;
+  attr_ent *ents =
+    blob_size != 0 ? blob_attrs(blob, blob_size, &nent) : NULL;
+  if (blob_size != 0 && ents == NULL) {
+    PyErr_Clear();
+    return 0;
+  }
+  const attr_ent *nm = NULL, *dn = NULL, *cls = NULL;
+  if (ents != NULL) {
+    nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
+    dn = attr_find(ents, nent, MIZU_IX_ATTR_DIMNAMES);
+    cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
+  }
+  const int blob_table = cls != NULL &&
+    class_is(cls, MIZU_IX_CLASS_TABLE, NULL);
+  ix_labels lb;
+  int rc = 0;
+  if (mizu_py_labels_of(obj, nd, shape, &lb) < 0) {
+    PyErr_Clear();
+    goto out;
+  }
+  if (nm != NULL ? (lb.names == NULL || !labels_eq_names(lb.names, nm))
+                 : lb.names != NULL)
+    goto out;
+  if (dn != NULL ? !labels_eq_dnval(lb.dimnames, lb.axis_names, dn->val.obj)
+                 : (lb.dimnames != NULL || lb.axis_names != NULL))
+    goto out;
+  if (blob_table != lb.table) goto out;
+  rc = 1;
+out:
+  mizu_py_labels_clear(&lb);
+  if (ents != NULL) attr_vals_free(ents, nent);
+  return rc;
 }
 
 /* The u64 marker's verbatim verdict (the MIZU_CAP_MIZL_U64V leaf form):
@@ -1687,6 +2270,7 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
   const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+  const attr_ent *dnm = NULL, *dn = NULL;
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -1715,6 +2299,83 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
     } else {
       out = dim_to_ndarray(vtype, vptr, vn, dims, nd);
     }
+  } else if (dm == NULL && lv == NULL &&
+             (dnm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES)) != NULL &&
+             nent == 1 && vit.kind == MIZU_IX_VEC) {
+    /* a named vector (MIZU_CAP_LABELED): the vec home, wrapped with the
+       labels — names the strv length, NA elements None */
+    PyObject *t = str_tuple_of(dnm);
+    if (t == NULL) goto attr_fail;
+    if (PyTuple_GET_SIZE(t) != (Py_ssize_t) vn) {
+      Py_DECREF(t);
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "the names strv is not the value's length");
+      goto attr_fail;
+    }
+    PyObject *arr = ixr_vec(vtype, vptr, vn);
+    if (arr == NULL) {
+      Py_DECREF(t);
+      goto attr_fail;
+    }
+    out = dimarray_attach(arr, t, NULL, NULL, 0);
+    Py_DECREF(t);
+    Py_DECREF(arr);
+  } else if (dm != NULL &&
+             (dn = attr_find(ents, nent, MIZU_IX_ATTR_DIMNAMES)) != NULL &&
+             (nent == 2 || nent == 3) && vit.kind == MIZU_IX_VEC &&
+             dn->kind == AV_OBJ &&
+             (dm->kind == AV_INTSPAN || dm->kind == AV_INT)) {
+    /* a dim array with dimnames (MIZU_CAP_LABELED): the F-order home,
+       wrapped with the labels — class exactly "table" when present */
+    if (nent == 3 && !class_is(cls, MIZU_IX_CLASS_TABLE, NULL)) {
+      ixr_no_home(ents, nent, "an attributed value");
+      goto attr_fail;
+    }
+    int32_t one = (int32_t) dm->val.v;
+    const int32_t *dims = dm->kind == AV_INT ? &one :
+      (const int32_t *) dm->val.ptr;
+    uint64_t nd = dm->kind == AV_INT ? 1 : dm->val.count;
+    if (nd == 0) {
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "an empty dim");
+      goto attr_fail;
+    }
+    PyObject *entries = NULL, *axis = NULL;
+    if (dimnames_tuples(dn->val.obj, &entries, &axis) < 0) {
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "a dimnames value of an unexpected form");
+      goto attr_fail;
+    }
+    PyObject *arr = dim_to_ndarray(vtype, vptr, vn, dims, nd);
+    if (arr == NULL) {
+      Py_XDECREF(entries);
+      Py_XDECREF(axis);
+      goto attr_fail;
+    }
+    /* dim_to_ndarray validated the product; the entries' per-axis
+       lengths are the remaining shape rule */
+    const Py_ssize_t ndim = dm->kind == AV_INT ? 1 : (Py_ssize_t) dm->val.count;
+    int ok = PyTuple_GET_SIZE(entries) == ndim;
+    if (ok && axis != NULL)
+      ok = PyTuple_GET_SIZE(axis) == ndim;
+    for (Py_ssize_t i = 0; ok && i < ndim; i++) {
+      PyObject *e = PyTuple_GET_ITEM(entries, i);
+      if (e != Py_None &&
+          PyTuple_GET_SIZE(e) != (Py_ssize_t) dims[i])
+        ok = 0;
+    }
+    if (!ok) {
+      Py_DECREF(arr);
+      Py_XDECREF(entries);
+      Py_XDECREF(axis);
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "a dimnames entry length is not its axis extent");
+      goto attr_fail;
+    }
+    out = dimarray_attach(arr, NULL, entries, axis, nent == 3);
+    Py_XDECREF(entries);
+    Py_XDECREF(axis);
+    Py_DECREF(arr);
   } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
              vtype == MIZU_TYPE_REAL) {
     out = realv_to_datetime(vptr, vn, 1);
@@ -1736,6 +2397,9 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   }
   attr_vals_free(ents, nent);
   return out;
+attr_fail:
+  attr_vals_free(ents, nent);
+  return NULL;
 }
 
 // The frame reader ------------------------------------------------------------------
@@ -2212,8 +2876,89 @@ static PyObject *frame_rownames_build(const attr_ent *rn, int64_t nrow) {
   return NULL;
 }
 
+/* The frame class rule (MIZU_CAP_LABELED's extension): class's last
+   element is "data.frame" — AV_STR the length-1 form, a strv for the
+   prefix classes (a tibble's c("tbl_df", "tbl", "data.frame")). */
+static int class_ends_dataframe(const attr_ent *e) {
+  if (class_is(e, MIZU_IX_CLASS_DATAFRAME, NULL)) return 1;
+  if (e == NULL || e->kind != AV_STRLIST) return 0;
+  PyObject *lst = e->val.obj;
+  const Py_ssize_t n = PyList_GET_SIZE(lst);
+  return n >= 1 &&
+    str_obj_eq(PyList_GET_ITEM(lst, n - 1), MIZU_IX_CLASS_DATAFRAME);
+}
+
+/* The extended frame's stash: -1 with the no-home error (an extra key
+   colliding with the reserved set — it would shadow a canonical pair,
+   and tsp R validates at apply); 0 the plain frame (no stash — its
+   bytes stay today's); 1 with *out the (class_tuple, extras) tuple,
+   extras a list of (key, raw span) in dict order, never decoded. */
+static int frame_stash_build(const attr_ent *ents, int nent,
+                             const attr_ent *cls, PyObject **out) {
+  int next = 0;
+  for (int i = 0; i < nent; i++) {
+    const char *k = (const char *) ents[i].key;
+    const size_t kl = (size_t) ents[i].key_len;
+    if ((kl == strlen(MIZU_IX_ATTR_NAMES) &&
+         memcmp(k, MIZU_IX_ATTR_NAMES, kl) == 0) ||
+        (kl == strlen(MIZU_IX_ATTR_CLASS) &&
+         memcmp(k, MIZU_IX_ATTR_CLASS, kl) == 0) ||
+        (kl == strlen(MIZU_IX_ATTR_ROWNAMES) &&
+         memcmp(k, MIZU_IX_ATTR_ROWNAMES, kl) == 0))
+      continue;
+    if (mizu_ix_attr_reserved(k, kl) || ents[i].kind != AV_SPAN) {
+      ixr_no_home(ents, nent, "an attributed list");
+      return -1;
+    }
+    /* a comment is nil or character (R's apply rule) — the wire tag,
+       never the decoded value */
+    if (kl == 7 && memcmp(k, "comment", 7) == 0 &&
+        ents[i].val.count != 0 &&
+        ents[i].val.ptr[0] != MIZU_IX_TAG_NIL &&
+        ents[i].val.ptr[0] != MIZU_IX_TAG_STR &&
+        ents[i].val.ptr[0] != MIZU_IX_TAG_STRV) {
+      ixr_no_home(ents, nent, "an attributed list");
+      return -1;
+    }
+    next++;
+  }
+  if (next == 0 && class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL)) return 0;
+  PyObject *kt = str_tuple_of(cls);
+  if (kt == NULL) return -1;
+  PyObject *ex = PyList_New(next);
+  if (ex == NULL) {
+    Py_DECREF(kt);
+    return -1;
+  }
+  for (int i = 0, j = 0; i < nent; i++) {
+    if (ents[i].kind != AV_SPAN) continue;
+    PyObject *ks = PyUnicode_DecodeUTF8((const char *) ents[i].key,
+                                        (Py_ssize_t) ents[i].key_len, NULL);
+    PyObject *bs = PyBytes_FromStringAndSize(
+      (const char *) ents[i].val.ptr, (Py_ssize_t) ents[i].val.count);
+    PyObject *t = NULL;
+    if (ks != NULL && bs != NULL) t = PyTuple_Pack(2, ks, bs);
+    Py_XDECREF(ks);
+    Py_XDECREF(bs);
+    if (t == NULL) {
+      Py_DECREF(kt);
+      Py_DECREF(ex);
+      return -1;
+    }
+    PyList_SET_ITEM(ex, j++, t);
+  }
+  *out = PyTuple_Pack(2, kt, ex);
+  Py_DECREF(kt);
+  Py_DECREF(ex);
+  return *out != NULL ? 1 : -1;
+}
+
 /* The data.frame shape: read the columns, then the dict, and validate
-   before installing the shell. */
+   before installing the shell. The extended form (MIZU_CAP_LABELED)
+   stashes the full class vector (decoded, for introspection) and every
+   extra attribute's raw span on the Frame's _r_attrs — never decoded:
+   a pristine echo splices them verbatim, a rebuild drops the stash and
+   arrives in R as a plain data.frame. */
 static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
                            const ixr_mode *Py_UNUSED(mode)) {
   if (ncols64 == 0 || ncols64 > (1u << 20)) {
@@ -2240,16 +2985,25 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
   const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
   const attr_ent *nm = attr_find(ents, nent, MIZU_IX_ATTR_NAMES);
   const attr_ent *rn = attr_find(ents, nent, MIZU_IX_ATTR_ROWNAMES);
-  if (cls == NULL || nm == NULL || rn == NULL || nent != 3 ||
-      !class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL)) {
+  if (cls == NULL || nm == NULL || rn == NULL || nent < 3 ||
+      !class_ends_dataframe(cls)) {
     if (!PyErr_Occurred())
       ixr_no_home(ents, nent, "an attributed list");
+    attr_vals_free(ents, nent);
+    goto fail;
+  }
+  /* the extended frame's stash: the class vector (decoded, for
+     introspection) and every extra's raw span — never decoded; a
+     pristine echo splices them, a rebuild drops them */
+  PyObject *r_attrs = NULL;
+  if (frame_stash_build(ents, nent, cls, &r_attrs) < 0) {
     attr_vals_free(ents, nent);
     goto fail;
   }
   frame_cols *fc = frame_cols_new(ncols, nrow);
   if (fc == NULL) {
     PyErr_NoMemory();
+    Py_XDECREF(r_attrs);
     attr_vals_free(ents, nent);
     goto fail;
   }
@@ -2264,13 +3018,16 @@ static PyObject *ixr_frame(mizu_ix *cur, uint64_t ncols64,
   if (self == NULL) {
     frame_cols_decref(fc);
     Py_DECREF(rownames);
+    Py_XDECREF(r_attrs);
     return NULL;
   }
   self->fc = fc;
   self->row_names = rownames;
   self->loan = NULL;
+  self->r_attrs = r_attrs;
   return (PyObject *) self;
 dict_fail:
+  Py_XDECREF(r_attrs);
   attr_vals_free(ents, nent);
   frame_cols_decref(fc);
 fail:
@@ -2771,6 +3528,7 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
+  const attr_ent *nm2 = NULL, *dn = NULL;
   if (cls != NULL && lv != NULL && nent == 2 &&
       class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && type == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
@@ -2791,6 +3549,87 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
     out = tree_dim_view(owner, loan,
                         nent == 2 ? MIZU_TYPE_INT64 : type, data, n,
                         valid, nulls, dm);
+  } else if ((nm2 = attr_find(ents, nent, MIZU_IX_ATTR_NAMES)) != NULL &&
+             nent == 1 && dm == NULL) {
+    /* a named vector (MIZU_CAP_LABELED): the borrowed view wrapped —
+       the base chain preserved, so a whole re-send still REFs */
+    PyObject *t = str_tuple_of(nm2);
+    if (t == NULL) goto home_fail;
+    if (PyTuple_GET_SIZE(t) != (Py_ssize_t) n) {
+      Py_DECREF(t);
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region (the "
+                      "names strv is not the element count)");
+      goto home_fail;
+    }
+    PyObject *view = mizu_py_view_borrow(
+      owner, loan, data, (Py_ssize_t) n * (Py_ssize_t) mizu_type_elt_size(type),
+      type, valid, nulls);
+    if (view == NULL) {
+      Py_DECREF(t);
+      goto home_fail;
+    }
+    out = dimarray_attach(view, t, NULL, NULL, 0);
+    Py_DECREF(t);
+    Py_DECREF(view);
+  } else if (dm != NULL &&
+             (dn = attr_find(ents, nent, MIZU_IX_ATTR_DIMNAMES)) != NULL &&
+             (nent == 2 || nent == 3) && dn->kind == AV_OBJ) {
+    /* a dim array with dimnames (MIZU_CAP_LABELED): the F-order view
+       wrapped — class exactly "table" when present (an integer64
+       array's own class rides the wire tag) */
+    if (nent == 3 && !class_is(cls, MIZU_IX_CLASS_TABLE, NULL)) {
+      ixr_no_home(ents, nent, "an attributed value");
+      goto home_fail;
+    }
+    int32_t one;
+    const int32_t *dims;
+    uint64_t nd;
+    if (dm->kind == AV_INT) {
+      one = (int32_t) dm->val.v;
+      dims = &one;
+      nd = 1;
+    } else if (dm->kind == AV_INTSPAN) {
+      dims = (const int32_t *) dm->val.ptr;
+      nd = dm->val.count;
+    } else {
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                      "(a dim of an unexpected form)");
+      goto home_fail;
+    }
+    PyObject *entries = NULL, *axis = NULL;
+    if (dimnames_tuples(dn->val.obj, &entries, &axis) < 0) {
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                      "(a dimnames value of an unexpected form)");
+      goto home_fail;
+    }
+    PyObject *view = tree_dim_view(owner, loan, type, data, n, valid,
+                                   nulls, dm);
+    if (view == NULL) {
+      Py_XDECREF(entries);
+      Py_XDECREF(axis);
+      goto home_fail;
+    }
+    int ok = nd <= 32 && PyTuple_GET_SIZE(entries) == (Py_ssize_t) nd;
+    if (ok && axis != NULL)
+      ok = PyTuple_GET_SIZE(axis) == (Py_ssize_t) nd;
+    for (uint64_t i = 0; ok && i < nd; i++) {
+      PyObject *e = PyTuple_GET_ITEM(entries, (Py_ssize_t) i);
+      if (e != Py_None &&
+          PyTuple_GET_SIZE(e) != (Py_ssize_t) dims[i])
+        ok = 0;
+    }
+    if (!ok) {
+      Py_DECREF(view);
+      Py_XDECREF(entries);
+      Py_XDECREF(axis);
+      PyErr_SetString(MizuError, "pymizu: corrupt or newer region (a "
+                      "dimnames entry length is not its axis extent)");
+      goto home_fail;
+    }
+    out = dimarray_attach(view, NULL, entries, axis, nent == 3);
+    Py_XDECREF(entries);
+    Py_XDECREF(axis);
+    Py_DECREF(view);
   } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
              type == MIZU_TYPE_REAL) {
     out = realv_to_datetime(data, (uint64_t) n, 1);
@@ -2822,6 +3661,9 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   }
   attr_vals_free(ents, nent);
   return out;
+home_fail:
+  attr_vals_free(ents, nent);
+  return NULL;
 }
 
 static PyObject *tree_walk(PyObject *owner, PyObject *loan,
@@ -2974,11 +3816,12 @@ fail:
 /* The data.frame shape: the region-backed Frame — columns off the
    directory entries (a remote leaf's region hold deduped on the block),
    names and row.names off the root blob, the tree's loan anchor on the
-   shell. */
+   shell. r_attrs the extended frame's stash (NULL for the plain form),
+   a reference stolen on success. */
 static PyObject *tree_frame(PyObject *Py_UNUSED(owner), PyObject *loan,
                             const uint8_t *base, size_t size, int64_t n,
                             const attr_ent *nm, const attr_ent *rn,
-                            unsigned depth) {
+                            PyObject *r_attrs, unsigned depth) {
   if (n == 0 || n > (int64_t) (1u << 20)) {
     PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                     "(a frame without columns)");
@@ -3010,15 +3853,18 @@ static PyObject *tree_frame(PyObject *Py_UNUSED(owner), PyObject *loan,
   self->row_names = rownames;
   Py_INCREF(loan);
   self->loan = loan;
+  self->r_attrs = r_attrs;
   return (PyObject *) self;
 fail:
+  Py_XDECREF(r_attrs);
   frame_cols_decref(fc);
   return NULL;
 }
 
 /* The root and leaf dict's shape decision: no attributes a plain list,
-   names only a dict, the data.frame shape a region-backed Frame, any
-   other attribute set the no-home error. */
+   names only a dict, the data.frame shape a region-backed Frame (the
+   extended form stashing the class vector and extras), any other
+   attribute set the no-home error. */
 static PyObject *tree_home(PyObject *owner, PyObject *loan,
                            const uint8_t *base, size_t size, int64_t n,
                            attr_ent *ents, int nent, unsigned depth) {
@@ -3029,9 +3875,13 @@ static PyObject *tree_home(PyObject *owner, PyObject *loan,
     return tree_list(owner, loan, base, size, n, depth);
   if (nent == 1 && nm != NULL)
     return tree_dict(owner, loan, base, size, n, nm, depth);
-  if (nent == 3 && cls != NULL && nm != NULL && rn != NULL &&
-      class_is(cls, MIZU_IX_CLASS_DATAFRAME, NULL))
-    return tree_frame(owner, loan, base, size, n, nm, rn, depth);
+  if (nent >= 3 && cls != NULL && nm != NULL && rn != NULL &&
+      class_ends_dataframe(cls)) {
+    PyObject *r_attrs = NULL;
+    if (frame_stash_build(ents, nent, cls, &r_attrs) < 0) return NULL;
+    return tree_frame(owner, loan, base, size, n, nm, rn, r_attrs,
+                      depth);
+  }
   ixr_no_home(ents, nent, "an attributed list");
   return NULL;
 }
@@ -3388,14 +4238,67 @@ static void ixe_fcol(ixw *w, const fcol *c) {
 
 /* The frame shape: attr(list cols, {names, class: "data.frame",
    row.names}). Names and row.names follow the length-1 scalar rule. */
-static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
+/* A class vector verbatim (the stashed form): the tuple's strings as
+   the strv, the 0x04 scalar at length 1 (ixe_class's shape). */
+static void ixe_class_tuple(ixw *w, PyObject *kt) {
+  const Py_ssize_t n = PyTuple_GET_SIZE(kt);
+  if (n == 1) {
+    Py_ssize_t len;
+    const char *s =
+      PyUnicode_AsUTF8AndSize(PyTuple_GET_ITEM(kt, 0), &len);
+    if (s == NULL || len > INT32_MAX) {
+      PyErr_Clear();
+      ixw_decline(w, "a class name is not writable as UTF-8");
+      return;
+    }
+    IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), s, (int32_t) len));
+    return;
+  }
+  IXW_PUT(w, mizu_ix_put_strv_begin(IXW_DST(w), (uint64_t) n));
+  for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
+    Py_ssize_t len;
+    const char *s =
+      PyUnicode_AsUTF8AndSize(PyTuple_GET_ITEM(kt, i), &len);
+    if (s == NULL || len > INT32_MAX) {
+      PyErr_Clear();
+      ixw_decline(w, "a class name is not writable as UTF-8");
+      return;
+    }
+    IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), s, (int32_t) len));
+  }
+}
+
+/* The raw byte splice (an extra's stashed span): the put helpers'
+   overflow discipline, no sizing walk — the span is the value's
+   complete encoding, re-emitted verbatim. */
+static void ixe_span(ixw *w, const void *src, size_t n) {
+  if (w->decline) return;
+  if (w->dst != NULL) {
+    if (w->total + n > w->limit) {
+      w->overflow = 1;
+      w->dst = NULL;
+    } else {
+      memcpy(w->dst + w->total, src, n);
+    }
+  }
+  w->total += n;
+}
+
+static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names,
+                      PyObject *r_attrs) {
   /* attr + the column list + a column's own attr shape (3 at worst:
      factor/Date/TS/TD) */
   if (!ixw_attr_depth(w, 5)) return;
+  /* the extended frame's stash (MIZU_CAP_LABELED): the class vector
+     verbatim and the extras spliced raw in stored order — never
+     decoded; the peer's mask must carry the bit (never a strip) */
+  if (r_attrs != NULL && !ixw_labeled_gate(w)) return;
+  const int nex = r_attrs != NULL ?
+    (int) PyList_GET_SIZE(PyTuple_GET_ITEM(r_attrs, 1)) : 0;
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) fc->ncols));
   for (int i = 0; i < fc->ncols; i++) ixe_fcol(w, &fc->cols[i]);
-  IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 3));
+  IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), (uint64_t) (3 + nex)));
   ixe_key(w, MIZU_IX_ATTR_NAMES);
   if (fc->ncols == 1) {
     IXW_PUT(w, mizu_ix_put_str(IXW_DST(w), fc->names,
@@ -3408,7 +4311,9 @@ static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
                 fc->name_off[i + 1] - fc->name_off[i]));
   }
   ixe_key(w, MIZU_IX_ATTR_CLASS);
-  {
+  if (r_attrs != NULL) {
+    ixe_class_tuple(w, PyTuple_GET_ITEM(r_attrs, 0));
+  } else {
     static const char *cls[1] = { MIZU_IX_CLASS_DATAFRAME };
     ixe_class(w, cls, 1);
   }
@@ -3449,6 +4354,26 @@ static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names) {
     if (PyObject_GetBuffer(row_names, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
       ixe_intv_i32(w, (const int32_t *) v.buf, v.len / 4);
       PyBuffer_Release(&v);
+    }
+  }
+  if (w->decline) return;
+  if (r_attrs != NULL) {
+    /* the extras: (key, raw span) pairs in stored order, spliced
+       verbatim — never decoded */
+    PyObject *ex = PyTuple_GET_ITEM(r_attrs, 1);
+    for (int i = 0; i < nex && !w->decline; i++) {
+      PyObject *t = PyList_GET_ITEM(ex, i);
+      PyObject *ks = PyTuple_GET_ITEM(t, 0);
+      PyObject *bs = PyTuple_GET_ITEM(t, 1);
+      Py_ssize_t kn;
+      const char *k = PyUnicode_AsUTF8AndSize(ks, &kn);
+      if (k == NULL) {
+        PyErr_Clear();
+        ixw_decline(w, "an extra key is not writable as UTF-8");
+        return;
+      }
+      IXW_PUT(w, mizu_ix_put_key(IXW_DST(w), k, (uint32_t) kn));
+      ixe_span(w, PyBytes_AS_STRING(bs), (size_t) PyBytes_GET_SIZE(bs));
     }
   }
 }
@@ -3653,6 +4578,151 @@ static void ixe_dim(ixw *w, const uint8_t *src, int nd,
   ixe_intv(w, nd, dims, NULL);
 }
 
+/* The labeled shapes' send gate (MIZU_CAP_LABELED): every emission site
+   declines locally on a caps-less peer — never a strip (metadata is
+   data). */
+static int ixw_labeled_gate(ixw *w) {
+  if (w->caps & MIZU_CAP_LABELED) return 1;
+  ixw_decline(w, "the peer predates the labeled attribute capability");
+  return 0;
+}
+
+/* A labels strv (validated by mizu_py_labels_of): None as the -1 form,
+   always the strv tag — never the length-1 scalar collapse (an extent-1
+   dimnames entry must arrive a list, an NA one distinct from a nil
+   axis). */
+static void ixe_labels_strv(ixw *w, PyObject *seq, Py_ssize_t n) {
+  IXW_PUT(w, mizu_ix_put_strv_begin(IXW_DST(w), (uint64_t) n));
+  for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
+    PyObject *e = PySequence_GetItem(seq, i);
+    if (e == NULL) {
+      PyErr_Clear();
+      ixw_decline(w, "a label sequence changed under the write");
+      return;
+    }
+    if (e == Py_None) {
+      IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), NULL, -1));
+    } else {
+      Py_ssize_t len;
+      const char *s = PyUnicode_AsUTF8AndSize(e, &len);
+      if (s == NULL || len > INT32_MAX) {
+        PyErr_Clear();
+        Py_DECREF(e);
+        ixw_decline(w, "a label is not writable as UTF-8 (a lone "
+                       "surrogate)");
+        return;
+      }
+      IXW_PUT(w, mizu_ix_put_strelt(IXW_DST(w), s, (int32_t) len));
+    }
+    Py_DECREF(e);
+  }
+}
+
+static void ixe_dimnames(ixw *w, PyObject *dimnames, PyObject *axis_names,
+                         int nd);
+
+/* The dst-forms (pyinterop.h): the 'I' writer's own emitters over a
+   local ixw, so the wire forms cannot drift — NULL dst sizes, a real
+   dst writes behind the size pass's total (the blob buffer discipline,
+   mizu_py_blob_frame's pattern). */
+size_t mizu_py_ix_labels_strv(uint8_t *dst, PyObject *seq, Py_ssize_t n) {
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  w.limit = SIZE_MAX;
+  ixe_labels_strv(&w, seq, n);
+  return w.total;
+}
+
+size_t mizu_py_ix_dimnames(uint8_t *dst, PyObject *dimnames,
+                           PyObject *axis_names, int nd) {
+  ixw w;
+  memset(&w, 0, sizeof(w));
+  w.dst = dst;
+  w.limit = SIZE_MAX;
+  ixe_dimnames(&w, dimnames, axis_names, nd);
+  return w.total;
+}
+
+/* The dimnames value: the plain list (nil / strv entries), or
+   attr(list, {names}) when axis_names is set — the one site a
+   names-attributed list is not the 0x0d dict. */
+static void ixe_dimnames(ixw *w, PyObject *dimnames, PyObject *axis_names,
+                         int nd) {
+  const int named = axis_names != NULL;
+  if (named) IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
+  IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) nd));
+  w->depth++;
+  for (int i = 0; i < nd && !w->decline; i++) {
+    PyObject *e = PySequence_GetItem(dimnames, i);
+    if (e == NULL) {
+      PyErr_Clear();
+      ixw_decline(w, "a dimnames sequence changed under the write");
+      return;
+    }
+    if (e == Py_None) {
+      IXW_PUT(w, mizu_ix_put_nil(IXW_DST(w)));
+    } else {
+      ixe_labels_strv(w, e, PySequence_Size(e));
+    }
+    Py_DECREF(e);
+  }
+  if (w->depth > 0) w->depth--;
+  if (named) {
+    IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
+    ixe_key(w, MIZU_IX_ATTR_NAMES);
+    ixe_labels_strv(w, axis_names, nd);
+  }
+}
+
+/* The 1-D body emitter (defined with the numpy leaves below). */
+static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
+                         const cvt_row *row, int64_t stride);
+
+/* The named vector shape (MIZU_CAP_LABELED): attr(vec, {names: strv}). */
+static void ixe_named_vec(ixw *w, const uint8_t *src, uint64_t n,
+                          const cvt_row *row, int64_t stride,
+                          PyObject *names) {
+  if (!ixw_labeled_gate(w)) return;
+  if (!ixw_attr_depth(w, 3)) return;   /* attr + vec + dict's names strv */
+  IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
+  ixe_cvt_body(w, src, n, row, stride);
+  if (w->decline) return;
+  IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
+  ixe_key(w, MIZU_IX_ATTR_NAMES);
+  ixe_labels_strv(w, names, (Py_ssize_t) n);
+}
+
+/* The dim + dimnames shape (MIZU_CAP_LABELED): attr(vec, {dim,
+   dimnames[, class = "table"]}) — the labeled half of ixe_dim (a C-order
+   gather or a strided one rides the same body). */
+static void ixe_dim_labeled(ixw *w, const uint8_t *src, int nd,
+                            const int64_t *shape, const int64_t *strides,
+                            const cvt_row *row, const ix_labels *lb) {
+  if (!ixw_labeled_gate(w)) return;
+  /* attr + vec + (dict, its list, the carrier's attr + dict) */
+  if (!ixw_attr_depth(w, 5)) return;
+  IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
+  ixe_nd_body(w, src, nd, shape, strides, row);
+  IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w),
+                                    (uint64_t) (lb->table ? 3 : 2)));
+  ixe_key(w, MIZU_IX_ATTR_DIM);
+  if (nd == 1) {
+    IXW_PUT(w, mizu_ix_put_int(IXW_DST(w), shape[0]));
+  } else {
+    int64_t dims[32];
+    for (int i = 0; i < nd && i < 32; i++) dims[i] = shape[i];
+    ixe_intv(w, nd, dims, NULL);
+  }
+  ixe_key(w, MIZU_IX_ATTR_DIMNAMES);
+  ixe_dimnames(w, lb->dimnames, lb->axis_names, nd);
+  if (lb->table) {
+    ixe_key(w, MIZU_IX_ATTR_CLASS);
+    static const char *cls[1] = { MIZU_IX_CLASS_TABLE };
+    ixe_class(w, cls, 1);
+  }
+}
+
 /* The temporal dtype units are pyinterop.h's (shared with layout.c). */
 static int temporal_unit(const char *s, size_t n) {
   if (n == 1) {
@@ -3803,9 +4873,17 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
                      "memmap) has no portable home");
     return;
   }
+  /* the labeled-array flag ahead of the temporal probe: a labeled
+     temporal has no labeled shape (a named Date / POSIXct stays
+     declined) and must not drop its labels silently */
+  const int labeled = mizu_py_dimarray_labeled(obj);
   /* temporal dtypes refuse the buffer protocol: probe .dtype.str first */
   int unit = TU_NONE, delta = 0;
   if (mizu_py_np_temporal_unit(obj, &unit, &delta) != 0) {
+    if (labeled) {
+      ixw_decline(w, "a labeled temporal array has no portable home");
+      return;
+    }
     ixw_numpy_temporal(w, obj, unit, delta);
     return;
   }
@@ -3837,6 +4915,50 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
     PyBuffer_Release(&v);
     ixw_decline(w, "a strided array nested in a container has no "
                 "portable home");
+    return;
+  }
+  if (labeled) {
+    /* the labeled shapes (MIZU_CAP_LABELED): the validated stash drives
+       the emission; an invalid one declines with its message */
+    int64_t shape64[32];
+    for (int i = 0; i < v.ndim && i < 32; i++)
+      shape64[i] = (int64_t) v.shape[i];
+    ix_labels lb;
+    if (mizu_py_labels_of(obj, v.ndim, shape64, &lb) < 0) {
+      PyObject *et, *ev, *tb;
+      PyErr_Fetch(&et, &ev, &tb);
+      PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
+      ixw_decline(w, es != NULL ? PyUnicode_AsUTF8(es) :
+                    "an invalid label stash");
+      Py_XDECREF(es);
+      Py_XDECREF(et);
+      Py_XDECREF(ev);
+      Py_XDECREF(tb);
+      PyBuffer_Release(&v);
+      return;
+    }
+    if (lb.names != NULL) {
+      const int64_t stride = strided ? (int64_t) v.strides[0] : 0;
+      ixe_named_vec(w, (const uint8_t *) v.buf, (uint64_t) v.shape[0],
+                    row, stride, lb.names);
+    } else {
+      int64_t strides64[32];
+      if (strided) {
+        for (int i = 0; i < v.ndim; i++)
+          strides64[i] = (int64_t) v.strides[i];
+      } else {
+        /* C-order strides (the plain path's computation) */
+        int64_t acc = row->w_in;
+        for (int i = v.ndim - 1; i >= 0; i--) {
+          strides64[i] = acc;
+          acc *= shape64[i];
+        }
+      }
+      ixe_dim_labeled(w, (const uint8_t *) v.buf, v.ndim, shape64,
+                      strides64, row, &lb);
+    }
+    mizu_py_labels_clear(&lb);
+    PyBuffer_Release(&v);
     return;
   }
   if (v.ndim == 0) {
@@ -4196,7 +5318,7 @@ static void ixw_value(ixw *w, PyObject *obj) {
   }
   if (Py_TYPE(obj) == &MizuFrameType) {
     MizuFrame *f = (MizuFrame *) obj;
-    ixe_frame(w, f->fc, f->row_names);
+    ixe_frame(w, f->fc, f->row_names, f->r_attrs);
     return;
   }
   datetime_probe();
@@ -4741,16 +5863,18 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   for (int i = 0; i < x->ncols; i++)
     if (x->cols[i].kind == PC_TS)
       mizu_arrow_tz(ar, i, x->schema.children[i]->format + 4);
-  if (x->row_names != NULL && x->row_names != Py_None) {
+  if (x->r_attrs != NULL ||
+      (x->row_names != NULL && x->row_names != Py_None)) {
     /* the names array serves the blob alone */
     if ((names = ixs_names_collect(x)) == NULL)
       goto out;
     size_t bn = mizu_py_blob_frame(NULL, names, x->ncols, x->hold.rows,
-                                   x->row_names);
+                                   x->row_names, x->r_attrs, peer_caps);
     if (bn == 0) goto out;
     blob = malloc(bn);
     if (blob == NULL) goto out;
-    mizu_py_blob_frame(blob, names, x->ncols, x->hold.rows, x->row_names);
+    mizu_py_blob_frame(blob, names, x->ncols, x->hold.rows, x->row_names,
+                       x->r_attrs, peer_caps);
     mizu_arrow_root_blob(ar, blob, bn);
   }
   /* the zero-copy gate on the memoized frame span (was: the 'I' sizing's
@@ -4803,6 +5927,7 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
   x.st = st;
   x.cap = cap;
   x.row_names = f->row_names;
+  x.r_attrs = f->r_attrs;
   int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h, peer_caps);
   ixs_free(&x);
   return rc;
@@ -5755,6 +6880,7 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   memcpy(w.path, "args", 5);
   w.path_len = 4;
   w.refs = 1;              /* the hook mode: markers and REF leaves emit */
+  w.caps = MIZU_PY_CAPS;   /* this build's word, as the corpus hook's */
   ixw_task(&w, code_s, code_n, (int) kind, args, kwargs, target, ident);
   if (w.decline) {
     ixw_raise(&w);
@@ -6136,6 +7262,7 @@ PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
   memset(&w, 0, sizeof(w));
   memcpy(w.path, "args", 5);
   w.path_len = 4;
+  w.caps = MIZU_PY_CAPS;   /* this build's word, as the corpus hook's */
   ixw_map_desc(&w, code_s, code_n, (int) kind, args, kwargs, x, target,
                MIZU_PY_IDENT);
   if (w.decline) {
@@ -6474,13 +7601,14 @@ static void ixw_raise(ixw *w) {
    (the stage_convert discipline: a raise as error leaves no claimed
    reservation half-written — the core rolls it back). */
 int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
-                    uint32_t inline_max, mizu_handle *h) {
+                    uint32_t inline_max, mizu_handle *h, uint32_t caps) {
   ixw w;
   memset(&w, 0, sizeof(w));
   memcpy(w.path, "x", 2);
   w.path_len = 1;
   w.dst = payload;
   w.limit = inline_max;
+  w.caps = caps;
   ixw_stream(&w, obj);
   if (w.decline) {
     ixw_raise(&w);
@@ -6547,6 +7675,7 @@ PyObject *pymizu_ix_write_stream(PyObject *obj) {
   memset(&w, 0, sizeof(w));
   memcpy(w.path, "x", 2);
   w.path_len = 1;
+  w.caps = MIZU_PY_CAPS;   /* the corpus hook: this build's full word */
   ixw_stream(&w, obj);
   if (w.decline) {
     ixw_raise(&w);

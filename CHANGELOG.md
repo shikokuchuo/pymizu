@@ -10,6 +10,26 @@ Initial pre-release.
 
 ### Added
 
+- Faithful metadata round trips with R (the `MIZU_CAP_LABELED`
+  capability): named vectors keep their names, matrices and arrays keep
+  their `dimnames` (axis names and the `table` class included), and
+  data.frame metadata — the full class vector (tibbles, any class
+  ending in `"data.frame"`) and extra attributes — crosses opaquely.
+  The new `pymizu.DimArray` (an `ndarray` subclass) homes labeled
+  vectors and arrays with `names` / `dimnames` / `axis_names` /
+  `r_class` attached; numpy operations drop the labels rather than
+  mislabel reshaped data, so a modified array arrives in R as a plain
+  array and a pristine echo stays `identical()`. Frame metadata rides
+  the `Frame._r_attrs` stash (the class vector decoded, extra
+  attributes as undecoded wire spans), spliced verbatim on a pristine
+  echo; a frame rebuilt through pyarrow, polars, pandas, `from_arrow`,
+  or pickle arrives in R as a plain `data.frame`. Sends of these shapes
+  to a peer without the capability decline at send time, never strip;
+  and a re-attached or changed label set on a region-backed array
+  crosses by value (a by-reference send never resurrects the region's
+  labels). The `DimArray` re-export is lazy: a numpy-less
+  `import pymizu` stays clean.
+
 - `pymizu.TaskLostError`: a task whose payload region vanished without a
   worker-death verdict (a transient open failure on the worker, not a
   dead worker) now collects as this distinct error instead of a generic

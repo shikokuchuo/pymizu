@@ -25,6 +25,36 @@ class ExpectedFrame:
     columns: dict = field(default_factory=dict)
     names: list = field(default_factory=list)
     row_names: object = None  # None | list[str] | int32 array
+    r_attrs: object = None  # (class_tuple, extra_keys) of the stash
+
+
+@dataclass
+class ExpectedDimArray:
+    """A labeled array home (MIZU_CAP_LABELED): the values plus R's
+    labels (names / dimnames / axis_names / the table class)."""
+
+    array: object
+    names: object = None
+    dimnames: object = None
+    axis_names: object = None
+    r_class: object = None
+
+
+@dataclass
+class NamedList:
+    """attr(list, {names}) — the dimnames carrier's one attr form."""
+
+    entries: list
+    names: list
+
+
+@dataclass
+class OpaqueAttr:
+    """An extended frame's extra value: never decoded — the raw (value,
+    attrs) pair (its span the write side's byte check pins)."""
+
+    x: object
+    attrs: dict
 
 
 @dataclass
@@ -414,7 +444,7 @@ def _factor_home(codes, levels):
     return out
 
 
-def _frame_home(cols, attrs):
+def _frame_home(cols, attrs, klass=None):
     names = _str_list(attrs["names"])
     row_names = attrs["row.names"]
     if (
@@ -425,10 +455,17 @@ def _frame_home(cols, attrs):
         row_names = None  # the compact automatic form c(NA, +-n)
     elif isinstance(row_names, int):
         row_names = np.array([row_names], dtype=np.int32)
+    r_attrs = None
+    if klass is not None:
+        extras = sorted(
+            k for k in attrs if k not in ("names", "class", "row.names")
+        )
+        r_attrs = (tuple(klass), extras)
     return ExpectedFrame(
         columns=dict(zip(names, cols, strict=True)),
         names=names,
         row_names=row_names,
+        r_attrs=r_attrs,
     )
 
 
@@ -439,6 +476,15 @@ def attr_home(x, attrs):
         levels = _str_list(attrs["levels"])
         codes = np.atleast_1d(x)
         return _factor_home(codes, levels)
+    if (
+        klass is not None
+        and klass[-1] == "data.frame"
+        and (len(klass) > 1 or set(attrs) != {"names", "class", "row.names"})
+    ):
+        # the extended frame (MIZU_CAP_LABELED): the class vector's last
+        # element rules, extras ride opaquely
+        cols = x if isinstance(x, list) else [x]
+        return _frame_home(cols, attrs, klass)
     if klass == ["data.frame"]:
         cols = x if isinstance(x, list) else [x]
         return _frame_home(cols, attrs)
@@ -451,6 +497,35 @@ def attr_home(x, attrs):
         if len(dims) == 1:
             return x  # the length-1 shift: a plain vector
         return np.asarray(x).reshape(dims, order="F")
+    if set(attrs) == {"names"}:
+        # the named vector; attr(list, {names}) is the dimnames carrier
+        if isinstance(x, list):
+            return NamedList(x, _str_list(attrs["names"]))
+        return ExpectedDimArray(
+            np.asarray(x), names=tuple(_str_list(attrs["names"]))
+        )
+    if "dimnames" in attrs and set(attrs) <= {"dim", "dimnames", "class"}:
+        if klass is not None and klass != ["table"]:
+            raise ValueError(f"no Python home for attr class {klass!r}")
+        dims = attrs["dim"]
+        if isinstance(dims, int):
+            dims = [dims]
+        else:
+            dims = dims.view(np.int32).tolist()
+        arr = np.asarray(x)
+        if len(dims) > 1:
+            arr = arr.reshape(dims, order="F")
+        dn = attrs["dimnames"]
+        axis_names = None
+        if isinstance(dn, NamedList):
+            axis_names = tuple(dn.names)
+            dn = dn.entries
+        return ExpectedDimArray(
+            arr,
+            dimnames=tuple(None if e is None else tuple(e) for e in dn),
+            axis_names=axis_names,
+            r_class="table" if klass == ["table"] else None,
+        )
     if klass == ["Date"]:
         return np.asarray(x).astype("datetime64[D]")
     if klass == ["POSIXct", "POSIXt"]:
@@ -483,7 +558,8 @@ def attr_home(x, attrs):
         out = us.astype("timedelta64[us]")
         out[isnat] = np.timedelta64("NaT", "us")
         return out
-    raise ValueError(f"no Python home for attr class {klass!r}")
+    # the opaque subtree (an extended frame's extra): never decoded
+    return OpaqueAttr(x, attrs)
 
 
 def parse(text):
@@ -533,6 +609,10 @@ def ix_same(a, b):
         return isinstance(a, _p._IxRef) and a.id == b.id
     if isinstance(b, ExpectedFrame):
         return frame_same(a, b)
+    if isinstance(b, ExpectedDimArray):
+        return dimarray_same(a, b)
+    if isinstance(b, NamedList):
+        return False  # never a top-level home: the dimnames carrier
     if isinstance(b, ExpectedError):
         return err_same(a, b)
     if isinstance(b, np.ndarray):
@@ -558,6 +638,19 @@ def _col_same(a, b):
     return ix_same(a, b)
 
 
+def dimarray_same(a, b):
+    """The DimArray comparison: values exact, labels equal."""
+    if type(a).__name__ != "DimArray":
+        return False
+    return (
+        _array_same(np.asarray(a), np.asarray(b.array))
+        and a.names == b.names
+        and a.dimnames == b.dimnames
+        and a.axis_names == b.axis_names
+        and a.r_class == b.r_class
+    )
+
+
 def frame_same(f, exp):
     if not isinstance(f, _pymizu_frame()):
         return False
@@ -568,6 +661,19 @@ def frame_same(f, exp):
         return False
     if not all(_col_same(d[k], exp.columns[k]) for k in exp.columns):
         return False
+    # the extended frame's stash: the class vector verbatim, the extras'
+    # keys (their spans the write side's byte check pins)
+    ra = f._r_attrs
+    if exp.r_attrs is None:
+        if ra is not None:
+            return False
+    else:
+        if ra is None:
+            return False
+        if tuple(ra[0]) != exp.r_attrs[0]:
+            return False
+        if [k for k, _ in ra[1]] != exp.r_attrs[1]:
+            return False
     rn = f.row_names
     en = exp.row_names
     if en is None:

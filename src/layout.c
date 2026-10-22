@@ -123,6 +123,9 @@ typedef struct {
   int64_t strides[32];  /* bytes */
   uint64_t total;
   int f_contig;         /* the F-order verdict (length-1 axes exempt) */
+  /* the label stash (MIZU_CAP_LABELED): a DimArray's, validated */
+  int labeled;
+  ix_labels lb;
   /* temporal: the held int64 counts (the .view form) */
   PyObject *tview;
   Py_buffer tbv;
@@ -137,6 +140,10 @@ static void leaf_release(pymizu_leaf *lf) {
     Py_XDECREF(lf->tview);
   } else if (lf->type != 0) {
     PyBuffer_Release(&lf->v);
+  }
+  if (lf->labeled) {
+    mizu_py_labels_clear(&lf->lb);
+    lf->labeled = 0;
   }
   lf->type = 0;
   lf->temporal = 0;
@@ -172,6 +179,9 @@ static int leaf_classify(PyObject *obj, pymizu_leaf *lf) {
   lf->temporal = mizu_py_np_temporal_unit(obj, &unit, &delta);
   if (lf->temporal) {
     if (unit == TU_CAL || unit == TU_SUB || unit == TU_NONE) return 0;
+    /* a labeled temporal has no labeled shape (a named Date / POSIXct
+       stays declined): the 'I' writer names the rule */
+    if (mizu_py_dimarray_labeled(obj)) return 0;
     lf->unit = unit;
     lf->nd = 1;
     if (temporal_counts(obj, lf) < 0) {
@@ -231,6 +241,15 @@ static int leaf_classify(PyObject *obj, pymizu_leaf *lf) {
   lf->nd = nd;
   lf->total = total;
   lf->f_contig = f_contig;
+  /* the label stash (MIZU_CAP_LABELED): an invalid one declines the
+     leaf — the 'I' writer re-validates and names the rule */
+  if (mizu_py_labels_of(obj, nd, lf->shape, &lf->lb) < 0) {
+    PyErr_Clear();
+    leaf_release(lf);
+    return 0;
+  }
+  lf->labeled = lf->lb.names != NULL || lf->lb.dimnames != NULL ||
+    lf->lb.axis_names != NULL || lf->lb.table;
   return 1;
 fail:
   PyBuffer_Release(&lf->v);
@@ -349,8 +368,71 @@ static uint64_t mizh_leaf_body_size(const pymizu_leaf *lf) {
     lf->total * (uint64_t) mizu_type_elt_size(lf->type);
 }
 
+/* The labeled blobs (MIZU_CAP_LABELED): {names} for a 1-D array, or
+   {dim, dimnames[, class = "table"]} — the corpus-pinned wire forms,
+   sized and written through the shared put helpers (the 'I' writer's
+   ixe_named_vec / ixe_dim_labeled dicts byte-for-byte). */
+static uint64_t blob_labeled_size(const pymizu_leaf *lf) {
+  uint64_t sz = mizu_ix_put_header(NULL);
+  if (lf->lb.names != NULL) {
+    const Py_ssize_t n = PySequence_Size(lf->lb.names);
+    return sz + mizu_ix_put_dict_begin(NULL, 1) +
+      mizu_ix_put_key(NULL, MIZU_IX_ATTR_NAMES,
+                      IX_KEYLEN(MIZU_IX_ATTR_NAMES)) +
+      mizu_py_ix_labels_strv(NULL, lf->lb.names, n);
+  }
+  sz += mizu_ix_put_dict_begin(NULL, (uint64_t) (lf->lb.table ? 3 : 2));
+  sz += mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
+  if (lf->nd == 1) {
+    sz += mizu_ix_put_int(NULL, lf->dims[0]);
+  } else {
+    sz += mizu_ix_put_vec(NULL, MIZU_TYPE_INT, NULL, (uint64_t) lf->nd);
+  }
+  sz += mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIMNAMES,
+                        IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES));
+  sz += mizu_py_ix_dimnames(NULL, lf->lb.dimnames, lf->lb.axis_names,
+                            lf->nd);
+  if (lf->lb.table) {
+    sz += mizu_ix_put_key(NULL, MIZU_IX_ATTR_CLASS,
+                          IX_KEYLEN(MIZU_IX_ATTR_CLASS));
+    sz += mizu_ix_put_str(NULL, MIZU_IX_CLASS_TABLE,
+                          (int32_t) IX_KEYLEN(MIZU_IX_CLASS_TABLE));
+  }
+  return sz;
+}
+
+static void blob_labeled_write(uint8_t *dst, const pymizu_leaf *lf) {
+  dst += mizu_ix_put_header(dst);
+  if (lf->lb.names != NULL) {
+    const Py_ssize_t n = PySequence_Size(lf->lb.names);
+    dst += mizu_ix_put_dict_begin(dst, 1);
+    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_NAMES,
+                           IX_KEYLEN(MIZU_IX_ATTR_NAMES));
+    mizu_py_ix_labels_strv(dst, lf->lb.names, n);
+    return;
+  }
+  dst += mizu_ix_put_dict_begin(dst, (uint64_t) (lf->lb.table ? 3 : 2));
+  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
+  if (lf->nd == 1) {
+    dst += mizu_ix_put_int(dst, lf->dims[0]);
+  } else {
+    dst += mizu_ix_put_vec(dst, MIZU_TYPE_INT, lf->dims, (uint64_t) lf->nd);
+  }
+  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIMNAMES,
+                         IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES));
+  dst += mizu_py_ix_dimnames(dst, lf->lb.dimnames, lf->lb.axis_names,
+                             lf->nd);
+  if (lf->lb.table) {
+    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_CLASS,
+                           IX_KEYLEN(MIZU_IX_ATTR_CLASS));
+    mizu_ix_put_str(dst, MIZU_IX_CLASS_TABLE,
+                    (int32_t) IX_KEYLEN(MIZU_IX_CLASS_TABLE));
+  }
+}
+
 static uint64_t mizh_leaf_blob_size(const pymizu_leaf *lf) {
   if (lf->temporal) return blob_temporal_size(lf);
+  if (lf->labeled) return blob_labeled_size(lf);
   return lf->nd >= 2 ? blob_dim_size(lf->nd) : 0;
 }
 
@@ -396,6 +478,10 @@ static void mizh_leaf_body_write(uint8_t *dst, pymizu_leaf *lf) {
 static void mizh_leaf_blob_write(uint8_t *dst, const pymizu_leaf *lf) {
   if (lf->temporal) {
     blob_temporal_write(dst, lf);
+    return;
+  }
+  if (lf->labeled) {
+    blob_labeled_write(dst, lf);
     return;
   }
   if (lf->nd >= 2) blob_dim_write(dst, lf->dims, lf->nd);
@@ -602,6 +688,7 @@ static int tree_elt_size(PyObject *elt, unsigned depth, uint64_t *size,
     const uint64_t blob = mizh_leaf_blob_size(&lf);
     *size = mizh_leaf_body_size(&lf) + blob;
     if (blob != 0) *caps |= MIZU_CAP_ATTRS;
+    if (lf.labeled) *caps |= MIZU_CAP_LABELED;
     leaf_release(&lf);
     return 1;
   }
@@ -985,11 +1072,14 @@ int pymizu_stage_layout(PyObject *obj, mizu_slot_hdr *hdr,
   pymizu_leaf lf;
   if (!leaf_classify(obj, &lf)) return -1;
   int rc = -1;
-  /* the root shapes (a 1-D contiguous identity buffer is stage_raw's) */
-  if (lf.temporal || lf.nd >= 2 || !lf.f_contig) {
+  /* the root shapes (a 1-D contiguous identity buffer is stage_raw's);
+     a labeled array rides the tier at any contiguity — the peer's mask
+     carrying the bit, else the 'I' writer's gate names the remedy */
+  if (lf.temporal || lf.nd >= 2 || !lf.f_contig || lf.labeled) {
     const uint64_t blob = mizh_leaf_blob_size(&lf);
-    if (blob == 0 || (peer_caps & MIZU_CAP_ATTRS) != 0)
-      rc = mizh_root(obj, &lf, hdr, payload, inline_max, h);
+    if (!lf.labeled || (peer_caps & MIZU_CAP_LABELED) != 0)
+      if (blob == 0 || (peer_caps & MIZU_CAP_ATTRS) != 0)
+        rc = mizh_root(obj, &lf, hdr, payload, inline_max, h);
   }
   leaf_release(&lf);
   return rc;

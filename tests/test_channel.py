@@ -1135,21 +1135,23 @@ def test_r_interop_r_produces():
 
 
 @r_only
-def test_r_interop_named_vector_declined_at_send():
-    # a named atomic vector has no portable home: the interchange writer
-    # raises at R send time (the identity exchange tells R what pymizu
-    # can read), and the R side reports the classed decline
+def test_r_interop_named_vector_crosses():
+    # a named atomic vector crosses with its names (MIZU_CAP_LABELED):
+    # the layout write + {names} blob homes a DimArray carrying them
+    np = pytest.importorskip("numpy")
     src = (
         "{ y <- cumsum(rep(1.0, 1000000));"
         " names(y) <- paste0('n', seq_along(y));"
-        " e <- tryCatch({ mizu_send(ch, y); 'no error' },"
-        "   error = function(e) conditionMessage(e));"
-        " mizu_send(ch, e)\n" + _R_ECHO + " }"
+        " mizu_send(ch, y)\n" + _R_ECHO + " }"
     )
     ch = _r_channel(src)
     try:
         got = ch.recv(timeout=10)
-        assert "not portable" in got and "named atomic vector" in got
+        assert isinstance(got, pymizu.DimArray)
+        assert got.dtype == np.dtype("f8")
+        assert got[0] == 1.0 and got[-1] == 1000000.0
+        assert got.names is not None
+        assert got.names[0] == "n1" and got.names[-1] == "n1000000"
     finally:
         ch.close()
 

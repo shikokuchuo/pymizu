@@ -43,6 +43,8 @@ typedef struct {
   uint32_t lang;       /* the peer's language (the sentinel warnings gate) */
   PyObject *row_names; /* a same-language Frame's row_names (borrowed);
                           NULL writes the automatic c(NA, -n) form */
+  PyObject *r_attrs;   /* a same-language Frame's extended-frame stash
+                          (borrowed); NULL writes the plain dict */
   cvt_warn warn;       /* the 'I' frame emit's conversion warnings,
                           raised after the write completes (the MIZL
                           writer keeps its own) */
@@ -50,13 +52,17 @@ typedef struct {
 
 // The root-blob override emitter (interop.c's; a complete 'I' stream) -----------
 
-/* The frame dict {names, class = "data.frame", row.names} with a custom
+/* The frame dict {names, class, row.names[, extras...]} with a custom
    (int32 or character) row_names — the override handed to the core
-   writer's mizu_arrow_root_blob. The automatic c(NA, -n) form is the
-   core's. dst NULL sizes, a real dst writes behind the size pass's count.
-   0 with an exception set on a malformed row_names. */
+   writer's mizu_arrow_root_blob — plus, when r_attrs is set, the
+   extended frame's stash: the class vector verbatim and the extras
+   spliced raw in stored order (MIZU_CAP_LABELED; caps must carry the
+   bit). The automatic c(NA, -n) form is the core's. dst NULL sizes, a
+   real dst writes behind the size pass's count. 0 with an exception
+   set on a malformed row_names or a caps-less peer. */
 size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
-                          PyObject *row_names);
+                          PyObject *row_names, PyObject *r_attrs,
+                          uint32_t caps);
 
 // The Frame.from_arrow builder (interop.c's; interop_frame.c wraps) -----------
 

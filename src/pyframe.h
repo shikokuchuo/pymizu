@@ -153,6 +153,13 @@ typedef struct {
   PyObject *row_names;   /* Py_None | list[str] | numpy int32 array */
   PyObject *loan;        /* region-backed: the tree wrap's _ShmLoan anchor
                             (NULL for a copy-backed Frame) */
+  PyObject *r_attrs;     /* NULL, or the extended frame's (class_tuple,
+                            extras) stash: extras a list of (key, bytes)
+                            — the extra attributes' raw wire spans,
+                            spliced verbatim on a pristine echo, never
+                            decoded (DESIGN.md's Frame immutability
+                            invariant: any future Frame mutator must
+                            clear it first) */
 } MizuFrame;
 
 typedef struct { const int32_t *p; uint64_t n; } i32_span;

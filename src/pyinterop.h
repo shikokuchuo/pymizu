@@ -196,16 +196,18 @@ int mizu_py_layout_register(PyObject *m, PyObject *mizu_error);
 // What _pymizu.c calls in interop.c -------------------------------------------
 
 /* The 'I' writer onto the tiers (foreign handles only): sizes and validates
-   in one pass, then writes and stages INLINE/ARENA/SHM_RAW. 0 staged,
-   1 declined (DeclinedError set) or another exception. */
+   in one pass, then writes and stages INLINE/ARENA/SHM_RAW. caps is the
+   peer's word (the labeled shapes' send gate). 0 staged, 1 declined
+   (DeclinedError set) or another exception. */
 int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
-                    uint32_t inline_max, mizu_handle *h);
+                    uint32_t inline_max, mizu_handle *h, uint32_t caps);
 
 /* This binding's capability mask and identity word, the one binding fill
    (channel and pool). */
 #define MIZU_PY_CAPS \
   (MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL | MIZU_CAP_TASKREF | \
-   MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN | MIZU_CAP_MIZL_U64V)
+   MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN | MIZU_CAP_MIZL_U64V | \
+   MIZU_CAP_LABELED)
 #define MIZU_PY_IDENT MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_PY_CAPS)
 
 /* The MIZL remote-leaf directory tag (F2): the column lives in another
@@ -303,6 +305,53 @@ int mizu_py_ref_emit(mizu_shm *shm, mizu_slot_hdr *hdr, uint8_t *payload,
    region). */
 int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
                            PyObject **out_view, uint32_t *out_caps);
+
+/* The DimArray type check alone (the buffer gates' exemption from the
+   subclass reject — its buffer export is the plain ndarray one). */
+int mizu_py_dimarray_check(PyObject *obj);
+
+/* The fast gate for the stage order (skipping the raw tiers): 1 when obj is a DimArray
+   carrying any label (names / dimnames / axis_names / r_class) — the
+   raw tiers skip a labeled array (labels are data, never silently
+   dropped); the 'I' writer and the layout tiers then own the shape. */
+int mizu_py_dimarray_labeled(PyObject *obj);
+
+/* The validated label stash off a DimArray (the 'I' writer and the
+   layout leaf builds share it): NULL when a slot is unset, table the
+   r_class verdict. The three sequences are owned references, cleared
+   by mizu_py_labels_clear. */
+typedef struct {
+  PyObject *names;
+  PyObject *dimnames;
+  PyObject *axis_names;
+  int table;
+} ix_labels;
+
+/* Read and validate the stash: 0 the object carries no labels, 1 a
+   validated stash (owned references), -1 with DeclinedError set (names
+   and dimnames mutually exclusive, axis_names requiring dimnames,
+   lengths against (nd, shape), r_class "table" or absent). */
+int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
+                      ix_labels *out);
+void mizu_py_labels_clear(ix_labels *lb);
+
+/* The 'I' emission halves of the labeled shapes (layout.c's blob
+   writers): NULL dst sizes, a real dst writes behind the size pass's
+   count (the put helpers' discipline). */
+size_t mizu_py_ix_labels_strv(uint8_t *dst, PyObject *seq, Py_ssize_t n);
+size_t mizu_py_ix_dimnames(uint8_t *dst, PyObject *dimnames,
+                           PyObject *axis_names, int nd);
+
+/* The REF gates' label compare: the MIZH root blob's labels against the
+   candidate's stash — a by-reference send requires them equal, else the
+   candidate crosses by value (mizu's mizu_view_attrs_match precedent; a
+   relabeled or label-stripped array never resurrects the region's
+   labels, a plain array over a labeled region copies: honest loss).
+   blob NULL/0 the unlabeled region (the candidate must carry no
+   labels). 1 equal, 0 differ or malformed (the by-value paths
+   re-validate and decline there). */
+int mizu_py_labels_match(const uint8_t *blob, size_t blob_size,
+                         PyObject *obj, int nd, const int64_t *shape);
 
 /* The referenced root's descriptor for a remote-leaf (tag 33) write:
    length / attrs_size / the known-NA-free claim off the live region's

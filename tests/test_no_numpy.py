@@ -719,3 +719,45 @@ def test_raw_read_f64_sink_partial_numpy(tmp_path):
             ch.close()
         """,
     )
+
+
+def test_dimarray_lazy_export_without_numpy(tmp_path):
+    # the lazy re-export keeps numpy out of pymizu's own import path:
+    # import pymizu stays numpy-free, and touching pymizu.DimArray raises
+    # the import error
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+
+        assert "numpy" not in __import__("sys").modules
+        try:
+            pymizu.DimArray
+            raise SystemExit("expected ImportError")
+        except ImportError:
+            pass
+        """,
+    )
+
+
+def test_labeled_read_without_numpy_declines(tmp_path):
+    # a labeled array arriving without numpy declines the way a plain
+    # dim array does today (the no-numpy read path's own decline)
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+        from pymizu import _pymizu
+
+        # attr(intv[1,2], names=strv["a","b"]) — the {names} blob's read
+        data = bytes.fromhex(
+            "49010f07020000000000000001000000020000000d0100000000000000"
+            "050000006e616d65730b020000000000000001000000610100000062"
+        )
+        try:
+            _pymizu._read_stream(data)
+            raise SystemExit("expected MizuError")
+        except pymizu.MizuError as e:
+            assert "numpy" in str(e)
+        """,
+    )

@@ -1896,7 +1896,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 95)  # R: all caps but MIZL_TSN
+        assert ch._h._peer_ident() == (2, 223)  # R: all caps but MIZL_TSN
     finally:
         ch.close()
 
@@ -2219,16 +2219,20 @@ report_err <- function(x) {
 report_err(ordered(c("a", "b")))
 df <- data.frame(x = 1:2)
 class(df) <- c("tbl_df", "tbl", "data.frame") # a tibble's shape, no package
-report_err(df)
+mizu::mizu_send(ch, df)   # a tibble crosses now (MIZU_CAP_LABELED)
 bs <- "héllo"
 Encoding(bs) <- "bytes"
 report_err(bs)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        for _ in range(src.count("report_err(")):
-            got = ch.recv(30)
-            assert "not portable" in got
+        got = ch.recv(30)
+        assert "not portable" in got
+        f = ch.recv(30)  # the tibble: the full class vector rides the stash
+        assert isinstance(f, pymizu.Frame)
+        assert f._r_attrs[0] == ("tbl_df", "tbl", "data.frame")
+        got = ch.recv(30)
+        assert "not portable" in got
     finally:
         ch.close()
     # Python-side DeclinedErrors over the live foreign channel
@@ -2602,8 +2606,49 @@ mizu::mizu_send(ch, e)
         assert d["b"].tolist()[-1] == 1.0
         fac = ch.recv(30)
         assert fac == ["a", "b"] * 50000  # a big factor: the copy tier
-        got = ch.recv(30)
-        assert "not portable" in got and "named atomic vector" in got
+        got = ch.recv(30)  # the named vector: the layout write + blob
+        assert isinstance(got, pymizu.DimArray)
+        assert got.names is not None
+        assert got.names[0] == "n1" and got.names[-1] == "n100000"
+    finally:
+        ch.close()
+
+
+def test_crosslang_labeled_extent1(r_mizu):
+    pytest.importorskip("numpy")
+    # extent-1 label positions: the 0x04 scalar collapse would break the
+    # R -> Python hop (a bare str entry has no home, an NA one reads as
+    # a nil axis) — both directions identical()
+    src = r"""
+t0 <- table("a")
+mizu::mizu_send(ch, t0)
+y <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, identical(y, t0))
+e1 <- array(1, 1L, list(NA_character_))
+mizu::mizu_send(ch, e1)
+y <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, identical(y, e1))
+n1 <- structure(1, names = NA_character_)
+mizu::mizu_send(ch, n1)
+y <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, identical(y, n1))
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        t0 = ch.recv(30)
+        assert isinstance(t0, pymizu.DimArray)
+        assert t0.dimnames == (("a",),) and t0.axis_names == ("",)
+        assert t0.r_class == "table"
+        assert ch.send(t0) is None
+        assert ch.recv(30) is True
+        e1 = ch.recv(30)
+        assert e1.dimnames == ((None,),)
+        assert ch.send(e1) is None
+        assert ch.recv(30) is True
+        n1 = ch.recv(30)
+        assert n1.names == (None,)
+        assert ch.send(n1) is None
+        assert ch.recv(30) is True
     finally:
         ch.close()
 
@@ -3132,18 +3177,15 @@ mizu::mizu_recv(ch, timeout = 60)
 
 
 def test_r_peer_region_declines_on_r_side(r_mizu):
-    # past the floor on a foreign handle: a named vector and a
-    # closure-leafed tree raise at send (no portable home); a difftime
-    # crosses as the MIZH layout + blob and homes timedelta64[us]
+    # past the floor on a foreign handle: a named vector crosses as a
+    # DimArray with its names (MIZU_CAP_LABELED), a closure-leafed tree
+    # raises at send (no portable home); a difftime crosses as the MIZH
+    # layout + blob and homes timedelta64[us]
     np = pytest.importorskip("numpy")
     src = r"""
-e1 <- tryCatch({
-  nv <- runif(300000)
-  names(nv) <- paste0("n", 1:300000)
-  mizu::mizu_send(ch, nv)
-  "no error"
-}, error = function(e) conditionMessage(e))
-mizu::mizu_send(ch, e1)
+nv <- runif(300000)
+names(nv) <- paste0("n", 1:300000)
+mizu::mizu_send(ch, nv)
 e2 <- tryCatch({
   mizu::mizu_send(ch, as.difftime(1:300000, units = "secs"))
   "no error"
@@ -3158,7 +3200,11 @@ mizu::mizu_recv(ch, timeout = 60)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        assert "not portable" in ch.recv(30)
+        got = ch.recv(30)  # the named vector: one layout write + blob
+        assert isinstance(got, pymizu.DimArray)
+        assert got.dtype == np.dtype("f8")
+        assert got.names is not None
+        assert got.names[0] == "n1" and got.names[-1] == "n300000"
         got = ch.recv(30)  # the difftime: one layout write, an owned copy
         assert got.dtype == np.dtype("m8[us]")
         assert got[0] == np.timedelta64(1, "s")

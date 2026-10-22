@@ -120,6 +120,7 @@ uint64_t frame_data_size(const frame_cols *fc) {
 static void Frame_dealloc(MizuFrame *self) {
   Py_CLEAR(self->row_names);
   Py_CLEAR(self->loan);
+  Py_CLEAR(self->r_attrs);
   if (self->fc != NULL) frame_cols_decref(self->fc);
   MizuFrameType.tp_free((PyObject *) self);
 }
@@ -154,6 +155,13 @@ static PyObject *Frame_row_names_get(MizuFrame *self,
                                      void *Py_UNUSED(closure)) {
   Py_INCREF(self->row_names);
   return self->row_names;
+}
+
+static PyObject *Frame_r_attrs_get(MizuFrame *self,
+                                   void *Py_UNUSED(closure)) {
+  if (self->r_attrs == NULL) Py_RETURN_NONE;
+  Py_INCREF(self->r_attrs);
+  return self->r_attrs;
 }
 
 /* Arrow unit -> numpy datetime64/timedelta64 unit code (u/n widen). */
@@ -1763,6 +1771,10 @@ static PyGetSetDef Frame_getset[] = {
   { "row_names", (getter) Frame_row_names_get, NULL,
     "The row names metadata: None for automatic, else a list of str or\n"
     "an int32 array. Not carried by to_dict() or the Arrow export.", NULL },
+  { "_r_attrs", (getter) Frame_r_attrs_get, NULL,
+    "The extended frame's stash: None, or (class_tuple, extras) with\n"
+    "extras a list of (key, bytes) — R frame metadata carried verbatim\n"
+    "for a pristine echo, never decoded.", NULL },
   { NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -1779,7 +1791,12 @@ PyTypeObject MizuFrameType = {
             "to_dict() gives the column dict without an Arrow library;\n"
             "__arrow_c_stream__ exports to polars / pyarrow / pandas.\n"
             "from_arrow() constructs one from an Arrow producer (the\n"
-            "opt-in zero-copy path for Python-to-Python channels).",
+            "opt-in zero-copy path for Python-to-Python channels).\n"
+            "R frame metadata rides the _r_attrs stash: it attaches at\n"
+            "read and validates at send, but it rides the pristine\n"
+            "received Frame only — the Frame immutability invariant:\n"
+            "any future mutator must clear it first (a rebuild arrives\n"
+            "in R as a plain data.frame, never a mislabeled one).",
   .tp_dealloc = (destructor) Frame_dealloc,
   .tp_repr = (reprfunc) Frame_repr,
   .tp_as_sequence = &Frame_as_sequence,

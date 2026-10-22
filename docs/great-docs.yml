@@ -50,6 +50,7 @@ reference:
         - r_launcher
         - r_pool_launcher
         - Frame
+        - DimArray
     - title: Outcomes and errors
       desc: >-
         Terminal transport states return as the sentinel singletons FULL /

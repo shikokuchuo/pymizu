@@ -59,6 +59,7 @@ from pymizu._r import r_launcher, r_pool_launcher
 if TYPE_CHECKING:
     import numpy as _np
 
+    from pymizu._dimarray import DimArray
     from pymizu._map import PreparedMap
 
 try:
@@ -1396,6 +1397,12 @@ def __getattr__(name: str) -> _Any:
         from pymizu._map import PreparedMap
 
         return PreparedMap
+    # pymizu._dimarray imports numpy outright — the same deferral, so a
+    # numpy-less `import pymizu` stays clean.
+    if name == "DimArray":
+        from pymizu._dimarray import DimArray
+
+        return DimArray
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -1407,6 +1414,7 @@ __all__ = [
     "CancelledError",
     "Channel",
     "DeclinedError",
+    "DimArray",
     "Frame",
     "Pool",
     "PoolExecutor",

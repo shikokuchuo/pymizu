@@ -1286,11 +1286,11 @@ def test_attr_dict_malformed_forms():
     # the attributes are not a dict
     with pytest.raises(pymizu.MizuError, match="not a dict"):
         _read(attr_val(_ix_int(1)))
-    # past 16 entries
-    big = b"\x0d" + (17).to_bytes(8, "little")
-    for i in range(17):
+    # past 1024 entries (the extended frame's extras raised the bound)
+    big = b"\x0d" + (1025).to_bytes(8, "little")
+    for i in range(1025):
         big += _ix_key(f"k{i}") + _ix_int(1)
-    with pytest.raises(pymizu.MizuError, match="past 16"):
+    with pytest.raises(pymizu.MizuError, match="past 1024"):
         _read(attr_val(big))
     # a duplicate key
     dup = b"\x0d" + (2).to_bytes(8, "little")
