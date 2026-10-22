@@ -327,6 +327,7 @@ R_MIZS_ECHO = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))
 mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -351,6 +352,7 @@ R_MIZS_NA = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, is.na(x))
 mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -456,6 +458,7 @@ def test_py_peer_str_list_retain_balance(r_mizu):
 
 R_MIZS_ATTRS = r"""
 mizu::mizu_send(ch, setNames(paste0("s", 1:30000), paste0("n", 1:30000)))
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -474,6 +477,7 @@ R_MIZH_ECHO = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, .Call(mizu:::mizu_zc_view_check, x))
 mizu::mizu_send(ch, x)
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -840,6 +844,7 @@ x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, x[[1]])
 mizu::mizu_send(ch, x[[2]][[2]])
 mizu::mizu_send(ch, x[[3]])
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -865,6 +870,7 @@ def test_r_peer_path_view_resolves(r_mizu):
 R_MIZL_VIEW_TREE_COPIES = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, list(x, seq_len(20000) + 0L))
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -891,6 +897,7 @@ x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, x)
 y <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, y)
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -1702,6 +1709,7 @@ x <- as.numeric(seq_len(2000000)) + 0   # materialize: an ALTREP sequence
 i <- seq_len(2000000) + 0L              # would serialize, never SHM_VEC
 mizu::mizu_send(ch, x)
 mizu::mizu_send(ch, i)
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
@@ -3693,6 +3701,7 @@ N <- 100000
 mizu::mizu_send(ch, stats::setNames(list(runif(N), runif(N)), c("a", NA)))
 # an attributed list root: no portable home, never a silent drop
 mizu::mizu_send(ch, structure(list(runif(N), runif(N)), foo = "bar"))
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
@@ -3710,6 +3719,7 @@ def test_r_peer_malformed_tree_shapes(r_mizu):
 R_PATH_VIEW_TEN = r"""
 x <- mizu::mizu_recv(ch, timeout = 60)
 mizu::mizu_send(ch, x[[10]])
+mizu::mizu_recv(ch, timeout = 60)   # stay alive while the consumer reads
 """
 
 
