@@ -83,7 +83,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-fcaa8ba736cf4e2cf4790a1a6ae86d56.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-723567b195ef916a85594ef888c0e6b0.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -370,9 +370,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li>A <code>Date</code> crosses as <code>datetime64[D]</code> or Arrow <code>date32</code>. A <code>POSIXct</code> crosses as a naive <code>datetime64[us]</code> or <code>timestamp[us, tz]</code>: microsecond precision, <code>NaT</code> read as <code>NA</code>. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with <code>tzone = "UTC"</code>.</li>
 <li>A <code>difftime</code> crosses as <code>timedelta64[us]</code>: microsecond precision, <code>NA</code> read as <code>NaT</code>. R’s five units cross by value. A round trip normalizes them to seconds. <code>timedelta64</code> arrays of any non-calendar unit cross likewise (numpy scalars and <code>datetime.timedelta</code> included). Inside a frame, a difftime column exports to Arrow as <code>duration[us]</code>, and an Arrow <code>duration</code> column arrives as a difftime.</li>
 <li>A <code>POSIXlt</code>, Arrow <code>date64</code>/<code>time</code>/<code>interval</code>, and ordered dictionaries (polars Enums) are declined at send time.</li>
-<li>An R vector with <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> is declined (numpy has no per-element names). A matrix crosses with values exact: the data is never transposed. <code>dimnames</code> and character matrices are declined.</li>
+<li>Labels cross with the values they name: a named vector keeps its names, and a matrix or array keeps its <code>dimnames</code> — axis names and the <code>table</code> class included. The Python home is <a href="../reference/DimArray.html#pymizu.DimArray" class="gdls-link"><code>DimArray</code></a>, an <code>ndarray</code> subclass carrying the labels; an unmodified echo is <code>identical()</code> in R. numpy operations drop the labels rather than mislabel reshaped data — a transpose, arithmetic, a slice, or a copy arrives in R as a plain array; labels re-attached in Python ride back. A <em>named</em> factor, Date, or POSIXct, and a character matrix stay declined.</li>
 <li>Cross-language sends copy R’s ALTREP vectors by value. Values stay exact, but the compact representation is not preserved.</li>
 </ul>
+<p>Frame metadata rides along verbatim: the full class vector of a data.frame (a tibble’s <code>c("tbl_df", "tbl", "data.frame")</code>, any class ending in <code>"data.frame"</code>) and extra attributes — a <code>reference</code> note, readr’s column specification, user attributes — cross opaquely. Python stashes them undecoded on the <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link"><code>Frame</code></a> (its <code>_r_attrs</code>), and an unmodified echo restores them in R. The stash rides the pristine received frame only: a frame rebuilt through pyarrow, polars, pandas, or <a href="../reference/Frame.from_arrow.html#pymizu.Frame.from_arrow" class="gdls-link gdls-code">from_arrow</a> arrives in R as a plain <code>data.frame</code> — honest loss, never wrong labels.</p>
 </section>
 <section id="the-dtype-matrix" class="level1">
 <h1>The dtype matrix</h1>

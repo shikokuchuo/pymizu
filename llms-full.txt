@@ -915,6 +915,30 @@ to_dict() gives the column dict without an Arrow library;
 __arrow_c_stream__ exports to polars / pyarrow / pandas.
 from_arrow() constructs one from an Arrow producer (the
 opt-in zero-copy path for Python-to-Python channels).
+R frame metadata rides the _r_attrs stash: it attaches at
+read and validates at send, but it rides the pristine
+received Frame only — the Frame immutability invariant:
+any future mutator must clear it first (a rebuild arrives
+in R as a plain data.frame, never a mislabeled one).
+
+DimArray(shape, dtype=None, buffer=None, offset=0, strides=None, order=None)
+
+An `ndarray` carrying R labels (`names` / `dimnames` /
+`axis_names` / `r_class`) for faithful R ↔ Python round trips.
+
+A received labeled vector or array homes as a DimArray; an
+unmodified echo restores every label in R (`identical()`).
+Attach labels explicitly to send a labeled value: `names` for a
+1-D array, `dimnames` (plus optional `axis_names`, R's
+`names(dimnames(x))`) for a matrix or n-D array, and
+`r_class = "table"` for R's table class. The two label slots are
+mutually exclusive at send; `axis_names` requires `dimnames` and
+has one entry per axis.
+
+Labels never propagate implicitly — any numpy operation that
+builds a new array (a transpose, arithmetic, a slice, a copy)
+drops them, so a reshaped or permuted array never inherits labels
+its data no longer matches.
 
 
 ## Frame Methods
@@ -2133,11 +2157,16 @@ Sent to R, it becomes a `data.frame` again.
   `timedelta64` arrays of any non-calendar unit cross likewise (numpy scalars and `datetime.timedelta` included).
   Inside a frame, a difftime column exports to Arrow as `duration[us]`, and an Arrow `duration` column arrives as a difftime.
 - A `POSIXlt`, Arrow `date64`/`time`/`interval`, and ordered dictionaries (polars Enums) are declined at send time.
-- An R vector with `names` is declined (numpy has no per-element names).
-  A matrix crosses with values exact: the data is never transposed.
-  `dimnames` and character matrices are declined.
+- Labels cross with the values they name: a named vector keeps its names, and a matrix or array keeps its `dimnames` — axis names and the `table` class included.
+  The Python home is [`DimArray`](`pymizu.DimArray`), an `ndarray` subclass carrying the labels; an unmodified echo is `identical()` in R.
+  numpy operations drop the labels rather than mislabel reshaped data — a transpose, arithmetic, a slice, or a copy arrives in R as a plain array; labels re-attached in Python ride back.
+  A *named* factor, Date, or POSIXct, and a character matrix stay declined.
 - Cross-language sends copy R's ALTREP vectors by value.
   Values stay exact, but the compact representation is not preserved.
+
+Frame metadata rides along verbatim: the full class vector of a data.frame (a tibble's `c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`) and extra attributes — a `reference` note, readr's column specification, user attributes — cross opaquely.
+Python stashes them undecoded on the [`Frame`](`pymizu.Frame`) (its `_r_attrs`), and an unmodified echo restores them in R.
+The stash rides the pristine received frame only: a frame rebuilt through pyarrow, polars, pandas, or `from_arrow` arrives in R as a plain `data.frame` — honest loss, never wrong labels.
 
 ## The dtype matrix
 

@@ -4,7 +4,7 @@ Attach to the channel named by a join token (the peer side).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L189-L213)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L190-L214)
 
 ``` python
 Channel.attach(token)

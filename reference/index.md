@@ -151,6 +151,9 @@ Return a [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) launc
 [Frame](Frame.md#pymizu.Frame)  
 A data.frame's Python home: named columns with a row count.
 
+[DimArray](DimArray.md#pymizu.DimArray)  
+An `ndarray` carrying R labels ([names](../reference/Frame.names.md#pymizu.Frame.names) / `dimnames` /
+
 ## Frame Methods
 
 Methods for the Frame class

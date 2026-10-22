@@ -4,7 +4,7 @@ Receive one payload.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L250-L263)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L251-L264)
 
 ``` python
 Channel.recv(timeout=None)

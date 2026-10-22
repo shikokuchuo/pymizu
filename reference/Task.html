@@ -83,7 +83,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-fcaa8ba736cf4e2cf4790a1a6ae86d56.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-723567b195ef916a85594ef888c0e6b0.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -520,6 +520,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="menu-text">Frame</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/DimArray.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">DimArray</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -785,7 +791,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 </tbody>
 </table>
-<hr style="border: none; border-top: 2px solid #c5c8cd; margin: 1.5rem 0 1rem 0;">
 <section id="cancel" class="level3">
 <h3 class="anchored" data-anchor-id="cancel"><span class="doc-object-name doc-function doc-label doc-label-method">cancel()</span></h3>
 <div class="doc-subject">
@@ -801,7 +806,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>Advisory and discard-only, never preemptive: a still-queued task is skipped; an executing one runs to completion and its result is dropped. True when this call cancelled the task; every other edge folds to False.</p>
 </div>
 </section>
-<hr style="border: none; border-top: 2px dotted #b0b4ba; margin: 1.5rem 0 1rem 0;">
 <section id="collect" class="level3">
 <h3 class="anchored" data-anchor-id="collect"><span class="doc-object-name doc-function doc-label doc-label-method">collect()</span></h3>
 <div class="doc-subject">
@@ -817,7 +821,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>Wait up to <code>timeout</code> seconds (None indefinitely, 0 polls) for the task’s terminal state and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost payload region as pymizu.TaskLostError. pymizu.TIMEOUT on expiry; a task is collected exactly once.</p>
 </div>
 </section>
-<hr style="border: none; border-top: 2px dotted #b0b4ba; margin: 1.5rem 0 1rem 0;">
 <section id="result" class="level3">
 <h3 class="anchored" data-anchor-id="result"><span class="doc-object-name doc-function doc-label doc-label-method">result()</span></h3>
 <div class="doc-subject">

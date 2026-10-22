@@ -16,7 +16,7 @@
     "href": "user-guide/interop.html",
     "title": "R interop",
     "section": "",
-    "text": "The process at the other end of a channel does not have to be Python. mizu is the R binding of the same shared-memory core, and a channel or pool connects the two languages directly.\n\nR channel peers\nA channel peer can be an R process with the mizu package installed. Pass the peer program as R source, and set the launcher to pymizu.r_launcher():\nimport pymizu\n\nch = pymizu.Channel.create(\n    \"\"\"\nlibrary(mizu)\nrepeat {\n  x &lt;- mizu_recv(ch, timeout = 30)\n  if (inherits(x, \"mizu_sentinel\")) break\n  mizu_send(ch, x)\n}\n\"\"\",\n    launcher=pymizu.r_launcher(),\n)\n\nimport numpy as np\nch.send(np.array([1.5, 2.5, 3.5]))   # arrives in R as a numeric vector\nprint(ch.recv(timeout=5))            # echoes back as a float64 array\nch.close()\nr_launcher() needs R and the mizu R package installed. If either is missing, it raises MizuError before the channel is created. Pass rscript= to use a specific R installation.\nTo spawn the peer differently, write your own launcher: one callable that takes the channel’s token and starts the peer process. The reverse direction works too: an R session spawns a Python peer with mizu::mizu_py_launcher().\n\n\nMixed-language pools\nA pool’s workers can be R processes. pymizu.r_pool_launcher() spawns them, and pymizu.call() describes the task: a qualified function name (\"pkg::fn\" for R, \"mod.fn\" for Python) or a source= string, plus constant arguments:\nimport numpy as np\nimport pymizu\n\npool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())\nt = pool.submit(pymizu.call(\"stats::quantile\", np.arange(101.0),\n                            probs=np.array([0.25, 0.5, 0.75]), names=False))\nprint(t.collect())                  # [ 25.  50.  75.]\nt2 = pool.submit(pymizu.call(source=\"y &lt;- x * 2\\ny + 1\", x=20))\nprint(t2.collect())                 # 41\npool.stop()\nUnnamed arguments become positional arguments, and keyword arguments become named ones. This matches R’s calling convention. A source= task evaluates in a fresh environment with the keyword arguments bound as names and the positional arguments bound as _1, _2, … The result is the value of the last expression.\nThe workers’ language comes from the pool itself: there is no language argument and no override. On an R-worker pool, submitting a plain Python callable raises an error naming pymizu.call(). An unqualified name errors at submit. An argument that cannot cross the boundary raises DeclinedError at submit. An error in the R code crosses as TaskError with the R error type preserved in remote_type. A result with no Python equivalent fails the task with an error naming the type. The reverse direction mirrors: mizu::mizu_pool() with mizu::mizu_py_pool_launcher(), and mizu::mizu_submit_call() with mizu::mizu_call() specs.\nLarge arguments cross without copying. A fresh array argument past the zero-copy floor (32 KB) is written to shared memory once, in one layout write. The worker reads a view over it. An argument that is already a shared view (a _ShmView, or a numpy array whose .base chain ends in one) crosses as its identifier alone, zero payload bytes. If the pool runs workers too old to read such references, the submit fails with an error naming the remedy. A pool’s workers all run one language: mixing R and Python workers in one pool is not supported.\n\n\nMapping over a foreign pool\nA pymizu.call() spec is also a map’s fn, with Pool.map() and Pool.map_prepare() on an R-worker pool. mizu::mizu_map() mirrors this in R:\npool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())\npool.map(pymizu.call(\"stats::median\"), x)\npool.map(pymizu.call(source=\"summary(mgcv::gam(x$y ~ s(x$x)))$r.sq\"),\n         folds, template=0.0)   # each fold a dict; the element binds as x\npool.stop()\nEach element fills the spec’s first positional argument (a named spec) or binds as x (a source= spec). Put constant arguments in the spec itself: the map’s own args=/kwargs= must stay empty. template= and collect= work unchanged, and a per-element error crosses with its index. Spec maps take integer seeds only (when the workers are R, the seed within R’s 32-bit range and the offset at most 2^53). Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.\n\n\nWhat crosses the language boundary\nA portable subset of values crosses in both directions:\n\nPython scalars (bool, int, float, complex, str, None), lists, and dicts with str keys cross both ways. R sees its own logical, integer, double, complex, character, and list values. A tuple arrives as a list.\nA 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector, and an R vector arrives as a numpy array. See the dtype matrix for the exact correspondence.\nA large array crosses without copying: each side reads the other’s vector as a view over the shared pages. The view threshold is 32 KB, with one exception: a contiguous vector below 256 KB sent on a channel travels as one copy into the channel’s spill arena instead — cheaper than region machinery at those sizes — and crosses as a view from 256 KB (pools have no arena, so the 32 KB floor always wins there). Without numpy, a received view is a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: pa.array(view), pl.from_arrow(view).\nA multi-dimensional numpy array arrives as an R array with dim set (a matrix is the 2-D case). C order, F order, or strided, it crosses value-exact. A large array also crosses without copying in any memory order: F order, C order, or strided. R reads a matrix view over the shared pages. datetime64 arrays with day or week units arrive as Date, and finer units arrive as POSIXct. Past the zero-copy floor these cross without copying too. datetime.date and datetime.datetime scalars arrive as the length-1 forms.\nAn Arrow array arrives as an R vector, with Arrow nulls as R missing values: ch.send(pa.array([1, None, 3])). Anything with __arrow_c_array__ works (pyarrow, polars, a duckdb result column).\nAn Arrow stream (a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with __arrow_c_stream__) arrives as an R data.frame. Dictionary-encoded columns become factors, and date32/timestamp columns become Date/POSIXct. A Series arrives as a plain vector. An R data.frame arrives as a pymizu.Frame, and a factor as list[str | None].\nbytes arrives as an R raw vector.\nStrings cross both ways. R’s NA_character_ arrives as None, and a string vector arrives as list[str | None]. A large list[str | None] sent to R also crosses without copying: R reads a character vector over the shared pages, with None as NA_character_.\nA large nested tree of lists, dicts, arrays, and strings sent to R crosses as one shared-memory region: R reads a list view over the shared pages instead of a copy (dict keys become the list’s names). A received view nested inside such a tree crosses by reference: only its region’s name moves, and R resolves it to a view of the original region.\nA value outside the portable subset raises pymizu.DeclinedError (a subclass of TypeError) at send time, with path and reason attributes naming what was rejected and why.\n\n\n\npymizu.Frame\nA pymizu.Frame is Python’s home for an R data.frame: named columns with a row count. frame.to_dict() returns the columns as a dict: numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as list[str | None]. frame.names and frame.row_names carry the metadata. Any Arrow consumer takes a frame in one line: pl.from_arrow(f), pa.table(f), pd.DataFrame.from_arrow(f) (polars &gt;= 2.0 returns a struct Series for a streaming producer, and .struct.unnest() restores the columns). Factors become dictionary columns, logicals Arrow bool, Date date32, and POSIXct timestamp[us]. A Frame pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a data.frame again.\n\n\nData frames without copying\n\nA large data.frame (past 32 KB) crosses as one shared-memory region in either direction. Python receives a region-backed Frame: its columns read directly from the shared pages, numeric columns as read-only numpy views. R receives an ordinary data.frame, read in place.\nIf the other side is too old to read these regions, the frame crosses as a copy instead. The value always arrives.\nSending a received frame back unmodified moves no data at all: it crosses as a reference to the region it arrived from. This holds through polars or pyarrow (pl.from_arrow(f), pa.table(f)) as long as no column was modified.\nModifying some columns moves only those columns. Each unmodified column still crosses as a reference, so a relay that adds one computed column pays for one column. R reads the unmodified columns as views of the original region.\nA polars or pyarrow object that wraps a received frame keeps the frame’s shared-memory region alive until it is deleted and garbage-collected. Holding many of them at once can force later sends back to copying, so delete them when they are no longer needed.\n\n\n\nDates, times, and other types\n\nA factor crosses as list[str | None] on its own, or as a dictionary-encoded column inside a frame.\nA Date crosses as datetime64[D] or Arrow date32. A POSIXct crosses as a naive datetime64[us] or timestamp[us, tz]: microsecond precision, NaT read as NA. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with tzone = \"UTC\".\nA difftime crosses as timedelta64[us]: microsecond precision, NA read as NaT. R’s five units cross by value. A round trip normalizes them to seconds. timedelta64 arrays of any non-calendar unit cross likewise (numpy scalars and datetime.timedelta included). Inside a frame, a difftime column exports to Arrow as duration[us], and an Arrow duration column arrives as a difftime.\nA POSIXlt, Arrow date64/time/interval, and ordered dictionaries (polars Enums) are declined at send time.\nAn R vector with names is declined (numpy has no per-element names). A matrix crosses with values exact: the data is never transposed. dimnames and character matrices are declined.\nCross-language sends copy R’s ALTREP vectors by value. Values stay exact, but the compact representation is not preserved.\n\n\n\nThe dtype matrix\nThe exact correspondence between Python and R dtypes. Conversion happens once, at send time. The identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.\n\n\n\nPython sends\nR receives\nNotes\n\n\n\n\nbytes / uint8\nraw\nArrow uint8 with nulls: TypeError (R raw has no NA)\n\n\nint8 / int16 / uint16\ninteger\nwidened, exact\n\n\nint32\ninteger\n\n\n\nuint32\ndouble\nwidened, exact\n\n\nint64\ninteger64 (bit64’s layout)\nbit-exact; INT64_MIN reads as NA\n\n\nuint64\ndouble + NA past 2^53 (warned)\nthe frame column and mizu_as_arrow() are bit-exact\n\n\nfloat16 / float32 / float64\ndouble\nfloat16 and float32 widened, exact\n\n\nbool\nlogical\n\n\n\ncomplex64 / complex128\ncomplex\n(buffer protocol only; Arrow has no standard complex)\n\n\nArrow bool / numeric with nulls\nlogical / numeric with NA\nthe validity bitmap is honored, slices included\n\n\nArrow strings (utf8 / large_utf8 / string_view)\ncharacter\na Series as list[str \\| None]; a column as a frame column\n\n\nArrow date32 / timestamp[u]\nDate / POSIXct\nthe zone name rides a frame column’s metadata\n\n\nArrow duration[u]\ndifftime (secs)\nthe frame column exports back as duration[us]\n\n\ntimedelta64 (any non-calendar unit)\ndifftime (secs)\nNaT reads as NA; the unit converts to seconds\n\n\nArrow dictionary-encoded\nfactor\nordered dictionaries decline (polars Enum: cast to pl.Categorical)\n\n\nArrow ChunkedArray / Table / Series\nvector / data.frame\nchunks are concatenated\n\n\nArrow nested, decimal, time32/64, interval\n—\nDeclinedError at send time\n\n\n\nMissing values:\n\nR marks missing values with sentinels inside the data: INT_MIN for integer and logical, INT64_MIN for integer64, and a special NaN value (NA_real_) for double. Arrow nulls convert to these sentinels, so R sees correct NAs.\nRead from Python, the result depends on the accessor:\n\nCopied reads (list(...), Frame.to_dict()) give exact dtypes: a logical arrives as bool_ when it has no NA, else int32. An integer arrives as int32 when NA-free, else float64 with NaN (every int32 value is exact in float64).\nZero-copy views keep the sentinel values in the buffer. .to_numpy() applies the same rule and reads NA-freeness off the region’s validity section before any data scan.\nint64 keeps its dtype in every numpy form and warns when an NA is detected on a copied read or .to_numpy(). Use .to_arrow() for an NA-exact read. A genuine Python -2^63 value round-trips without a warning.\nEvery Arrow export of a logical is Arrow bool with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with NA_real_ slots as Arrow nulls (a genuine NaN stays a valid value).\n\nA genuine int32 value of -2147483648 collides with the NA sentinel and reads as NA in R. Likewise an int64 value of -9223372036854775808 reads as NA_integer64_. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once, to an R peer. A Python peer reads the identical columns exactly and stays silent.\nPython compute treats NA_real_ as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent. Do not rely on it.\n\nRound trips are stable after the first hop, and a pass-through echo is bit-exact. An untouched received view sent back crosses as a reference to its region, so no data moves and even the NA_real_ value survives a relay. A slice or a dtype view of a received view crosses by value.\n\n\n\nPython sends\nR sees\nBack in Python\nNotes\n\n\n\n\nuint8\nraw\nuint8\nexact\n\n\nint8 / int16 / uint16\ninteger\nint32\nwidened, values exact\n\n\nint32\ninteger\nint32\nexact\n\n\nuint32\ndouble\nfloat64\nexact\n\n\nint64\ninteger64\nint64\nexact\n\n\nuint64\ndouble + NA past 2^53 (warned)\nuint64\nthe column and R’s Arrow export are bit-exact\n\n\nfloat16\ndouble\nfloat64\nwidened, values exact\n\n\nfloat32\ndouble\nfloat64\nwidened, values exact\n\n\nfloat64\ndouble\nfloat64\nexact\n\n\nbool\nlogical\nbool_ (int32 with NAs)\ndtype lost\n\n\ncomplex64 / complex128\ncomplex\ncomplex128\nexact\n\n\ntimedelta64\ndifftime\ntimedelta64[us]\nunit normalizes to us, values exact\n\n\n\n\n\n\nR sends\nPython sees\nBack in R\nNotes\n\n\n\n\ninteger\nint32 (float64 with NAs)\ninteger\nexact\n\n\ninteger64 (bit64)\nint64 (warns on NA)\ninteger64\nexact; a genuine Python -2^63 arrives as NA\n\n\ndouble\nfloat64\ndouble\nexact\n\n\nraw\nuint8\nraw\nexact\n\n\ncomplex\ncomplex128\ncomplex\nexact\n\n\nlogical\nbool_ (int32 with NAs)\ninteger\ntag lost on a Python round trip (values kept); a whole view sent back stays logical\n\n\ndifftime\ntimedelta64[us]\ndifftime (secs)\nunits normalize to seconds, values exact; NA crosses as NaT\n\n\n\nBetween two Python processes, on a channel or a pool, the conversions on this page never run. The identity dtypes cross unchanged, and everything else pickles. An exact Python-to-Python send of a non-identity dtype needs no work. They apply only when the other end runs R.",
+    "text": "The process at the other end of a channel does not have to be Python. mizu is the R binding of the same shared-memory core, and a channel or pool connects the two languages directly.\n\nR channel peers\nA channel peer can be an R process with the mizu package installed. Pass the peer program as R source, and set the launcher to pymizu.r_launcher():\nimport pymizu\n\nch = pymizu.Channel.create(\n    \"\"\"\nlibrary(mizu)\nrepeat {\n  x &lt;- mizu_recv(ch, timeout = 30)\n  if (inherits(x, \"mizu_sentinel\")) break\n  mizu_send(ch, x)\n}\n\"\"\",\n    launcher=pymizu.r_launcher(),\n)\n\nimport numpy as np\nch.send(np.array([1.5, 2.5, 3.5]))   # arrives in R as a numeric vector\nprint(ch.recv(timeout=5))            # echoes back as a float64 array\nch.close()\nr_launcher() needs R and the mizu R package installed. If either is missing, it raises MizuError before the channel is created. Pass rscript= to use a specific R installation.\nTo spawn the peer differently, write your own launcher: one callable that takes the channel’s token and starts the peer process. The reverse direction works too: an R session spawns a Python peer with mizu::mizu_py_launcher().\n\n\nMixed-language pools\nA pool’s workers can be R processes. pymizu.r_pool_launcher() spawns them, and pymizu.call() describes the task: a qualified function name (\"pkg::fn\" for R, \"mod.fn\" for Python) or a source= string, plus constant arguments:\nimport numpy as np\nimport pymizu\n\npool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())\nt = pool.submit(pymizu.call(\"stats::quantile\", np.arange(101.0),\n                            probs=np.array([0.25, 0.5, 0.75]), names=False))\nprint(t.collect())                  # [ 25.  50.  75.]\nt2 = pool.submit(pymizu.call(source=\"y &lt;- x * 2\\ny + 1\", x=20))\nprint(t2.collect())                 # 41\npool.stop()\nUnnamed arguments become positional arguments, and keyword arguments become named ones. This matches R’s calling convention. A source= task evaluates in a fresh environment with the keyword arguments bound as names and the positional arguments bound as _1, _2, … The result is the value of the last expression.\nThe workers’ language comes from the pool itself: there is no language argument and no override. On an R-worker pool, submitting a plain Python callable raises an error naming pymizu.call(). An unqualified name errors at submit. An argument that cannot cross the boundary raises DeclinedError at submit. An error in the R code crosses as TaskError with the R error type preserved in remote_type. A result with no Python equivalent fails the task with an error naming the type. The reverse direction mirrors: mizu::mizu_pool() with mizu::mizu_py_pool_launcher(), and mizu::mizu_submit_call() with mizu::mizu_call() specs.\nLarge arguments cross without copying. A fresh array argument past the zero-copy floor (32 KB) is written to shared memory once, in one layout write. The worker reads a view over it. An argument that is already a shared view (a _ShmView, or a numpy array whose .base chain ends in one) crosses as its identifier alone, zero payload bytes. If the pool runs workers too old to read such references, the submit fails with an error naming the remedy. A pool’s workers all run one language: mixing R and Python workers in one pool is not supported.\n\n\nMapping over a foreign pool\nA pymizu.call() spec is also a map’s fn, with Pool.map() and Pool.map_prepare() on an R-worker pool. mizu::mizu_map() mirrors this in R:\npool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())\npool.map(pymizu.call(\"stats::median\"), x)\npool.map(pymizu.call(source=\"summary(mgcv::gam(x$y ~ s(x$x)))$r.sq\"),\n         folds, template=0.0)   # each fold a dict; the element binds as x\npool.stop()\nEach element fills the spec’s first positional argument (a named spec) or binds as x (a source= spec). Put constant arguments in the spec itself: the map’s own args=/kwargs= must stay empty. template= and collect= work unchanged, and a per-element error crosses with its index. Spec maps take integer seeds only (when the workers are R, the seed within R’s 32-bit range and the offset at most 2^53). Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.\n\n\nWhat crosses the language boundary\nA portable subset of values crosses in both directions:\n\nPython scalars (bool, int, float, complex, str, None), lists, and dicts with str keys cross both ways. R sees its own logical, integer, double, complex, character, and list values. A tuple arrives as a list.\nA 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector, and an R vector arrives as a numpy array. See the dtype matrix for the exact correspondence.\nA large array crosses without copying: each side reads the other’s vector as a view over the shared pages. The view threshold is 32 KB, with one exception: a contiguous vector below 256 KB sent on a channel travels as one copy into the channel’s spill arena instead — cheaper than region machinery at those sizes — and crosses as a view from 256 KB (pools have no arena, so the 32 KB floor always wins there). Without numpy, a received view is a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: pa.array(view), pl.from_arrow(view).\nA multi-dimensional numpy array arrives as an R array with dim set (a matrix is the 2-D case). C order, F order, or strided, it crosses value-exact. A large array also crosses without copying in any memory order: F order, C order, or strided. R reads a matrix view over the shared pages. datetime64 arrays with day or week units arrive as Date, and finer units arrive as POSIXct. Past the zero-copy floor these cross without copying too. datetime.date and datetime.datetime scalars arrive as the length-1 forms.\nAn Arrow array arrives as an R vector, with Arrow nulls as R missing values: ch.send(pa.array([1, None, 3])). Anything with __arrow_c_array__ works (pyarrow, polars, a duckdb result column).\nAn Arrow stream (a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with __arrow_c_stream__) arrives as an R data.frame. Dictionary-encoded columns become factors, and date32/timestamp columns become Date/POSIXct. A Series arrives as a plain vector. An R data.frame arrives as a pymizu.Frame, and a factor as list[str | None].\nbytes arrives as an R raw vector.\nStrings cross both ways. R’s NA_character_ arrives as None, and a string vector arrives as list[str | None]. A large list[str | None] sent to R also crosses without copying: R reads a character vector over the shared pages, with None as NA_character_.\nA large nested tree of lists, dicts, arrays, and strings sent to R crosses as one shared-memory region: R reads a list view over the shared pages instead of a copy (dict keys become the list’s names). A received view nested inside such a tree crosses by reference: only its region’s name moves, and R resolves it to a view of the original region.\nA value outside the portable subset raises pymizu.DeclinedError (a subclass of TypeError) at send time, with path and reason attributes naming what was rejected and why.\n\n\n\npymizu.Frame\nA pymizu.Frame is Python’s home for an R data.frame: named columns with a row count. frame.to_dict() returns the columns as a dict: numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as list[str | None]. frame.names and frame.row_names carry the metadata. Any Arrow consumer takes a frame in one line: pl.from_arrow(f), pa.table(f), pd.DataFrame.from_arrow(f) (polars &gt;= 2.0 returns a struct Series for a streaming producer, and .struct.unnest() restores the columns). Factors become dictionary columns, logicals Arrow bool, Date date32, and POSIXct timestamp[us]. A Frame pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a data.frame again.\n\n\nData frames without copying\n\nA large data.frame (past 32 KB) crosses as one shared-memory region in either direction. Python receives a region-backed Frame: its columns read directly from the shared pages, numeric columns as read-only numpy views. R receives an ordinary data.frame, read in place.\nIf the other side is too old to read these regions, the frame crosses as a copy instead. The value always arrives.\nSending a received frame back unmodified moves no data at all: it crosses as a reference to the region it arrived from. This holds through polars or pyarrow (pl.from_arrow(f), pa.table(f)) as long as no column was modified.\nModifying some columns moves only those columns. Each unmodified column still crosses as a reference, so a relay that adds one computed column pays for one column. R reads the unmodified columns as views of the original region.\nA polars or pyarrow object that wraps a received frame keeps the frame’s shared-memory region alive until it is deleted and garbage-collected. Holding many of them at once can force later sends back to copying, so delete them when they are no longer needed.\n\n\n\nDates, times, and other types\n\nA factor crosses as list[str | None] on its own, or as a dictionary-encoded column inside a frame.\nA Date crosses as datetime64[D] or Arrow date32. A POSIXct crosses as a naive datetime64[us] or timestamp[us, tz]: microsecond precision, NaT read as NA. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with tzone = \"UTC\".\nA difftime crosses as timedelta64[us]: microsecond precision, NA read as NaT. R’s five units cross by value. A round trip normalizes them to seconds. timedelta64 arrays of any non-calendar unit cross likewise (numpy scalars and datetime.timedelta included). Inside a frame, a difftime column exports to Arrow as duration[us], and an Arrow duration column arrives as a difftime.\nA POSIXlt, Arrow date64/time/interval, and ordered dictionaries (polars Enums) are declined at send time.\nLabels cross with the values they name: a named vector keeps its names, and a matrix or array keeps its dimnames — axis names and the table class included. The Python home is DimArray, an ndarray subclass carrying the labels; an unmodified echo is identical() in R. numpy operations drop the labels rather than mislabel reshaped data — a transpose, arithmetic, a slice, or a copy arrives in R as a plain array; labels re-attached in Python ride back. A named factor, Date, or POSIXct, and a character matrix stay declined.\nCross-language sends copy R’s ALTREP vectors by value. Values stay exact, but the compact representation is not preserved.\n\nFrame metadata rides along verbatim: the full class vector of a data.frame (a tibble’s c(\"tbl_df\", \"tbl\", \"data.frame\"), any class ending in \"data.frame\") and extra attributes — a reference note, readr’s column specification, user attributes — cross opaquely. Python stashes them undecoded on the Frame (its _r_attrs), and an unmodified echo restores them in R. The stash rides the pristine received frame only: a frame rebuilt through pyarrow, polars, pandas, or from_arrow arrives in R as a plain data.frame — honest loss, never wrong labels.\n\n\nThe dtype matrix\nThe exact correspondence between Python and R dtypes. Conversion happens once, at send time. The identity rows (float64, int32, int64, complex128, uint8) are a plain memcpy.\n\n\n\nPython sends\nR receives\nNotes\n\n\n\n\nbytes / uint8\nraw\nArrow uint8 with nulls: TypeError (R raw has no NA)\n\n\nint8 / int16 / uint16\ninteger\nwidened, exact\n\n\nint32\ninteger\n\n\n\nuint32\ndouble\nwidened, exact\n\n\nint64\ninteger64 (bit64’s layout)\nbit-exact; INT64_MIN reads as NA\n\n\nuint64\ndouble + NA past 2^53 (warned)\nthe frame column and mizu_as_arrow() are bit-exact\n\n\nfloat16 / float32 / float64\ndouble\nfloat16 and float32 widened, exact\n\n\nbool\nlogical\n\n\n\ncomplex64 / complex128\ncomplex\n(buffer protocol only; Arrow has no standard complex)\n\n\nArrow bool / numeric with nulls\nlogical / numeric with NA\nthe validity bitmap is honored, slices included\n\n\nArrow strings (utf8 / large_utf8 / string_view)\ncharacter\na Series as list[str \\| None]; a column as a frame column\n\n\nArrow date32 / timestamp[u]\nDate / POSIXct\nthe zone name rides a frame column’s metadata\n\n\nArrow duration[u]\ndifftime (secs)\nthe frame column exports back as duration[us]\n\n\ntimedelta64 (any non-calendar unit)\ndifftime (secs)\nNaT reads as NA; the unit converts to seconds\n\n\nArrow dictionary-encoded\nfactor\nordered dictionaries decline (polars Enum: cast to pl.Categorical)\n\n\nArrow ChunkedArray / Table / Series\nvector / data.frame\nchunks are concatenated\n\n\nArrow nested, decimal, time32/64, interval\n—\nDeclinedError at send time\n\n\n\nMissing values:\n\nR marks missing values with sentinels inside the data: INT_MIN for integer and logical, INT64_MIN for integer64, and a special NaN value (NA_real_) for double. Arrow nulls convert to these sentinels, so R sees correct NAs.\nRead from Python, the result depends on the accessor:\n\nCopied reads (list(...), Frame.to_dict()) give exact dtypes: a logical arrives as bool_ when it has no NA, else int32. An integer arrives as int32 when NA-free, else float64 with NaN (every int32 value is exact in float64).\nZero-copy views keep the sentinel values in the buffer. .to_numpy() applies the same rule and reads NA-freeness off the region’s validity section before any data scan.\nint64 keeps its dtype in every numpy form and warns when an NA is detected on a copied read or .to_numpy(). Use .to_arrow() for an NA-exact read. A genuine Python -2^63 value round-trips without a warning.\nEvery Arrow export of a logical is Arrow bool with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with NA_real_ slots as Arrow nulls (a genuine NaN stays a valid value).\n\nA genuine int32 value of -2147483648 collides with the NA sentinel and reads as NA in R. Likewise an int64 value of -9223372036854775808 reads as NA_integer64_. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once, to an R peer. A Python peer reads the identical columns exactly and stays silent.\nPython compute treats NA_real_ as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent. Do not rely on it.\n\nRound trips are stable after the first hop, and a pass-through echo is bit-exact. An untouched received view sent back crosses as a reference to its region, so no data moves and even the NA_real_ value survives a relay. A slice or a dtype view of a received view crosses by value.\n\n\n\nPython sends\nR sees\nBack in Python\nNotes\n\n\n\n\nuint8\nraw\nuint8\nexact\n\n\nint8 / int16 / uint16\ninteger\nint32\nwidened, values exact\n\n\nint32\ninteger\nint32\nexact\n\n\nuint32\ndouble\nfloat64\nexact\n\n\nint64\ninteger64\nint64\nexact\n\n\nuint64\ndouble + NA past 2^53 (warned)\nuint64\nthe column and R’s Arrow export are bit-exact\n\n\nfloat16\ndouble\nfloat64\nwidened, values exact\n\n\nfloat32\ndouble\nfloat64\nwidened, values exact\n\n\nfloat64\ndouble\nfloat64\nexact\n\n\nbool\nlogical\nbool_ (int32 with NAs)\ndtype lost\n\n\ncomplex64 / complex128\ncomplex\ncomplex128\nexact\n\n\ntimedelta64\ndifftime\ntimedelta64[us]\nunit normalizes to us, values exact\n\n\n\n\n\n\nR sends\nPython sees\nBack in R\nNotes\n\n\n\n\ninteger\nint32 (float64 with NAs)\ninteger\nexact\n\n\ninteger64 (bit64)\nint64 (warns on NA)\ninteger64\nexact; a genuine Python -2^63 arrives as NA\n\n\ndouble\nfloat64\ndouble\nexact\n\n\nraw\nuint8\nraw\nexact\n\n\ncomplex\ncomplex128\ncomplex\nexact\n\n\nlogical\nbool_ (int32 with NAs)\ninteger\ntag lost on a Python round trip (values kept); a whole view sent back stays logical\n\n\ndifftime\ntimedelta64[us]\ndifftime (secs)\nunits normalize to seconds, values exact; NA crosses as NaT\n\n\n\nBetween two Python processes, on a channel or a pool, the conversions on this page never run. The identity dtypes cross unchanged, and everything else pickles. An exact Python-to-Python send of a non-identity dtype needs no work. They apply only when the other end runs R.",
     "crumbs": [
       "User Guide",
       "Guide",
@@ -40,7 +40,7 @@
     "href": "skills.html",
     "title": "Skills",
     "section": "",
-    "text": "A skill is a package of structured files that teaches an AI coding agent how to work with a specific tool or framework. The skill below was generated by Great Docs from this project’s documentation. Install it in your agent and it will be able to run commands, edit configuration, write content, and troubleshoot problems without step-by-step guidance from you.\n\n  \n    ▶    Install this skill\n  \n  \n    \n      \nAny agent — install with npx:\nnpx skills add https://shikokuchuo.net/pymizu/\nCodex / OpenCode\nTell the agent:Fetch the skill file at https://shikokuchuo.net/pymizu/skill.md and follow the instructions.\nManual — download the skill file:\ncurl -O https://shikokuchuo.net/pymizu/skill.md\nOr browse the SKILL.md file.\n      \n    \n  \n\n\nSKILL.md\n---\nname: pymizu\ndescription: &gt;\n  Zero-copy shared-memory parallelism across Python and R. Use when writing Python code that uses the pymizu package.\nlicense: MIT\ncompatibility: Requires Python &gt;=3.10.\n---\n\n# pymizu 水\n\nZero-copy shared-memory parallelism across Python and R\n\n## Installation\n\n```bash\npip install pymizu\n```\n\n## API overview\n\n### Channels\n\nA two-way message link between a Python process and a helper process that it spawns.\n\n- `Channel`: A shared-memory SPSC channel handle (process-private)\n\n### Channel Methods\n\nMethods for the Channel class\n\n- `Channel.create`\n- `Channel.attach`\n- `Channel.token`\n- `Channel.send`\n- `Channel.send_batch`\n- `Channel.recv`\n- `Channel.recv_batch`\n- `Channel.close`\n- `Channel.close_signal`\n- `Channel.destroy`\n- `Channel.alive`\n- `Channel.info`\n- `Channel.__enter__`\n- `Channel.__exit__`\n- `Channel.__iter__`\n\n### Task pools\n\nA set of worker processes that divide submitted tasks among themselves.\n\n- `Pool`: A shared-memory work-stealing task pool handle (process-private)\n- `Task`: A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot\n- `PreparedMap`: A map staged once into a persistent region, run many times\n- `PoolExecutor`: A `concurrent.futures.Executor` over a pymizu pool\n\n### Pool Methods\n\nMethods for the Pool class\n\n- `Pool.create`\n- `Pool.attach`\n- `Pool.token`\n- `Pool.submit`\n- `Pool.submit_batch`\n- `Pool.collect_any`\n- `Pool.collect_all`\n- `Pool.map`\n- `Pool.starmap`\n- `Pool.map_prepare`\n- `Pool.retire`\n- `Pool.spawn_workers`\n- `Pool.stop`\n- `Pool.shutdown`\n- `Pool.destroy`\n- `Pool.status`\n- `Pool.dump`\n- `Pool.stats`\n- `Pool.trace`\n- `Pool.__enter__`\n- `Pool.__exit__`\n\n### Cross-language interop\n\nR peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.\n\n- `call`: A task specification for a pool of another language's workers\n- `r_launcher`: Return a [`Channel.create()`](`pymizu.Channel.create`) launcher\n- `r_pool_launcher`: Return a [`Pool.create()`](`pymizu.Pool.create`) launcher\n- `Frame`: A data.frame's Python home: named columns with a row count\n\n### Frame Methods\n\nMethods for the Frame class\n\n- `Frame.names`\n- `Frame.row_names`\n- `Frame.to_dict`\n- `Frame.from_arrow`\n- `Frame.__arrow_c_stream__`\n- `Frame.__len__`\n- `Frame.__reduce__`\n\n### Outcomes and errors\n\nTerminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.\n\n- `Sentinel`: Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE\n- `is_sentinel`: is_sentinel(x) -&gt; bool\n- `is_remote_error`: Test whether a received channel value is a remote error\n- `MizuError`: Base class for all pymizu errors\n- `ShmError`: A shared-memory region operation failed. Also an OSError: the failure is at the OS layer\n- `StartupError`: A channel peer or pool worker failed to attach within the startup timeout\n- `SubmitTimeoutError`: Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError\n- `SlotsExhaustedError`: Pool.submit() found no free result slot: too many outstanding (uncollected) tasks\n- `StoppedError`: The pool is stopped; no further submission is possible\n- `CancelledError`: The task was cancelled before it ran\n- `TaskError`: The task callable raised. Carries 'remote_type' and 'remote_traceback' attributes describing the worker-side exception\n- `WorkerDiedError`: The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker\n- `DeclinedError`: A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes\n\n### Housekeeping\n\nThe process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.\n\n- `default_pool`: The process-wide default pool, or None when none is set\n- `set_default_pool`: Set the process-wide default pool; None clears it\n- `using_pool`: Use ``pool`` as the default for the with block, then restore\n- `current_pool`: The evaluating worker's own pool handle, inside a task\n- `current_rng`: The running element's own numpy Generator, inside a seeded map\n- `prune`: Remove orphaned shared memory regions\n\n## Resources\n\n- [Full documentation](https://shikokuchuo.net/pymizu/)\n- [llms.txt](llms.txt) — Indexed API reference for LLMs\n- [llms-full.txt](llms-full.txt) — Comprehensive documentation for LLMs\n- [Source code](https://github.com/shikokuchuo/pymizu)"
+    "text": "A skill is a package of structured files that teaches an AI coding agent how to work with a specific tool or framework. The skill below was generated by Great Docs from this project’s documentation. Install it in your agent and it will be able to run commands, edit configuration, write content, and troubleshoot problems without step-by-step guidance from you.\n\n  \n    ▶    Install this skill\n  \n  \n    \n      \nAny agent — install with npx:\nnpx skills add https://shikokuchuo.net/pymizu/\nCodex / OpenCode\nTell the agent:Fetch the skill file at https://shikokuchuo.net/pymizu/skill.md and follow the instructions.\nManual — download the skill file:\ncurl -O https://shikokuchuo.net/pymizu/skill.md\nOr browse the SKILL.md file.\n      \n    \n  \n\n\nSKILL.md\n---\nname: pymizu\ndescription: &gt;\n  Zero-copy shared-memory parallelism across Python and R. Use when writing Python code that uses the pymizu package.\nlicense: MIT\ncompatibility: Requires Python &gt;=3.10.\n---\n\n# pymizu 水\n\nZero-copy shared-memory parallelism across Python and R\n\n## Installation\n\n```bash\npip install pymizu\n```\n\n## API overview\n\n### Channels\n\nA two-way message link between a Python process and a helper process that it spawns.\n\n- `Channel`: A shared-memory SPSC channel handle (process-private)\n\n### Channel Methods\n\nMethods for the Channel class\n\n- `Channel.create`\n- `Channel.attach`\n- `Channel.token`\n- `Channel.send`\n- `Channel.send_batch`\n- `Channel.recv`\n- `Channel.recv_batch`\n- `Channel.close`\n- `Channel.close_signal`\n- `Channel.destroy`\n- `Channel.alive`\n- `Channel.info`\n- `Channel.__enter__`\n- `Channel.__exit__`\n- `Channel.__iter__`\n\n### Task pools\n\nA set of worker processes that divide submitted tasks among themselves.\n\n- `Pool`: A shared-memory work-stealing task pool handle (process-private)\n- `Task`: A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot\n- `PreparedMap`: A map staged once into a persistent region, run many times\n- `PoolExecutor`: A `concurrent.futures.Executor` over a pymizu pool\n\n### Pool Methods\n\nMethods for the Pool class\n\n- `Pool.create`\n- `Pool.attach`\n- `Pool.token`\n- `Pool.submit`\n- `Pool.submit_batch`\n- `Pool.collect_any`\n- `Pool.collect_all`\n- `Pool.map`\n- `Pool.starmap`\n- `Pool.map_prepare`\n- `Pool.retire`\n- `Pool.spawn_workers`\n- `Pool.stop`\n- `Pool.shutdown`\n- `Pool.destroy`\n- `Pool.status`\n- `Pool.dump`\n- `Pool.stats`\n- `Pool.trace`\n- `Pool.__enter__`\n- `Pool.__exit__`\n\n### Cross-language interop\n\nR peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.\n\n- `call`: A task specification for a pool of another language's workers\n- `r_launcher`: Return a [`Channel.create()`](`pymizu.Channel.create`) launcher\n- `r_pool_launcher`: Return a [`Pool.create()`](`pymizu.Pool.create`) launcher\n- `Frame`: A data.frame's Python home: named columns with a row count\n- `DimArray`: An `ndarray` carrying R labels (`names` / `dimnames` /\n\n### Frame Methods\n\nMethods for the Frame class\n\n- `Frame.names`\n- `Frame.row_names`\n- `Frame.to_dict`\n- `Frame.from_arrow`\n- `Frame.__arrow_c_stream__`\n- `Frame.__len__`\n- `Frame.__reduce__`\n\n### Outcomes and errors\n\nTerminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.\n\n- `Sentinel`: Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE\n- `is_sentinel`: is_sentinel(x) -&gt; bool\n- `is_remote_error`: Test whether a received channel value is a remote error\n- `MizuError`: Base class for all pymizu errors\n- `ShmError`: A shared-memory region operation failed. Also an OSError: the failure is at the OS layer\n- `StartupError`: A channel peer or pool worker failed to attach within the startup timeout\n- `SubmitTimeoutError`: Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError\n- `SlotsExhaustedError`: Pool.submit() found no free result slot: too many outstanding (uncollected) tasks\n- `StoppedError`: The pool is stopped; no further submission is possible\n- `CancelledError`: The task was cancelled before it ran\n- `TaskError`: The task callable raised. Carries 'remote_type' and 'remote_traceback' attributes describing the worker-side exception\n- `WorkerDiedError`: The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker\n- `DeclinedError`: A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes\n\n### Housekeeping\n\nThe process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.\n\n- `default_pool`: The process-wide default pool, or None when none is set\n- `set_default_pool`: Set the process-wide default pool; None clears it\n- `using_pool`: Use ``pool`` as the default for the with block, then restore\n- `current_pool`: The evaluating worker's own pool handle, inside a task\n- `current_rng`: The running element's own numpy Generator, inside a seeded map\n- `prune`: Remove orphaned shared memory regions\n\n## Resources\n\n- [Full documentation](https://shikokuchuo.net/pymizu/)\n- [llms.txt](llms.txt) — Indexed API reference for LLMs\n- [llms-full.txt](llms-full.txt) — Comprehensive documentation for LLMs\n- [Source code](https://github.com/shikokuchuo/pymizu)"
   },
   {
     "objectID": "reference/set_default_pool.html",
@@ -198,7 +198,7 @@
     "href": "reference/index.html#cross-language-interop",
     "title": "API Reference",
     "section": "Cross-language interop",
-    "text": "Cross-language interop\n\nR peers and workers (the mizu R package), neutral task specifications, and the data.frame’s Python home.\n\n\ncall\n\nA task specification for a pool of another language’s workers.\n\nr_launcher()\n\nReturn a Channel.create() launcher\n\nr_pool_launcher()\n\nReturn a Pool.create() launcher\n\nFrame\n\nA data.frame’s Python home: named columns with a row count.",
+    "text": "Cross-language interop\n\nR peers and workers (the mizu R package), neutral task specifications, and the data.frame’s Python home.\n\n\ncall\n\nA task specification for a pool of another language’s workers.\n\nr_launcher()\n\nReturn a Channel.create() launcher\n\nr_pool_launcher()\n\nReturn a Pool.create() launcher\n\nFrame\n\nA data.frame’s Python home: named columns with a row count.\n\nDimArray\n\nAn ndarray carrying R labels (names / dimnames /",
     "crumbs": [
       "Reference",
       "API Index"
@@ -742,273 +742,190 @@
     ]
   },
   {
-    "objectID": "reference/Channel.token.html",
-    "href": "reference/Channel.token.html",
-    "title": "Channel.token",
+    "objectID": "reference/DeclinedError.html",
+    "href": "reference/DeclinedError.html",
+    "title": "DeclinedError",
     "section": "",
-    "text": "The join token for the peer’s attach.\n\n\nChannel.token: str",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.token"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html",
-    "href": "reference/Channel.send.html",
-    "title": "Channel.send()",
-    "section": "",
-    "text": "Send one payload.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html#parameters",
-    "href": "reference/Channel.send.html#parameters",
-    "title": "Channel.send()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nx: _Any\n\nThe payload. None itself is a valid payload; bytes and numpy arrays travel raw, everything else rides pickle protocol 4.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html#returns",
-    "href": "reference/Channel.send.html#returns",
-    "title": "Channel.send()",
-    "section": "Returns",
-    "text": "Returns\n\n\n None, or the FULL / CLOSED / PEER_GONE sentinel\n\n(identity-tested).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html",
-    "href": "reference/Channel.recv.html",
-    "title": "Channel.recv()",
-    "section": "",
-    "text": "Receive one payload.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#parameters",
-    "href": "reference/Channel.recv.html#parameters",
-    "title": "Channel.recv()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#returns",
-    "href": "reference/Channel.recv.html#returns",
-    "title": "Channel.recv()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The payload, or the TIMEOUT / CLOSED / PEER_GONE\n\nsentinel on the non-payload outcomes.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.info.html",
-    "href": "reference/Channel.info.html",
-    "title": "Channel.info()",
-    "section": "",
-    "text": "A read-only wire-state snapshot of the channel (dict).\n\n\nUsage\nSource\n\n\nChannel.info()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.info"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html",
-    "href": "reference/Channel.create.html",
-    "title": "Channel.create()",
-    "section": "",
-    "text": "Create a channel and spawn its peer.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#parameters",
-    "href": "reference/Channel.create.html#parameters",
-    "title": "Channel.create()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\npeer: str\n\nA Python source string, evaluated in the peer process with ch bound to the peer-side handle.\n\ncapacity: int = 16384\n\nRing capacity in slots; a power of two.\n\nslot_size: int = 256\n\nBytes per ring slot; a power of two. The inline payload budget is slot_size - 16.\n\narena_size: int = 4 * 1024 * 1024\n\nBytes of shared staging arena for out-of-line payloads.\n\nspin: bool = False\n\nSpin rather than park while waiting.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the peer to attach.\n\nlauncher: _Callable[[str], _Any] | None = None\n\nA callable(token) arranging for a Python process to run python -m pymizu.child &lt;token&gt;; the default spawns sys.executable directly. r_launcher() returns one spawning an R peer (the R package mizu).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#returns",
-    "href": "reference/Channel.create.html#returns",
-    "title": "Channel.create()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The host-side channel handle.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#examples",
-    "href": "reference/Channel.create.html#examples",
-    "title": "Channel.create()",
-    "section": "Examples",
-    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     ch.send([1, \"a\", None])\n...     received = ch.recv(timeout=5)\n&gt;&gt;&gt; received\n[1, 'a', None]",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.close.html",
-    "href": "reference/Channel.close.html",
-    "title": "Channel.close()",
-    "section": "",
-    "text": "Orderly close: signal the peer and wait up to timeout\n\n\nUsage\nSource\n\n\nChannel.close(timeout=5.0)\n\n\nseconds for it to observe the close. True on a clean handshake; False (with a warning) on timeout, in which case resources release when the handle is garbage collected.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.close"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.alive.html",
-    "href": "reference/Channel.alive.html",
-    "title": "Channel.alive()",
-    "section": "",
-    "text": "True while the peer process is alive.\n\n\nUsage\nSource\n\n\nChannel.alive()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.alive"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.__exit__.html",
-    "href": "reference/Channel.__exit__.html",
-    "title": "Channel.__exit__()",
-    "section": "",
-    "text": "Usage\nSource\n\n\nChannel.__exit__(*exc)",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__exit__"
-    ]
-  },
-  {
-    "objectID": "reference/CancelledError.html",
-    "href": "reference/CancelledError.html",
-    "title": "CancelledError",
-    "section": "",
-    "text": "The task was cancelled before it ran.\n\n\nUsage\n\n\nCancelledError()",
+    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes.\n\n\nUsage\n\n\nDeclinedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
-      "CancelledError"
+      "DeclinedError"
     ]
   },
   {
-    "objectID": "license.html",
-    "href": "license.html",
-    "title": "License",
+    "objectID": "reference/Channel.send_batch.html",
+    "href": "reference/Channel.send_batch.html",
+    "title": "Channel.send_batch()",
     "section": "",
-    "text": "▶\n    License features — MIT License\n\n\n\n\n\nPermissions\n\nCommercial use\nModification\nDistribution\nPrivate use\n\n\nConditions\n\nLicense and copyright notice\n\n\nLimitations\n\nLiability\nWarranty\n\n\n\n\n# MIT License\n\nCopyright (c) 2026 libmizu authors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."
+    "text": "Send several payloads in one crossing; return the number\n\n\nUsage\nSource\n\n\nChannel.send_batch(xs)\n\n\naccepted (short on ring-full or a terminal state).",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.send_batch"
+    ]
   },
   {
-    "objectID": "contributing.html",
-    "href": "contributing.html",
-    "title": "Contributing",
+    "objectID": "reference/Channel.recv_batch.html",
+    "href": "reference/Channel.recv_batch.html",
+    "title": "Channel.recv_batch()",
     "section": "",
-    "text": "Contributions are welcome — bug reports and pull requests alike. pymizu is pre-release and the API can change at any time, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump() — it is the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module — pickle sends them by reference, so spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
+    "text": "Receive up to n payloads in one crossing; a list\n\n\nUsage\nSource\n\n\nChannel.recv_batch(\n    n=256,\n    timeout=None,\n)\n\n\n(possibly short or empty), or a terminal sentinel.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv_batch"
+    ]
   },
   {
-    "objectID": "citation.html",
-    "href": "citation.html",
-    "title": "Authors and Citation",
+    "objectID": "reference/Channel.html",
+    "href": "reference/Channel.html",
+    "title": "Channel",
     "section": "",
-    "text": "To cite this package in publications, please use the following citation."
+    "text": "A shared-memory SPSC channel handle (process-private).\n\n\nUsage\nSource\n\n\nChannel()\n\n\nCreate the host side with Channel.create() (which spawns the peer); the peer side attaches with Channel.attach() — python -m pymizu.child does this. Handles do not survive fork().",
+    "crumbs": [
+      "Reference",
+      "Channels",
+      "Channel"
+    ]
   },
   {
-    "objectID": "citation.html#bibtex",
-    "href": "citation.html#bibtex",
-    "title": "Authors and Citation",
-    "section": "BibTeX",
-    "text": "BibTeX\n@Manual{,\n  title = {pymizu: Zero-copy shared-memory parallelism across Python and R},\n  author = {Charlie Gao},\n  year = {2026},\n  url = {https://shikokuchuo.net/pymizu/},\n}"
-  },
-  {
-    "objectID": "citation.html#apa",
-    "href": "citation.html#apa",
-    "title": "Authors and Citation",
-    "section": "APA",
-    "text": "APA\nGao, C. (2026). pymizu: Zero-copy shared-memory parallelism across Python and R (Version ) [Computer software]. https://shikokuchuo.net/pymizu/"
-  },
-  {
-    "objectID": "citation.html#ris",
-    "href": "citation.html#ris",
-    "title": "Authors and Citation",
-    "section": "RIS",
-    "text": "RIS\nTY  - COMP\nTI  - pymizu: Zero-copy shared-memory parallelism across Python and R\nAU  - Gao, Charlie\nPY  - 2026\nUR  - https://shikokuchuo.net/pymizu/\nER  -"
-  },
-  {
-    "objectID": "code-of-conduct.html",
-    "href": "code-of-conduct.html",
-    "title": "Code of Conduct",
+    "objectID": "reference/Channel.destroy.html",
+    "href": "reference/Channel.destroy.html",
+    "title": "Channel.destroy()",
     "section": "",
-    "text": "We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation.\nWe pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community."
+    "text": "Tear down the handle immediately, without the close\n\n\nUsage\nSource\n\n\nChannel.destroy()\n\n\nhandshake: the peer observes the channel closed (PEER_GONE is the hard-death outcome). Safe from any thread: a verb in flight on another thread pins the handle, and teardown completes when the last one returns — an indefinite wait (recv, recv_batch, ready_wait, close) breaks out within a bounded slice, so the teardown (and the peer’s observation of it) follows promptly.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.destroy"
+    ]
   },
   {
-    "objectID": "code-of-conduct.html#correction",
-    "href": "code-of-conduct.html#correction",
-    "title": "Code of Conduct",
-    "section": "1. Correction",
-    "text": "1. Correction\nCommunity Impact: Use of inappropriate language or other behavior deemed unprofessional or unwelcome in the community.\nConsequence: A private, written warning from community leaders, providing clarity around the nature of the violation and an explanation of why the behavior was inappropriate. A public apology may be requested."
+    "objectID": "reference/Channel.close_signal.html",
+    "href": "reference/Channel.close_signal.html",
+    "title": "Channel.close_signal()",
+    "section": "",
+    "text": "Signal close without waiting (the peer’s recv side sees\n\n\nUsage\nSource\n\n\nChannel.close_signal()\n\n\nCLOSED once the ring drains).",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.close_signal"
+    ]
   },
   {
-    "objectID": "code-of-conduct.html#warning",
-    "href": "code-of-conduct.html#warning",
-    "title": "Code of Conduct",
-    "section": "2. Warning",
-    "text": "2. Warning\nCommunity Impact: A violation through a single incident or series of actions.\nConsequence: A warning with consequences for continued behavior. No interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, for a specified period of time. This includes avoiding interactions in community spaces as well as external channels like social media. Violating these terms may lead to a temporary or permanent ban."
+    "objectID": "reference/Channel.attach.html",
+    "href": "reference/Channel.attach.html",
+    "title": "Channel.attach()",
+    "section": "",
+    "text": "Attach to the channel named by a join token (the peer side).",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.attach"
+    ]
   },
   {
-    "objectID": "code-of-conduct.html#temporary-ban",
-    "href": "code-of-conduct.html#temporary-ban",
-    "title": "Code of Conduct",
-    "section": "3. Temporary Ban",
-    "text": "3. Temporary Ban\nCommunity Impact: A serious violation of community standards, including sustained inappropriate behavior.\nConsequence: A temporary ban from any sort of interaction or public communication with the community for a specified period of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban."
+    "objectID": "reference/Channel.attach.html#parameters",
+    "href": "reference/Channel.attach.html#parameters",
+    "title": "Channel.attach()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntoken: str\n\nThe join token from the host side’s ch.token.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.attach"
+    ]
   },
   {
-    "objectID": "code-of-conduct.html#permanent-ban",
-    "href": "code-of-conduct.html#permanent-ban",
-    "title": "Code of Conduct",
-    "section": "4. Permanent Ban",
-    "text": "4. Permanent Ban\nCommunity Impact: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.\nConsequence: A permanent ban from any sort of public interaction within the community."
+    "objectID": "reference/Channel.attach.html#returns",
+    "href": "reference/Channel.attach.html#returns",
+    "title": "Channel.attach()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The peer-side channel handle.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.attach"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.attach.html#details",
+    "href": "reference/Channel.attach.html#details",
+    "title": "Channel.attach()",
+    "section": "Details",
+    "text": "Details\nLow-level: the caller consumes ch.drop before signalling ch.ready_set(). python -m pymizu.child is the reference peer entry.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.attach"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.__iter__.html",
+    "href": "reference/Channel.__iter__.html",
+    "title": "Channel.__iter__()",
+    "section": "",
+    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__iter__()\n\n\nBlocks indefinitely between payloads (recv() with no timeout); use Channel.recv() directly when a bound is needed.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.__iter__"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.__enter__.html",
+    "href": "reference/Channel.__enter__.html",
+    "title": "Channel.__enter__()",
+    "section": "",
+    "text": "Usage\nSource\n\n\nChannel.__enter__()",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.__enter__"
+    ]
+  },
+  {
+    "objectID": "package-info.html",
+    "href": "package-info.html",
+    "title": "Package Info",
+    "section": "",
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n—\n\n\n2026-06-19\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-09-27\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-15\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-06\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+  },
+  {
+    "objectID": "package-info.html#all",
+    "href": "package-info.html#all",
+    "title": "Package Info",
+    "section": "",
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30"
+  },
+  {
+    "objectID": "package-info.html#cloudpickle",
+    "href": "package-info.html#cloudpickle",
+    "title": "Package Info",
+    "section": "",
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03"
+  },
+  {
+    "objectID": "package-info.html#dev",
+    "href": "package-info.html#dev",
+    "title": "Package Info",
+    "section": "",
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n—\n\n\n2026-06-19\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-09-27\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-15\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-06"
+  },
+  {
+    "objectID": "package-info.html#docs",
+    "href": "package-info.html#docs",
+    "title": "Package Info",
+    "section": "",
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09"
+  },
+  {
+    "objectID": "package-info.html#numpy",
+    "href": "package-info.html#numpy",
+    "title": "Package Info",
+    "section": "",
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
   },
   {
     "objectID": "index.html",
@@ -1067,189 +984,284 @@
     "text": "Where next\n\nBenchmarks — overhead against the stdlib pools, and how pymizu compares with other frameworks.\nChannels — sending and receiving, batch operations, and what crosses a channel.\nTask pools — outcomes, nested tasks, growing and observing a pool.\nParallel map — scheduling, reproducible randomness, templates, prepared maps.\nR interop — R peers and workers, what crosses the language boundary, and the dtype matrix.\nAPI reference — the generated function and class reference."
   },
   {
-    "objectID": "package-info.html",
-    "href": "package-info.html",
-    "title": "Package Info",
+    "objectID": "code-of-conduct.html",
+    "href": "code-of-conduct.html",
+    "title": "Code of Conduct",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n—\n\n\n2026-06-19\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-09-27\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-15\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-06\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+    "text": "We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation.\nWe pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community."
   },
   {
-    "objectID": "package-info.html#all",
-    "href": "package-info.html#all",
-    "title": "Package Info",
+    "objectID": "code-of-conduct.html#correction",
+    "href": "code-of-conduct.html#correction",
+    "title": "Code of Conduct",
+    "section": "1. Correction",
+    "text": "1. Correction\nCommunity Impact: Use of inappropriate language or other behavior deemed unprofessional or unwelcome in the community.\nConsequence: A private, written warning from community leaders, providing clarity around the nature of the violation and an explanation of why the behavior was inappropriate. A public apology may be requested."
+  },
+  {
+    "objectID": "code-of-conduct.html#warning",
+    "href": "code-of-conduct.html#warning",
+    "title": "Code of Conduct",
+    "section": "2. Warning",
+    "text": "2. Warning\nCommunity Impact: A violation through a single incident or series of actions.\nConsequence: A warning with consequences for continued behavior. No interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, for a specified period of time. This includes avoiding interactions in community spaces as well as external channels like social media. Violating these terms may lead to a temporary or permanent ban."
+  },
+  {
+    "objectID": "code-of-conduct.html#temporary-ban",
+    "href": "code-of-conduct.html#temporary-ban",
+    "title": "Code of Conduct",
+    "section": "3. Temporary Ban",
+    "text": "3. Temporary Ban\nCommunity Impact: A serious violation of community standards, including sustained inappropriate behavior.\nConsequence: A temporary ban from any sort of interaction or public communication with the community for a specified period of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban."
+  },
+  {
+    "objectID": "code-of-conduct.html#permanent-ban",
+    "href": "code-of-conduct.html#permanent-ban",
+    "title": "Code of Conduct",
+    "section": "4. Permanent Ban",
+    "text": "4. Permanent Ban\nCommunity Impact: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.\nConsequence: A permanent ban from any sort of public interaction within the community."
+  },
+  {
+    "objectID": "citation.html",
+    "href": "citation.html",
+    "title": "Authors and Citation",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30"
+    "text": "To cite this package in publications, please use the following citation."
   },
   {
-    "objectID": "package-info.html#cloudpickle",
-    "href": "package-info.html#cloudpickle",
-    "title": "Package Info",
+    "objectID": "citation.html#bibtex",
+    "href": "citation.html#bibtex",
+    "title": "Authors and Citation",
+    "section": "BibTeX",
+    "text": "BibTeX\n@Manual{,\n  title = {pymizu: Zero-copy shared-memory parallelism across Python and R},\n  author = {Charlie Gao},\n  year = {2026},\n  url = {https://shikokuchuo.net/pymizu/},\n}"
+  },
+  {
+    "objectID": "citation.html#apa",
+    "href": "citation.html#apa",
+    "title": "Authors and Citation",
+    "section": "APA",
+    "text": "APA\nGao, C. (2026). pymizu: Zero-copy shared-memory parallelism across Python and R (Version ) [Computer software]. https://shikokuchuo.net/pymizu/"
+  },
+  {
+    "objectID": "citation.html#ris",
+    "href": "citation.html#ris",
+    "title": "Authors and Citation",
+    "section": "RIS",
+    "text": "RIS\nTY  - COMP\nTI  - pymizu: Zero-copy shared-memory parallelism across Python and R\nAU  - Gao, Charlie\nPY  - 2026\nUR  - https://shikokuchuo.net/pymizu/\nER  -"
+  },
+  {
+    "objectID": "contributing.html",
+    "href": "contributing.html",
+    "title": "Contributing",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03"
+    "text": "Contributions are welcome — bug reports and pull requests alike. pymizu is pre-release and the API can change at any time, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump() — it is the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module — pickle sends them by reference, so spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
   },
   {
-    "objectID": "package-info.html#dev",
-    "href": "package-info.html#dev",
-    "title": "Package Info",
+    "objectID": "license.html",
+    "href": "license.html",
+    "title": "License",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n—\n\n\n2026-06-19\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-09-27\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-15\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-06"
+    "text": "▶\n    License features — MIT License\n\n\n\n\n\nPermissions\n\nCommercial use\nModification\nDistribution\nPrivate use\n\n\nConditions\n\nLicense and copyright notice\n\n\nLimitations\n\nLiability\nWarranty\n\n\n\n\n# MIT License\n\nCopyright (c) 2026 libmizu authors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."
   },
   {
-    "objectID": "package-info.html#docs",
-    "href": "package-info.html#docs",
-    "title": "Package Info",
+    "objectID": "reference/CancelledError.html",
+    "href": "reference/CancelledError.html",
+    "title": "CancelledError",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-10-09"
-  },
-  {
-    "objectID": "package-info.html#numpy",
-    "href": "package-info.html#numpy",
-    "title": "Package Info",
-    "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
-  },
-  {
-    "objectID": "reference/Channel.__enter__.html",
-    "href": "reference/Channel.__enter__.html",
-    "title": "Channel.__enter__()",
-    "section": "",
-    "text": "Usage\nSource\n\n\nChannel.__enter__()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__enter__"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.__iter__.html",
-    "href": "reference/Channel.__iter__.html",
-    "title": "Channel.__iter__()",
-    "section": "",
-    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__iter__()\n\n\nBlocks indefinitely between payloads (recv() with no timeout); use Channel.recv() directly when a bound is needed.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__iter__"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.attach.html",
-    "href": "reference/Channel.attach.html",
-    "title": "Channel.attach()",
-    "section": "",
-    "text": "Attach to the channel named by a join token (the peer side).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.attach.html#parameters",
-    "href": "reference/Channel.attach.html#parameters",
-    "title": "Channel.attach()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntoken: str\n\nThe join token from the host side’s ch.token.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.attach.html#returns",
-    "href": "reference/Channel.attach.html#returns",
-    "title": "Channel.attach()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The peer-side channel handle.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.attach.html#details",
-    "href": "reference/Channel.attach.html#details",
-    "title": "Channel.attach()",
-    "section": "Details",
-    "text": "Details\nLow-level: the caller consumes ch.drop before signalling ch.ready_set(). python -m pymizu.child is the reference peer entry.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.close_signal.html",
-    "href": "reference/Channel.close_signal.html",
-    "title": "Channel.close_signal()",
-    "section": "",
-    "text": "Signal close without waiting (the peer’s recv side sees\n\n\nUsage\nSource\n\n\nChannel.close_signal()\n\n\nCLOSED once the ring drains).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.close_signal"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.destroy.html",
-    "href": "reference/Channel.destroy.html",
-    "title": "Channel.destroy()",
-    "section": "",
-    "text": "Tear down the handle immediately, without the close\n\n\nUsage\nSource\n\n\nChannel.destroy()\n\n\nhandshake: the peer observes the channel closed (PEER_GONE is the hard-death outcome). Safe from any thread: a verb in flight on another thread pins the handle, and teardown completes when the last one returns — an indefinite wait (recv, recv_batch, ready_wait, close) breaks out within a bounded slice, so the teardown (and the peer’s observation of it) follows promptly.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.destroy"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.html",
-    "href": "reference/Channel.html",
-    "title": "Channel",
-    "section": "",
-    "text": "A shared-memory SPSC channel handle (process-private).\n\n\nUsage\nSource\n\n\nChannel()\n\n\nCreate the host side with Channel.create() (which spawns the peer); the peer side attaches with Channel.attach() — python -m pymizu.child does this. Handles do not survive fork().",
-    "crumbs": [
-      "Reference",
-      "Channels",
-      "Channel"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_batch.html",
-    "href": "reference/Channel.recv_batch.html",
-    "title": "Channel.recv_batch()",
-    "section": "",
-    "text": "Receive up to n payloads in one crossing; a list\n\n\nUsage\nSource\n\n\nChannel.recv_batch(\n    n=256,\n    timeout=None,\n)\n\n\n(possibly short or empty), or a terminal sentinel.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_batch"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send_batch.html",
-    "href": "reference/Channel.send_batch.html",
-    "title": "Channel.send_batch()",
-    "section": "",
-    "text": "Send several payloads in one crossing; return the number\n\n\nUsage\nSource\n\n\nChannel.send_batch(xs)\n\n\naccepted (short on ring-full or a terminal state).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send_batch"
-    ]
-  },
-  {
-    "objectID": "reference/DeclinedError.html",
-    "href": "reference/DeclinedError.html",
-    "title": "DeclinedError",
-    "section": "",
-    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes.\n\n\nUsage\n\n\nDeclinedError()",
+    "text": "The task was cancelled before it ran.\n\n\nUsage\n\n\nCancelledError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
-      "DeclinedError"
+      "CancelledError"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.__exit__.html",
+    "href": "reference/Channel.__exit__.html",
+    "title": "Channel.__exit__()",
+    "section": "",
+    "text": "Usage\nSource\n\n\nChannel.__exit__(*exc)",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.__exit__"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.alive.html",
+    "href": "reference/Channel.alive.html",
+    "title": "Channel.alive()",
+    "section": "",
+    "text": "True while the peer process is alive.\n\n\nUsage\nSource\n\n\nChannel.alive()",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.alive"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.close.html",
+    "href": "reference/Channel.close.html",
+    "title": "Channel.close()",
+    "section": "",
+    "text": "Orderly close: signal the peer and wait up to timeout\n\n\nUsage\nSource\n\n\nChannel.close(timeout=5.0)\n\n\nseconds for it to observe the close. True on a clean handshake; False (with a warning) on timeout, in which case resources release when the handle is garbage collected.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.close"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.create.html",
+    "href": "reference/Channel.create.html",
+    "title": "Channel.create()",
+    "section": "",
+    "text": "Create a channel and spawn its peer.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.create"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.create.html#parameters",
+    "href": "reference/Channel.create.html#parameters",
+    "title": "Channel.create()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\npeer: str\n\nA Python source string, evaluated in the peer process with ch bound to the peer-side handle.\n\ncapacity: int = 16384\n\nRing capacity in slots; a power of two.\n\nslot_size: int = 256\n\nBytes per ring slot; a power of two. The inline payload budget is slot_size - 16.\n\narena_size: int = 4 * 1024 * 1024\n\nBytes of shared staging arena for out-of-line payloads.\n\nspin: bool = False\n\nSpin rather than park while waiting.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the peer to attach.\n\nlauncher: _Callable[[str], _Any] | None = None\n\nA callable(token) arranging for a Python process to run python -m pymizu.child &lt;token&gt;; the default spawns sys.executable directly. r_launcher() returns one spawning an R peer (the R package mizu).",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.create"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.create.html#returns",
+    "href": "reference/Channel.create.html#returns",
+    "title": "Channel.create()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The host-side channel handle.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.create"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.create.html#examples",
+    "href": "reference/Channel.create.html#examples",
+    "title": "Channel.create()",
+    "section": "Examples",
+    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     ch.send([1, \"a\", None])\n...     received = ch.recv(timeout=5)\n&gt;&gt;&gt; received\n[1, 'a', None]",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.create"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.info.html",
+    "href": "reference/Channel.info.html",
+    "title": "Channel.info()",
+    "section": "",
+    "text": "A read-only wire-state snapshot of the channel (dict).\n\n\nUsage\nSource\n\n\nChannel.info()",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.info"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv.html",
+    "href": "reference/Channel.recv.html",
+    "title": "Channel.recv()",
+    "section": "",
+    "text": "Receive one payload.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv.html#parameters",
+    "href": "reference/Channel.recv.html#parameters",
+    "title": "Channel.recv()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv.html#returns",
+    "href": "reference/Channel.recv.html#returns",
+    "title": "Channel.recv()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The payload, or the TIMEOUT / CLOSED / PEER_GONE\n\nsentinel on the non-payload outcomes.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.send.html",
+    "href": "reference/Channel.send.html",
+    "title": "Channel.send()",
+    "section": "",
+    "text": "Send one payload.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.send"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.send.html#parameters",
+    "href": "reference/Channel.send.html#parameters",
+    "title": "Channel.send()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nx: _Any\n\nThe payload. None itself is a valid payload; bytes and numpy arrays travel raw, everything else rides pickle protocol 4.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.send"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.send.html#returns",
+    "href": "reference/Channel.send.html#returns",
+    "title": "Channel.send()",
+    "section": "Returns",
+    "text": "Returns\n\n\n None, or the FULL / CLOSED / PEER_GONE sentinel\n\n(identity-tested).",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.send"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.token.html",
+    "href": "reference/Channel.token.html",
+    "title": "Channel.token",
+    "section": "",
+    "text": "The join token for the peer’s attach.\n\n\nChannel.token: str",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.token"
+    ]
+  },
+  {
+    "objectID": "reference/DimArray.html",
+    "href": "reference/DimArray.html",
+    "title": "DimArray",
+    "section": "",
+    "text": "An ndarray carrying R labels (names / dimnames /\n\n\nUsage\nSource\n\n\nDimArray()\n\n\naxis_names / r_class) for faithful R ↔︎ Python round trips.\nA received labeled vector or array homes as a DimArray; an unmodified echo restores every label in R (identical()). Attach labels explicitly to send a labeled value: names for a 1-D array, dimnames (plus optional axis_names, R’s names(dimnames(x))) for a matrix or n-D array, and r_class = \"table\" for R’s table class. The two label slots are mutually exclusive at send; axis_names requires dimnames and has one entry per axis.\nLabels never propagate implicitly — any numpy operation that builds a new array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped or permuted array never inherits labels its data no longer matches.",
+    "crumbs": [
+      "Reference",
+      "Cross-language interop",
+      "DimArray"
     ]
   },
   {
@@ -1281,7 +1293,7 @@
     "href": "reference/Frame.html",
     "title": "Frame",
     "section": "",
-    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\n\n\nFrame()\n\n\nto_dict() gives the column dict without an Arrow library; arrow_c_stream exports to polars / pyarrow / pandas. from_arrow() constructs one from an Arrow producer (the opt-in zero-copy path for Python-to-Python channels).",
+    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\n\n\nFrame()\n\n\nto_dict() gives the column dict without an Arrow library; arrow_c_stream exports to polars / pyarrow / pandas. from_arrow() constructs one from an Arrow producer (the opt-in zero-copy path for Python-to-Python channels). R frame metadata rides the _r_attrs stash: it attaches at read and validates at send, but it rides the pristine received Frame only — the Frame immutability invariant: any future mutator must clear it first (a rebuild arrives in R as a plain data.frame, never a mislabeled one).",
     "crumbs": [
       "Reference",
       "Cross-language interop",

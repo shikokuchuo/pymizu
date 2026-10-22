@@ -70,6 +70,7 @@
 - [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
 - [r_pool_launcher](https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html): Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
 - [Frame](https://shikokuchuo.net/pymizu/reference/Frame.html): A data.frame's Python home: named columns with a row count
+- [DimArray](https://shikokuchuo.net/pymizu/reference/DimArray.html): An `ndarray` carrying R labels (`names` / `dimnames` /
 
 #### Frame Methods
 > Methods for the Frame class

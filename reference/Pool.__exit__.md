@@ -2,7 +2,7 @@
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1202-L1204)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1203-L1205)
 
 ``` python
 Pool.__exit__(*exc)

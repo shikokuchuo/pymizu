@@ -8,4 +8,4 @@ Usage
 Frame()
 ```
 
-to_dict() gives the column dict without an Arrow library; **arrow_c_stream** exports to polars / pyarrow / pandas. from_arrow() constructs one from an Arrow producer (the opt-in zero-copy path for Python-to-Python channels).
+to_dict() gives the column dict without an Arrow library; **arrow_c_stream** exports to polars / pyarrow / pandas. from_arrow() constructs one from an Arrow producer (the opt-in zero-copy path for Python-to-Python channels). R frame metadata rides the \_r_attrs stash: it attaches at read and validates at send, but it rides the pristine received Frame only -- the Frame immutability invariant: any future mutator must clear it first (a rebuild arrives in R as a plain data.frame, never a mislabeled one).

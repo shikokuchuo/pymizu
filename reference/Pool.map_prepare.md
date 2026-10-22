@@ -4,7 +4,7 @@ Stage a map once for repeated runs; return a
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1038-L1084)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1039-L1085)
 
 ``` python
 Pool.map_prepare(

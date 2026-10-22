@@ -4,7 +4,7 @@ Attach to a live pool as a submitter, by its join token.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L616-L632)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L617-L633)
 
 ``` python
 Pool.attach(token)

@@ -87,6 +87,7 @@ R peers and workers (the mizu R package), neutral task specifications, and the d
 - `r_launcher`: Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
 - `r_pool_launcher`: Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
 - `Frame`: A data.frame's Python home: named columns with a row count
+- `DimArray`: An `ndarray` carrying R labels (`names` / `dimnames` /
 
 ### Frame Methods
 

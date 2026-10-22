@@ -4,7 +4,7 @@ Send one payload.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L220-L235)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L221-L236)
 
 ``` python
 Channel.send(x)
