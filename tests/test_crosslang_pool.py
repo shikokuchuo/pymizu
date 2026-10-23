@@ -94,7 +94,12 @@ cmd <- c("-c", shQuote(probe_src))
 a <- probe(cmd, TRUE)
 b <- probe(cmd, FALSE)
 d <- probe(
-  c("-c", shQuote("import sys; print(sys.executable, sys.prefix, sys.path)")),
+  c("-c", shQuote(paste0(
+    "import os, sys; print(sys.executable, sys.prefix, sys.path); ",
+    "m = [l.split()[-1] for l in open('/proc/self/maps')] ",
+    "if os.path.exists('/proc/self/maps') else []; ",
+    "print('libpython mapped:', sorted({p for p in m if 'libpython' in p}))"
+  ))),
   TRUE
 )
 vars <- c(
@@ -110,7 +115,11 @@ report <- c(
   "--- probe, stderr captured", st(a), a,
   paste("last line exists:", length(a) > 0L && file.exists(a[[length(a)]])),
   "--- probe, stderr discarded (as the launcher)", st(b), b,
-  "--- interpreter", st(d), d
+  "--- interpreter", st(d), d,
+  paste(
+    "system libpython:",
+    paste(Sys.glob("/usr/lib/*/libpython3*"), collapse = " ")
+  )
 )
 mizu::mizu_send(ch, paste(report, collapse = "\n"))
 """
@@ -165,7 +174,8 @@ mizu::mizu_send(ch, r)
             sys.stderr.write(
                 "\n=== pymizu probe diagnostic\n"
                 f"pytest side: wd={os.getcwd()} "
-                f"PYTHONPATH={os.environ.get('PYTHONPATH')}\n"
+                f"PYTHONPATH={os.environ.get('PYTHONPATH')} "
+                f"LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH')}\n"
                 f"pytest-side probe: status {pre.returncode}\n"
                 f"{pre.stdout}{pre.stderr}"
                 f"--- R peer side\n{report}\n=== end diagnostic\n"
