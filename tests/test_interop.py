@@ -665,7 +665,6 @@ def test_declined_error_paths():
         (np.ma.MaskedArray([1.0, 2.0], mask=[True, False]), "buffer subclass"),
         ([np.ma.MaskedArray([1.0])], "buffer subclass"),
         (np.array([["a"]], dtype=object), "dtype"),
-        ([np.arange(4)[::2]], "strided"),
         ({1: "x"}, "non-str dict key"),
         ("\ud800", "UTF-8"),
         (2**90, "int64"),
@@ -868,7 +867,7 @@ def test_a_declined_write_pass_fails_the_send():
 
         def __buffer__(self, flags):
             self.calls += 1
-            if self.calls == 4:
+            if self.calls >= 4:
                 raise BufferError("export refused")
             return memoryview(self.a)
 
@@ -1814,9 +1813,6 @@ def test_writer_declines_buffer_forms():
     # a lone-surrogate dict key
     with pytest.raises(pymizu.DeclinedError, match="not writable as UTF-8"):
         _pymizu._write_stream({"\ud800": 1})
-    # a strided array is the top-level F-order form only — never nested
-    with pytest.raises(pymizu.DeclinedError, match="strided array nested"):
-        _pymizu._write_stream([np.arange(10)[::2]])
 
 
 def test_frame_row_names_reemit_forms():

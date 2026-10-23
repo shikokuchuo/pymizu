@@ -178,6 +178,12 @@ Initial pre-release.
   release carrying the matching runner. A nonexistent `rscript=` now
   raises an error naming the interpreter instead of blaming a missing
   mizu.
+- A non-C-contiguous array nested in a container now crosses instead of
+  raising `DeclinedError`: the nested decline predated the stride-aware
+  nested writers, which gather it F-order just as the top-level and
+  layout-tier paths already did. Every R matrix arrives in Python as an
+  F-order view, so an R `list(m = matrix(...))` now echoes from Python
+  whole (labeled leaves — dimnames and names — included).
 
 ### Changed
 

@@ -506,14 +506,16 @@ def test_runner_frame_stage_gates():
         h.destroy()
 
 
-def test_spec_strided_array_arg_declines():
+def test_spec_strided_array_arg_crosses():
     # a non-contiguous argument: the plan's candidate probe clears the
-    # buffer refusal, and the value walk's nested-strided decline stands
+    # buffer refusal, and the value walk gathers it strided like any
+    # nested leaf
     import numpy as np
 
+    a = np.arange(64.0)[::2]
     with pymizu.Pool.create(1) as pool:
-        with pytest.raises(pymizu.DeclinedError, match="strided"):
-            pool.submit(pymizu.call("numpy.sum", np.arange(64.0)[::2]))
+        out = pool.submit(pymizu.call("numpy.sum", a)).collect(timeout=30)
+        assert out == a.sum()
 
 
 def test_spec_view_arg_pinned_on_the_zc_path():

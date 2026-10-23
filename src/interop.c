@@ -4911,12 +4911,9 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
                      "portable home");
     return;
   }
-  if (strided && w->depth > 0) {
-    PyBuffer_Release(&v);
-    ixw_decline(w, "a strided array nested in a container has no "
-                "portable home");
-    return;
-  }
+  /* a strided buffer emits through the same stride-aware forms at any
+     depth: a container leaf is a plain vec, a cvt body, or
+     attr(vec, {dim}) — the gathers are F-order throughout */
   if (labeled) {
     /* the labeled shapes (MIZU_CAP_LABELED): the validated stash drives
        the emission; an invalid one declines with its message */
