@@ -69,7 +69,54 @@ def test_r_host_python_workers(r_pool):
     assert "OK" in proc.stdout
 
 
-def test_r_host_task_arg_view_ref():
+# CI diagnostic for the ubuntu 3.14 leg: the R peer's pymizu probe (the
+# launcher's exact system2 call, stderr discarded, an R error read as a
+# failed probe) rejects the interpreter there and nowhere else. The peer
+# re-runs the probe with stderr captured and again as the launcher runs
+# it, adds an interpreter self-report and the environment it sees, and
+# sends the lot back; the test prints it past pytest's capture, so the
+# log carries it whether the leg passes or fails.
+PROBE_SRC = "import pymizu.worker, pymizu; print(pymizu.__file__)"
+R_PROBE_DIAG = r"""
+probe <- function(args, stderr) {
+  tryCatch(
+    suppressWarnings(
+      system2(py, args, stdout = TRUE, stderr = stderr, timeout = 60)
+    ),
+    error = function(e) paste("R error:", conditionMessage(e))
+  )
+}
+st <- function(x) {
+  s <- attr(x, "status")
+  paste("status:", if (is.null(s)) "NULL (0)" else s)
+}
+cmd <- c("-c", shQuote(probe_src))
+a <- probe(cmd, TRUE)
+b <- probe(cmd, FALSE)
+d <- probe(
+  c("-c", shQuote("import sys; print(sys.executable, sys.prefix, sys.path)")),
+  TRUE
+)
+vars <- c(
+  "PYTHONPATH", "COVERAGE_PROCESS_START", "COVERAGE_RUN", "LD_LIBRARY_PATH",
+  "PYTHONHOME", "PYTHONSAFEPATH", "VIRTUAL_ENV"
+)
+report <- c(
+  paste("pid:", Sys.getpid()),
+  paste("wd:", getwd()),
+  paste("R:", R.version.string),
+  paste("mizu:", as.character(packageVersion("mizu"))),
+  sprintf("%s=%s", vars, Sys.getenv(vars)),
+  "--- probe, stderr captured", st(a), a,
+  paste("last line exists:", length(a) > 0L && file.exists(a[[length(a)]])),
+  "--- probe, stderr discarded (as the launcher)", st(b), b,
+  "--- interpreter", st(d), d
+)
+mizu::mizu_send(ch, paste(report, collapse = "\n"))
+"""
+
+
+def test_r_host_task_arg_view_ref(capfd):
     # a view nested in a task's args rides the task stream's ref leaf
     # (the path form): the worker resolves it off the shared pages
     import numpy as np
@@ -78,7 +125,16 @@ def test_r_host_task_arg_view_ref():
         launcher = pymizu.r_launcher()
     except pymizu.MizuError:
         pytest.skip("Rscript with the mizu package not available")
+    pre = subprocess.run(
+        [sys.executable, "-c", PROBE_SRC],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
     src = f"""
+py <- "{sys.executable}"
+probe_src <- "{PROBE_SRC}"
+{R_PROBE_DIAG}
 p <- mizu::mizu_pool(
   1L,
   launcher = mizu::mizu_py_pool_launcher(
@@ -104,6 +160,17 @@ mizu::mizu_send(ch, r)
         np.arange(1, 30001, dtype=np.float64) * 2,
     ]
     try:
+        report = ch.recv(60)
+        with capfd.disabled():
+            sys.stderr.write(
+                "\n=== pymizu probe diagnostic\n"
+                f"pytest side: wd={os.getcwd()} "
+                f"PYTHONPATH={os.environ.get('PYTHONPATH')}\n"
+                f"pytest-side probe: status {pre.returncode}\n"
+                f"{pre.stdout}{pre.stderr}"
+                f"--- R peer side\n{report}\n=== end diagnostic\n"
+            )
+            sys.stderr.flush()
         assert ch.send(payload) is None
         assert ch.recv(60) == pytest.approx(float(payload[1].sum()))
     finally:
