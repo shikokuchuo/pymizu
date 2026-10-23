@@ -717,6 +717,25 @@ def test_from_arrow_uint64_copy_arms():
     assert d2["u"].tolist() == [2**63 + k for k in range(2, 7)]
 
 
+def test_from_arrow_uint64_nulls_region_roundtrip():
+    # a uint64 column with nulls crosses the region tier verbatim: the
+    # nulls and the past-int64 lanes survive the receive and re-export
+    f = pymizu.Frame.from_arrow(
+        pa.table({"u": pa.array([1, None, 2**63] * 30000, type=pa.uint64())})
+    )
+    h, p = same_pair()
+    try:
+        h.send(f)
+        got = p.recv(10)
+        t = pa.table(got)
+        assert t.schema.field("u").type == pa.uint64()
+        assert t.column("u").null_count == 30000
+        assert t.to_pydict()["u"][:3] == [1, None, 2**63]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_from_arrow_declines_unsupported_types():
     cases = {
         "bin": pa.array([b"a"], type=pa.binary()),

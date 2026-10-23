@@ -265,6 +265,12 @@ def test_peer_ident_after_destroy():
         h._peer_ident()
 
 
+def test_attach_missing_region_names_it():
+    # a well-formed token whose region is gone: the core's error surfaces
+    with pytest.raises(pymizu.MizuError, match="cannot open channel region"):
+        pymizu.Channel.attach("0_0")
+
+
 def test_destroy_defers_to_in_flight_recv():
     # a recv parked in another thread pins the core handle past
     # destroy(); teardown completes when the recv returns

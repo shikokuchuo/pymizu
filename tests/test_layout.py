@@ -163,6 +163,21 @@ def test_mizl_tree_roundtrip():
         h.destroy()
 
 
+def test_mizh_bytes_region_tier():
+    # bytes past the floor stage as one MIZH region, values exact
+    h, p = foreign_pair()
+    try:
+        payload = b"x" * 100000
+        assert h.send(payload) is None
+        got = p.recv(5)
+        assert np.array_equal(
+            np.asarray(got), np.frombuffer(payload, dtype=np.uint8)
+        )
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_mizl_tree_scalar_wire_types():
     # int32-range ints land INT, wider INT64; -2^63 keeps its int64 value
     # here (R reads the sentinel as NA_integer64_ — the crosslang pin)

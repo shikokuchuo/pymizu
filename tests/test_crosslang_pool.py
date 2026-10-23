@@ -69,6 +69,47 @@ def test_r_host_python_workers(r_pool):
     assert "OK" in proc.stdout
 
 
+def test_r_host_task_arg_view_ref():
+    # a view nested in a task's args rides the task stream's ref leaf
+    # (the path form): the worker resolves it off the shared pages
+    import numpy as np
+
+    try:
+        launcher = pymizu.r_launcher()
+    except pymizu.MizuError:
+        pytest.skip("Rscript with the mizu package not available")
+    src = f"""
+p <- mizu::mizu_pool(
+  1L,
+  launcher = mizu::mizu_py_pool_launcher(
+    "{sys.executable}", stdout = FALSE, stderr = FALSE
+  )
+)
+v <- mizu::mizu_recv(ch, timeout = 30)
+t <- mizu::mizu_submit_call(
+  p,
+  mizu::mizu_call(
+    .name = NULL,
+    list(v[[2]]),
+    .source = "import numpy as np\\nfloat(np.asarray(_1[0]).sum())"
+  )
+)
+r <- mizu::mizu_collect(t)
+mizu::mizu_pool_stop(p)
+mizu::mizu_send(ch, r)
+"""
+    ch = pymizu.Channel.create(src, launcher=launcher)
+    payload = [
+        np.arange(30000, dtype=np.float64),
+        np.arange(1, 30001, dtype=np.float64) * 2,
+    ]
+    try:
+        assert ch.send(payload) is None
+        assert ch.recv(60) == pytest.approx(float(payload[1].sum()))
+    finally:
+        ch.close()
+
+
 def test_both_kinds_and_result_values(r_pool):
     import numpy as np
 

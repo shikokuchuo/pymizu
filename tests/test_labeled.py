@@ -267,6 +267,85 @@ def test_ref_echo_pristine_region():
         h.close()
 
 
+def test_labeled_region_tier_round_trips():
+    # the labeled blobs on the region tier (past the zc floor): {names}
+    # for a 1-D array, the 1-D dim scalar with dimnames, class = "table"
+    h, p = foreign_pair(2 | LABELED)  # ATTRS + LABELED
+    try:
+        a = _dimarray(np.arange(100000, dtype=np.float64))
+        a.names = tuple(f"n{i}" for i in range(100000))
+        h.send(a)
+        got = p.recv(10)
+        assert isinstance(got, pymizu.DimArray)
+        assert got.names == a.names
+        assert np.array_equal(np.asarray(got), np.asarray(a))
+        t = _dimarray(np.arange(60000, dtype=np.int32))
+        t.dimnames = (tuple(f"d{i}" for i in range(60000)),)
+        t.axis_names = ("",)
+        h.send(t)
+        got = p.recv(10)
+        assert got.dimnames == t.dimnames and got.axis_names == ("",)
+        assert np.array_equal(np.asarray(got), np.asarray(t))
+        m = _dimarray(np.arange(40000, dtype=np.float64).reshape(200, 200))
+        m.dimnames = (
+            tuple(f"r{i}" for i in range(200)),
+            tuple(f"c{i}" for i in range(200)),
+        )
+        m.r_class = "table"
+        h.send(m)
+        got = p.recv(10)
+        assert got.dimnames == m.dimnames and got.r_class == "table"
+        assert np.array_equal(np.asarray(got), np.asarray(m))
+    finally:
+        p.close()
+        h.close()
+
+
+def _region_named_vec():
+    """A region-backed 1-D named array off a foreign receive: (the array,
+    the holding channel pair)."""
+    h, p = foreign_pair(2 | LABELED)  # ATTRS + LABELED
+    a = _dimarray(np.arange(100000, dtype=np.float64))
+    a.names = tuple(f"n{i}" for i in range(100000))
+    h.send(a)
+    got = p.recv(10)
+    assert isinstance(got, pymizu.DimArray)
+    assert got.names == a.names
+    return got, (h, p)
+
+
+def test_ref_probe_names_compare():
+    got, (h, p) = _region_named_vec()
+    try:
+        # pristine: the names equal the region blob's — the probe admits
+        assert _pymizu._view_check(got)
+        # a relabeled send: the probe rejects (crosses by value instead)
+        got.names = got.names[:-1] + ("changed",)
+        assert not _pymizu._view_check(got)
+        # a label-stripped send rejects too: the region's names never
+        # resurrect on a plain array
+        got.names = None
+        assert not _pymizu._view_check(got)
+    finally:
+        p.close()
+        h.close()
+
+
+def test_ref_probe_added_names_copy():
+    # labels added over an unlabeled region's bytes: the compare rejects
+    # and the send copies — the region's lack of names is not a match
+    h, p = foreign_pair(2 | LABELED)
+    try:
+        h.send(np.arange(100000, dtype=np.float64))
+        got = p.recv(10)
+        cand = np.asarray(memoryview(got)).view(pymizu.DimArray)
+        cand.names = tuple(f"n{i}" for i in range(100000))
+        assert not _pymizu._view_check(cand)
+    finally:
+        p.close()
+        h.close()
+
+
 def test_labeled_temporal_declines():
     # a named Date / POSIXct stays declined: no labeled temporal shape
     a = _dimarray(np.arange(3).astype("datetime64[D]"))

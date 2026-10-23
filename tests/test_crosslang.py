@@ -1257,6 +1257,77 @@ mizu::mizu_recv(ch, timeout = 60)
         ch.close()
 
 
+def test_r_peer_view_element_ref_path(r_mizu):
+    # an element view re-sent top-level crosses as a REF naming the path
+    # (region[i]): the resolve walks the tree off the shared pages
+    np = pytest.importorskip("numpy")
+    src = r"""
+v <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, v[[2]])
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    payload = [
+        np.arange(30000, dtype=np.float64),
+        np.arange(1, 30001, dtype=np.float64) * 2,
+    ]
+    try:
+        assert ch.send(payload) is None
+        got = ch.recv(30)
+        assert isinstance(got, np.ndarray)
+        assert type(got.base).__name__ == "_ShmView"
+        assert np.array_equal(got, payload[1])
+        pa = pytest.importorskip("pyarrow")
+        arr = pa.array(got.base)
+        assert arr.type == pa.float64() and arr.null_count == 0
+        assert len(arr) == 30000
+        del arr
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
+def test_r_peer_frame_remote_column_path(r_mizu):
+    # a data.frame column that is itself a view of a tree element crosses
+    # as a remote leaf naming the path: the column resolves off the
+    # referenced region, no bytes moving. The bulk column carries the
+    # frame past the zero-copy floor (a remote leaf's span never does).
+    np = pytest.importorskip("numpy")
+    src = r"""
+v <- mizu::mizu_recv(ch, timeout = 30)
+df <- data.frame(c = v[[2]], d = runif(30000))
+mizu::mizu_send(ch, df)
+df <- data.frame(c = v[[1]][[2]], d = runif(30000))
+mizu::mizu_send(ch, df)
+mizu::mizu_recv(ch, timeout = 30)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    payload = [
+        [
+            np.zeros(10, dtype=np.float64),
+            np.arange(1, 30001, dtype=np.float64) * 2,
+        ],
+        np.arange(30000, dtype=np.float64),
+    ]
+    try:
+        assert ch.send(payload) is None
+        # the one-hop path: region[2]
+        f = ch.recv(30)
+        assert isinstance(f, pymizu.Frame)
+        col = f.to_dict()["c"]
+        assert type(col.base).__name__ == "_ShmView"
+        assert np.array_equal(np.asarray(col), payload[1])
+        # the two-hop path: region[1,2]
+        f = ch.recv(30)
+        assert isinstance(f, pymizu.Frame)
+        col = f.to_dict()["c"]
+        assert type(col.base).__name__ == "_ShmView"
+        assert np.array_equal(np.asarray(col), payload[0][1])
+        ch.send(b"")
+    finally:
+        ch.close()
+
+
 def test_r_peer_view_to_arrow(r_mizu):
     # .to_arrow() re-exposes the __arrow_c_array__ export (3.4): LGL is
     # Arrow bool, INT64 carries its validity bitmap
@@ -2354,6 +2425,39 @@ relay(data.frame(u = as.difftime(c(90, 135, NA), units = "secs"),
             assert ch.recv(30) is True
     finally:
         ch.close()
+
+
+def test_crosslang_frame_stash_mizl_roundtrip(r_mizu):
+    # the _r_attrs stash splices verbatim through the same-language MIZL
+    # tier: the full class vector, the extra attrs, the automatic row
+    # names — and the values
+    np = pytest.importorskip("numpy")
+    src = r"""
+df <- data.frame(n = as.numeric(seq_len(20000)), i = seq_len(20000))
+class(df) <- c("tbl_df", "tbl", "data.frame")
+attr(df, "note") <- "hello"
+mizu::mizu_send(ch, df)
+"""
+    ch = pymizu.Channel.create(src, launcher=r_mizu)
+    try:
+        f = ch.recv(30)
+        assert isinstance(f, pymizu.Frame)
+        assert f._r_attrs[0] == ("tbl_df", "tbl", "data.frame")
+        assert len(f._r_attrs[1]) == 1  # the "note" extra
+        assert f.row_names is None
+    finally:
+        ch.close()
+    echo = pymizu.Channel.create("import pymizu\n" + PY_ECHO)
+    try:
+        assert echo.send(f) is None  # past the floor: one MIZL region
+        got = echo.recv(30)
+        assert isinstance(got, pymizu.Frame)
+        assert got._r_attrs == f._r_attrs
+        d = got.to_dict()
+        assert np.array_equal(np.asarray(d["n"]), np.arange(1, 20001) + 0.0)
+        assert np.array_equal(np.asarray(d["i"]), np.arange(1, 20001))
+    finally:
+        echo.close()
 
 
 def test_crosslang_arrow_frames_to_dataframe(r_mizu):
