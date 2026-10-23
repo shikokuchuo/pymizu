@@ -91,6 +91,21 @@ def test_r_launcher_probe_malformed_output(tmp_path):
         pymizu.r_launcher(rscript=str(fake))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the fake is a shell script")
+def test_r_launcher_probe_failure_detail(tmp_path):
+    # the probe's exit status and stderr tail ride the error: the probe
+    # runs in this process's environment, which a shell cannot reproduce
+    fake = tmp_path / "Rscript"
+    fake.write_text('#!/bin/sh\necho "no package mizu in: /lib" >&2\nexit 1\n')
+    fake.chmod(0o755)
+    with pytest.raises(pymizu.MizuError) as info:
+        pymizu.r_launcher(rscript=str(fake))
+    msg = str(info.value)
+    assert "needs the R package 'mizu'" in msg
+    assert "exit status 1" in msg
+    assert "no package mizu in: /lib" in msg
+
+
 def test_r_launcher_probe_cache_hit(tmp_path, monkeypatch):
     # a live cache entry is served without running the probe: a real
     # interpreter that cannot answer it, so a returned launcher proves

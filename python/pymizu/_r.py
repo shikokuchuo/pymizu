@@ -19,11 +19,15 @@ from pymizu._pymizu import MizuError
 
 # Feature probe: an installed mizu whose mizu_channel takes a source string
 # (the MIZU_DROP_SOURCE path). Prints the static runner path and the
-# library paths, one per line; exit status 1 when unsupported.
+# library paths, one per line; exit status 1 when unsupported, the reason
+# (and the library paths searched) on stderr for the launcher's error.
 _PROBE = (
-    'ok <- requireNamespace("mizu", quietly = TRUE) && '
-    'grepl("source string", paste(deparse(mizu::mizu_channel), '
-    'collapse = " ")); '
+    'inst <- requireNamespace("mizu", quietly = TRUE); '
+    'ok <- inst && grepl("source string", '
+    'paste(deparse(mizu::mizu_channel), collapse = " ")); '
+    'if (!inst) message("no package mizu in: ", '
+    'paste(.libPaths(), collapse = ", ")) '
+    'else if (!ok) message("the installed mizu lacks source string support"); '
     "if (ok) cat("
     'system.file("scripts", "mizu-child.R", package = "mizu"), "\\n", '
     'paste(.libPaths(), collapse = "\\n"), '
@@ -34,12 +38,19 @@ _PROBE = (
 _cache: dict[str, tuple[str, tuple[str, ...]]] = {}
 
 
-def _find_mizu(rscript: str) -> tuple[str, tuple[str, ...]] | None:
+class _ProbeFailed(Exception):
+    """The Rscript probe found no usable mizu; the message is the detail
+    (exit status, the probe's stderr tail) for the launcher's error."""
+
+
+def _find_mizu(rscript: str) -> tuple[str, tuple[str, ...]]:
     """(child script, libpaths) of an installed mizu with the source-drop
-    path, else None. Successful probes are cached per Rscript; a hit
-    revalidates against the child script with one exists check, so an
-    uninstalled or replaced mizu re-probes (and the launcher errors
-    early) instead of failing only at spawn with a startup timeout."""
+    path; _ProbeFailed otherwise, carrying why. Successful probes are
+    cached per Rscript; a hit revalidates against the child script with
+    one exists check, so an uninstalled or replaced mizu re-probes (and
+    the launcher errors early) instead of failing only at spawn with a
+    startup timeout. The probe runs in this process's environment, which
+    is the part a shell cannot reproduce, so its stderr is kept."""
     hit = _cache.get(rscript)
     if hit is not None and _os.path.exists(hit[0]):
         return hit
@@ -50,13 +61,17 @@ def _find_mizu(rscript: str) -> tuple[str, tuple[str, ...]] | None:
             text=True,
             timeout=60,
         )
-    except (OSError, _subprocess.TimeoutExpired):
-        return None
-    if probe.returncode != 0:
-        return None
+    except _subprocess.TimeoutExpired:
+        raise _ProbeFailed("the probe timed out after 60 s") from None
+    except OSError as e:
+        raise _ProbeFailed(f"cannot run the probe: {e}") from None
     lines = probe.stdout.splitlines()
-    if len(lines) < 2 or not lines[0]:
-        return None
+    if probe.returncode != 0 or len(lines) < 2 or not lines[0]:
+        detail = [f"exit status {probe.returncode}"]
+        if probe.returncode == 0:
+            detail.append("the probe printed no runner path")
+        detail.extend(probe.stderr.splitlines()[-8:])
+        raise _ProbeFailed("\n".join(detail))
     found = (lines[0], tuple(lines[1:]))
     _cache[rscript] = found
     return found
@@ -83,13 +98,13 @@ def _resolve(
                 f"interpreter '{rscript}'"
             )
         rscript = resolved
-    found = _find_mizu(rscript)
-    if found is None:
+    try:
+        script, libs = _find_mizu(rscript)
+    except _ProbeFailed as e:
         raise MizuError(
             f"pymizu: {verb}() needs the R package 'mizu' (with source "
-            f"string support) installed for {rscript}"
-        )
-    script, libs = found
+            f"string support) installed for {rscript}\n{e}"
+        ) from None
     return rscript, script, libs
 
 
