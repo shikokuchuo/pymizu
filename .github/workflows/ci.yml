@@ -89,6 +89,21 @@ jobs:
         with:
           use-public-rspm: true
 
+      # R's startup script (etc/ldpaths) prepends its build-time system
+      # library dirs (/usr/local/lib:/usr/lib/x86_64-linux-gnu) to
+      # LD_LIBRARY_PATH for every R process and its children, ahead of
+      # the toolcache lib dir setup-python exports. ubuntu-26.04 ships a
+      # system Python 3.14, so the toolcache's shared-library 3.14
+      # interpreter, spawned from an R peer, loaded the system
+      # libpython3.14, whose frozen site module is Debian's and looks for
+      # dist-packages: no site-packages on sys.path, no pymizu, the R
+      # launcher's probe fails. R_LD_LIBRARY_PATH replaces the prepended
+      # portion; R's own lib dir is all it needs (the system dirs are on
+      # the loader's default search path anyway).
+      - name: Keep R's library path off the system dirs (cross-language tests)
+        if: runner.os == 'Linux' && env.CROSSLANG_PAT != ''
+        run: echo "R_LD_LIBRARY_PATH=$(R RHOME)/lib" >> "$GITHUB_ENV"
+
       - name: Install the mizu R package (cross-language tests)
         if: runner.os == 'Linux' && env.CROSSLANG_PAT != ''
         env:
