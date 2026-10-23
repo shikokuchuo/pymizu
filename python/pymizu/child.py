@@ -11,9 +11,7 @@ import sys
 import traceback
 
 import pymizu
-from pymizu import _TOKEN_RE, _pymizu
-
-_DROP_SOURCE = 0x53  # 'S'
+from pymizu import _DROP_SOURCE, _TOKEN_RE, _pymizu
 
 
 def main() -> int:

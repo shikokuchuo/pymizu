@@ -1106,8 +1106,7 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
   size_t n = (size_t) v.len;
   PyBuffer_Release(&v);
   if (type == 0 || n > (SIZE_MAX >> 9)) return -1;
-  size_t zc_gate = (size_t) fp->inline_max > MIZU_ZC_FLOOR ?
-    (size_t) fp->inline_max : MIZU_ZC_FLOOR;
+  const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   if (!fp->churn && n >= zc_gate) {
     if (fp->ref) return -1;   /* one staging checkout per frame */
     fp->ref = 1;
@@ -1127,8 +1126,7 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
    form, so the whole task tuple pickles (the pre-FRAMEREF behavior).
    0 ok, -1 reject. */
 static int frame_ref_size(PyObject *o, frame_plan *fp) {
-  size_t zc_gate = (size_t) fp->inline_max > MIZU_ZC_FLOOR ?
-    (size_t) fp->inline_max : MIZU_ZC_FLOOR;
+  const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   if (fp->churn ||
       frame_data_size(((MizuFrame *) o)->fc) < (uint64_t) zc_gate)
     return -1;
@@ -1237,8 +1235,7 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
   }
   int type = wire_type_of(&v);
   size_t n = (size_t) v.len;
-  size_t zc_gate = (size_t) fp->inline_max > MIZU_ZC_FLOOR ?
-    (size_t) fp->inline_max : MIZU_ZC_FLOOR;
+  const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   int rc = 0;
   if (!fp->churn && n >= zc_gate) {
     /* the stage_shm_vec body minus the slot-header writes: one MIZH
@@ -2079,7 +2076,7 @@ static PyObject *loan_new(MizuShmOwner *owner) {
   return (PyObject *) l;
 }
 
-static const char *view_format(int type) {
+const char *mizu_py_tag_format(int type) {
   switch (type) {
   case MIZU_TYPE_REAL: return "d";
   case MIZU_TYPE_INT:
@@ -2106,7 +2103,8 @@ static int view_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
   view->len = v->len;
   view->readonly = 1;
   view->itemsize = elt;
-  view->format = (flags & PyBUF_FORMAT) ? (char *) view_format(v->type) : NULL;
+  view->format =
+    (flags & PyBUF_FORMAT) ? (char *) mizu_py_tag_format(v->type) : NULL;
   view->ndim = 1;
   view->shape = (flags & PyBUF_ND) ? v->shape : NULL;
   /* PyBUF_STRIDES contains the PyBUF_ND bit: an ND-only request (the
@@ -2407,6 +2405,46 @@ void mizu_py_arrow_array_cap_free(PyObject *cap) {
   free(a);
 }
 
+int mizu_py_arrow_export_alloc(int nbufs, mizu_shm *shm,
+                               ArrowSchema **schema_out,
+                               ArrowArray **array_out,
+                               const void ***buffers_out,
+                               mizu_py_arrow_loan **loan_out,
+                               PyObject **scap_out, PyObject **acap_out) {
+  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
+  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
+  const void **buffers =
+    (const void **) calloc((size_t) nbufs, sizeof(void *));
+  mizu_py_arrow_loan *loan =
+    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
+  PyObject *scap = schema != NULL ?
+    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
+    NULL;
+  PyObject *acap = array != NULL ?
+    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
+    NULL;
+  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
+    if (scap == NULL) free(schema);
+    if (acap == NULL) free(array);
+    Py_XDECREF(scap);
+    Py_XDECREF(acap);
+    free(buffers);
+    free(loan);
+    if (!PyErr_Occurred()) PyErr_NoMemory();
+    return -1;
+  }
+  loan->shm = shm;
+  loan->pid = mizu_self_pid();
+  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
+  *schema_out = schema;
+  *array_out = array;
+  *buffers_out = buffers;
+  *loan_out = loan;
+  *scap_out = scap;
+  *acap_out = acap;
+  return 0;
+}
+
 int mizu_py_arrow_fill(int tag, const uint8_t *data, int64_t n,
                        int build_valid, mizu_py_arrow_loan *loan,
                        const char **fmt, const void **values,
@@ -2556,33 +2594,18 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
      error the destructors clean up through release — the structs, the
      buffers array, the loan, the mapping, and the zc count are never
      freed by hand once wrapped */
-  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
-  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
-  const void **buffers = (const void **) calloc(2, sizeof(void *));
-  mizu_py_arrow_loan *loan =
-    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
-  PyObject *scap = schema != NULL ?
-    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
-    NULL;
-  PyObject *acap = array != NULL ?
-    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
-    NULL;
-  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
-    if (scap == NULL) free(schema);
-    if (acap == NULL) free(array);
-    Py_XDECREF(scap);
-    Py_XDECREF(acap);
-    free(buffers);
-    free(loan);
+  ArrowSchema *schema;
+  ArrowArray *array;
+  const void **buffers;
+  mizu_py_arrow_loan *loan;
+  PyObject *scap, *acap;
+  if (mizu_py_arrow_export_alloc(2, shm, &schema, &array, &buffers,
+                                 &loan, &scap, &acap) < 0) {
     mizu_zc_unref(shm);
     mizu_shm_close(shm, 0);
-    if (!PyErr_Occurred()) PyErr_NoMemory();
     return NULL;
   }
-  loan->shm = shm;
-  loan->pid = mizu_self_pid();
   loan->zc = 1;
-  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
   array->private_data = loan;
   array->buffers = buffers;
   array->release = mizu_py_arrow_array_release;
@@ -2992,33 +3015,18 @@ static PyObject *strview_arrow_c_array(PyObject *obj, PyObject *args,
     raise_tls();
     return NULL;
   }
-  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
-  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
-  const void **buffers = (const void **) calloc(3, sizeof(void *));
-  mizu_py_arrow_loan *loan =
-    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
-  PyObject *scap = schema != NULL ?
-    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
-    NULL;
-  PyObject *acap = array != NULL ?
-    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
-    NULL;
-  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
-    if (scap == NULL) free(schema);
-    if (acap == NULL) free(array);
-    Py_XDECREF(scap);
-    Py_XDECREF(acap);
-    free(buffers);
-    free(loan);
+  ArrowSchema *schema;
+  ArrowArray *array;
+  const void **buffers;
+  mizu_py_arrow_loan *loan;
+  PyObject *scap, *acap;
+  if (mizu_py_arrow_export_alloc(3, shm, &schema, &array, &buffers,
+                                 &loan, &scap, &acap) < 0) {
     mizu_zc_unref(shm);
     mizu_shm_close(shm, 0);
-    if (!PyErr_Occurred()) PyErr_NoMemory();
     return NULL;
   }
-  loan->shm = shm;
-  loan->pid = mizu_self_pid();
   loan->zc = 1;
-  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
   mizu_mizs_geom g = mizu_mizs_geometry(sv->n);
   const uint8_t *block =
     (const uint8_t *) mizu_shm_addr(shm) + MIZU_HEADER_SIZE;
@@ -4274,7 +4282,7 @@ static int read_foreign(const mizu_read_ctx *ctx) {
   mizu_handle *h = ctx->handle;
   if (h != NULL && mizu_handle_kind(h) == MIZU_HTYPE_POOL) {
     uint32_t lang =
-      (uint32_t) (mizu_pool_worker_ident((mizu_pool *) h) & 0xff);
+      MIZU_PY_IDENT_LANG(mizu_pool_worker_ident((mizu_pool *) h));
     return lang != 0 && lang != MIZU_LANG_PYTHON;
   }
   MizuHandleCtx *hctx = (MizuHandleCtx *) ctx->binding_ctx;
@@ -4762,7 +4770,7 @@ static int publish_exc(mizu_result_sink *sink, uint64_t sub_ident) {
      a foreign submitter gets the neutral err stream every binding reads —
      the private pickle envelope would be unreadable there. Bounded by
      construction, INLINE, cannot fail */
-  if (sub_ident != 0 && (sub_ident & 0xff) != MIZU_LANG_PYTHON) {
+  if (sub_ident != 0 && MIZU_PY_IDENT_LANG(sub_ident) != MIZU_LANG_PYTHON) {
     uint64_t widx = 0;
     if (eidx != NULL) {
       unsigned long long v = PyLong_AsUnsignedLongLong(eidx);
@@ -4917,11 +4925,11 @@ static int py_exec_task(mizu_result_sink *sink, const uint8_t *bytes,
       return 1;      /* BaseException: the worker goes down */
     return publish_exc(sink, sub_ident);
   }
-  const int foreign = (sub_ident & 0xff) != 0 &&
-    (sub_ident & 0xff) != MIZU_LANG_PYTHON;
+  const int foreign = MIZU_PY_IDENT_LANG(sub_ident) != 0 &&
+    MIZU_PY_IDENT_LANG(sub_ident) != MIZU_LANG_PYTHON;
   if (foreign && hctx != NULL) {
-    hctx->peer_lang = (uint32_t) (sub_ident & 0xff);
-    hctx->peer_caps = (uint32_t) (sub_ident >> 32);
+    hctx->peer_lang = MIZU_PY_IDENT_LANG(sub_ident);
+    hctx->peer_caps = MIZU_PY_IDENT_CAPS(sub_ident);
   }
   int rc = mizu_result_publish(sink, (void *) value);
   Py_DECREF(value);
@@ -5091,12 +5099,10 @@ static mizu_channel *chan_get(MizuChannel *self) {
   return c;
 }
 
-/* Raise a MIZU_ERR from a handle verb. A callback that already set a Python
-   error (the check hook's KeyboardInterrupt, a stage/read failure) wins. */
-static PyObject *raise_handle(mizu_channel *c) {
-  if (PyErr_Occurred()) return NULL;
-  mizu_errcat cat = mizu_channel_errcat(c);
-  const char *msg = mizu_channel_error(c);
+/* The errcat -> exception mapping shared by the channel and pool
+   raisers; the pool's two extra categories are pool_raise's ahead of
+   the fallback. */
+static PyObject *raise_errcat(mizu_errcat cat, const char *msg) {
   switch (cat) {
   case MIZU_ERRCAT_INTERRUPTED:
     PyErr_SetNone(PyExc_KeyboardInterrupt);
@@ -5111,6 +5117,13 @@ static PyObject *raise_handle(mizu_channel *c) {
     break;
   }
   return NULL;
+}
+
+/* Raise a MIZU_ERR from a handle verb. A callback that already set a Python
+   error (the check hook's KeyboardInterrupt, a stage/read failure) wins. */
+static PyObject *raise_handle(mizu_channel *c) {
+  if (PyErr_Occurred()) return NULL;
+  return raise_errcat(mizu_channel_errcat(c), mizu_channel_error(c));
 }
 
 /* Resolve a finished verb's status. Callers run chan_call_done first, so
@@ -5253,6 +5266,29 @@ static PyObject *Channel_send_error(MizuChannel *self, PyObject *arg) {
   return PyBool_FromLong(st == MIZU_OK);
 }
 
+/* A tuple snapshot for the batch verbs: the GIL drops for the batch, so
+   the borrowed items of a caller-shared list could be freed mid-call by
+   another thread. *seq_out the owned tuple, *n_out the count; NULL with
+   an exception set. */
+static void **batch_snapshot(PyObject *arg, PyObject **seq_out,
+                             Py_ssize_t *n_out) {
+  PyObject *seq = PySequence_Tuple(arg);
+  if (seq == NULL) return NULL;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+  void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));
+  if (objs == NULL) {
+    Py_DECREF(seq);
+    PyErr_NoMemory();
+    return NULL;
+  }
+  PyObject **items = PySequence_Fast_ITEMS(seq);
+  for (Py_ssize_t i = 0; i < n; i++)
+    objs[i] = (void *) items[i];
+  *seq_out = seq;
+  *n_out = n;
+  return objs;
+}
+
 PyDoc_STRVAR(send_batch_doc,
 "send_batch(xs) -> int\n\n\
 Publish a sequence of messages in one batched tail store. Returns the\n\
@@ -5262,19 +5298,10 @@ closed midway; send the next element singly to learn which.");
 static PyObject *Channel_send_batch(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
-  /* a tuple snapshot: the GIL drops for the batch, so the borrowed items
-     of a caller-shared list could be freed mid-send by another thread */
-  PyObject *seq = PySequence_Tuple(arg);
-  if (seq == NULL) return NULL;
-  Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
-  void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));
-  if (objs == NULL) {
-    Py_DECREF(seq);
-    return PyErr_NoMemory();
-  }
-  PyObject **items = PySequence_Fast_ITEMS(seq);
-  for (Py_ssize_t i = 0; i < n; i++)
-    objs[i] = (void *) items[i];
+  PyObject *seq;
+  Py_ssize_t n;
+  void **objs = batch_snapshot(arg, &seq, &n);
+  if (objs == NULL) return NULL;
   size_t accepted = 0;
   mizu_status st;
   CHAN_ALLOW_THREADS(self);
@@ -5526,8 +5553,8 @@ static PyObject *Channel_ready_wait(MizuChannel *self, PyObject *tmo) {
          the in-flight count still pins c and vcache) */
       uint64_t ident = mizu_channel_peer_ident(c);
       MizuHandleCtx *hc = (MizuHandleCtx *) self->vcache;
-      hc->peer_lang = (uint32_t) (ident & 0xff);
-      hc->peer_caps = (uint32_t) (ident >> 32);
+      hc->peer_lang = MIZU_PY_IDENT_LANG(ident);
+      hc->peer_caps = MIZU_PY_IDENT_CAPS(ident);
     }
     if (chan_call_done(self, c, st)) return NULL;
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
@@ -5751,25 +5778,15 @@ static PyObject *pool_raise(mizu_pool *p) {
   mizu_errcat cat = mizu_pool_errcat(p);
   const char *msg = mizu_pool_error(p);
   switch (cat) {
-  case MIZU_ERRCAT_INTERRUPTED:
-    PyErr_SetNone(PyExc_KeyboardInterrupt);
-    break;
   case MIZU_ERRCAT_STOPPED:
     PyErr_Format(MizuStoppedError, "pymizu: %s", msg);
-    break;
+    return NULL;
   case MIZU_ERRCAT_EXHAUSTED:
     PyErr_Format(MizuSlotsExhaustedError, "pymizu: %s", msg);
-    break;
-  case MIZU_ERRCAT_NOSPACE:
-  case MIZU_ERRCAT_NOMEMORY:
-  case MIZU_ERRCAT_EXISTS:
-    PyErr_Format(MizuShmError, "pymizu: %s", msg);
-    break;
+    return NULL;
   default:
-    PyErr_Format(MizuError, "pymizu: %s", msg);
-    break;
+    return raise_errcat(cat, msg);
   }
-  return NULL;
 }
 
 /* The destroy half of the in-flight fence: the core handle and the
@@ -6005,8 +6022,9 @@ static PyObject *Pool_worker_ident(MizuPool *self,
   if (hctx->pool_ident == 0)
     hctx->pool_ident = mizu_pool_worker_ident(p);
   if (hctx->pool_ident == 0) Py_RETURN_NONE;
-  return Py_BuildValue("(I I)", (unsigned) (hctx->pool_ident & 0xff),
-                       (unsigned) (uint32_t) (hctx->pool_ident >> 32));
+  return Py_BuildValue("(I I)",
+                       (unsigned) MIZU_PY_IDENT_LANG(hctx->pool_ident),
+                       (unsigned) MIZU_PY_IDENT_CAPS(hctx->pool_ident));
 }
 
 PyDoc_STRVAR(pool_exec_fail_doc,
@@ -6042,22 +6060,17 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   if (p == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  /* a tuple snapshot: the GIL drops for the batch, so the borrowed items
-     of a caller-shared list could be freed mid-submit by another thread */
-  PyObject *fast = PySequence_Tuple(seq);
-  if (fast == NULL) return NULL;
-  Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
-  void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));
+  PyObject *fast;
+  Py_ssize_t n;
+  void **objs = batch_snapshot(seq, &fast, &n);
+  if (objs == NULL) return NULL;
   mizu_task *ts = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(mizu_task));
-  if (objs == NULL || ts == NULL) {
+  if (ts == NULL) {
     PyMem_Free(objs);
     PyMem_Free(ts);
     Py_DECREF(fast);
     return PyErr_NoMemory();
   }
-  PyObject **items = PySequence_Fast_ITEMS(fast);
-  for (Py_ssize_t i = 0; i < n; i++)
-    objs[i] = (void *) items[i];
   size_t done = 0;
   mizu_status st;
   POOL_ALLOW_THREADS(self);
@@ -6321,10 +6334,9 @@ static PyObject *Pool_ready_wait(MizuPool *self, PyObject *args,
   /* Sliced like stop: a Pool_destroy breaks the wait out as False. */
   double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
   for (;;) {
-    self->in_flight++;
-    Py_BEGIN_ALLOW_THREADS
+    POOL_ALLOW_THREADS(self);
     st = mizu_pool_ready_wait(p, slots, (size_t) n, slice);
-    Py_END_ALLOW_THREADS
+    POOL_RESUME();
     if (pool_call_done(self, p, st)) {
       PyMem_Free(slots);
       return NULL;
@@ -6392,10 +6404,9 @@ static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
   /* Not sliced like the other waits: each stop call releases the handle,
      so a re-entered stop short-circuits to OK on the released handle —
      an indefinite stop waits out its own deadline past a destroy. */
-  self->in_flight++;
-  Py_BEGIN_ALLOW_THREADS
+  POOL_ALLOW_THREADS(self);
   st = mizu_pool_stop(p, ms);
-  Py_END_ALLOW_THREADS
+  POOL_RESUME();
   if (pool_call_done(self, p, st)) return NULL;
   /* the handle stays alive (a post-stop submit reads the shutdown flag as
      StoppedError); the finalizer's destroy is a no-op after */
@@ -7363,8 +7374,8 @@ static PyObject *pymizu_channel_attach(PyObject *Py_UNUSED(module),
     /* the host's word is on the region at attach */
     uint64_t word = mizu_channel_peer_ident(c);
     MizuHandleCtx *hc = (MizuHandleCtx *) self->vcache;
-    hc->peer_lang = (uint32_t) (word & 0xff);
-    hc->peer_caps = (uint32_t) (word >> 32);
+    hc->peer_lang = MIZU_PY_IDENT_LANG(word);
+    hc->peer_caps = MIZU_PY_IDENT_CAPS(word);
   }
   /* borrowed drop bytes, valid until destroy — copy out for the caller */
   const uint8_t *bytes;

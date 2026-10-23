@@ -275,49 +275,36 @@ static void fcol_view_valid(const fcol *c, const uint8_t **valid,
    remote column borrows a region the frame's anchor does not cover: the
    wrap rides a fresh open of the referenced region (the copy tiers the
    fallback on a gone one). */
+/* fcol_to_obj's kind -> wire type, 0 a kind with no view form. */
+static int fcol_wire_type(int kind) {
+  switch (kind) {
+  case FCOL_F64: return MIZU_TYPE_REAL;
+  case FCOL_I32: return MIZU_TYPE_INT;
+  case FCOL_I64: return MIZU_TYPE_INT64;
+  case FCOL_U8: return MIZU_TYPE_RAW;
+  case FCOL_C128: return MIZU_TYPE_CPLX;
+  default: return 0;
+  }
+}
+
 static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                              PyObject *loan) {
   uint64_t n = (uint64_t) c->n;
-  if (c->borrowed && c->hold != NULL) {
-    int type;
-    switch (c->kind) {
-    case FCOL_F64: type = MIZU_TYPE_REAL; break;
-    case FCOL_I32: type = MIZU_TYPE_INT; break;
-    case FCOL_I64: type = MIZU_TYPE_INT64; break;
-    case FCOL_U8: type = MIZU_TYPE_RAW; break;
-    case FCOL_C128: type = MIZU_TYPE_CPLX; break;
-    default: type = 0; break;
-    }
-    if (type != 0) {
-      const uint8_t *valid;
-      int64_t nulls;
-      fcol_view_valid(c, &valid, &nulls);
-      PyObject *v = mizu_py_view_borrow_remote(
-        c->hold, c->values, valid,
-        (Py_ssize_t) c->n * (Py_ssize_t) mizu_type_elt_size(type),
-        type, nulls);
+  const int type = c->borrowed ? fcol_wire_type(c->kind) : 0;
+  if (type != 0) {
+    const uint8_t *valid;
+    int64_t nulls;
+    fcol_view_valid(c, &valid, &nulls);
+    const Py_ssize_t nbytes =
+      (Py_ssize_t) c->n * (Py_ssize_t) mizu_type_elt_size(type);
+    if (c->hold != NULL) {
+      PyObject *v = mizu_py_view_borrow_remote(c->hold, c->values, valid,
+                                               nbytes, type, nulls);
       if (v != NULL) return v;
       PyErr_Clear();   /* a gone referenced region: the copy forms below */
-    }
-  }
-  if (c->borrowed && c->hold == NULL) {
-    int type;
-    switch (c->kind) {
-    case FCOL_F64: type = MIZU_TYPE_REAL; break;
-    case FCOL_I32: type = MIZU_TYPE_INT; break;
-    case FCOL_I64: type = MIZU_TYPE_INT64; break;
-    case FCOL_U8: type = MIZU_TYPE_RAW; break;
-    case FCOL_C128: type = MIZU_TYPE_CPLX; break;
-    default: type = 0; break;
-    }
-    if (type != 0) {
-      const uint8_t *valid;
-      int64_t nulls;
-      fcol_view_valid(c, &valid, &nulls);
-      return mizu_py_view_borrow(owner, loan, c->values,
-                                 (Py_ssize_t) c->n *
-                                 (Py_ssize_t) mizu_type_elt_size(type),
-                                 type, valid, nulls);
+    } else {
+      return mizu_py_view_borrow(owner, loan, c->values, nbytes, type,
+                                 valid, nulls);
     }
   }
   switch (c->kind) {
@@ -1267,7 +1254,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         if (s == Py_None) {
           nulls++;
           if (valid == NULL) {
-            valid = calloc(((size_t) n + 7) / 8, 1);
+            valid = mizu_py_bitmap_calloc((uint64_t) n);
             if (valid == NULL) goto str_nomem;
             for (Py_ssize_t q = 0; q < j; q++) valid[q >> 3] |= 1 << (q & 7);
           }
@@ -1307,7 +1294,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         NULL;
       if (levels == NULL || !PyList_Check(levels)) goto malformed;
       Py_ssize_t nlev = PyList_GET_SIZE(levels);
-      int32_t *codes = malloc((size_t) (n != 0 ? n : 1) * 4);
+      int32_t *codes = mizu_py_ix_alloc((uint64_t) n, 4);
       int32_t *loffs = malloc(((size_t) nlev + 1) * 4);
       uint8_t *bytes = NULL;
       size_t blen = 0, bcap = 0;
@@ -1356,7 +1343,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     }
     if (c->kind == FCOL_U64) {
       /* nulls bitmap-only: the pickle form's Nones, never a sentinel */
-      uint64_t *vals = malloc((size_t) (n != 0 ? n : 1) * 8);
+      uint64_t *vals = mizu_py_ix_alloc((uint64_t) n, 8);
       uint8_t *valid = NULL;
       int64_t nulls = 0;
       if (vals == NULL) goto nomem;
@@ -1365,7 +1352,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         if (v == Py_None) {
           nulls++;
           if (valid == NULL) {
-            valid = calloc(((size_t) n + 7) / 8, 1);
+            valid = mizu_py_bitmap_calloc((uint64_t) n);
             if (valid == NULL) {
               free(vals);
               goto nomem;
@@ -1392,7 +1379,7 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       if (valid == NULL) c->known_free = 1;
       goto next_col;
     }
-    c->values = malloc((size_t) (n != 0 ? n : 1) * (size_t) elt);
+    c->values = mizu_py_ix_alloc((uint64_t) n, (size_t) elt);
     if (c->values == NULL) goto nomem;
     for (Py_ssize_t j = 0; j < n; j++) {
       PyObject *v = PyList_GET_ITEM(payload, j);

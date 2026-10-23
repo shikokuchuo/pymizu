@@ -20,6 +20,20 @@
 
 static PyObject *MizuErr;   /* pymizu.MizuError (borrowed at registration) */
 
+/* The SHM_VEC commit shared by the three roots: the slot header over
+   the staged region (the region name the payload), the producer loan
+   retained. */
+static int layout_shm_vec_commit(mizu_handle *h, mizu_shm *shm,
+                                 mizu_slot_hdr *hdr, uint8_t *payload,
+                                 int type, uint64_t total) {
+  hdr->kind = MIZU_KIND_SHM_VEC;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = mizu_aux_shm_vec(type, total);
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain_zc(h, shm);
+  return 0;
+}
+
 // The MIZS leaf ------------------------------------------------------------------
 
 /* The probe's byte sum plus the block geometry: the whole block gates
@@ -74,8 +88,7 @@ static int mizs_leaf_write(uint8_t *dst, PyObject *obj) {
 static int mizs_root(PyObject *obj, uint64_t block, mizu_slot_hdr *hdr,
                      uint8_t *payload, uint32_t inline_max, mizu_handle *h) {
   const Py_ssize_t n = PyList_GET_SIZE(obj);
-  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
-    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
+  const uint64_t zc_gate = mizu_py_zc_gate(inline_max);
   /* the churn read behind the size gate (the single-read discipline) */
   if (block < zc_gate || mizu_handle_churn(h)) return -1;
   mizu_shm *shm;
@@ -95,12 +108,8 @@ static int mizs_root(PyObject *obj, uint64_t block, mizu_slot_hdr *hdr,
   memcpy(base, &magic, 4);
   memcpy(base + 8, &n64, 8);
   memcpy(base + 16, &sd, 8);
-  hdr->kind = MIZU_KIND_SHM_VEC;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_STR, MIZU_HEADER_SIZE + block);
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain_zc(h, shm);
-  return 0;
+  return layout_shm_vec_commit(h, shm, hdr, payload, MIZU_TYPE_STR,
+                               MIZU_HEADER_SIZE + block);
 }
 
 // The MIZH leaf ------------------------------------------------------------------
@@ -500,8 +509,7 @@ static int mizh_root(PyObject *Py_UNUSED(obj), pymizu_leaf *lf,
                      uint32_t inline_max, mizu_handle *h) {
   const uint64_t body = mizh_leaf_body_size(lf);
   const uint64_t blob = mizh_leaf_blob_size(lf);
-  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
-    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
+  const uint64_t zc_gate = mizu_py_zc_gate(inline_max);
   /* the churn read behind the size gate (the single-read discipline) */
   if (body + blob < zc_gate || mizu_handle_churn(h)) return -1;
   mizu_shm *shm;
@@ -521,12 +529,8 @@ static int mizh_root(PyObject *Py_UNUSED(obj), pymizu_leaf *lf,
   mizh_leaf_blob_write(base + MIZU_HEADER_SIZE + body, lf);
   const int64_t asz = (int64_t) blob;   /* attrs_size, over the zeroed word */
   memcpy(base + 16, &asz, 8);
-  hdr->kind = MIZU_KIND_SHM_VEC;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = mizu_aux_shm_vec(type, MIZU_HEADER_SIZE + body + blob);
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain_zc(h, shm);
-  return 0;
+  return layout_shm_vec_commit(h, shm, hdr, payload, type,
+                               MIZU_HEADER_SIZE + body + blob);
 }
 
 // The MIZL tree ------------------------------------------------------------------
@@ -540,6 +544,13 @@ typedef struct {
   int32_t attrs_size;
   int64_t length;
 } pymizu_mizl_ent;
+
+_Static_assert(sizeof(pymizu_mizl_ent) == 32, "MIZL directory stride");
+_Static_assert(offsetof(pymizu_mizl_ent, sexptype) == 16, "MIZL tag offset");
+
+/* The remote-validity tail's row: a {reserved, claim} int64 pair per
+   element. */
+#define MIZL_VALID_ROW (2 * sizeof(int64_t))
 
 /* A dict node's names blob: a complete 'I' stream whose value is the
    one-key dict, the strv form scalar at length 1 (ixe_names' shape).
@@ -702,7 +713,8 @@ static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
   if (dict && !tree_dict_keys_ok(obj)) return 0;
   const Py_ssize_t n = dict ? PyDict_Size(obj) :
     PyList_CheckExact(obj) ? PyList_GET_SIZE(obj) : PyTuple_GET_SIZE(obj);
-  uint64_t total = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (uint64_t) n);
+  uint64_t total =
+    MIZU_ALIGN64(MIZU_HEADER_SIZE + sizeof(pymizu_mizl_ent) * (uint64_t) n);
   uint32_t my_caps = 0;
   int any_remote = 0;
   if (dict) {
@@ -733,7 +745,7 @@ static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
   /* the validity-table reserve: a remote leaf's claim rides the node's
      n-entry tail (the 63 the alignment slack). The local leaves carry NA
      in-band, so only the remote arm of mizu's reserve ever trips here */
-  if (any_remote) total += 63 + 16 * (uint64_t) n;
+  if (any_remote) total += 63 + MIZL_VALID_ROW * (uint64_t) n;
   *size = total;
   *caps |= my_caps;
   return 1;
@@ -912,7 +924,9 @@ static int tree_elt_write(uint8_t *base, pymizu_mizl_ent *ent,
 static int64_t tree_remote_claim(const uint8_t *base, Py_ssize_t i,
                                  PyObject *elt) {
   int32_t tag;
-  memcpy(&tag, base + MIZU_HEADER_SIZE + 32 * (size_t) i + 16, 4);
+  const size_t ent_off =
+    MIZU_HEADER_SIZE + sizeof(pymizu_mizl_ent) * (size_t) i;
+  memcpy(&tag, base + ent_off + offsetof(pymizu_mizl_ent, sexptype), 4);
   if (tag != PYMIZU_MIZL_TAG_REF) return 0;
   mizu_shm *shm = NULL;
   PyObject *view = NULL;
@@ -937,7 +951,8 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
      refcount / flags (S4 never set) / the validity pair — {0, 0} absent,
      the tree's leaves carrying NA in-band — / reserved */
   memset(base + 24, 0, MIZU_HEADER_SIZE - 24);
-  uint64_t cur = MIZU_ALIGN64(MIZU_HEADER_SIZE + 32 * (uint64_t) n);
+  uint64_t cur =
+    MIZU_ALIGN64(MIZU_HEADER_SIZE + sizeof(pymizu_mizl_ent) * (uint64_t) n);
   int wrote_remote = 0;
   Py_ssize_t i = 0;
   if (dict) {
@@ -948,7 +963,8 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
       ent.data_offset = (int64_t) cur;
       if (tree_elt_write(base, &ent, v) != 0) return 0;
       wrote_remote |= ent.sexptype == PYMIZU_MIZL_TAG_REF;
-      memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &ent, sizeof ent);
+      memcpy(base + MIZU_HEADER_SIZE + sizeof(pymizu_mizl_ent) * (size_t) i,
+             &ent, sizeof ent);
       cur += MIZU_ALIGN64((uint64_t) ent.data_size);
       i++;
     }
@@ -960,7 +976,8 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
       ent.data_offset = (int64_t) cur;
       if (tree_elt_write(base, &ent, elt) != 0) return 0;
       wrote_remote |= ent.sexptype == PYMIZU_MIZL_TAG_REF;
-      memcpy(base + MIZU_HEADER_SIZE + 32 * (size_t) i, &ent, sizeof ent);
+      memcpy(base + MIZU_HEADER_SIZE + sizeof(pymizu_mizl_ent) * (size_t) i,
+             &ent, sizeof ent);
       cur += MIZU_ALIGN64((uint64_t) ent.data_size);
     }
   }
@@ -975,7 +992,7 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
     /* the validity tail: every row the {0, 0} no-claim but a remote
        leaf's {0, -1} upgrade — the table always spent, the header pair
        never speaking for a remote column. */
-    int64_t *tab = (int64_t *) malloc(16 * (size_t) n);
+    int64_t *tab = (int64_t *) malloc(MIZL_VALID_ROW * (size_t) n);
     if (tab == NULL) {
       PyErr_NoMemory();
       return 0;
@@ -998,10 +1015,10 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
       }
     }
     const uint64_t tab_off = MIZU_ALIGN64(cur);
-    memcpy(base + tab_off, tab, 16 * (size_t) n);
+    memcpy(base + tab_off, tab, MIZL_VALID_ROW * (size_t) n);
     free(tab);
     mizu_mizh_validity_set(base, (int64_t) tab_off, 0);
-    cur = tab_off + 16 * (uint64_t) n;
+    cur = tab_off + MIZL_VALID_ROW * (uint64_t) n;
   }
   uint32_t magic = MIZU_MAGIC_LIST;
   const int32_t n32 = (int32_t) n;
@@ -1026,8 +1043,7 @@ static int mizl_root(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   uint32_t caps = MIZU_CAP_MIZL;
   if (!tree_node_size(obj, 0, &total, &caps)) return -1;
   if ((peer_caps & caps) != caps) return -1;
-  const uint64_t zc_gate = (uint64_t) inline_max > MIZU_ZC_FLOOR ?
-    (uint64_t) inline_max : (uint64_t) MIZU_ZC_FLOOR;
+  const uint64_t zc_gate = mizu_py_zc_gate(inline_max);
   /* the churn read behind the size gate (the single-read discipline) */
   if (total < zc_gate || mizu_handle_churn(h)) return -1;
   mizu_shm *shm;
@@ -1036,14 +1052,9 @@ static int mizl_root(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   uint8_t *base = (uint8_t *) shm->addr;
   const uint64_t used = tree_node_write(base, obj);
   if (used == 0) return 1;
-  hdr->kind = MIZU_KIND_SHM_VEC;
-  hdr->len = (uint32_t) shm->name_len;
   /* aux carries the write's actual total — the size pass's reserve
      counts the remote leaves' table slack */
-  hdr->aux = mizu_aux_shm_vec(MIZU_TYPE_VEC, used);
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain_zc(h, shm);
-  return 0;
+  return layout_shm_vec_commit(h, shm, hdr, payload, MIZU_TYPE_VEC, used);
 }
 
 /* The top-level layout dispatch (stage_impl's foreign order, after the

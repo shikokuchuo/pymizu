@@ -22,6 +22,10 @@
 /* _pymizu.c's O(1) raw-tier gate over a Py_buffer (0 = pickle). */
 int mizu_py_wire_type_of(const Py_buffer *v);
 
+/* _pymizu.c's buffer-protocol format string for a wire type (the
+   getbuffer / type-error shapes). */
+const char *mizu_py_tag_format(int type);
+
 /* Register map.c's module functions on the _pymizu module; the exception
    objects are borrowed from _pymizu.c's module state (incref'd here). */
 int mizu_py_map_register(PyObject *m, PyObject *mizu_error,

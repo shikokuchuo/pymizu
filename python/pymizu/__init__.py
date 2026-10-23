@@ -484,23 +484,37 @@ def _check_native(ident: tuple[int, int] | None, verb: str) -> None:
         )
 
 
-def _exec_source(source: str, ns: dict) -> _Any:
-    """Run a source-kind task: the arguments are bound in ``ns``; the
-    result is the trailing expression's value, else None (the ast split:
-    exec the prefix, eval the tail). Called by the worker's exec hook."""
+def _split_source(code: str) -> tuple[_Any, _Any]:
+    """The ast split shared by task and map source execution: ``(prefix,
+    tail)`` — the statements ahead of a trailing expression and that
+    expression's node (prefix None for a bare expression, tail None when
+    the source is statements only). Uncompiled: the caller's filename is
+    its own."""
     import ast
 
-    tree = ast.parse(source)
+    tree = ast.parse(code)
     body = tree.body
     if body and isinstance(body[-1], ast.Expr):
+        tail = ast.fix_missing_locations(ast.Expression(body[-1].value))
         if len(body) > 1:
             prefix = ast.fix_missing_locations(
                 ast.Module(body=body[:-1], type_ignores=[])
             )
-            exec(compile(prefix, "<task>", "exec"), ns)
-        tail = ast.fix_missing_locations(ast.Expression(body[-1].value))
+        else:
+            prefix = None
+        return prefix, tail
+    return tree, None
+
+
+def _exec_source(source: str, ns: dict) -> _Any:
+    """Run a source-kind task: the arguments are bound in ``ns``; the
+    result is the trailing expression's value, else None (the ast split:
+    exec the prefix, eval the tail). Called by the worker's exec hook."""
+    prefix, tail = _split_source(source)
+    if prefix is not None:
+        exec(compile(prefix, "<task>", "exec"), ns)
+    if tail is not None:
         return eval(compile(tail, "<task>", "eval"), ns)
-    exec(compile(tree, "<task>", "exec"), ns)
     return None
 
 

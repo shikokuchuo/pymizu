@@ -18,6 +18,34 @@
    registry); a key crosses with its length as sizeof - 1. */
 #define IX_KEYLEN(s) ((uint32_t) (sizeof(s) - 1))
 
+/* The layout/region tiers' size gate: the zero-copy forms engage at the
+   larger of the inline budget and the core's floor (mizu_ext.h's
+   MIZU_ZC_FLOOR doctrine). */
+static inline size_t mizu_py_zc_gate(uint32_t inline_max) {
+  return (size_t) inline_max > MIZU_ZC_FLOOR ?
+    (size_t) inline_max : MIZU_ZC_FLOOR;
+}
+
+/* The identity word's fields, MIZU_IDENT's packing (mizu_ext.h). */
+#define MIZU_PY_IDENT_LANG(w) ((uint32_t) ((w) & 0xff))
+#define MIZU_PY_IDENT_CAPS(w) ((uint32_t) ((w) >> 32))
+
+/* The fallible allocation idioms of the interop readers and frame
+   builders: a zero count still allocates (the buffer rides free()
+   regardless), and a validity bitmap is (n + 7) / 8 zeroed bytes. NULL
+   with MemoryError set. */
+static inline void *mizu_py_ix_alloc(uint64_t n, size_t elt) {
+  void *p = malloc((size_t) (n != 0 ? n : 1) * elt);
+  if (p == NULL) PyErr_NoMemory();
+  return p;
+}
+
+static inline uint8_t *mizu_py_bitmap_calloc(uint64_t n) {
+  uint8_t *p = (uint8_t *) calloc(((size_t) n + 7) / 8, 1);
+  if (p == NULL) PyErr_NoMemory();
+  return p;
+}
+
 // Arrow C Data Interface ---------------------------------------------------------
 
 /* The stable C ABI structs are the vendored core's (mizu_ext.h, under the
@@ -71,6 +99,20 @@ void mizu_py_arrow_schema_release(ArrowSchema *s);
 void mizu_py_arrow_array_release(ArrowArray *a);
 void mizu_py_arrow_schema_cap_free(PyObject *cap);
 void mizu_py_arrow_array_cap_free(PyObject *cap);
+
+/* The export's alloc-and-wrap half, shared by the _ShmView /
+   _ShmStrView / _MapOutView exports (_pymizu.c's): the schema/array
+   structs, the buffers array (nbufs), and the loan, each struct
+   capsule-wrapped at once so a later failure cleans up through release.
+   On success the loan's shm/pid are filled (zc stays 0 — a counted-loan
+   caller sets it) and the debug span registered. -1 with an exception
+   set: the allocations freed, the caller's shm cleanup still owed. */
+int mizu_py_arrow_export_alloc(int nbufs, mizu_shm *shm,
+                               ArrowSchema **schema_out,
+                               ArrowArray **array_out,
+                               const void ***buffers_out,
+                               mizu_py_arrow_loan **loan_out,
+                               PyObject **scap_out, PyObject **acap_out);
 
 /* The wire-tag switch + value/validity buffer build shared by the
    _ShmView and _MapOutView exports. build_valid: no validity section

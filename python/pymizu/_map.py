@@ -46,7 +46,7 @@ from typing import Any as _Any
 from typing import Literal as _Literal
 from typing import NoReturn as _NoReturn
 
-from pymizu import _pymizu
+from pymizu import _LANG_PYTHON, _LANG_R, _pymizu, _split_source
 
 if TYPE_CHECKING:
     import pymizu
@@ -64,6 +64,9 @@ except ImportError:  # pragma: no cover - environment-dependent
 # The region header's x_kind values (src/map.c).
 _X_DESC = 0
 _X_RAWBUF = 1
+
+# The runner stream's gen_field packing: (ordinal << 32) | generation.
+_GEN_SHIFT = 32
 
 # The wire tags of the raw-x gate (mizu.h's MIZU_TYPE_*), and their numpy /
 # memoryview spellings. Complex needs numpy (a memoryview cannot cast to
@@ -83,6 +86,7 @@ _TAG_MV: dict[int, _Literal["B", "d", "i", "q"]] = {
     10: "i",
     32: "q",
 }
+_TAG_COMPLEX = 15
 
 # Morsel geometry (frozen by the R package's gate sweep): target ~256
 # morsels per runner, clamped to a constant grain.
@@ -149,8 +153,8 @@ def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
         if ident is None:
             raise pymizu.MizuError("pymizu: no worker has joined this pool")
         return True, ident[0]
-    if ident is None or ident[0] == 3:  # 3 = Python
-        return False, 3
+    if ident is None or ident[0] == _LANG_PYTHON:
+        return False, _LANG_PYTHON
     raise TypeError(
         "pymizu: this pool's workers are not Python — Pool.map() needs a "
         "pymizu.call() spec as 'fn' on a foreign pool"
@@ -204,12 +208,12 @@ def _seed_wire(
         )
     if not -(2**63) <= seed < 2**63 or offset >= 2**63:
         raise TypeError("pymizu: seed and offset must fit an int64")
-    if lang == 2 and abs(seed) > 2**31 - 1:  # 2 = R
+    if lang == _LANG_R and abs(seed) > 2**31 - 1:
         raise TypeError(
             "pymizu: an int seed on R workers must fit R's 32-bit "
             "derivation range"
         )
-    if lang == 2 and offset > 2**53:  # 2 = R
+    if lang == _LANG_R and offset > 2**53:
         raise TypeError(
             "pymizu: a seed offset on R workers must not exceed 2^53 — "
             "doubles cannot represent larger integers exactly"
@@ -238,19 +242,7 @@ def _source_fn(code: str, positional: list, named: dict) -> _Callable:
     per runner (exec the prefix, eval the trailing expression — the
     source convention), each element bound as x in a fresh namespace over
     the constant arguments, matching a task's own fresh namespace."""
-    import ast
-
-    tree = ast.parse(code)
-    body = tree.body
-    prefix = tail = None
-    if body and isinstance(body[-1], ast.Expr):
-        tail = ast.fix_missing_locations(ast.Expression(body[-1].value))
-        if len(body) > 1:
-            prefix = ast.fix_missing_locations(
-                ast.Module(body=body[:-1], type_ignores=[])
-            )
-    else:
-        prefix = tree
+    prefix, tail = _split_source(code)
     prefix_code = (
         compile(prefix, "<map>", "exec") if prefix is not None else None
     )
@@ -284,8 +276,8 @@ def _runner_ix(
     are its ascii form, exactly as `_seed_spec` builds them)."""
     import pymizu
 
-    k = gen_field >> 32
-    gen = gen_field % (1 << 32)
+    k = gen_field >> _GEN_SHIFT
+    gen = gen_field % (1 << _GEN_SHIFT)
     ctx = _map_ctx(region_name)
     if k >= ctx.claim_n:
         raise pymizu.MizuError(
@@ -609,7 +601,7 @@ def _template_probe(template: _Any) -> tuple:
             "pymizu: template must be a C-contiguous buffer of a supported "
             "dtype (float64/int32/int64/complex128/uint8)"
         )
-    if probe[0] == 15 and _np is None:
+    if probe[0] == _TAG_COMPLEX and _np is None:
         raise TypeError("pymizu: a complex128 template needs numpy")
     return probe
 
@@ -644,7 +636,7 @@ def _probe_x(
     """
     view_x = spec and not stream and _pymizu._view_check(x)
     probe = None if view_x else _pymizu._map_probe_x(x, convert)
-    if probe is not None and probe[0] == 15 and _np is None:
+    if probe is not None and probe[0] == _TAG_COMPLEX and _np is None:
         probe = None
     if probe is None:
         if not view_x:
@@ -735,7 +727,7 @@ class _Plan:
         self.args = args
         self.kwargs = kwargs
         # the convert gate is the worker language, never 'spec' alone
-        self.convert = spec and lang == 2  # 2 = R
+        self.convert = spec and lang == _LANG_R
         self.seed = _seed_wire(seed, lang) if spec else _seed_spec(seed)
         self.tprobe = None if template is None else _template_probe(template)
         if self.tprobe is None:
@@ -987,6 +979,7 @@ def _stream_fail(
     oi: list,
     ranges: list,
     first: _Any,
+    capsules: list | None = None,
 ) -> _NoReturn:
     """The fail path of the streaming window, NORET: cancel the
     outstanding chunks, then drain them non-blockingly. A blind collect
@@ -1000,11 +993,23 @@ def _stream_fail(
     (the erroring chunk's own `index` is the element index —
     [`Pool.collect_any()`](`pymizu.Pool.collect_any`)'s position stamp
     defers to it). An error carrying no element index is not fn's
-    (infrastructure) and stays fatal, as the runner path's."""
+    (infrastructure) and stays fatal, as the runner path's.
+
+    The spec window passes `capsules`: each outstanding chunk's region
+    cancel word is set ahead of `cancel()`, and the chunk-local element
+    indices — `first`'s (its chunk read off `position`, collect_any's
+    unconditional stamp) and the drained siblings' — are offset to the
+    global element index before the minimum raises."""
+    if capsules is not None:
+        first.index += ranges[oi[first.position]][0]
     errs = [first]
     died = None
     lost = []
     for k in oi:
+        if capsules is not None:
+            cap = capsules[k]
+            if cap is not None:
+                _pymizu._map_cancel_set(cap)
         h = handles[k]
         if h is not None:
             h.cancel()
@@ -1024,6 +1029,8 @@ def _stream_fail(
         except pymizu.TaskError as e:
             if not hasattr(e, "index"):
                 raise
+            if capsules is not None:
+                e.index += ranges[k][0]
             errs.append(e)
     if died is not None:
         died.lost = lost
@@ -1111,55 +1118,6 @@ def _stream_window(
         if not refill():
             return pymizu.TIMEOUT
     return out
-
-
-def _stream_fail_spec(
-    pymizu,
-    handles: list,
-    capsules: list,
-    oi: list,
-    ranges: list,
-    first: _Any,
-) -> _NoReturn:
-    """The spec streaming window's fail path, NORET: `_stream_fail`'s
-    drain discipline plus the per-chunk regions' cancel words. `first`
-    carries its chunk in `position` (collect_any's unconditional stamp)
-    and the chunk-local element in `index`; both it and the drained
-    siblings (collected per handle, their chunk known) are offset to the
-    global element index before the minimum raises."""
-    first.index += ranges[oi[first.position]][0]
-    errs = [first]
-    died = None
-    lost = []
-    for k in oi:
-        cap = capsules[k]
-        if cap is not None:
-            _pymizu._map_cancel_set(cap)
-        h = handles[k]
-        if h is not None:
-            h.cancel()
-    for k in oi:
-        h = handles[k]
-        if h is None:
-            continue
-        handles[k] = None
-        if h.state not in ("ok", "err", "died"):
-            continue
-        try:
-            h.collect(timeout=0)
-        except pymizu.WorkerDiedError as e:
-            if died is None:
-                died = e
-            lost.append(ranges[k])
-        except pymizu.TaskError as e:
-            if not hasattr(e, "index"):
-                raise
-            e.index += ranges[k][0]
-            errs.append(e)
-    if died is not None:
-        died.lost = lost
-        raise died
-    raise min(errs, key=lambda e: e.index)
 
 
 def _stream_window_spec(
@@ -1276,7 +1234,7 @@ def _stream_window_spec(
             e.lost = [ranges[oi[e.index]]]
             raise
         except pymizu.TaskError as e:
-            _stream_fail_spec(pymizu, handles, capsules, oi, ranges, e)
+            _stream_fail(pymizu, handles, oi, ranges, e, capsules)
         if got is pymizu.TIMEOUT:
             return pymizu.TIMEOUT
         idx, v = got
@@ -1289,7 +1247,7 @@ def _stream_window_spec(
             out[lo:hi] = chunk
         else:
             run = v
-            if plan.lang == 2:  # R workers' morsel pairs -> element spans
+            if plan.lang == _LANG_R:  # R morsel pairs -> element spans
                 run = _runs_to_spans([v], hi - lo, hi - lo)[0]
             hist, vals = run
             for (blo, bhi), batch in zip(hist, vals, strict=True):
@@ -1516,7 +1474,7 @@ def _submit_runners(
         if expired():
             return True
         payload = (
-            _pymizu._runner_frame(name, k * 2**32 + gen, seed_spec)
+            _pymizu._runner_frame(name, (k << _GEN_SHIFT) + gen, seed_spec)
             if spec
             else (_runner, (name, k, gen, seed_spec), {})
         )
@@ -1670,7 +1628,7 @@ def _collect_region(
                 t = 0.05
             if consume(pending[0], t):
                 pending.pop(0)
-    if lang == 2:  # R workers publish morsel-pair histories: normalize
+    if lang == _LANG_R:  # R workers publish morsel-pair histories: normalize
         runs = _runs_to_spans(runs, morsel, n)
     if died is None and doomed:
         # the registry-read verdict carries no claimant record: None
@@ -1867,7 +1825,7 @@ class PreparedMap:
                 self._name = None
             return
         probe = _pymizu._map_probe_x(x, self._convert)
-        if probe is not None and probe[0] == 15 and _np is None:
+        if probe is not None and probe[0] == _TAG_COMPLEX and _np is None:
             probe = None
         if (
             self._capsule is not None

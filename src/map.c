@@ -376,17 +376,6 @@ static PyObject *py_map_x_view(PyObject *Py_UNUSED(module), PyObject *caps) {
 
 // Template output area ------------------------------------------------------------
 
-static const char *pymap_tag_format(uint32_t tag) {
-  switch (tag) {
-  case MIZU_TYPE_REAL: return "d";
-  case MIZU_TYPE_INT:
-  case MIZU_TYPE_LGL: return "i";
-  case MIZU_TYPE_INT64: return "q";
-  case MIZU_TYPE_CPLX: return "Zd";
-  default: return "B";
-  }
-}
-
 /* Annotate the in-flight exception with the element index — the "first by
    element index" contract rides the `_pymizu_map_index` attribute the
    worker's error envelope reads. */
@@ -411,7 +400,7 @@ static void pymap_annotate_index(uint64_t index) {
 static void pymap_raise_value(mizu_pymap *mh, uint64_t index) {
   PyErr_Format(MizuErr,
                "pymizu: map values must match the template (format '%s', "
-               "length %llu)", pymap_tag_format(mh->h.out_type),
+               "length %llu)", mizu_py_tag_format((int) mh->h.out_type),
                (unsigned long long) mh->h.out_m);
   pymap_annotate_index(index);
 }
@@ -585,7 +574,7 @@ static int mapview_getbuffer(PyObject *obj, Py_buffer *view, int flags) {
   view->readonly = 1;
   view->itemsize = elt;
   view->format = (flags & PyBUF_FORMAT) ?
-    (char *) pymap_tag_format(v->tag) : NULL;
+    (char *) mizu_py_tag_format((int) v->tag) : NULL;
   view->ndim = 1;
   view->shape = (flags & PyBUF_ND) ? v->shape : NULL;
   view->strides = (flags & PyBUF_STRIDES) ? v->strides : NULL;
@@ -655,33 +644,18 @@ static PyObject *mapview_arrow_c_array(PyObject *obj, PyObject *args,
      destructors clean up through release on any error — the structs,
      the buffers array, the loan, and the mapping are never freed by
      hand once wrapped (the view export's discipline) */
-  ArrowSchema *schema = (ArrowSchema *) calloc(1, sizeof(ArrowSchema));
-  ArrowArray *array = (ArrowArray *) calloc(1, sizeof(ArrowArray));
-  const void **buffers = (const void **) calloc(2, sizeof(void *));
-  mizu_py_arrow_loan *loan =
-    (mizu_py_arrow_loan *) calloc(1, sizeof(mizu_py_arrow_loan));
-  PyObject *scap = schema != NULL ?
-    PyCapsule_New(schema, "arrow_schema", mizu_py_arrow_schema_cap_free) :
-    NULL;
-  PyObject *acap = array != NULL ?
-    PyCapsule_New(array, "arrow_array", mizu_py_arrow_array_cap_free) :
-    NULL;
-  if (scap == NULL || acap == NULL || buffers == NULL || loan == NULL) {
-    if (scap == NULL) free(schema);
-    if (acap == NULL) free(array);
-    Py_XDECREF(scap);
-    Py_XDECREF(acap);
-    free(buffers);
-    free(loan);
+  ArrowSchema *schema;
+  ArrowArray *array;
+  const void **buffers;
+  mizu_py_arrow_loan *loan;
+  PyObject *scap, *acap;
+  if (mizu_py_arrow_export_alloc(2, shm, &schema, &array, &buffers,
+                                 &loan, &scap, &acap) < 0) {
     mizu_shm_close(shm, 0);
-    if (!PyErr_Occurred()) PyErr_NoMemory();
     return NULL;
   }
-  loan->shm = shm;
-  loan->pid = mizu_self_pid();
   /* zc stays 0: no counted loan on a map region, so the release skips
      the unref */
-  mizu_py_debug_span_add(mizu_shm_addr(shm), mizu_shm_size(shm));
   array->private_data = loan;
   array->buffers = buffers;
   array->release = mizu_py_arrow_array_release;

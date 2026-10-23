@@ -602,8 +602,8 @@ def test_stream_fail_spec_drains_siblings(pool):
     handles = [None, h_first, h_ok, h_sib]
     ranges = [(0, 10), (10, 20), (20, 30), (30, 40)]
     with pytest.raises(pymizu.TaskError) as exc_info:
-        _map_mod._stream_fail_spec(
-            pymizu, handles, [None] * 4, [0, 1, 2, 3], ranges, first
+        _map_mod._stream_fail(
+            pymizu, handles, [0, 1, 2, 3], ranges, first, [None] * 4
         )
     assert exc_info.value is first
     assert first.index == 2
@@ -621,9 +621,7 @@ def test_stream_fail_spec_sibling_without_index_raises(pool):
     except pymizu.TaskError as e:
         first = e
     with pytest.raises(pymizu.TaskError) as exc_info:
-        _map_mod._stream_fail_spec(
-            pymizu, [h_plain], [None], [0], [(0, 4)], first
-        )
+        _map_mod._stream_fail(pymizu, [h_plain], [0], [(0, 4)], first, [None])
     assert not hasattr(exc_info.value, "index")
     assert exc_info.value.remote_type == "ValueError"
 
@@ -643,13 +641,13 @@ def test_stream_fail_spec_reraises_died():
         except pymizu.TaskError as e:
             first = e
         with pytest.raises(pymizu.WorkerDiedError) as exc_info:
-            _map_mod._stream_fail_spec(
+            _map_mod._stream_fail(
                 pymizu,
                 [h_pend, h_die],
-                [None, None],
                 [0, 1],
                 [(0, 4), (4, 8)],
                 first,
+                [None, None],
             )
         assert exc_info.value.lost == [(4, 8)]
         h_pend.cancel()

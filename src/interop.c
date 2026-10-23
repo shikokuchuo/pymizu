@@ -25,6 +25,12 @@
 static PyObject *MizuError;
 static PyObject *MizuDeclinedError;
 
+/* The cursor failure's exception: the core's thread-local message. void
+   so the return-NULL / return -1 / goto fail sites share the one call. */
+static void ixr_cursor_err(void) {
+  PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+}
+
 static void store_na_r(uint8_t *dst) {
   const uint64_t bits = PYMIZU_NA_REAL_BITS;
   memcpy(dst, &bits, 8);
@@ -837,12 +843,8 @@ typedef struct {
    missing form. NULL on OOM. */
 static uint8_t *masked_buf(const uint8_t *values, const uint8_t *valid,
                            uint64_t n, size_t elt, int kind) {
-  size_t bytes = (size_t) (n != 0 ? n : 1) * elt;
-  uint8_t *buf = malloc(bytes);
-  if (buf == NULL) {
-    PyErr_NoMemory();
-    return NULL;
-  }
+  uint8_t *buf = mizu_py_ix_alloc(n, elt);
+  if (buf == NULL) return NULL;
   memcpy(buf, values, (size_t) n * elt);
   for (uint64_t i = 0; i < n; i++) {
     if (bitmap_at(valid, i)) continue;
@@ -1023,7 +1025,7 @@ static PyObject *ixr_strv(mizu_ix *cur, uint64_t count,
     mizu_ix_item it;
     if (mizu_ix_next(cur, &it) != MIZU_OK || it.kind != MIZU_IX_STR) {
       Py_DECREF(out);
-      PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+      ixr_cursor_err();
       return NULL;
     }
     PyObject *s = ixr_str(&it);
@@ -1057,7 +1059,7 @@ static PyObject *ixr_dict(mizu_ix *cur, uint64_t count, const ixr_mode *mode) {
     mizu_ix_item kit;
     if (mizu_ix_next(cur, &kit) != MIZU_OK || kit.kind != MIZU_IX_STR) {
       Py_DECREF(out);
-      PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+      ixr_cursor_err();
       return NULL;
     }
     PyObject *k = PyUnicode_DecodeUTF8((const char *) kit.ptr,
@@ -1149,7 +1151,7 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
   for (uint64_t i = 0; i < n; i++) {
     mizu_ix_item kit;
     if (mizu_ix_next(cur, &kit) != MIZU_OK || kit.kind != MIZU_IX_STR) {
-      PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+      ixr_cursor_err();
       goto fail;
     }
     for (uint64_t j = 0; j < i; j++)
@@ -1170,7 +1172,7 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
       const uint8_t *s;
       size_t slen;
       if (mizu_ix_skip(cur, &s, &slen) != MIZU_OK) {
-        PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+        ixr_cursor_err();
         goto fail;
       }
       ents[i].kind = AV_SPAN;
@@ -1180,7 +1182,7 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
     }
     mizu_ix_item vit;
     if (mizu_ix_next(cur, &vit) != MIZU_OK) {
-      PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+      ixr_cursor_err();
       goto fail;
     }
     switch (vit.kind) {
@@ -1237,7 +1239,7 @@ static attr_ent *ixr_attr_dict(mizu_ix *cur, int *n_out,
       }
       mizu_ix_item v2;
       if (mizu_ix_next(cur, &v2) != MIZU_OK) {
-        PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+        ixr_cursor_err();
         goto fail;
       }
       if (v2.kind != MIZU_IX_LIST) {
@@ -1328,13 +1330,13 @@ static attr_ent *blob_attrs(const uint8_t *buf, size_t size, int *n_out) {
   }
   mizu_ix cur;
   if (mizu_ix_open(&cur, buf, size) != MIZU_OK) {
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     return NULL;
   }
   attr_ent *ents = ixr_attr_dict(&cur, n_out, NULL);
   if (ents == NULL) return NULL;
   if (mizu_ix_end(&cur) != MIZU_OK) {
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     attr_vals_free(ents, *n_out);
     return NULL;
   }
@@ -1884,11 +1886,8 @@ fail:
    MIZU_NA_INT32 for NA. Validated against nlev. */
 static int codes_read(const int32_t *src, uint64_t n, int64_t nlev,
                       int32_t **out) {
-  int32_t *codes = malloc((size_t) (n != 0 ? n : 1) * 4);
-  if (codes == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  int32_t *codes = mizu_py_ix_alloc((uint64_t) n, 4);
+  if (codes == NULL) return -1;
   for (uint64_t i = 0; i < n; i++) {
     int32_t v = src[i];
     if (v == MIZU_NA_INT32) {
@@ -1968,7 +1967,7 @@ fail:
 static PyObject *ixr_value(mizu_ix *cur, const ixr_mode *mode) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) {
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     return NULL;
   }
   switch (it.kind) {
@@ -2221,7 +2220,7 @@ static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
 static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   mizu_ix_item vit;
   if (mizu_ix_next(cur, &vit) != MIZU_OK) {
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     return NULL;
   }
   if (vit.kind == MIZU_IX_LIST)
@@ -2407,11 +2406,8 @@ attr_fail:
 /* A Date column's doubles to owned i32 days (MIZU_NA_INT32 null); a
    fractional or non-finite value is the informative decline. */
 static int fcol_date_fill(const double *src, uint64_t vn, fcol *c) {
-  int32_t *days = malloc((size_t) (vn != 0 ? vn : 1) * 4);
-  if (days == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  int32_t *days = mizu_py_ix_alloc(vn, 4);
+  if (days == NULL) return -1;
   for (uint64_t i = 0; i < vn; i++) {
     uint64_t bits;
     memcpy(&bits, src + i, 8);
@@ -2433,67 +2429,51 @@ static int fcol_date_fill(const double *src, uint64_t vn, fcol *c) {
   return 0;
 }
 
-/* A POSIXct column's doubles to owned i64 microseconds (INT64_MIN null);
-   the tzone name (empty when naive) is export metadata. */
-static int fcol_ts_fill(const double *src, uint64_t vn, const char *tz,
-                        size_t tz_len, fcol *c) {
-  int64_t *us = malloc((size_t) (vn != 0 ? vn : 1) * 8);
-  if (us == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+/* A POSIXct/difftime column's doubles to owned i64 us (INT64_MIN null),
+   scale the value's unit in seconds (1.0 for POSIXct). An R-sentinel NA
+   is the null; a non-finite or out-of-range value the informative
+   decline. */
+static int fcol_scaled_fill(const double *src, uint64_t vn, double scale,
+                            int kind, const char *what, fcol *c) {
+  int64_t *us = mizu_py_ix_alloc(vn, 8);
+  if (us == NULL) return -1;
   for (uint64_t i = 0; i < vn; i++) {
     uint64_t bits;
     memcpy(&bits, src + i, 8);
     if (is_na_r(bits)) {
       us[i] = INT64_MIN;
-    } else if (!isfinite(src[i]) || fabs(src[i]) > 9.0e12) {
+    } else if (!isfinite(src[i]) || fabs(src[i]) * scale > 9.0e12) {
       free(us);
-      PyErr_SetString(MizuError, "pymizu: no portable home for this "
-                      "POSIXct value");
+      PyErr_Format(MizuError, "pymizu: no portable home for this %s "
+                   "value", what);
       return -1;
     } else {
-      us[i] = (int64_t) llround(src[i] * 1e6);
+      us[i] = (int64_t) llround(src[i] * scale * 1e6);
     }
   }
-  c->kind = FCOL_TS;
+  c->kind = kind;
   c->n = (int64_t) vn;
   c->values = (uint8_t *) us;
   c->unit = 'u';
+  return 0;
+}
+
+/* A POSIXct column's fill; the tzone name (empty when naive) is export
+   metadata. */
+static int fcol_ts_fill(const double *src, uint64_t vn, const char *tz,
+                        size_t tz_len, fcol *c) {
+  if (fcol_scaled_fill(src, vn, 1.0, FCOL_TS, "POSIXct", c) != 0)
+    return -1;
   if (tz_len > 0 && tz_len < sizeof(c->tz))
     snprintf(c->tz, sizeof(c->tz), "%.*s", (int) tz_len, tz);
   return 0;
 }
 
-/* A difftime column's doubles (in the dict's declared units, unit_secs
-   the unit in seconds) to owned i64 us (MIZU_NA_INT64 null) — Arrow
-   duration[us]. */
+/* A difftime column's fill (in the dict's declared units, unit_secs the
+   unit in seconds) — Arrow duration[us]. */
 static int fcol_difftime_fill(const double *src, uint64_t vn,
                               double unit_secs, fcol *c) {
-  int64_t *us = malloc((size_t) (vn != 0 ? vn : 1) * 8);
-  if (us == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
-  for (uint64_t i = 0; i < vn; i++) {
-    uint64_t bits;
-    memcpy(&bits, src + i, 8);
-    if (is_na_r(bits)) {
-      us[i] = INT64_MIN;
-    } else if (!isfinite(src[i]) || fabs(src[i]) * unit_secs > 9.0e12) {
-      free(us);
-      PyErr_SetString(MizuError, "pymizu: no portable home for this "
-                      "difftime value");
-      return -1;
-    } else {
-      us[i] = (int64_t) llround(src[i] * unit_secs * 1e6);
-    }
-  }
-  c->kind = FCOL_TD;
-  c->n = (int64_t) vn;
-  c->values = (uint8_t *) us;
-  c->unit = 'u';
-  return 0;
+  return fcol_scaled_fill(src, vn, unit_secs, FCOL_TD, "difftime", c);
 }
 
 /* One frame column: the cursor at the column's first item; fills the
@@ -2501,7 +2481,7 @@ static int fcol_difftime_fill(const double *src, uint64_t vn,
 static int ixr_column(mizu_ix *cur, fcol *c) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) {
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     return -1;
   }
   memset(c, 0, sizeof(*c));
@@ -2543,17 +2523,14 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     for (uint64_t i = 0; i < n; i++) {
       mizu_ix_item sit;
       if (mizu_ix_next(cur, &sit) != MIZU_OK || sit.kind != MIZU_IX_STR) {
-        PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+        ixr_cursor_err();
         goto strv_fail;
       }
       if (sit.na) {
         nulls++;
         if (valid == NULL) {
-          valid = calloc(((size_t) n + 7) / 8, 1);
-          if (valid == NULL) {
-            PyErr_NoMemory();
-            goto strv_fail;
-          }
+          valid = mizu_py_bitmap_calloc(n);
+          if (valid == NULL) goto strv_fail;
           for (uint64_t j = 0; j < i; j++) valid[j >> 3] |= 1 << (j & 7);
         }
       }
@@ -2591,7 +2568,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
   case MIZU_IX_ATTR: {
     mizu_ix_item vit;
     if (mizu_ix_next(cur, &vit) != MIZU_OK) {
-      PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+      ixr_cursor_err();
       return -1;
     }
     if (vit.kind != MIZU_IX_VEC && vit.kind != MIZU_IX_REAL &&
@@ -5177,8 +5154,7 @@ static void ixw_node(ixw *w, PyObject *obj) {
         PyObject_CheckBuffer(obj)) {
       Py_buffer v;
       if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) == 0) {
-        const size_t zc_gate = (size_t) w->inline_max > MIZU_ZC_FLOOR ?
-          (size_t) w->inline_max : MIZU_ZC_FLOOR;
+        const size_t zc_gate = mizu_py_zc_gate(w->inline_max);
         const int ok = v.strides == NULL && mizu_py_wire_type_of(&v) != 0 &&
           (size_t) v.len >= zc_gate;
         PyBuffer_Release(&v);
@@ -5544,8 +5520,7 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
        home for the rule) — the provenance REF of an unmodified round
        trip first, else the core writer's layout stage; anything less
        falls to the copy tiers */
-    const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-      (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
+    const size_t zc_gate = mizu_py_zc_gate(inline_max);
     if (mizu_arrow_size(ar) > zc_gate && !mizu_handle_churn(h)) {
       int any_str = 0;
       for (int i = 0; i < x->ncols; i++)
@@ -5876,8 +5851,7 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   }
   /* the zero-copy gate on the memoized frame span (was: the 'I' sizing's
      per-element walk, discarded whenever the region won) */
-  const size_t zc_gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-    (size_t) inline_max : (size_t) MIZU_ZC_FLOOR;
+  const size_t zc_gate = mizu_py_zc_gate(inline_max);
   if (mizu_arrow_size(ar) <= zc_gate) goto out;
   {
     mizu_arrow_warn warn;
@@ -6034,11 +6008,8 @@ static int fc_adopt_gate(ixs *x, int col) {
 static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
                           int kind, cvt_warn *warn) {
   int64_t n = x->hold.rows;
-  uint8_t *buf = malloc((size_t) (n != 0 ? n : 1) * row->w_out);
-  if (buf == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  uint8_t *buf = mizu_py_ix_alloc((uint64_t) n, row->w_out);
+  if (buf == NULL) return -1;
   size_t off = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
@@ -6067,11 +6038,8 @@ static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
    sentinel form exists (the fill collides with 2^63). */
 static int fcol_build_u64(ixs *x, int col, fcol *c) {
   int64_t n = x->hold.rows;
-  uint64_t *buf = malloc((size_t) (n != 0 ? n : 1) * 8);
-  if (buf == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  uint64_t *buf = mizu_py_ix_alloc((uint64_t) n, 8);
+  if (buf == NULL) return -1;
   uint8_t *valid = NULL;
   int64_t nulls = 0, done = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
@@ -6086,10 +6054,9 @@ static int fcol_build_u64(ixs *x, int col, fcol *c) {
       } else {
         nulls++;
         if (valid == NULL) {
-          valid = calloc(((size_t) n + 7) / 8, 1);
+          valid = mizu_py_bitmap_calloc((uint64_t) n);
           if (valid == NULL) {
             free(buf);
-            PyErr_NoMemory();
             return -1;
           }
           for (int64_t q = 0; q < i; q++) valid[q >> 3] |= 1 << (q & 7);
@@ -6142,7 +6109,7 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
         } else {
           nulls++;
           if (valid == NULL) {
-            valid = calloc(((size_t) n + 7) / 8, 1);
+            valid = mizu_py_bitmap_calloc((uint64_t) n);
             if (valid == NULL) goto nomem;
             for (int64_t q = 0; q < i; q++) valid[q >> 3] |= 1 << (q & 7);
           }
@@ -6176,11 +6143,8 @@ fail:
 static int fcol_build_dict(ixs *x, int col, fcol *c, char **names) {
   const ixs_pcol *pc = &x->cols[col];
   int64_t n = x->hold.rows;
-  int32_t *codes = malloc((size_t) (n != 0 ? n : 1) * 4);
-  if (codes == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  int32_t *codes = mizu_py_ix_alloc((uint64_t) n, 4);
+  if (codes == NULL) return -1;
   int idx_w, idx_signed;
   fcol_dict_idx_form(x->schema.children[col]->format, &idx_w, &idx_signed);
   int64_t done = 0;
@@ -6266,11 +6230,8 @@ fail:
    NA_integer_ warning, which is not a date's semantics). */
 static int fcol_build_date(ixs *x, int col, fcol *c) {
   int64_t n = x->hold.rows;
-  int32_t *days = malloc((size_t) (n != 0 ? n : 1) * 4);
-  if (days == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  int32_t *days = mizu_py_ix_alloc((uint64_t) n, 4);
+  if (days == NULL) return -1;
   int64_t done = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
@@ -6291,11 +6252,8 @@ static int fcol_build_date(ixs *x, int col, fcol *c) {
 static int fcol_build_counts(ixs *x, int col, fcol *c) {
   const ixs_pcol *pc = &x->cols[col];
   int64_t n = x->hold.rows;
-  int64_t *counts = malloc((size_t) (n != 0 ? n : 1) * 8);
-  if (counts == NULL) {
-    PyErr_NoMemory();
-    return -1;
-  }
+  int64_t *counts = mizu_py_ix_alloc((uint64_t) n, 8);
+  if (counts == NULL) return -1;
   int64_t done = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
@@ -6731,7 +6689,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     memcpy(w.path, "args", 5);
     w.path_len = 4;
     w.h = h;
-    w.caps = (uint32_t) (word >> 32);
+    w.caps = MIZU_PY_IDENT_CAPS(word);
     w.inline_max = inline_max;
     w.churn = mizu_handle_churn(h);
     w.refs = 1;
@@ -6739,7 +6697,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     w.limit = inline_max;
     w.plan = &plan;
     ixw_task(&w, code_s, code_n, (int) kind, args, kwargs,
-             (uint32_t) (word & 0xff), ident);
+             MIZU_PY_IDENT_LANG(word), ident);
     if (w.decline) {
       ixw_raise(&w);
       goto out;
@@ -6778,7 +6736,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
       w2.dst = payload;   /* the record walk flipped it to count-only */
       w2.zc_node = zc_node;
       ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
-               (uint32_t) (word & 0xff), ident);
+               MIZU_PY_IDENT_LANG(word), ident);
       if (!w2.abandon) {
         if (w2.decline) {
           ixw_raise(&w2);
@@ -6786,7 +6744,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
         }
         /* the sentinel counts key on the worker language (the pool
            word's language byte), not the submitter's */
-        if (mizu_py_cvt_warn(&w2.warn, (uint32_t) (word & 0xff)) != 0)
+        if (mizu_py_cvt_warn(&w2.warn, MIZU_PY_IDENT_LANG(word)) != 0)
           goto out;
         hdr->kind = MIZU_KIND_INLINE;
         hdr->len = (uint32_t) w2.total;
@@ -6807,7 +6765,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     if (plan.ncand == 0 && total <= (size_t) inline_max) {
       /* one walk: the record walk's write is the stream, and its warn
          record is complete — nothing flipped it to count-only */
-      if (mizu_py_cvt_warn(&w.warn, (uint32_t) (word & 0xff)) != 0)
+      if (mizu_py_cvt_warn(&w.warn, MIZU_PY_IDENT_LANG(word)) != 0)
         goto out;
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) total;
@@ -6836,14 +6794,14 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     w2.limit = total;   /* exact: the deterministic write re-counts to it */
     w2.no_zc = 1;
     ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs,
-             (uint32_t) (word & 0xff), ident);
+             MIZU_PY_IDENT_LANG(word), ident);
     if (w2.decline) {
       ixw_raise(&w2);
       goto out;
     }
     /* the complete warn record is the rewrite walk's — the record walk's
        was cut short at the flip to count-only, so it is never raised */
-    if (mizu_py_cvt_warn(&w2.warn, (uint32_t) (word & 0xff)) != 0)
+    if (mizu_py_cvt_warn(&w2.warn, MIZU_PY_IDENT_LANG(word)) != 0)
       goto out;
     if (w2.ref_emitted) {
       Py_INCREF(spec);
@@ -6912,7 +6870,7 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
 // The task stream decode (Phase 4) ---------------------------------------------
 
 static PyObject *ixt_stop_tls(void) {
-  PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+  ixr_cursor_err();
   return NULL;
 }
 
@@ -7345,10 +7303,10 @@ int pymizu_ix_stage_runner(PyObject *frame, mizu_slot_hdr *hdr,
     return 1;
   }
   size_t n = ixw_runner(NULL, name_s, name_n, (int64_t) gen_field, seed,
-                        (uint32_t) (word & 0xff), ident);
+                        MIZU_PY_IDENT_LANG(word), ident);
   if (n <= (size_t) inline_max) {
     ixw_runner(payload, name_s, name_n, (int64_t) gen_field, seed,
-               (uint32_t) (word & 0xff), ident);
+               MIZU_PY_IDENT_LANG(word), ident);
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = 0;          /* no keeperless claim: inert on task entries */
@@ -7362,7 +7320,7 @@ int pymizu_ix_stage_runner(PyObject *frame, mizu_slot_hdr *hdr,
     return 1;
   }
   ixw_runner(buf, name_s, name_n, (int64_t) gen_field, seed,
-             (uint32_t) (word & 0xff), ident);
+             MIZU_PY_IDENT_LANG(word), ident);
   int rc = mizu_py_stage_bytes(buf, n, hdr, payload, inline_max, h);
   free(buf);
   return rc;
@@ -7653,14 +7611,14 @@ PyObject *pymizu_ix_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
   const ixr_mode mode = { pool ? 1 : 0, pool ? ctx : NULL };
   mizu_ix cur;
   if (mizu_ix_open(&cur, src, n) != MIZU_OK) {
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     return NULL;
   }
   PyObject *v = ixr_value(&cur, &mode);
   if (v == NULL) return NULL;
   if (mizu_ix_end(&cur) != MIZU_OK) {
     Py_DECREF(v);
-    PyErr_Format(MizuError, "pymizu: %s", mizu_last_error_message());
+    ixr_cursor_err();
     return NULL;
   }
   return v;
