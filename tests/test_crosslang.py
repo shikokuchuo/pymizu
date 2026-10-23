@@ -154,17 +154,18 @@ def test_r_spawn_libpaths_each_own_argv_entry(tmp_path, monkeypatch):
     assert seen["argv"][3:] == [b"/a:b".hex(), b"/c".hex()]
 
 
-def _settled_refcount(view, timeout=10.0):
+def _settled_refcount(view, timeout=10.0, target=1):
     """The region's refcount with R's producer loan waited out.
 
     R's loan drops at its first parked-recv reap past the consumer's
     head publish (one interrupt-bound park cycle, <= 2 s), so an exact
     refcount read taken at a fixed point races that cadence. Waits for
-    the floor of one (the consumer's wrap) and returns the last read.
+    `target` (by default the floor of one, the consumer's wrap) and
+    returns the last read.
     """
     deadline = time.monotonic() + timeout
     rc = view.refcount
-    while rc != 1 and time.monotonic() < deadline:
+    while rc != target and time.monotonic() < deadline:
         time.sleep(0.05)
         rc = view.refcount
     return rc
@@ -1705,7 +1706,8 @@ def test_r_peer_frame_remote_columns(r_mizu):
     assert getattr(d2["z"], "base", None) is None
     assert bytes(d2["r"])[:4] == raw[:4]
     assert np.array_equal(np.asarray(d2["z"])[:3], cplx[:3])
-    assert d["r"].base.refcount == rc - 1  # the producer loan released
+    # the producer loan released, on R's exit cadence
+    assert _settled_refcount(d["r"].base, target=rc - 1) == rc - 1
 
 
 R_STRVIEW_DEATH = r"""
