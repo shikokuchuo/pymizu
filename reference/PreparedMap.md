@@ -4,7 +4,7 @@ A map staged once into a persistent region, run many times.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1704-L2106)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1662-L2064)
 
 ``` python
 PreparedMap(
@@ -86,7 +86,7 @@ Unlink the staged region (idempotent; the GC backstop is the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2090-L2096)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2048-L2054)
 
 ``` python
 close()
@@ -100,7 +100,7 @@ Run the prepared map once; return its results (the same
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1922-L2032)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1880-L1990)
 
 ``` python
 run(
