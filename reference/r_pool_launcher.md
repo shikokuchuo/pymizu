@@ -4,7 +4,7 @@ Return a [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) launc
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L171-L238)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L186-L253)
 
 ``` python
 r_pool_launcher(

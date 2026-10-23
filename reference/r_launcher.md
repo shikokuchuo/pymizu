@@ -4,7 +4,7 @@ Return a [`Channel.create()`](../reference/Channel.create.md#pymizu.Channel.crea
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L119-L168)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L134-L183)
 
 ``` python
 r_launcher(
