@@ -3387,7 +3387,6 @@ newer:
   return -1;
 }
 
-/* The directory-entry read, then the fill. */
 static int tree_column(const uint8_t *base, size_t size, int64_t i,
                        fcol *c, frame_cols *fc, unsigned depth) {
   mizu_mizl_entry e;
@@ -3999,7 +3998,6 @@ static double unit_scale(char unit) {
     1e-6;
 }
 
-/* One fcol as a frame column value. */
 static void ixe_fcol(ixw *w, const fcol *c) {
   switch (c->kind) {
   case FCOL_F64:
@@ -5732,7 +5730,6 @@ static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
   return rc;
 }
 
-/* The __arrow_c_stream__ front-end. */
 int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint8_t *payload, uint32_t inline_max,
                                  mizu_handle *h, uint32_t peer_lang,
@@ -6572,7 +6569,6 @@ done:
    resolution stays with _pymizu.c's callers. Serves the peer shim's
    _send_error and Phase 4's ERR publish. */
 
-/* Run the two-pass walk over obj: header + one value. */
 static void ixw_stream(ixw *w, PyObject *obj) {
   IXW_PUT(w, mizu_ix_put_header(IXW_DST(w)));
   ixw_node(w, obj);

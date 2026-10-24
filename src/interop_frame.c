@@ -1194,7 +1194,6 @@ fail:
   return NULL;
 }
 
-/* Rebuild a Frame from the pickle state. */
 static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
   PyObject *names, *columns, *rn;
   if (!PyArg_ParseTuple(args, "OOO:_frame_rebuild", &names, &columns, &rn))
@@ -1207,7 +1206,6 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     return NULL;
   }
   int ncols = (int) PyList_GET_SIZE(names);
-  /* first pass: the row count from column 0's payload */
   int64_t nrow = -1;
   frame_cols *fc = NULL;
   fcol *cols = calloc((size_t) ncols, sizeof(fcol));

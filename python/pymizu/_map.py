@@ -814,7 +814,7 @@ def pool_map(
     # _map_region hands its region back through "capsule"; a spec stream's
     # per-chunk regions through "capsules"
     box: dict[str, _Any] = {"capsule": None, "capsules": None}
-    try:  # here for the finally's cancel + unlink
+    try:
         if plan.stream:
             return _map_stream(
                 pool,
@@ -1247,7 +1247,7 @@ def _stream_window_spec(
             out[lo:hi] = chunk
         else:
             run = v
-            if plan.lang == _LANG_R:  # R morsel pairs -> element spans
+            if plan.lang == _LANG_R:
                 run = _runs_to_spans([v], hi - lo, hi - lo)[0]
             hist, vals = run
             for (blo, bhi), batch in zip(hist, vals, strict=True):

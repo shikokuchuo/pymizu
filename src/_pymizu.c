@@ -5919,7 +5919,6 @@ static mizu_task task_get(MizuTask *self, MizuPool **pool_out) {
   return t;
 }
 
-/* Extract a task sequence's handles and their shared pool. */
 static MizuPool *tasks_get(PyObject *arg, mizu_task **ts_out, size_t *n_out) {
   PyObject *seq = PySequence_Fast(
     arg, "pymizu: tasks must be a non-empty sequence of task handles");

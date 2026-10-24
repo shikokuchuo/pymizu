@@ -186,7 +186,6 @@ int mizu_py_cvt_warn(const cvt_warn *warn, uint32_t peer_lang);
 
 // The temporal vocabulary (the 'I' writer's and layout.c's) ---------------------
 
-/* The temporal dtype units. */
 enum { TU_DAY, TU_WEEK, TU_HOUR, TU_MIN, TU_SEC, TU_MS, TU_US, TU_NS,
        TU_CAL, TU_SUB, TU_NONE };
 

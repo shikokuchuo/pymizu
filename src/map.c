@@ -396,7 +396,6 @@ static void pymap_annotate_index(uint64_t index) {
   PyErr_Restore(t, v, tb);
 }
 
-/* Raise the template-mismatch error, annotated like any element failure. */
 static void pymap_raise_value(mizu_pymap *mh, uint64_t index) {
   PyErr_Format(MizuErr,
                "pymizu: map values must match the template (format '%s', "
@@ -773,8 +772,6 @@ static PyObject *py_map_next(PyObject *Py_UNUSED(module), PyObject *args) {
       return NULL;
     }
   }
-  /* the core's batch transition: generation-fenced lane claim, cancel and
-     pool-signal checks, AIMD sizing, cursor issue */
   uint64_t m, k;
   int help;
   if (!mizu_morsel_next(mh->shm->addr, &mh->h, &mh->sizer, r, gen, s, 0,
