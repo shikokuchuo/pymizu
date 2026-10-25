@@ -251,12 +251,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
    
   <ul class="collapse">
   <li><a href="#r-channel-peers" id="toc-r-channel-peers" class="nav-link active" data-scroll-target="#r-channel-peers">R channel peers</a></li>
+  <li><a href="#everyday-values-round-trip" id="toc-everyday-values-round-trip" class="nav-link" data-scroll-target="#everyday-values-round-trip">Everyday values round-trip</a></li>
+  <li><a href="#large-data-crosses-without-copying" id="toc-large-data-crosses-without-copying" class="nav-link" data-scroll-target="#large-data-crosses-without-copying">Large data crosses without copying</a></li>
+  <li><a href="#what-doesnt-cross" id="toc-what-doesnt-cross" class="nav-link" data-scroll-target="#what-doesnt-cross">What doesn’t cross</a></li>
+  <li><a href="#the-fine-print" id="toc-the-fine-print" class="nav-link" data-scroll-target="#the-fine-print">The fine print</a></li>
+  <li><a href="#pymizu.frame" id="toc-pymizu.frame" class="nav-link" data-scroll-target="#pymizu.frame">pymizu.Frame</a></li>
   <li><a href="#mixed-language-pools" id="toc-mixed-language-pools" class="nav-link" data-scroll-target="#mixed-language-pools">Mixed-language pools</a></li>
   <li><a href="#mapping-over-a-foreign-pool" id="toc-mapping-over-a-foreign-pool" class="nav-link" data-scroll-target="#mapping-over-a-foreign-pool">Mapping over a foreign pool</a></li>
-  <li><a href="#what-crosses-the-language-boundary" id="toc-what-crosses-the-language-boundary" class="nav-link" data-scroll-target="#what-crosses-the-language-boundary">What crosses the language boundary</a></li>
-  <li><a href="#pymizu.frame" id="toc-pymizu.frame" class="nav-link" data-scroll-target="#pymizu.frame">pymizu.Frame</a></li>
-  <li><a href="#data-frames-without-copying" id="toc-data-frames-without-copying" class="nav-link" data-scroll-target="#data-frames-without-copying">Data frames without copying</a></li>
-  <li><a href="#dates-times-and-other-types" id="toc-dates-times-and-other-types" class="nav-link" data-scroll-target="#dates-times-and-other-types">Dates, times, and other types</a></li>
   <li><a href="#the-dtype-matrix" id="toc-the-dtype-matrix" class="nav-link" data-scroll-target="#the-dtype-matrix">The dtype matrix</a></li>
   </ul>
 </nav>
@@ -283,7 +284,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </header>
 
 
-<p>The process at the other end of a channel does not have to be Python. <a href="https://github.com/shikokuchuo/mizu">mizu</a> is the R binding of the same shared-memory core, and a channel or pool connects the two languages directly.</p>
+<p>The process at the other end of a channel does not have to be Python. <a href="https://github.com/shikokuchuo/mizu">mizu</a> is the R binding of the same shared-memory core, and a channel or pool connects the two languages as directly as two Python processes.</p>
 <section id="r-channel-peers" class="level1">
 <h1>R channel peers</h1>
 <p>A channel peer can be an R process with the <code>mizu</code> package installed. Pass the peer program as R source, and set the launcher to <a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">pymizu.r_launcher()</a>:</p>
@@ -307,10 +308,75 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <p><a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">r_launcher()</a> needs R and the <code>mizu</code> R package installed. If either is missing, it raises <a href="../reference/MizuError.html#pymizu.MizuError" class="gdls-link gdls-code">MizuError</a> before the channel is created. Pass <code>rscript=</code> to use a specific R installation.</p>
 <p>To spawn the peer differently, write your own launcher: one callable that takes the channel’s token and starts the peer process. The reverse direction works too: an R session spawns a Python peer with <code>mizu::mizu_py_launcher()</code>.</p>
+<p>The exchange is easiest to take in tiers, from the everyday to the involved: most values cross as an ordinary copy and round-trip unchanged, past a size floor larger data crosses without copying at all, and a handful of types have no faithful home on the other side and are declined. A closing fine-print section collects the few round-trip normalizations and what your R collaborator sees.</p>
+</section>
+<section id="everyday-values-round-trip" class="level1">
+<h1>Everyday values round-trip</h1>
+<p>Most Python objects cross as an ordinary copy — converted once, at send time — and round-trip exactly. R sees the natural equivalent — an R vector for an array, a named list for a dict — and whatever R sends back arrives as the natural Python object:</p>
+<ul>
+<li>Python scalars (<code>bool</code>, <code>int</code>, <code>float</code>, <code>complex</code>, <code>str</code>, <code>None</code>), lists, and dicts with <code>str</code> keys cross both ways; a <code>tuple</code> arrives as a <code>list</code> in R.</li>
+<li>A numpy array of any fixed-width numeric dtype arrives as the matching R vector, and an R vector arrives as a numpy array — the <a href="#the-dtype-matrix">dtype matrix</a> has the exact per-dtype correspondence. <code>bytes</code> arrives as an R raw vector.</li>
+<li>Strings cross both ways: R’s <code>NA_character_</code> arrives as <code>None</code>, and a string vector as <code>list[str | None]</code>.</li>
+<li>An Arrow array arrives as an R vector, Arrow nulls as R missing values: <code>ch.send(pa.array([1, None, 3]))</code>. Anything with <code>__arrow_c_array__</code> works (pyarrow, polars, a duckdb result column).</li>
+<li>An Arrow stream — a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with <a href="../reference/Frame.__arrow_c_stream__.html#pymizu.Frame.__arrow_c_stream__" class="gdls-link gdls-code">__arrow_c_stream__</a> — arrives as an R <code>data.frame</code>. Dictionary-encoded columns become factors, <code>date32</code>/<code>timestamp</code> columns become <code>Date</code>/<code>POSIXct</code>, and a Series arrives as a plain vector.</li>
+<li>Dates and times keep their meaning: a <code>Date</code> crosses as <code>datetime64[D]</code> or Arrow <code>date32</code>, a <code>POSIXct</code> as naive <code>datetime64[us]</code> or <code>timestamp[us]</code> (<code>NaT</code> read as <code>NA</code>), and a <code>difftime</code> as <code>timedelta64[us]</code>. <code>datetime.date</code> and <code>datetime.datetime</code> scalars arrive as the length-1 forms.</li>
+<li>A factor crosses as <code>list[str | None]</code> on its own, or as a dictionary-encoded column inside a frame.</li>
+<li>Labels cross with the values they name: a named R vector arrives as a <a href="../reference/DimArray.html#pymizu.DimArray" class="gdls-link"><code>DimArray</code></a> carrying its names, a matrix or array with its <code>dimnames</code> — axis names and the <code>table</code> class included — and labels you attach in Python ride to R the same way. An unmodified echo is <code>identical()</code> in R. Names ride on the plain atomic types; the exceptions are listed in what doesn’t cross.</li>
+</ul>
+<p>The few cases where a round trip normalizes the container (never the values) are listed in the fine print.</p>
+</section>
+<section id="large-data-crosses-without-copying" class="level1">
+<h1>Large data crosses without copying</h1>
+<p>Past a size floor, the data itself never moves: it is written to shared memory once, and both sides read it in place — no copy, no parsing. Everything you <em>send</em> large is read by R over the shared pages, and everything you <em>receive</em> large arrives as a view over them — usually wrapped as a numpy array:</p>
+<ul>
+<li>A large numpy array of an identity dtype (<code>float64</code>, <code>int32</code>, <code>int64</code>, <code>complex128</code>, <code>uint8</code>), and a large R vector coming back. Without numpy, a received view is a buffer exporter: <code>memoryview(view)</code> works, and any Arrow consumer wraps the same pages zero-copy through the Arrow PyCapsule protocol — <code>pa.array(view)</code>, <code>pl.from_arrow(view)</code>.</li>
+<li>A large array of any shape crosses as a view too, in any memory order — C order, Fortran order, or strided — with <code>dim</code> set on the R side (a matrix is the 2-D case). A large <code>datetime64</code> array arrives in R as a <code>Date</code> or <code>POSIXct</code> view, <code>NaT</code> as <code>NA</code>.</li>
+<li>A large <code>list[str | None]</code> arrives in R as a character-vector view, <code>None</code> as <code>NA</code>.</li>
+<li>A large nested tree of lists, dicts, arrays, and strings arrives in R as a list view over one shared region (dict keys become the list’s names).</li>
+<li>A large data frame crosses as one shared-memory region in both directions — see <a href="#pymizu.frame"><code>pymizu.Frame</code></a>.</li>
+</ul>
+<p>The floors: a flat contiguous vector on a channel crosses as a view from 256 KB — below that it takes one quick copy into the channel’s spill arena, cheaper than region machinery at that size. Everywhere else — pools, string lists, frames, arrays with <code>dim</code> — the floor is 32 KB. Arrays of non-identity dtypes (booleans, the narrow ints, <code>uint64</code>, <code>float32</code>, …) cross as a converted copy at any size; the <a href="#the-dtype-matrix">dtype matrix</a> has the per-dtype rule.</p>
+<p>Views compose: a received view sent back crosses as its region’s name alone — zero payload bytes — and R resolves a view of the original region. A received view nested inside a tree crosses by reference the same way, while a slice or dtype view of one crosses by value.</p>
+<p>An unmodified frame echoed back moves no data at all, and this holds through polars or pyarrow (<code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>) as long as no column was modified; modify some columns and only those columns cross as data, the rest still by reference, so a relay that adds one computed column pays for one column. A polars or pyarrow object that wraps a received frame keeps the frame’s region alive until it is deleted and garbage-collected — holding many at once can force later sends back to copying, so delete them when they are no longer needed.</p>
+<p>One exception: R’s ALTREP vectors (say, <code>1:1e9</code>, which R stores as a compact recipe rather than data) cross by value. Values stay exact, but the compact representation is not preserved.</p>
+</section>
+<section id="what-doesnt-cross" class="level1">
+<h1>What doesn’t cross</h1>
+<p>A value with no faithful home on the other side is declined at send time with <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">pymizu.DeclinedError</a> (a subclass of <code>TypeError</code>), its <code>path</code> and <code>reason</code> attributes naming what was rejected and why. The channel stays usable.</p>
+<ul>
+<li>From Python: Arrow nested, decimal, <code>date64</code>, <code>time</code>, and <code>interval</code> columns, and ordered dictionaries — cast a polars <code>Enum</code> to <code>pl.Categorical</code> first. Arrow <code>uint8</code> <em>with nulls</em> is a <code>TypeError</code>: an R raw vector has no <code>NA</code>.</li>
+<li>From R: <code>POSIXlt</code>, a character matrix, and S4 objects — and a named vector with a class or of character type (a named character vector, factor, <code>Date</code>, or <code>POSIXct</code>), standalone or as a frame column, since names ride only on the plain atomic vectors. A dict of strings crosses fine as the labeled alternative. Among data frames: data.table, a groupedData-style frame (a formula attribute), an ordered-factor column, and a column that is itself a labeled matrix.</li>
+</ul>
+</section>
+<section id="the-fine-print" class="level1">
+<h1>The fine print</h1>
+<p>A round trip can normalize the container, never the values:</p>
+<ul>
+<li>A standalone R factor comes back as strings (inside a data frame it stays a factor).</li>
+<li>A length-1 <code>NA</code> arrives as <code>None</code>; sent back, it is R’s <code>NULL</code>.</li>
+<li>An R logical vector with <code>NA</code>s comes back as integer — <code>c(TRUE, NA)</code> returns as <code>c(1L, NA)</code> — numpy having no missing-aware bool dtype.</li>
+<li>A <code>POSIXct</code> timezone normalizes to UTC on a standalone vector (the instant is exact); a named timezone is kept as frame-column metadata. Naive Python datetimes arrive in R with <code>tzone = "UTC"</code>.</li>
+<li><code>difftime</code> units normalize to seconds: R’s five units cross by value, and a minute comes back as 60 seconds.</li>
+<li><code>-2147483648</code> in an int32 array and <code>-9223372036854775808</code> in an int64 array collide with R’s own <code>NA</code> sentinels and read as <code>NA</code> in R; a <code>uint64</code> value past 2^53 crosses as <code>NA</code> with a warning at send.</li>
+</ul>
+<p>And for what your R collaborator sees on their side:</p>
+<ul>
+<li>An array arrives as an R vector of the matching type — <code>float64</code> as <code>numeric</code>, <code>int32</code> as <code>integer</code>, <code>uint8</code> as <code>raw</code>, <code>int64</code> as <code>integer64</code> — and an array with <code>dim</code> as a matrix or array.</li>
+<li>Labels arrive as <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> on a vector and <code>dimnames</code> on a matrix or array. NumPy operations drop a <a href="../reference/DimArray.html#pymizu.DimArray" class="gdls-link gdls-code">DimArray</a>’s labels rather than risk mislabeling reshaped data, so a modified array arrives as a plain array — re-attach labels and they ride to R as labels again.</li>
+<li><code>timedelta64</code> arrays of any non-calendar unit arrive as a <code>difftime</code> (numpy scalars and <code>datetime.timedelta</code> included); inside a frame, a difftime column exports back to Arrow as <code>duration[us]</code>.</li>
+<li>A data frame arrives as an R <code>data.frame</code> — the <a href="#pymizu.frame"><code>pymizu.Frame</code></a> section has the details, including how R classes and attributes are preserved.</li>
+</ul>
+</section>
+<section id="pymizu.frame" class="level1">
+<h1>pymizu.Frame</h1>
+<p>A <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">pymizu.Frame</a> is Python’s home for an R <code>data.frame</code>: named columns with a row count. <code>frame.to_dict()</code> returns the columns as a dict: numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as <code>list[str | None]</code>. <code>frame.names</code> and <code>frame.row_names</code> carry the metadata.</p>
+<p>Any Arrow consumer takes a frame in one line: <code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>, <code>pd.DataFrame.from_arrow(f)</code> (polars &gt;= 2.0 returns a struct Series for a streaming producer, and <code>.struct.unnest()</code> restores the columns). Factors become dictionary columns, logicals Arrow <code>bool</code>, <code>Date</code> <code>date32</code>, and <code>POSIXct</code> <code>timestamp[us]</code>.</p>
+<p>A <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">Frame</a> pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a <code>data.frame</code> again. If the other side is too old to read shared-memory frames, the frame crosses as a copy instead.</p>
+<p>Frame metadata rides along verbatim. The full class vector of a data.frame (a tibble’s <code>c("tbl_df", "tbl", "data.frame")</code>, any class ending in <code>"data.frame"</code>) and extra attributes — a <code>reference</code> note, readr’s column specification, user attributes — cross opaquely. Python stashes them undecoded on the <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link"><code>Frame</code></a> (its <code>_r_attrs</code>), and an unmodified echo restores them in R. The stash rides the pristine received frame only: a frame rebuilt through pyarrow, polars, pandas, or <a href="../reference/Frame.from_arrow.html#pymizu.Frame.from_arrow" class="gdls-link gdls-code">from_arrow</a> arrives in R as a plain <code>data.frame</code>.</p>
 </section>
 <section id="mixed-language-pools" class="level1">
 <h1>Mixed-language pools</h1>
-<p>A pool’s workers can be R processes. <a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">pymizu.r_pool_launcher()</a> spawns them, and <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> describes the task: a qualified function name (<code>"pkg::fn"</code> for R, <code>"mod.fn"</code> for Python) or a <code>source=</code> string, plus constant arguments:</p>
+<p>A pool’s workers can be R processes. <a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link gdls-code">pymizu.r_pool_launcher()</a> spawns them, and <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> builds the task: a qualified function name (<code>"pkg::fn"</code> for R, <code>"mod.fn"</code> for Python) or a <code>source=</code> string, plus constant arguments:</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -322,60 +388,22 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(t2.collect())                 <span class="co"># 41</span></span>
 <span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>pool.stop()</span></code></pre></div>
 <p>Unnamed arguments become positional arguments, and keyword arguments become named ones. This matches R’s calling convention. A <code>source=</code> task evaluates in a fresh environment with the keyword arguments bound as names and the positional arguments bound as <code>_1</code>, <code>_2</code>, … The result is the value of the last expression.</p>
-<p>The workers’ language comes from the pool itself: there is no language argument and no override. On an R-worker pool, submitting a plain Python callable raises an error naming <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a>. An unqualified name errors at submit. An argument that cannot cross the boundary raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> at submit. An error in the R code crosses as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">TaskError</a> with the R error type preserved in <code>remote_type</code>. A result with no Python equivalent fails the task with an error naming the type. The reverse direction mirrors: <code>mizu::mizu_pool()</code> with <code>mizu::mizu_py_pool_launcher()</code>, and <code>mizu::mizu_submit_call()</code> with <code>mizu::mizu_call()</code> specs.</p>
-<p>Large arguments cross without copying. A fresh array argument past the zero-copy floor (32 KB) is written to shared memory once, in one layout write. The worker reads a view over it. An argument that is already a shared view (a <code>_ShmView</code>, or a numpy array whose <code>.base</code> chain ends in one) crosses as its identifier alone, zero payload bytes. If the pool runs workers too old to read such references, the submit fails with an error naming the remedy. A pool’s workers all run one language: mixing R and Python workers in one pool is not supported.</p>
+<p>The workers’ language comes from the pool itself: there is no language argument and no override. On an R-worker pool, submitting a plain Python callable raises an error naming <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a>.</p>
+<p>An unqualified name errors at submit, and an argument that cannot cross the boundary raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> at submit. An error in the R code crosses as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">TaskError</a> with the R error type preserved in <code>remote_type</code>, and a result with no Python equivalent fails the task with an error naming the type.</p>
+<p>The reverse direction mirrors: <code>mizu::mizu_pool()</code> with <code>mizu::mizu_py_pool_launcher()</code>, and <code>mizu::mizu_submit_call()</code> with <code>mizu::mizu_call()</code> specs.</p>
+<p>Arguments follow the same rules as channel payloads: a fresh array past the 32 KB floor crosses as one shared-memory view rather than a copy, and an argument that is already a shared view (a <code>_ShmView</code>, or a numpy array whose <code>.base</code> chain ends in one) crosses as its identifier alone — zero payload bytes. If the pool runs workers too old to read such references, the submit fails with an error naming the remedy.</p>
+<p>A pool’s workers all run one language: mixing R and Python workers in one pool is not supported.</p>
 </section>
 <section id="mapping-over-a-foreign-pool" class="level1">
 <h1>Mapping over a foreign pool</h1>
-<p>A <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> spec is also a map’s <code>fn</code>, with <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map()</a> and <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">Pool.map_prepare()</a> on an R-worker pool. <code>mizu::mizu_map()</code> mirrors this in R:</p>
+<p>You can also pass a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> spec as the <code>fn</code> of <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map()</a> or <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">Pool.map_prepare()</a> on an R-worker pool. <code>mizu::mizu_map()</code> mirrors this in R:</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>pool <span class="op">=</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_pool_launcher())</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(<span class="st">"stats::median"</span>), x)</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(source<span class="op">=</span><span class="st">"summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"</span>),</span>
 <span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>         folds, template<span class="op">=</span><span class="fl">0.0</span>)   <span class="co"># each fold a dict; the element binds as x</span></span>
 <span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>pool.stop()</span></code></pre></div>
-<p>Each element fills the spec’s first positional argument (a named spec) or binds as <code>x</code> (a <code>source=</code> spec). Put constant arguments in the spec itself: the map’s own <code>args=</code>/<code>kwargs=</code> must stay empty. <code>template=</code> and <code>collect=</code> work unchanged, and a per-element error crosses with its <code>index</code>. Spec maps take integer seeds only (when the workers are R, the seed within R’s 32-bit range and the offset at most 2^53). Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.</p>
-</section>
-<section id="what-crosses-the-language-boundary" class="level1">
-<h1>What crosses the language boundary</h1>
-<p>A portable subset of values crosses in both directions:</p>
-<ul>
-<li>Python scalars (<code>bool</code>, <code>int</code>, <code>float</code>, <code>complex</code>, <code>str</code>, <code>None</code>), lists, and dicts with <code>str</code> keys cross both ways. R sees its own logical, integer, double, complex, character, and list values. A <code>tuple</code> arrives as a <code>list</code>.</li>
-<li>A 1-D contiguous numpy array of any fixed-width numeric dtype arrives as an R vector, and an R vector arrives as a numpy array. See the <a href="#the-dtype-matrix">dtype matrix</a> for the exact correspondence.</li>
-<li>A large array crosses without copying: each side reads the other’s vector as a view over the shared pages. The view threshold is 32 KB, with one exception: a contiguous vector below 256 KB sent on a channel travels as one copy into the channel’s spill arena instead — cheaper than region machinery at those sizes — and crosses as a view from 256 KB (pools have no arena, so the 32 KB floor always wins there). Without numpy, a received view is a buffer exporter, and any Arrow consumer wraps the shared pages zero-copy through the Arrow PyCapsule protocol: <code>pa.array(view)</code>, <code>pl.from_arrow(view)</code>.</li>
-<li>A multi-dimensional numpy array arrives as an R array with <code>dim</code> set (a matrix is the 2-D case). C order, F order, or strided, it crosses value-exact. A large array also crosses without copying in any memory order: F order, C order, or strided. R reads a matrix view over the shared pages. <code>datetime64</code> arrays with day or week units arrive as <code>Date</code>, and finer units arrive as <code>POSIXct</code>. Past the zero-copy floor these cross without copying too. <code>datetime.date</code> and <code>datetime.datetime</code> scalars arrive as the length-1 forms.</li>
-<li>An Arrow array arrives as an R vector, with Arrow nulls as R missing values: <code>ch.send(pa.array([1, None, 3]))</code>. Anything with <code>__arrow_c_array__</code> works (pyarrow, polars, a duckdb result column).</li>
-<li>An Arrow stream (a polars or pandas DataFrame, a pyarrow Table or ChunkedArray, a polars Series, a duckdb relation, anything with <a href="../reference/Frame.__arrow_c_stream__.html#pymizu.Frame.__arrow_c_stream__" class="gdls-link gdls-code">__arrow_c_stream__</a>) arrives as an R <code>data.frame</code>. Dictionary-encoded columns become factors, and <code>date32</code>/<code>timestamp</code> columns become <code>Date</code>/<code>POSIXct</code>. A Series arrives as a plain vector. An R <code>data.frame</code> arrives as a <a href="#pymizuframe"><code>pymizu.Frame</code></a>, and a factor as <code>list[str | None]</code>.</li>
-<li><code>bytes</code> arrives as an R raw vector.</li>
-<li>Strings cross both ways. R’s <code>NA_character_</code> arrives as <code>None</code>, and a string vector arrives as <code>list[str | None]</code>. A large <code>list[str | None]</code> sent to R also crosses without copying: R reads a character vector over the shared pages, with <code>None</code> as <code>NA_character_</code>.</li>
-<li>A large nested tree of lists, dicts, arrays, and strings sent to R crosses as one shared-memory region: R reads a list view over the shared pages instead of a copy (dict keys become the list’s names). A received view nested inside such a tree crosses by reference: only its region’s name moves, and R resolves it to a view of the original region.</li>
-<li>A value outside the portable subset raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">pymizu.DeclinedError</a> (a subclass of <code>TypeError</code>) at send time, with <code>path</code> and <code>reason</code> attributes naming what was rejected and why.</li>
-</ul>
-</section>
-<section id="pymizu.frame" class="level1">
-<h1>pymizu.Frame</h1>
-<p>A <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">pymizu.Frame</a> is Python’s home for an R <code>data.frame</code>: named columns with a row count. <code>frame.to_dict()</code> returns the columns as a dict: numpy arrays when numpy is installed, memoryviews otherwise, strings and factors as <code>list[str | None]</code>. <code>frame.names</code> and <code>frame.row_names</code> carry the metadata. Any Arrow consumer takes a frame in one line: <code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>, <code>pd.DataFrame.from_arrow(f)</code> (polars &gt;= 2.0 returns a struct Series for a streaming producer, and <code>.struct.unnest()</code> restores the columns). Factors become dictionary columns, logicals Arrow <code>bool</code>, <code>Date</code> <code>date32</code>, and <code>POSIXct</code> <code>timestamp[us]</code>. A <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">Frame</a> pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a <code>data.frame</code> again.</p>
-</section>
-<section id="data-frames-without-copying" class="level1">
-<h1>Data frames without copying</h1>
-<ul>
-<li>A large <code>data.frame</code> (past 32 KB) crosses as one shared-memory region in either direction. Python receives a region-backed <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">Frame</a>: its columns read directly from the shared pages, numeric columns as read-only numpy views. R receives an ordinary <code>data.frame</code>, read in place.</li>
-<li>If the other side is too old to read these regions, the frame crosses as a copy instead. The value always arrives.</li>
-<li>Sending a received frame back unmodified moves no data at all: it crosses as a reference to the region it arrived from. This holds through polars or pyarrow (<code>pl.from_arrow(f)</code>, <code>pa.table(f)</code>) as long as no column was modified.</li>
-<li>Modifying some columns moves only those columns. Each unmodified column still crosses as a reference, so a relay that adds one computed column pays for one column. R reads the unmodified columns as views of the original region.</li>
-<li>A polars or pyarrow object that wraps a received frame keeps the frame’s shared-memory region alive until it is deleted and garbage-collected. Holding many of them at once can force later sends back to copying, so delete them when they are no longer needed.</li>
-</ul>
-</section>
-<section id="dates-times-and-other-types" class="level1">
-<h1>Dates, times, and other types</h1>
-<ul>
-<li>A factor crosses as <code>list[str | None]</code> on its own, or as a dictionary-encoded column inside a frame.</li>
-<li>A <code>Date</code> crosses as <code>datetime64[D]</code> or Arrow <code>date32</code>. A <code>POSIXct</code> crosses as a naive <code>datetime64[us]</code> or <code>timestamp[us, tz]</code>: microsecond precision, <code>NaT</code> read as <code>NA</code>. A named timezone is kept as frame column metadata but dropped from a standalone vector. Naive Python datetimes arrive in R with <code>tzone = "UTC"</code>.</li>
-<li>A <code>difftime</code> crosses as <code>timedelta64[us]</code>: microsecond precision, <code>NA</code> read as <code>NaT</code>. R’s five units cross by value. A round trip normalizes them to seconds. <code>timedelta64</code> arrays of any non-calendar unit cross likewise (numpy scalars and <code>datetime.timedelta</code> included). Inside a frame, a difftime column exports to Arrow as <code>duration[us]</code>, and an Arrow <code>duration</code> column arrives as a difftime.</li>
-<li>A <code>POSIXlt</code>, Arrow <code>date64</code>/<code>time</code>/<code>interval</code>, and ordered dictionaries (polars Enums) are declined at send time.</li>
-<li>Labels cross with the values they name: a named vector keeps its names, and a matrix or array keeps its <code>dimnames</code> — axis names and the <code>table</code> class included. The Python home is <a href="../reference/DimArray.html#pymizu.DimArray" class="gdls-link"><code>DimArray</code></a>, an <code>ndarray</code> subclass carrying the labels; an unmodified echo is <code>identical()</code> in R. numpy operations drop the labels rather than mislabel reshaped data — a transpose, arithmetic, a slice, or a copy arrives in R as a plain array; labels re-attached in Python ride back. A <em>named</em> factor, Date, or POSIXct, and a character matrix stay declined.</li>
-<li>Cross-language sends copy R’s ALTREP vectors by value. Values stay exact, but the compact representation is not preserved.</li>
-</ul>
-<p>Frame metadata rides along verbatim: the full class vector of a data.frame (a tibble’s <code>c("tbl_df", "tbl", "data.frame")</code>, any class ending in <code>"data.frame"</code>) and extra attributes — a <code>reference</code> note, readr’s column specification, user attributes — cross opaquely. Python stashes them undecoded on the <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link"><code>Frame</code></a> (its <code>_r_attrs</code>), and an unmodified echo restores them in R. The stash rides the pristine received frame only: a frame rebuilt through pyarrow, polars, pandas, or <a href="../reference/Frame.from_arrow.html#pymizu.Frame.from_arrow" class="gdls-link gdls-code">from_arrow</a> arrives in R as a plain <code>data.frame</code> — honest loss, never wrong labels.</p>
+<p>Each element becomes the spec’s first positional argument (a qualified-name spec) or binds as <code>x</code> (a <code>source=</code> spec). Put constant arguments in the spec itself: the map’s own <code>args=</code>/<code>kwargs=</code> must stay empty. <code>template=</code> and <code>collect=</code> work unchanged, and a per-element error crosses with its <code>index</code>.</p>
+<p>Seeds must be integers — with R workers, within R’s 32-bit range, with the offset at most 2^53. Each language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.</p>
 </section>
 <section id="the-dtype-matrix" class="level1">
 <h1>The dtype matrix</h1>
