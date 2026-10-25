@@ -58,11 +58,11 @@ stopifnot(
 
 # a spec map's results land in order; a runner's error carries its
 # element index (1-based on the R side)
-r <- mizu_map(p, 1:5, mizu_call(.source = "x * 2"))
+r <- mizu_collect(mizu_map(p, 1:5, mizu_call(.source = "x * 2")))
 stopifnot(identical(unlist(r), (1:5) * 2L))
 src <- "if x == 5:\n    raise ValueError('elt')"
 c4 <- tryCatch(
-  mizu_map(p, 1:10, mizu_call(.source = src)),
+  mizu_collect(mizu_map(p, 1:10, mizu_call(.source = src))),
   mizu_error_remote = function(c) c
 )
 stopifnot(inherits(c4, "mizu_error_remote"), identical(c4[["index"]], 5L))
