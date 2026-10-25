@@ -340,7 +340,7 @@ def test_view_x_crosses_to_map_workers_as_a_ref(r_pool):
     big = r_pool.submit(pymizu.call(source="runif(100000)")).collect()
     assert type(big.base).__name__ == "_ShmView"
     rc0 = big.base.refcount
-    res = r_pool.map(pymizu.call("base::sqrt"), big)
+    res = r_pool.map(pymizu.call("base::sqrt"), big).collect()
     assert res == np.sqrt(big).tolist()
     assert big.base.flags & 1 == 1  # REFHELD
     # the workers' map-context views release at eviction / teardown; the
@@ -439,3 +439,52 @@ def test_zc_selection_fold_candidate_matrix(r_pool):
         assert flags == [False] * 17
         assert _run_probe(p, [], (1.5, "abc"), {})[0] == []
         assert _run_probe(p, [], ("y" * 30000,), {})[0] == []
+
+
+# -- asyncio over R workers -------------------------------------------------
+
+
+def test_await_task_r_worker(r_pool):
+    import asyncio
+
+    async def main():
+        task = r_pool.submit(pymizu.call(source="median(c(1, 5, 2))"))
+        assert await task == 2.0
+
+    asyncio.run(main())
+
+
+def test_await_task_error_r_worker(r_pool):
+    import asyncio
+
+    async def main():
+        task = r_pool.submit(pymizu.call(source="stop('boom')"))
+        with pytest.raises(pymizu.TaskError):
+            await task
+
+    asyncio.run(main())
+
+
+def test_collect_all_async_r_workers(r_pool):
+    import asyncio
+
+    async def main():
+        tasks = [
+            r_pool.submit(pymizu.call("base::sqrt", float(i * i)))
+            for i in range(4)
+        ]
+        assert await r_pool.collect_all_async(tasks) == [
+            float(i) for i in range(4)
+        ]
+
+    asyncio.run(main())
+
+
+def test_await_map_r_workers(r_pool):
+    import asyncio
+
+    async def main():
+        m = r_pool.map(pymizu.call("base::sqrt"), [1.0, 4.0, 9.0])
+        assert await m == [1.0, 2.0, 3.0]
+
+    asyncio.run(main())

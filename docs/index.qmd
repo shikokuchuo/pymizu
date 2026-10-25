@@ -98,15 +98,16 @@ See [Task pools](user-guide/pools.qmd#concurrentfutures-interop) for wrapping an
 
 ## Parallel map
 
-`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the results in order.
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the run's handle immediately.
 The function and data cross into shared memory once.
 Workers divide the elements among themselves, claiming ranges from a shared cursor.
+`handle.collect()` returns the results in order — or `await handle` in asyncio code.
 
 A map also nests — the mapped function can map over its own pool with `pymizu.current_pool()`, deadlock-free.
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
-    result = pool.map(abs, range(-5, 5))
+    result = pool.map(abs, range(-5, 5)).collect()
 
 result
 ```

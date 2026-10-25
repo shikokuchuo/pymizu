@@ -103,12 +103,12 @@ def main():
 
     pool = pymizu.Pool.create(4)
     try:
-        pool.map(plus_one, xs)  # warm-up
+        pool.map(plus_one, xs).collect()  # warm-up
         note_us(
             "map trivial fn",
             "pymizu pool",
             k * n,
-            lambda: [pool.map(plus_one, xs) for _ in range(k)],
+            lambda: [pool.map(plus_one, xs).collect() for _ in range(k)],
             "us/elt",
         )
     finally:
@@ -117,12 +117,12 @@ def main():
     spec = pymizu.call("base::abs")
     pool = pymizu.Pool.create(4, launcher=r_launcher)
     try:
-        pool.map(spec, xs)  # warm-up
+        pool.map(spec, xs).collect()  # warm-up
         note_us(
             "map trivial fn",
             "pymizu spec",
             k * n,
-            lambda: [pool.map(spec, xs) for _ in range(k)],
+            lambda: [pool.map(spec, xs).collect() for _ in range(k)],
             "us/elt",
         )
         # the template path: results land in the region's output area,
@@ -132,7 +132,9 @@ def main():
             "map trivial fn",
             "pymizu spec template",
             k * n,
-            lambda: [pool.map(spec, xs, template=tmpl) for _ in range(k)],
+            lambda: [
+                pool.map(spec, xs, template=tmpl).collect() for _ in range(k)
+            ],
             "us/elt",
         )
         # the neutral (seed, offset) pair; per-element streams derived
@@ -142,7 +144,7 @@ def main():
             "pymizu spec seed",
             k * n,
             lambda: [
-                pool.map(pymizu.call(source="runif(1)"), xs, seed=42)
+                pool.map(pymizu.call(source="runif(1)"), xs, seed=42).collect()
                 for _ in range(k)
             ],
             "us/elt",
@@ -151,12 +153,12 @@ def main():
         # runner submit + collect, the workers' contexts cached
         pm = pool.map_prepare(spec, xs)
         try:
-            pm.run()  # warm-up
+            pm.run().collect()  # warm-up
             note_us(
                 "map trivial fn",
                 "pymizu spec prepared",
                 k * n,
-                lambda: [pm.run() for _ in range(k)],
+                lambda: [pm.run().collect() for _ in range(k)],
                 "us/elt",
             )
         finally:
@@ -180,24 +182,24 @@ def main():
 
     pool = pymizu.Pool.create(4)
     try:
-        pool.map(winsum, range(n))  # warm-up
+        pool.map(winsum, range(n)).collect()  # warm-up
         note_rate(
             "map ~10us tasks",
             "pymizu pool",
             n,
-            lambda: pool.map(winsum, range(n)),
+            lambda: pool.map(winsum, range(n)).collect(),
         )
     finally:
         pool.stop(timeout=15)
 
     pool = pymizu.Pool.create(4, launcher=r_launcher)
     try:
-        pool.map(gspec, range(n))  # warm-up
+        pool.map(gspec, range(n)).collect()  # warm-up
         note_rate(
             "map ~10us tasks",
             "pymizu spec",
             n,
-            lambda: pool.map(gspec, range(n)),
+            lambda: pool.map(gspec, range(n)).collect(),
         )
     finally:
         pool.stop(timeout=15)

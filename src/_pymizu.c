@@ -5053,6 +5053,279 @@ static int py_exec(const mizu_slot_hdr *hdr, const uint8_t *payload,
 
 // The channel handle ---------------------------------------------------------------
 
+// Notify records (the asyncio / concurrent.futures bridge over the core's watch) ----
+
+/* Per armed handle one MizuNotify record bridges the core's persistent
+   pure-C watch and a Python-level wake: an asyncio loop's
+   call_soon_threadsafe (loop set), or a direct call under the GIL (loop
+   NULL — the PoolExecutor's stdlib futures, whose set_result is
+   thread-safe by design). The watch callback runs on the core's listener
+   thread: a coalescing CAS, then — under PyGILState — the wake. The
+   scheduled trampoline clears the flag first, so a signal landing
+   mid-drain schedules afresh; spurious and stale signals are absorbed by
+   the drain's re-check, as the core's arm protocol intends.
+   Refs: 1 from create to handle teardown, +1 while armed, +1 per
+   scheduled trampoline. Every decrement holds the GIL (teardown and the
+   trampoline run with it; the callback takes it before any Python call),
+   so the count never races — the listener thread only increments.
+   Teardown unwatches first (the stop synchronizes with an in-flight
+   callback), so no callback ever runs against a freed record; a queued
+   trampoline sees dead set and no-ops. */
+typedef struct MizuNotify {
+  struct MizuNotify *next; /* the live-record registry (the AtExit fini) */
+  PyObject *loop;          /* the captured asyncio loop; NULL in direct mode */
+  PyObject *drain_cb;      /* the Python drain callable */
+  PyObject *capsule;       /* this record as the trampoline's argument */
+  void *core;              /* the mizu_channel/mizu_pool while watching */
+  _Atomic int scheduled;   /* the coalescing flag: one wake per burst */
+  _Atomic int refs;        /* create + armed + scheduled trampolines */
+  int is_pool;
+  int watching;            /* the core watch is active */
+  int armed;               /* the core arm and the armed ref are held */
+  int dead;                /* torn down: a queued trampoline no-ops */
+} MizuNotify;
+
+static MizuNotify *notify_registry;
+static PyObject *notify_trampoline;
+
+/* The direct-mode drain runs ON the core's listener thread (the
+   executor's loop-free arm): a handle teardown landing here — a destroy
+   racing in from another thread, completed by the drain's last in-flight
+   verb — would run the core's watch stop from inside the watched
+   callback, and the stop's queue-drain sync deadlocks. The teardown
+   hands off to a detached thread instead (the guard is at the teardown
+   sites); its unwatch then parks on the handler's completion exactly as
+   designed. The marker is set around the drain only (loop-mode wakes
+   run on the loop's thread, never here). */
+static _Thread_local MizuNotify *notify_cb_active;
+
+static int deferred_teardown(PyObject *self, void *core, int is_pool);
+
+static void notify_unref(MizuNotify *rec) {
+  if (atomic_fetch_sub_explicit(&rec->refs, 1, memory_order_acq_rel) == 1) {
+    Py_DECREF(rec->capsule);
+    PyMem_Free(rec);
+  }
+}
+
+/* The registry and every Python-ref mutation run with the GIL (create and
+   teardown on handle-owning threads, the fini at interpreter exit). */
+static void notify_registry_drop(MizuNotify *rec) {
+  if (notify_registry == rec) {
+    notify_registry = rec->next;
+    return;
+  }
+  for (MizuNotify *r = notify_registry; r != NULL; r = r->next)
+    if (r->next == rec) {
+      r->next = rec->next;
+      return;
+    }
+}
+
+static void notify_core_unwatch(MizuNotify *rec) {
+  if (rec->is_pool)
+    (void) mizu_pool_notify_unwatch((mizu_pool *) rec->core);
+  else
+    (void) mizu_channel_notify_unwatch((mizu_channel *) rec->core);
+}
+
+static void notify_core_disarm(MizuNotify *rec) {
+  if (rec->is_pool)
+    (void) mizu_pool_notify_arm((mizu_pool *) rec->core, 0);
+  else
+    (void) mizu_channel_notify_arm((mizu_channel *) rec->core, 0, NULL);
+}
+
+/* Handle teardown (the destroy veneers' teardown and the deallocs):
+   tombstone the record so a queued trampoline no-ops, stop the watch
+   (synchronizes with an in-flight callback), disarm, drop the Python
+   refs, release the held refs. core_ok is 0 on a forked child's abandon
+   path: the heap record and its Python refs release, but no core verb
+   runs (the listener machinery is the parent's). Runs with the GIL,
+   ahead of the core handle's destroy. */
+static void notify_teardown(MizuNotify **slot, int core_ok) {
+  MizuNotify *rec = *slot;
+  if (rec == NULL) return;
+  *slot = NULL;
+  notify_registry_drop(rec);
+  rec->dead = 1;
+  if (core_ok && rec->watching) {
+    rec->watching = 0;
+    notify_core_unwatch(rec);
+  }
+  if (rec->armed) {
+    rec->armed = 0;
+    if (core_ok) notify_core_disarm(rec);
+    notify_unref(rec);         /* the armed ref */
+  }
+  Py_CLEAR(rec->loop);
+  Py_CLEAR(rec->drain_cb);
+  notify_unref(rec);           /* the create ref (the capsule rides it) */
+}
+
+/* Stop every live watch before the interpreter goes down (the core's
+   listener thread may outlive it); the records stay — their handles'
+   teardown unrefs as usual. Registered with Py_AtExit at module init. */
+static void notify_fini(void) {
+  for (MizuNotify *rec = notify_registry; rec != NULL; rec = rec->next)
+    if (rec->watching) {
+      rec->watching = 0;
+      notify_core_unwatch(rec);
+    }
+}
+
+static MizuNotify *notify_alloc(MizuNotify **slot, void *core, int is_pool) {
+  MizuNotify *rec = PyMem_Calloc(1, sizeof(*rec));
+  if (rec == NULL) return NULL;
+  rec->capsule = PyCapsule_New(rec, "pymizu._notify", NULL);
+  if (rec->capsule == NULL) {
+    PyMem_Free(rec);
+    return NULL;
+  }
+  atomic_init(&rec->scheduled, 0);
+  atomic_init(&rec->refs, 1);   /* the create ref */
+  rec->core = core;
+  rec->is_pool = is_pool;
+  rec->next = notify_registry;
+  notify_registry = rec;
+  *slot = rec;
+  return rec;
+}
+
+/* The core's watch callback (any thread; the GIL is entered, never
+   assumed): coalesce the burst to one wake. Loop mode schedules the
+   trampoline; direct mode resolves in place and clears the flag only
+   after — a signal landing mid-drain coalesces into the drain's own
+   re-check instead of running a second drain concurrently. A
+   RuntimeError from call_soon_threadsafe is a closed loop: disarm (the
+   loop's own pending-future warnings are the user's signal); a later arm
+   captures a fresh loop. */
+static void notify_cb(void *ctx) {
+  MizuNotify *rec = (MizuNotify *) ctx;
+  int expected = 0;
+  if (!atomic_compare_exchange_strong_explicit(&rec->scheduled, &expected, 1,
+                                               memory_order_acq_rel,
+                                               memory_order_acquire))
+    return;
+  PyGILState_STATE gil = PyGILState_Ensure();
+  if (rec->loop == NULL) {
+    notify_cb_active = rec;
+    if (!rec->dead && rec->drain_cb != NULL) {
+      PyObject *r = PyObject_CallNoArgs(rec->drain_cb);
+      if (r == NULL) PyErr_WriteUnraisable(rec->drain_cb);
+      else Py_DECREF(r);
+    }
+    notify_cb_active = NULL;
+    atomic_store_explicit(&rec->scheduled, 0, memory_order_release);
+    PyGILState_Release(gil);
+    return;
+  }
+  atomic_fetch_add_explicit(&rec->refs, 1, memory_order_relaxed);
+  PyObject *r = PyObject_CallMethod(rec->loop, "call_soon_threadsafe", "OO",
+                                    notify_trampoline, rec->capsule);
+  if (r == NULL) {
+    if (PyErr_ExceptionMatches(PyExc_RuntimeError)) {
+      PyErr_Clear();
+      if (rec->armed) {
+        rec->armed = 0;
+        notify_core_disarm(rec);
+        Py_CLEAR(rec->loop);
+        Py_CLEAR(rec->drain_cb);
+        notify_unref(rec);     /* the armed ref */
+      }
+    } else {
+      PyErr_WriteUnraisable(rec->drain_cb);
+    }
+    notify_unref(rec);         /* the scheduled ref: no trampoline will run */
+  } else {
+    Py_DECREF(r);
+  }
+  PyGILState_Release(gil);
+}
+
+/* The scheduled wake (the asyncio loop's thread): clear the coalescing
+   flag first — a signal landing mid-drain schedules a fresh trampoline,
+   which the drain's re-check absorbs. An escaping drain error propagates
+   to the loop's exception handler, the asyncio idiom; the scheduled ref
+   releases either way. */
+static PyObject *notify_trampoline_call(PyObject *Py_UNUSED(self),
+                                        PyObject *cap) {
+  MizuNotify *rec =
+    (MizuNotify *) PyCapsule_GetPointer(cap, "pymizu._notify");
+  if (rec == NULL) return NULL;
+  atomic_store_explicit(&rec->scheduled, 0, memory_order_release);
+  PyObject *r = NULL;
+  if (!rec->dead && rec->drain_cb != NULL)
+    r = PyObject_CallNoArgs(rec->drain_cb);
+  notify_unref(rec);           /* the scheduled ref */
+  if (r == NULL && !PyErr_Occurred())
+    Py_RETURN_NONE;            /* a skipped drain (torn down or disarmed) */
+  return r;
+}
+
+static PyMethodDef notify_trampoline_def = {
+  "_notify_trampoline", (PyCFunction) notify_trampoline_call, METH_O, NULL};
+
+/* The arm's Python half, after the core arm succeeds: store the loop and
+   drain refs (replacing any previous) and take the armed ref once per arm
+   cycle. The callable check ran at the veneer. */
+static void notify_store(MizuNotify *rec, PyObject *loop, PyObject *cb) {
+  if (loop == Py_None) loop = NULL;
+  Py_INCREF(cb);
+  Py_XINCREF(loop);
+  Py_XDECREF(rec->loop);
+  Py_XDECREF(rec->drain_cb);
+  rec->loop = loop;
+  rec->drain_cb = cb;
+  if (!rec->armed) {
+    rec->armed = 1;
+    atomic_fetch_add_explicit(&rec->refs, 1, memory_order_relaxed);
+  }
+}
+
+/* The disarm half shared by both handle kinds: clear the core's arm word,
+   drop the loop/drain refs, release the armed ref. Lenient on a closed
+   handle (the drain's defensive disarm), a no-op when never armed. */
+static void notify_disarm(void *core, MizuNotify *rec, int is_pool) {
+  if (rec == NULL || !rec->armed) return;
+  rec->armed = 0;
+  if (core != NULL) {
+    if (is_pool)
+      (void) mizu_pool_notify_arm((mizu_pool *) core, 0);
+    else
+      (void) mizu_channel_notify_arm((mizu_channel *) core, 0, NULL);
+  }
+  Py_CLEAR(rec->loop);
+  Py_CLEAR(rec->drain_cb);
+  notify_unref(rec);           /* the armed ref */
+}
+
+static int notify_drain_check(PyObject *cb) {
+  if (PyCallable_Check(cb)) return 0;
+  PyErr_SetString(PyExc_TypeError, "pymizu: drain_cb must be callable");
+  return -1;
+}
+
+/* The `aio` getset pair shared by both handle kinds: the Python-side
+   async state object, owned by the handle (the cycle handle -> state ->
+   facade -> handle rides the type's GC). */
+static PyObject *aio_get(PyObject *state) {
+  if (state == NULL) Py_RETURN_NONE;
+  Py_INCREF(state);
+  return state;
+}
+
+static int aio_set(PyObject **slot, PyObject *v) {
+  if (v == NULL) {
+    PyErr_SetString(PyExc_TypeError, "pymizu: cannot delete _aio");
+    return -1;
+  }
+  Py_INCREF(v);
+  Py_XDECREF(*slot);
+  *slot = v;
+  return 0;
+}
+
 typedef struct {
   PyObject_HEAD
   mizu_channel *core;
@@ -5061,6 +5334,8 @@ typedef struct {
   unsigned in_flight;    /* core calls with the GIL dropped (GIL-guarded —
                             a free-threaded build needs a real lock here) */
   MizuViewCache *vcache; /* the binding.ctx view cache, for teardown */
+  MizuNotify *notify;    /* the notify record, lazily from the first arm */
+  PyObject *aio_state;   /* the Python async state (pymizu._aio), owned */
 } MizuChannel;
 
 /* The pin release (F1's D4): a ref-carrying task stream pins the spec
@@ -5148,6 +5423,10 @@ static PyObject *status_or_sentinel(mizu_status st, PyObject *on_ok) {
    with the count at zero — no core call can be inside, and chan_get
    fails every later one. */
 static void chan_teardown(MizuChannel *self, mizu_channel *c) {
+  if (notify_cb_active != NULL && self->notify == notify_cb_active &&
+      deferred_teardown((PyObject *) self, c, 0))
+    return;
+  notify_teardown(&self->notify, 1);
   mizu_channel_destroy(c);
   view_cache_free(self->vcache);
   self->vcache = NULL;
@@ -5494,6 +5773,7 @@ static PyObject *Channel_destroy(MizuChannel *self,
   if (c != NULL && self->self_pid != mizu_self_pid()) {
     /* a forked child's copy never touches the shared region; its view
        cache is process-local, so release it here as the dealloc does */
+    notify_teardown(&self->notify, 0);
     view_cache_free(self->vcache);
     self->vcache = NULL;
   } else if (c != NULL) {
@@ -5621,7 +5901,8 @@ static PyObject *Channel_info(MizuChannel *self, PyObject *Py_UNUSED(args)) {
       dict_set(d, "fl_hits", info.fl_hits) < 0 ||
       dict_set(d, "open_hits", info.open_hits) < 0 ||
       dict_set(d, "open_misses", info.open_misses) < 0 ||
-      dict_set(d, "ledger_entries", info.ledger_entries) < 0)
+      dict_set(d, "ledger_entries", info.ledger_entries) < 0 ||
+      dict_set(d, "notify_sends", info.notify_sends) < 0)
     goto fail;
   Py_DECREF(name);
   Py_DECREF(side);
@@ -5652,18 +5933,99 @@ static PyObject *Channel_repr(MizuChannel *self) {
   return PyUnicode_FromFormat("<pymizu.Channel %s>", buf);
 }
 
+static int Channel_traverse(MizuChannel *self, visitproc visit, void *arg) {
+  Py_VISIT(self->aio_state);
+  return 0;
+}
+
+static int Channel_clear(MizuChannel *self) {
+  Py_CLEAR(self->aio_state);
+  return 0;
+}
+
 static void Channel_dealloc(MizuChannel *self) {
+  PyObject_GC_UnTrack(self);
+  int own = self->self_pid == mizu_self_pid();
+  notify_teardown(&self->notify, own);
   /* destroy signals close and runs the non-blocking rendezvous check; a
      forked child's copy abandons instead — only its own mapping and heap
      release, the parent's channel untouched */
   if (self->core != NULL) {
-    if (self->self_pid == mizu_self_pid())
+    if (own)
       mizu_channel_destroy(self->core);
     else
       mizu_channel_abandon(self->core);
   }
   view_cache_free(self->vcache);
+  Py_XDECREF(self->aio_state);
   MizuChannelType.tp_free((PyObject *) self);
+}
+
+PyDoc_STRVAR(chan_notify_arm_doc,
+"_notify_arm(loop, drain_cb) -> bool\n\n\
+The asyncio bridge: register the notify watch (first arm) and arm this\n\
+side's endpoint; drain_cb is scheduled on `loop` per wake (loop None calls\n\
+it directly on the listener thread). Returns the arm's availability\n\
+report — drain synchronously what it reports, then stay armed.");
+
+PyDoc_STRVAR(chan_notify_rearm_doc,
+"_notify_rearm() -> bool\n\n\
+Re-set this side's notify bit (idempotent, cheap) and report availability.\n\
+The drain's re-check step: a publish racing it clears the bit and signals,\n\
+riding the next wake.");
+
+PyDoc_STRVAR(chan_notify_disarm_doc,
+"_notify_disarm() -> None\n\n\
+Clear this side's notify bit and drop the loop/drain refs; the watch\n\
+stays registered for a later re-arm. No-op when never armed or closed.");
+
+static PyObject *Channel_notify_arm(MizuChannel *self, PyObject *args) {
+  PyObject *loop, *cb;
+  if (!PyArg_ParseTuple(args, "OO:_notify_arm", &loop, &cb))
+    return NULL;
+  if (notify_drain_check(cb) < 0) return NULL;
+  mizu_channel *c = chan_get(self);
+  if (c == NULL) return NULL;
+  MizuNotify *rec = self->notify;
+  if (rec == NULL) {
+    rec = notify_alloc(&self->notify, c, 0);
+    if (rec == NULL) return PyErr_NoMemory();
+  }
+  if (!rec->watching) {
+    if (mizu_channel_notify_watch(c, notify_cb, rec) != MIZU_OK)
+      return raise_handle(c);
+    rec->watching = 1;
+  }
+  int avail = 0;
+  if (mizu_channel_notify_arm(c, 1, &avail) != MIZU_OK)
+    return raise_handle(c);
+  notify_store(rec, loop, cb);
+  return PyBool_FromLong(avail != 0);
+}
+
+static PyObject *Channel_notify_rearm(MizuChannel *self,
+                                      PyObject *Py_UNUSED(args)) {
+  mizu_channel *c = chan_get(self);
+  if (c == NULL) return NULL;
+  int avail = 0;
+  if (mizu_channel_notify_arm(c, 1, &avail) != MIZU_OK)
+    return raise_handle(c);
+  return PyBool_FromLong(avail != 0);
+}
+
+static PyObject *Channel_notify_disarm(MizuChannel *self,
+                                       PyObject *Py_UNUSED(args)) {
+  notify_disarm(self->core, self->notify, 0);
+  Py_RETURN_NONE;
+}
+
+static PyObject *Channel_aio_get(MizuChannel *self, void *Py_UNUSED(closure)) {
+  return aio_get(self->aio_state);
+}
+
+static int Channel_aio_set(MizuChannel *self, PyObject *v,
+                           void *Py_UNUSED(closure)) {
+  return aio_set(&self->aio_state, v);
 }
 
 static PyMethodDef Channel_methods[] = {
@@ -5685,6 +6047,12 @@ static PyMethodDef Channel_methods[] = {
   {"_peer_ident", (PyCFunction) Channel_peer_ident, METH_NOARGS,
    peer_ident_doc},
   {"info", (PyCFunction) Channel_info, METH_NOARGS, info_doc},
+  {"_notify_arm", (PyCFunction) Channel_notify_arm, METH_VARARGS,
+   chan_notify_arm_doc},
+  {"_notify_rearm", (PyCFunction) Channel_notify_rearm, METH_NOARGS,
+   chan_notify_rearm_doc},
+  {"_notify_disarm", (PyCFunction) Channel_notify_disarm, METH_NOARGS,
+   chan_notify_disarm_doc},
   {NULL, NULL, 0, NULL}
 };
 
@@ -5692,6 +6060,8 @@ static PyGetSetDef Channel_getset[] = {
   {"token", (getter) Channel_token_get, NULL,
    "The join token (\"<pid hex>_<counter hex>\") for the peer's attach.",
    NULL},
+  {"_aio", (getter) Channel_aio_get, (setter) Channel_aio_set,
+   "The Python async state slot (pymizu._aio's per-handle registry).", NULL},
   {NULL, NULL, NULL, NULL, NULL}
 };
 
@@ -5700,12 +6070,14 @@ static PyTypeObject MizuChannelType = {
   .tp_name = "_pymizu._Channel",
   .tp_basicsize = sizeof(MizuChannel),
   .tp_repr = (reprfunc) Channel_repr,
-  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
   .tp_doc = "A channel handle (process-private; does not survive fork()). "
             "Construct through pymizu.Channel.create() / Channel.attach().",
   .tp_methods = Channel_methods,
   .tp_getset = Channel_getset,
   .tp_dealloc = (destructor) Channel_dealloc,
+  .tp_traverse = (traverseproc) Channel_traverse,
+  .tp_clear = (inquiry) Channel_clear,
 };
 
 
@@ -5721,12 +6093,16 @@ typedef struct {
   int role;            /* MIZU_ROLE_* */
   MizuViewCache *vcache;
   PyObject *trace_fn;  /* the registered trace callable, or NULL */
+  MizuNotify *notify;  /* the notify record, lazily from the first arm */
+  PyObject *aio_state; /* the Python async state (pymizu._aio), owned */
 } MizuPool;
 
 typedef struct {
   PyObject_HEAD
   uint64_t word;       /* the core's 8-byte mizu_task, by value */
   PyObject *pool;      /* keeps the pool handle alive */
+  unsigned async_pending;  /* an asyncio consumer enrolled: blocking
+                              collects refuse (one consumer per result) */
 } MizuTask;
 
 /* Submitter/controller handles release the GIL around every verb; worker
@@ -5789,11 +6165,61 @@ static PyObject *pool_raise(mizu_pool *p) {
   }
 }
 
+typedef struct {
+  PyObject *self;   /* the handle object (a ref held across the handoff) */
+  void *core;       /* the deferred mizu_channel/mizu_pool */
+  int is_pool;
+} MizuDeferredTeardown;
+
+static void deferred_teardown_main(void *arg) {
+  MizuDeferredTeardown *dt = (MizuDeferredTeardown *) arg;
+  PyGILState_STATE gil = PyGILState_Ensure();
+  if (dt->is_pool) {
+    MizuPool *self = (MizuPool *) dt->self;
+    notify_teardown(&self->notify, 1);
+    mizu_pool_destroy((mizu_pool *) dt->core);
+    view_cache_free(self->vcache);
+    self->vcache = NULL;
+  } else {
+    MizuChannel *self = (MizuChannel *) dt->self;
+    notify_teardown(&self->notify, 1);
+    mizu_channel_destroy((mizu_channel *) dt->core);
+    view_cache_free(self->vcache);
+    self->vcache = NULL;
+  }
+  Py_DECREF(dt->self);
+  PyGILState_Release(gil);
+  free(dt);
+}
+
+/* Teardown inside this handle's own watch callback hands off (the
+   notify_cb_active marker): the handle was already tombstoned by the
+   destroy veneer (or the in-flight count completed it), so only the
+   core-side work moves. Returns nonzero when it handed off. */
+static int deferred_teardown(PyObject *self, void *core, int is_pool) {
+  MizuDeferredTeardown *dt = malloc(sizeof(*dt));
+  if (dt == NULL) return 0;   /* fall through to the in-place teardown */
+  Py_INCREF(self);
+  dt->self = self;
+  dt->core = core;
+  dt->is_pool = is_pool;
+  if (PyThread_start_new_thread(deferred_teardown_main, dt) < 0) {
+    Py_DECREF(self);
+    free(dt);
+    return 0;
+  }
+  return 1;
+}
+
 /* The destroy half of the in-flight fence: the core handle and the
    binding ctx its callbacks consult release together. Runs only with the
    count at zero — no core call can be inside, and pool_get fails every
    later one. */
 static void pool_teardown(MizuPool *self, mizu_pool *p) {
+  if (notify_cb_active != NULL && self->notify == notify_cb_active &&
+      deferred_teardown((PyObject *) self, p, 1))
+    return;
+  notify_teardown(&self->notify, 1);
   mizu_pool_destroy(p);
   view_cache_free(self->vcache);
   self->vcache = NULL;
@@ -5919,7 +6345,10 @@ static mizu_task task_get(MizuTask *self, MizuPool **pool_out) {
   return t;
 }
 
-static MizuPool *tasks_get(PyObject *arg, mizu_task **ts_out, size_t *n_out) {
+/* check_async: the collect verbs' one-consumer-per-result refusal — a
+   task with a pending asyncio consumer rejects a blocking collect. */
+static MizuPool *tasks_get(PyObject *arg, mizu_task **ts_out, size_t *n_out,
+                           int check_async) {
   PyObject *seq = PySequence_Fast(
     arg, "pymizu: tasks must be a non-empty sequence of task handles");
   if (seq == NULL) return NULL;
@@ -5941,6 +6370,12 @@ static MizuPool *tasks_get(PyObject *arg, mizu_task **ts_out, size_t *n_out) {
   for (Py_ssize_t i = 0; i < n; i++) {
     if (Py_TYPE(items[i]) != &MizuTaskType) {
       PyErr_SetString(PyExc_TypeError, "pymizu: not a task handle");
+      goto fail;
+    }
+    if (check_async && ((MizuTask *) items[i])->async_pending) {
+      PyErr_SetString(MizuError,
+                      "pymizu: task has a pending async consumer — one "
+                      "consumer per result");
       goto fail;
     }
     MizuPool *pi;
@@ -6142,7 +6577,7 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *args,
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   mizu_task *ts;
   size_t n;
-  MizuPool *pool = tasks_get(seq, &ts, &n);
+  MizuPool *pool = tasks_get(seq, &ts, &n, 1);
   if (pool == NULL) return NULL;
   if (pool != self) {
     PyMem_Free(ts);
@@ -6209,7 +6644,7 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   mizu_task *ts;
   size_t n;
-  MizuPool *pool = tasks_get(seq, &ts, &n);
+  MizuPool *pool = tasks_get(seq, &ts, &n, 1);
   if (pool == NULL) return NULL;
   if (pool != self) {
     PyMem_Free(ts);
@@ -6423,6 +6858,7 @@ static PyObject *Pool_destroy(MizuPool *self, PyObject *Py_UNUSED(args)) {
   if (p != NULL && self->self_pid != mizu_self_pid()) {
     /* a forked child's copy never touches the shared region; its view
        cache is process-local, so release it here as the dealloc does */
+    notify_teardown(&self->notify, 0);
     view_cache_free(self->vcache);
     self->vcache = NULL;
   } else if (p != NULL) {
@@ -6724,6 +7160,8 @@ static PyObject *Pool_dump(MizuPool *self, PyObject *Py_UNUSED(args)) {
       dict_set(local, "open_misses", (unsigned long long) d.open_misses) < 0 ||
       dict_set(local, "collect_parks",
                (unsigned long long) d.collect_parks) < 0 ||
+      dict_set(local, "notify_sends",
+               (unsigned long long) d.notify_sends) < 0 ||
       dict_set_str(out, "name", d.status.name) < 0 ||
       dict_set(out, "shutdown",
                (unsigned long long) (d.status.shutdown != 0)) < 0 ||
@@ -6878,27 +7316,32 @@ static PyObject *Pool_repr(MizuPool *self) {
 
 static int Pool_traverse(MizuPool *self, visitproc visit, void *arg) {
   Py_VISIT(self->trace_fn);
+  Py_VISIT(self->aio_state);
   return 0;
 }
 
 static int Pool_clear(MizuPool *self) {
   Py_CLEAR(self->trace_fn);
+  Py_CLEAR(self->aio_state);
   return 0;
 }
 
 static void Pool_dealloc(MizuPool *self) {
   PyObject_GC_UnTrack(self);
+  int own = self->self_pid == mizu_self_pid();
+  notify_teardown(&self->notify, own);
   /* a controller destroy broadcasts shutdown (no wait); a participant
      releases its slot; a forked child's copy abandons instead — only its
      own mapping and heap release, the parent's pool untouched */
   if (self->core != NULL) {
-    if (self->self_pid == mizu_self_pid())
+    if (own)
       mizu_pool_destroy(self->core);
     else
       mizu_pool_abandon(self->core);
   }
   view_cache_free(self->vcache);
   Py_XDECREF(self->trace_fn);
+  Py_XDECREF(self->aio_state);
   MizuPoolType.tp_free((PyObject *) self);
 }
 
@@ -7003,6 +7446,137 @@ static PyObject *Pool_submit_runner(MizuPool *self, PyObject *args,
   return NULL;
 }
 
+PyDoc_STRVAR(pool_notify_arm_doc,
+"_notify_arm(loop, drain_cb) -> None\n\n\
+The asyncio bridge: register the notify watch (first arm) and arm the\n\
+submitter's notify word; drain_cb is scheduled on `loop` per wake (loop\n\
+None calls it directly on the listener thread). The per-task NOTIFY\n\
+announce is _task_notify's; announce before arming, then re-check.");
+
+PyDoc_STRVAR(pool_notify_rearm_doc,
+"_notify_rearm() -> None\n\n\
+Re-set the submitter's notify word (idempotent, cheap) — the drain's\n\
+per-pass re-arm: a publish racing it clears the word and signals, riding\n\
+the next wake.");
+
+PyDoc_STRVAR(pool_notify_disarm_doc,
+"_notify_disarm() -> None\n\n\
+Clear the submitter's notify word and drop the loop/drain refs; the watch\n\
+stays registered for a later re-arm. No-op when never armed or closed.");
+
+static PyObject *Pool_notify_arm(MizuPool *self, PyObject *args) {
+  PyObject *loop, *cb;
+  if (!PyArg_ParseTuple(args, "OO:_notify_arm", &loop, &cb))
+    return NULL;
+  if (notify_drain_check(cb) < 0) return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  MizuNotify *rec = self->notify;
+  if (rec == NULL) {
+    rec = notify_alloc(&self->notify, p, 1);
+    if (rec == NULL) return PyErr_NoMemory();
+  }
+  if (!rec->watching) {
+    if (mizu_pool_notify_watch(p, notify_cb, rec) != MIZU_OK)
+      return pool_raise(p);
+    rec->watching = 1;
+  }
+  if (mizu_pool_notify_arm(p, 1) != MIZU_OK) return pool_raise(p);
+  notify_store(rec, loop, cb);
+  Py_RETURN_NONE;
+}
+
+static PyObject *Pool_notify_rearm(MizuPool *self,
+                                   PyObject *Py_UNUSED(args)) {
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (mizu_pool_notify_arm(p, 1) != MIZU_OK) return pool_raise(p);
+  Py_RETURN_NONE;
+}
+
+static PyObject *Pool_notify_disarm(MizuPool *self,
+                                    PyObject *Py_UNUSED(args)) {
+  notify_disarm(self->core, self->notify, 1);
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_task_notify_doc,
+"_task_notify(tasks, on) -> None\n\n\
+The per-slot NOTIFY announce (on true) or withdraw (on false) for this\n\
+submitter's tasks. Announce before arming the submitter word, then\n\
+re-check the tasks' terminal states; withdrawing restores the plain\n\
+announce on slots still holding it.");
+
+static PyObject *Pool_task_notify(MizuPool *self, PyObject *args) {
+  PyObject *seq;
+  int on;
+  if (!PyArg_ParseTuple(args, "Oi:_task_notify", &seq, &on))
+    return NULL;
+  mizu_task *ts;
+  size_t n;
+  MizuPool *pool = tasks_get(seq, &ts, &n, 0);
+  if (pool == NULL) return NULL;
+  if (pool != self) {
+    PyMem_Free(ts);
+    PyErr_SetString(PyExc_ValueError,
+                    "pymizu: task handles must belong to this pool handle");
+    return NULL;
+  }
+  mizu_status st = mizu_pool_task_notify(self->core, ts, n, on != 0);
+  PyMem_Free(ts);
+  if (st != MIZU_OK) return pool_raise(self->core);
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_tasks_terminal_doc,
+"_tasks_terminal(tasks) -> list of bool\n\n\
+The per-wake terminal scan (atomic loads only, one call for the whole\n\
+armed set): True per task whose result slot is no longer pending.");
+
+static PyObject *Pool_tasks_terminal(MizuPool *self, PyObject *arg) {
+  mizu_task *ts;
+  size_t n;
+  MizuPool *pool = tasks_get(arg, &ts, &n, 0);
+  if (pool == NULL) return NULL;
+  if (pool != self) {
+    PyMem_Free(ts);
+    PyErr_SetString(PyExc_ValueError,
+                    "pymizu: task handles must belong to this pool handle");
+    return NULL;
+  }
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  PyObject *out = PyList_New((Py_ssize_t) n);
+  if (out == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  for (size_t i = 0; i < n; i++) {
+    int terminal = mizu_pool_task_state(p, &ts[i]) != MIZU_RS_PENDING;
+    PyObject *b = PyBool_FromLong(terminal);
+    if (b == NULL) {
+      PyMem_Free(ts);
+      Py_DECREF(out);
+      return NULL;
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, b);
+  }
+  PyMem_Free(ts);
+  return out;
+}
+
+static PyObject *Pool_aio_get(MizuPool *self, void *Py_UNUSED(closure)) {
+  return aio_get(self->aio_state);
+}
+
+static int Pool_aio_set(MizuPool *self, PyObject *v,
+                        void *Py_UNUSED(closure)) {
+  return aio_set(&self->aio_state, v);
+}
+
 static PyMethodDef Pool_methods[] = {
   {"submit", (PyCFunction)(void (*)(void)) Pool_submit,
    METH_VARARGS | METH_KEYWORDS, pool_submit_doc},
@@ -7034,6 +7608,16 @@ static PyMethodDef Pool_methods[] = {
   {"_submit_runner", (PyCFunction)(void (*)(void)) Pool_submit_runner,
    METH_VARARGS | METH_KEYWORDS, pool_submit_runner_doc},
   {"_exec_fail", (PyCFunction) Pool_exec_fail, METH_O, pool_exec_fail_doc},
+  {"_notify_arm", (PyCFunction) Pool_notify_arm, METH_VARARGS,
+   pool_notify_arm_doc},
+  {"_notify_rearm", (PyCFunction) Pool_notify_rearm, METH_NOARGS,
+   pool_notify_rearm_doc},
+  {"_notify_disarm", (PyCFunction) Pool_notify_disarm, METH_NOARGS,
+   pool_notify_disarm_doc},
+  {"_task_notify", (PyCFunction) Pool_task_notify, METH_VARARGS,
+   pool_task_notify_doc},
+  {"_tasks_terminal", (PyCFunction) Pool_tasks_terminal, METH_O,
+   pool_tasks_terminal_doc},
   {NULL, NULL, 0, NULL}
 };
 
@@ -7041,6 +7625,8 @@ static PyGetSetDef Pool_getset[] = {
   {"token", (getter) Pool_token_get, NULL,
    "The join token (\"<pid hex>_<counter hex>\") for worker/submitter attach.",
    NULL},
+  {"_aio", (getter) Pool_aio_get, (setter) Pool_aio_set,
+   "The Python async state slot (pymizu._aio's per-handle registry).", NULL},
   {NULL, NULL, NULL, NULL, NULL}
 };
 
@@ -7078,6 +7664,12 @@ static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
   MizuPool *pool;
   mizu_task t = task_get(self, &pool);
   if (pool == NULL) return NULL;
+  if (self->async_pending) {
+    PyErr_SetString(MizuError,
+                    "pymizu: task has a pending async consumer — one "
+                    "consumer per result");
+    return NULL;
+  }
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   void *v = NULL;
@@ -7178,12 +7770,83 @@ PyDoc_STRVAR(task_result_doc,
 "result(timeout=None) -> value | sentinel\n\n\
 Alias for collect() — the concurrent.futures.Future spelling.");
 
+// The asyncio bridge (pymizu._aio is the drain half) ----------------------
+
+/* pymizu._aio's named entry, imported lazily on the first async call so
+   `import pymizu` never pays for asyncio. */
+static PyObject *aio_func(const char *name) {
+  static PyObject *aio_mod;
+  if (aio_mod == NULL) {
+    aio_mod = PyImport_ImportModule("pymizu._aio");
+    if (aio_mod == NULL) return NULL;
+  }
+  return PyObject_GetAttrString(aio_mod, name);
+}
+
+PyDoc_STRVAR(task_collect_async_doc,
+"collect_async() -> asyncio.Future\n\n\
+The event-driven collect: an asyncio.Future resolving with the task's\n\
+result (or raising the flattened remote error collect() raises), driven\n\
+by the submitter's notify endpoint — never blocks, never polls. Cancelling\n\
+the Future detaches the waiter (a later blocking collect() works again);\n\
+it never cancels the task — cancel() stays the explicit verb.");
+
+static PyObject *Task_collect_async(MizuTask *self,
+                                    PyObject *Py_UNUSED(args)) {
+  MizuPool *pool;
+  (void) task_get(self, &pool);
+  if (pool == NULL) return NULL;
+  PyObject *fn = aio_func("task_collect_async");
+  if (fn == NULL) return NULL;
+  PyObject *r = PyObject_CallOneArg(fn, (PyObject *) self);
+  Py_DECREF(fn);
+  return r;
+}
+
+static PyObject *Task_am_await(MizuTask *self) {
+  PyObject *fut = Task_collect_async(self, NULL);
+  if (fut == NULL) return NULL;
+  PyObject *it = PyObject_CallMethod(fut, "__await__", NULL);
+  Py_DECREF(fut);
+  return it;
+}
+
+static PyAsyncMethods Task_as_async = {
+  .am_await = (unaryfunc) Task_am_await,
+};
+
+PyDoc_STRVAR(task_async_set_doc,
+"_async_set(on) -> None\n\n\
+The one-consumer-per-result flag (pymizu._aio's enrollment marker): set on\n\
+enrollment (a second enrollment raises), cleared at settle or detach.\n\
+A set flag refuses blocking collects.");
+
+static PyObject *Task_async_set(MizuTask *self, PyObject *arg) {
+  int on = PyObject_IsTrue(arg);
+  if (on < 0) return NULL;
+  if (on) {
+    if (self->async_pending) {
+      PyErr_SetString(MizuError,
+                      "pymizu: task has a pending async consumer — one "
+                      "consumer per result");
+      return NULL;
+    }
+    self->async_pending = 1;
+  } else {
+    self->async_pending = 0;
+  }
+  Py_RETURN_NONE;
+}
+
 static PyMethodDef Task_methods[] = {
   {"collect", (PyCFunction)(void (*)(void)) Task_collect,
    METH_VARARGS | METH_KEYWORDS, task_collect_doc},
   {"result", (PyCFunction)(void (*)(void)) Task_collect,
    METH_VARARGS | METH_KEYWORDS, task_result_doc},
   {"cancel", (PyCFunction) Task_cancel, METH_NOARGS, task_cancel_doc},
+  {"collect_async", (PyCFunction) Task_collect_async, METH_NOARGS,
+   task_collect_async_doc},
+  {"_async_set", (PyCFunction) Task_async_set, METH_O, task_async_set_doc},
   {NULL, NULL, 0, NULL}
 };
 
@@ -7207,6 +7870,7 @@ static PyTypeObject MizuTaskType = {
             "an uncollected handle's finalizer releases its slot.",
   .tp_methods = Task_methods,
   .tp_getset = Task_getset,
+  .tp_as_async = &Task_as_async,
   .tp_dealloc = (destructor) Task_dealloc,
   .tp_traverse = (traverseproc) Task_traverse,
 };
@@ -8057,5 +8721,13 @@ PyInit__pymizu(void)
     Py_DECREF(m);
     return NULL;
   }
+  notify_trampoline = PyCFunction_New(&notify_trampoline_def, NULL);
+  if (notify_trampoline == NULL) {
+    Py_DECREF(m);
+    return NULL;
+  }
+  /* the watches ride the core's listener thread: stop them all before
+     the interpreter goes down (a late callback would wake a dead loop) */
+  Py_AtExit(notify_fini);
   return m;
 }

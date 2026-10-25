@@ -1238,7 +1238,7 @@ def test_r_interop_string_view_maps_by_ref():
         assert type(v).__name__ == "_ShmStrView"
         p = pymizu.Pool.create(2)
         try:
-            out = p.map(pymizu.call("builtins.len"), v, timeout=30)
+            out = p.map(pymizu.call("builtins.len"), v).collect(timeout=30)
         finally:
             p.stop()
         assert out == [1] * 100000

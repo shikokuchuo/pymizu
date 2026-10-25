@@ -1091,7 +1091,7 @@ def test_export_polars_smoke(echo):
 def test_mapview_export_roundtrip(pool):
     out = pool.map(
         scalar_double, list(range(100)), template=np.empty(1), collect="view"
-    )
+    ).collect()
     arr = pa.array(out.base)
     assert arr.type == pa.float64()
     assert arr.to_pylist() == (np.arange(100) * 2.0).tolist()
@@ -1108,7 +1108,7 @@ def test_mapview_export_types(pool):
             list(range(12)),
             template=np.empty(1, dtype=dtype),
             collect="view",
-        )
+        ).collect()
         arr = pa.array(_mapview(out))
         assert arr.type == atype
         assert arr.null_count == 0
@@ -1125,7 +1125,7 @@ def test_mapview_export_na(pool):
             list(range(30)),
             template=np.empty(1, dtype=dtype),
             collect="view",
-        )
+        ).collect()
         arr = pa.array(_mapview(out))
         assert arr.null_count == 10
         assert arr.to_pylist() == [
@@ -1138,7 +1138,7 @@ def test_mapview_export_m2_flat(pool):
     # same bytes the buffer protocol view exposes
     out = pool.map(
         pair_up, list(range(50)), template=np.empty(2), collect="view"
-    )
+    ).collect()
     view = _mapview(out)
     assert type(view).__name__ == "_MapOutView"
     arr = pa.array(view)
@@ -1151,7 +1151,7 @@ def test_mapview_export_outlives_view(pool):
     # context it owned) is gone
     out = pool.map(
         scalar_double, list(range(100)), template=np.empty(1), collect="view"
-    )
+    ).collect()
     view = _mapview(out)
     caps = view.__arrow_c_array__()
     del view, out
@@ -1165,7 +1165,7 @@ def test_mapview_export_unconsumed_gc(pool):
     before = set(pymizu._pymizu._debug_export_spans())
     out = pool.map(
         scalar_double, list(range(10)), template=np.empty(1), collect="view"
-    )
+    ).collect()
     caps = _mapview(out).__arrow_c_array__()
     assert len(set(pymizu._pymizu._debug_export_spans()) - before) == 1
     del caps
@@ -1179,7 +1179,7 @@ def test_mapview_export_complex_rejected(pool):
         list(range(10)),
         template=np.empty(1, dtype=np.complex128),
         collect="view",
-    )
+    ).collect()
     with pytest.raises(TypeError, match="complex"):
         _mapview(out).__arrow_c_array__()
 
@@ -1189,7 +1189,7 @@ def test_mapview_export_requested_schema_ignored(pool):
     # spec's sanctioned fallback); the requested capsule is borrowed
     out = pool.map(
         scalar_double, list(range(10)), template=np.empty(1), collect="view"
-    )
+    ).collect()
     f32 = pa.array([1.0], type=pa.float32()).__arrow_c_array__()[0]
     arr = pa.Array._import_from_c_capsule(
         *_mapview(out).__arrow_c_array__(requested_schema=f32)
@@ -1201,7 +1201,7 @@ def test_mapview_export_polars_smoke(pool):
     pl = pytest.importorskip("polars", reason="polars not installed")
     out = pool.map(
         scalar_double, list(range(100)), template=np.empty(1), collect="view"
-    )
+    ).collect()
     # the Arrow-array entry point for a flat producer (from_arrow builds a
     # DataFrame and demands a struct)
     s = pl.Series(_mapview(out))

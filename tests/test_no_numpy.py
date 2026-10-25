@@ -58,9 +58,9 @@ def test_map_int64_without_numpy(tmp_path):
         try:
             # generic collect: workers index the raw x section through
             # _TAG_MV (memoryview.cast("q"))
-            assert p.map(square, x) == [i * i for i in range(50)]
+            assert p.map(square, x).collect() == [i * i for i in range(50)]
             # template collect: _wrap_out's memoryview path for tag 32
-            out = p.map(square, x, template=array.array("q", [0]))
+            out = p.map(square, x, template=array.array("q", [0])).collect()
             assert type(out) is memoryview and out.format == "q"
             assert list(out) == [i * i for i in range(50)]
         finally:
@@ -89,7 +89,9 @@ def test_map_view_x_without_numpy(tmp_path):
             assert type(v).__name__ == "_ShmView"
             p = pymizu.Pool.create(2)
             try:
-                out = p.map(pymizu.call(source="x + 1"), v, timeout=30)
+                out = p.map(pymizu.call(source="x + 1"), v).collect(
+                    timeout=30
+                )
             finally:
                 p.stop()
             assert out == [b + 1 for b in x]
@@ -424,11 +426,12 @@ def test_current_rng_without_numpy(tmp_path):
         p = pymizu.Pool.create(1)
         try:
             # seeded maps that never call it are untouched
-            assert p.map(square, [1, 2, 3], seed=1) == [1, 4, 9]
-            assert len(p.map(rand_elt, list(range(10)), seed=1)) == 10
+            assert p.map(square, [1, 2, 3], seed=1).collect() == [1, 4, 9]
+            got = p.map(rand_elt, list(range(10)), seed=1).collect()
+            assert len(got) == 10
             # inside a seeded element it raises the lazy-numpy error
             try:
-                p.map(np_rand_elt, [1, 2], seed=1)
+                p.map(np_rand_elt, [1, 2], seed=1).collect()
                 raise SystemExit("no decline")
             except pymizu.TaskError as e:
                 assert "numpy" in str(e)
