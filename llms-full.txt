@@ -2124,7 +2124,7 @@ Labels cross with the values they name: a named R vector arrives as a [`DimArray
 ## What doesn't cross
 
 Some values have no portable home on the other side.
-`pymizu` declines these at send time with a `DeclinedError` (a subclass of `TypeError`) that names the offending value.
+`pymizu` declines these at send time with a `DeclinedError` (a subclass of `TypeError`) that names the offending value, carried on its `path` and `reason` attributes.
 The channel stays usable:
 
 ```python

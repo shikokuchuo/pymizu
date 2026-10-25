@@ -360,7 +360,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="what-doesnt-cross" class="level1">
 <h1>What doesn’t cross</h1>
-<p>Some values have no portable home on the other side. <code>pymizu</code> declines these at send time with a <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> (a subclass of <code>TypeError</code>) that names the offending value. The channel stays usable:</p>
+<p>Some values have no portable home on the other side. <code>pymizu</code> declines these at send time with a <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> (a subclass of <code>TypeError</code>) that names the offending value, carried on its <code>path</code> and <code>reason</code> attributes. The channel stays usable:</p>
 <div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> decimal</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyarrow <span class="im">as</span> pa</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>

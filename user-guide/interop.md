@@ -96,7 +96,7 @@ R sees the natural equivalent throughout: a vector for an array, a factor for a 
 
 ## What doesn't cross
 
-Some values have no portable home on the other side. `pymizu` declines these at send time with a [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) (a subclass of `TypeError`) that names the offending value. The channel stays usable:
+Some values have no portable home on the other side. `pymizu` declines these at send time with a [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) (a subclass of `TypeError`) that names the offending value, carried on its `path` and `reason` attributes. The channel stays usable:
 
 ``` python
 import decimal
