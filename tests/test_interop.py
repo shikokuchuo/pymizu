@@ -854,6 +854,15 @@ def test_depth_cap():
         _pymizu._write_stream(x)
 
 
+def test_declined_path_and_reason():
+    with pytest.raises(
+        pymizu.DeclinedError, match="no portable home"
+    ) as exc_info:
+        _pymizu._write_stream({"a": [object()]})
+    assert exc_info.value.path == "x['a'][0]"
+    assert "type 'object'" in exc_info.value.reason
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
 )
@@ -1564,8 +1573,12 @@ def test_write_task_kwargs_forms():
     )
     got = _pymizu._read_task(b)
     assert got[5] == {"y": 2.5, "z": None}
-    with pytest.raises(pymizu.DeclinedError, match="non-str dict key"):
+    with pytest.raises(
+        pymizu.DeclinedError, match="non-str dict key"
+    ) as exc_info:
         _pymizu._write_task("m.f", 0, (), {1: 2}, 1, 0)
+    assert exc_info.value.path == "args"
+    assert "non-str dict key" in exc_info.value.reason
     with pytest.raises(pymizu.DeclinedError, match="not writable as UTF-8"):
         _pymizu._write_task("m.f", 0, (), {"\ud800": 1}, 1, 0)
 

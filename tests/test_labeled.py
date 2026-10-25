@@ -68,8 +68,10 @@ def test_pickled_dimarray_drops_labels():
 def _decline(arr, match):
     h, p = foreign_pair(LABELED)
     try:
-        with pytest.raises(pymizu.DeclinedError, match=match):
+        with pytest.raises(pymizu.DeclinedError, match=match) as exc_info:
             h.send(arr)
+        assert exc_info.value.path == "x"
+        assert match in exc_info.value.reason
     finally:
         p.close()
         h.close()

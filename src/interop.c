@@ -251,6 +251,36 @@ static void ixw_decline_type(ixw *w, PyObject *obj, const char *what) {
   }
 }
 
+/* Raise DeclinedError with msg, the stub's path and reason riding as
+   attributes. Both decodes replace an invalid sequence (the walk's repr
+   truncation can cut one) so the decline itself always raises. */
+static void declined_raise(PyObject *msg, const char *path,
+                           const char *reason) {
+  PyObject *p = PyUnicode_DecodeUTF8(path, strlen(path), "replace");
+  PyObject *r = PyUnicode_DecodeUTF8(reason, strlen(reason), "replace");
+  PyObject *exc = NULL;
+  if (p == NULL || r == NULL) goto out;
+  exc = PyObject_CallFunctionObjArgs(MizuDeclinedError, msg, NULL);
+  if (exc == NULL) goto out;
+  if (PyObject_SetAttrString(exc, "path", p) < 0 ||
+      PyObject_SetAttrString(exc, "reason", r) < 0)
+    Py_CLEAR(exc);
+  else
+    PyErr_SetObject(MizuDeclinedError, exc);
+out:
+  Py_XDECREF(p);
+  Py_XDECREF(r);
+  Py_XDECREF(exc);
+}
+
+/* The plain form: the message is "pymizu: <reason>". */
+static void declined_raise_plain(const char *path, const char *reason) {
+  PyObject *msg = PyUnicode_FromFormat("pymizu: %s", reason);
+  if (msg == NULL) return;
+  declined_raise(msg, path, reason);
+  Py_DECREF(msg);
+}
+
 static void ixw_path_index(ixw *w, Py_ssize_t i) {
   size_t save = w->path_len;
   int n = snprintf(w->path + w->path_len, sizeof(w->path) - w->path_len,
@@ -553,7 +583,7 @@ size_t mizu_py_blob_frame(uint8_t *dst, char **names, int ncols, int64_t rows,
   w.caps = caps;
   w.limit = SIZE_MAX;   /* the caller's buffer: unbounded (size pass NULL) */
   if (r_attrs != NULL && !ixw_labeled_gate(&w)) {
-    PyErr_SetString(MizuDeclinedError, w.reason);
+    declined_raise_plain("x", w.reason);
     return 0;
   }
   const int nex = r_attrs != NULL ?
@@ -1531,9 +1561,11 @@ static int labels_str_ok(PyObject *o) {
 /* A labels sequence (a list or tuple of str | None elements) of the
    wanted length, or the decline. */
 static int labels_seq_ok(PyObject *s, Py_ssize_t n, const char *what) {
+  char reason[128];
   if ((!PyList_Check(s) && !PyTuple_Check(s)) || PySequence_Size(s) != n) {
-    PyErr_Format(MizuDeclinedError,
-                 "pymizu: %s must have %zd entries of str | None", what, n);
+    snprintf(reason, sizeof(reason), "%s must have %zd entries of str | None",
+             what, n);
+    declined_raise_plain("x", reason);
     return 0;
   }
   for (Py_ssize_t i = 0; i < n; i++) {
@@ -1541,9 +1573,9 @@ static int labels_seq_ok(PyObject *s, Py_ssize_t n, const char *what) {
     const int ok = e != NULL && labels_str_ok(e);
     Py_XDECREF(e);
     if (!ok) {
-      PyErr_Format(MizuDeclinedError,
-                   "pymizu: %s must have %zd entries of str | None", what,
-                   n);
+      snprintf(reason, sizeof(reason),
+               "%s must have %zd entries of str | None", what, n);
+      declined_raise_plain("x", reason);
       return 0;
     }
   }
@@ -1562,8 +1594,7 @@ int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
   PyTypeObject *t = dimarray_type_soft();
   if (t == NULL || !PyObject_TypeCheck(obj, t)) return 0;
   if (nd < 1 || nd > 32) {
-    PyErr_SetString(MizuDeclinedError,
-                    "pymizu: labels ride a 1..32-dimensional array");
+    declined_raise_plain("x", "labels ride a 1..32-dimensional array");
     return -1;
   }
   PyObject *names = PyObject_GetAttrString(obj, "names");
@@ -1576,27 +1607,23 @@ int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
   int rc = 0;
   if (r_class != Py_None) {
     if (!str_obj_eq(r_class, MIZU_IX_CLASS_TABLE)) {
-      PyErr_SetString(MizuDeclinedError,
-                      "pymizu: r_class must be \"table\" or None");
+      declined_raise_plain("x", "r_class must be \"table\" or None");
       goto fail;
     }
     out->table = 1;
   }
   if (names != Py_None && dimnames != Py_None) {
-    PyErr_SetString(MizuDeclinedError,
-                    "pymizu: names and dimnames are mutually exclusive");
+    declined_raise_plain("x", "names and dimnames are mutually exclusive");
     goto fail;
   }
   if (axis_names != Py_None && dimnames == Py_None) {
-    PyErr_SetString(MizuDeclinedError,
-                    "pymizu: axis_names requires dimnames");
+    declined_raise_plain("x", "axis_names requires dimnames");
     goto fail;
   }
   if (names != Py_None) {
     if (nd != 1 || !labels_seq_ok(names, shape[0], "names")) {
       if (!PyErr_Occurred())
-        PyErr_SetString(MizuDeclinedError,
-                        "pymizu: names rides a 1-D array only");
+        declined_raise_plain("x", "names rides a 1-D array only");
       goto fail;
     }
     out->names = names;
@@ -1606,9 +1633,10 @@ int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
   if (dimnames != Py_None) {
     if ((!PyList_Check(dimnames) && !PyTuple_Check(dimnames)) ||
         PySequence_Size(dimnames) != nd) {
-      PyErr_Format(MizuDeclinedError,
-                   "pymizu: dimnames must have %d entries (one per axis)",
-                   nd);
+      char reason[96];
+      snprintf(reason, sizeof(reason),
+               "dimnames must have %d entries (one per axis)", nd);
+      declined_raise_plain("x", reason);
       goto fail;
     }
     for (int i = 0; i < nd; i++) {
@@ -1618,10 +1646,13 @@ int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
       const int had = PyErr_Occurred() != NULL;
       Py_DECREF(e);
       if (!ok) {
-        if (!had)
-          PyErr_Format(MizuDeclinedError,
-                       "pymizu: a dimnames entry must be None or %lld "
-                       "entries of str | None", (long long) shape[i]);
+        if (!had) {
+          char reason[128];
+          snprintf(reason, sizeof(reason),
+                   "a dimnames entry must be None or %lld entries of str | None",
+                   (long long) shape[i]);
+          declined_raise_plain("x", reason);
+        }
         goto fail;
       }
     }
@@ -1636,8 +1667,7 @@ int mizu_py_labels_of(PyObject *obj, int nd, const int64_t *shape,
     rc = 1;
   }
   if (out->table && out->dimnames == NULL) {
-    PyErr_SetString(MizuDeclinedError,
-                    "pymizu: r_class \"table\" requires dimnames");
+    declined_raise_plain("x", "r_class \"table\" requires dimnames");
     goto fail;
   }
   Py_DECREF(names);
@@ -4900,8 +4930,12 @@ static void ixw_buffer(ixw *w, PyObject *obj) {
       PyObject *et, *ev, *tb;
       PyErr_Fetch(&et, &ev, &tb);
       PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
-      ixw_decline(w, es != NULL ? PyUnicode_AsUTF8(es) :
-                    "an invalid label stash");
+      const char *rs = es != NULL ? PyUnicode_AsUTF8(es) : NULL;
+      /* the stash gate's message carries the "pymizu: " prefix: strip it
+         so the walk's reason stays a bare rule (fc_err_reraise's
+         discipline) */
+      if (rs != NULL && strncmp(rs, "pymizu: ", 8) == 0) rs += 8;
+      ixw_decline(w, rs != NULL ? rs : "an invalid label stash");
       Py_XDECREF(es);
       Py_XDECREF(et);
       Py_XDECREF(ev);
@@ -5340,8 +5374,12 @@ static void ixs_free(ixs *x) {
 
 /* A decline from the front-end: DeclinedError with the cause named. */
 static void ixs_decline(const char *what) {
-  PyErr_Format(MizuDeclinedError,
-               "pymizu: value is not portable to the peer (%s)", what);
+  PyObject *msg =
+    PyUnicode_FromFormat("pymizu: value is not portable to the peer (%s)",
+                         what);
+  if (msg == NULL) return;
+  declined_raise(msg, "x", what);
+  Py_DECREF(msg);
 }
 
 // The front-end driver -------------------------------------------------------------
@@ -5754,10 +5792,10 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
       PyObject *et, *ev, *tb;
       PyErr_Fetch(&et, &ev, &tb);
       PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
-      PyErr_Format(MizuDeclinedError,
-                   "pymizu: value is not portable to the peer (the Arrow "
-                   "export needs pyarrow: %s)",
-                   es != NULL ? PyUnicode_AsUTF8(es) : "not installed");
+      char what[256];
+      snprintf(what, sizeof(what), "the Arrow export needs pyarrow: %s",
+               es != NULL ? PyUnicode_AsUTF8(es) : "not installed");
+      ixs_decline(what);
       Py_XDECREF(es);
       Py_XDECREF(et);
       Py_XDECREF(ev);
@@ -5766,10 +5804,10 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
       PyObject *et, *ev, *tb;
       PyErr_Fetch(&et, &ev, &tb);
       PyObject *es = ev != NULL ? PyObject_Str(ev) : NULL;
-      PyErr_Format(MizuDeclinedError,
-                   "pymizu: value is not portable to the peer (the Arrow "
-                   "export failed: %s)",
-                   es != NULL ? PyUnicode_AsUTF8(es) : "unknown error");
+      char what[256];
+      snprintf(what, sizeof(what), "the Arrow export failed: %s",
+               es != NULL ? PyUnicode_AsUTF8(es) : "unknown error");
+      ixs_decline(what);
       Py_XDECREF(es);
       Py_XDECREF(et);
       Py_XDECREF(ev);
@@ -7505,42 +7543,19 @@ out:
 }
 
 static void ixw_raise(ixw *w) {
-  /* the path's repr truncation can cut a multi-byte UTF-8 sequence:
-     decode with replacement so the DeclinedError itself always raises */
   PyObject *p = PyUnicode_DecodeUTF8(w->path, (Py_ssize_t) w->path_len,
                                      "replace");
   PyObject *r = PyUnicode_FromString(w->reason);
-  if (p == NULL || r == NULL) {
-    Py_XDECREF(p);
-    Py_XDECREF(r);
-    return;
-  }
-  PyObject *msg = PyUnicode_FromFormat(
+  PyObject *msg = NULL;
+  if (p == NULL || r == NULL) goto out;
+  msg = PyUnicode_FromFormat(
     "pymizu: value is not portable to the peer (%U at %U)", r, p);
-  if (msg == NULL) {
-    Py_DECREF(p);
-    Py_DECREF(r);
-    return;
-  }
-  PyObject *exc = PyObject_CallFunctionObjArgs(MizuDeclinedError, msg,
-                                               NULL);
-  Py_DECREF(msg);
-  if (exc == NULL) {
-    Py_DECREF(p);
-    Py_DECREF(r);
-    return;
-  }
-  if (PyObject_SetAttrString(exc, "path", p) < 0 ||
-      PyObject_SetAttrString(exc, "reason", r) < 0) {
-    Py_DECREF(p);
-    Py_DECREF(r);
-    Py_DECREF(exc);
-    return;
-  }
-  Py_DECREF(p);
-  Py_DECREF(r);
-  PyErr_SetObject(MizuDeclinedError, exc);
-  Py_DECREF(exc);
+  if (msg == NULL) goto out;
+  declined_raise(msg, w->path, w->reason);
+out:
+  Py_XDECREF(p);
+  Py_XDECREF(r);
+  Py_XDECREF(msg);
 }
 
 /* The 'I' writer onto the tiers: the slot payload is scratch until the

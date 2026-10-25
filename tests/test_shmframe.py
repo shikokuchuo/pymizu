@@ -273,7 +273,9 @@ def test_mizl_frame_row_names_and_int64():
 def test_mizl_declines():
     h, p = foreign_pair(caps=CAPS_R)
     n = 20000
-    with pytest.raises(pymizu.DeclinedError, match="no portable home"):
+    with pytest.raises(
+        pymizu.DeclinedError, match="no portable home"
+    ) as exc_info:
         h.send(
             pa.table(
                 {
@@ -283,6 +285,8 @@ def test_mizl_declines():
                 }
             )
         )
+    assert exc_info.value.path == "x"
+    assert "no portable home" in exc_info.value.reason
     with pytest.raises(pymizu.DeclinedError, match="zero-column"):
         h.send(pa.table({}))
     pl = pytest.importorskip("polars")

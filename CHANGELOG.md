@@ -68,6 +68,9 @@ Initial pre-release.
 
 ### Fixed
 
+- Every `DeclinedError` now carries the documented `path` and `reason`
+  attributes: the Arrow front-end and the label-stash gates raised
+  attribute-less instances, where the value walk's declines set them.
 - `Channel.send()` now returns `None` on a successful publish, as
   documented (it returned `True`): a `send(...) is None` check written
   against the documented contract treated every successful send as a
