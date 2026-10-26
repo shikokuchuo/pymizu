@@ -10,7 +10,7 @@ import threading
 import time
 
 import pytest
-from tests.helpers import fail_at, sleep_ident, square
+from tests.helpers import fail_at, sleep_ident, sleep_on, square
 
 import pymizu
 from pymizu import _pymizu
@@ -228,6 +228,152 @@ def test_channel_closed_loop_mid_arm(ch):
     assert holder[0].exception() is not None
 
 
+def test_recv_async_cancelled_head_skipped():
+    # a cancelled waiter at the FIFO head detaches in the drain: the
+    # message goes to the next waiter and the late cancel callback no-ops
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_async()
+            f2 = host.recv_async()
+            f1.cancel()
+            peer.send(1)
+            f3 = host.recv_async()  # the arm's synchronous drain
+            assert await f2 == 1
+            f3.cancel()
+            await asyncio.sleep(0)
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_async_terminal_skips_cancelled():
+    # the terminal broadcast skips a cancelled waiter
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_async()
+            f2 = host.recv_async()
+            f2.cancel()
+            f3 = host.recv_async()
+            peer.close_signal()
+            assert await asyncio.gather(f1, f3) == [pymizu.CLOSED] * 2
+            assert f2.cancelled()
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_channel_drain_error_fails_waiters():
+    # a handle broken under an armed drain fails the waiters with the
+    # closed-handle error
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            fut = host.recv_async()
+            host._h.destroy()
+            host._h._aio._drain()
+            with pytest.raises(ValueError, match="closed"):
+                await fut
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_close_settles_pending_recv(ch):
+    # a completed close settles pending recv futures with CLOSED
+    async def main():
+        fut = ch.recv_async()
+        assert ch.close()
+        assert await fut is pymizu.CLOSED
+
+    asyncio.run(main())
+
+
+def test_settle_tolerates_a_done_future():
+    # the settle helper's contract: set_result/set_exception on an
+    # already-settled waiter is a no-op
+    from pymizu import _aio
+
+    async def main():
+        fut = asyncio.get_running_loop().create_future()
+        fut.set_result(1)
+        _aio._settle(fut, 2)
+        _aio._settle(fut, RuntimeError(), exc=True)
+        assert fut.result() == 1
+
+    asyncio.run(main())
+
+
+def test_notify_arm_rejects_bad_args(ch, pool):
+    with pytest.raises(TypeError):
+        ch._h._notify_arm(None)
+    with pytest.raises(TypeError):
+        ch._h._notify_arm(None, 42)
+    with pytest.raises(TypeError):
+        pool._h._notify_arm(None)
+    with pytest.raises(TypeError):
+        pool._h._notify_arm(None, 42)
+
+
+def test_aio_state_cannot_be_deleted(ch, pool):
+    with pytest.raises(TypeError, match="cannot delete"):
+        del ch._h._aio
+    with pytest.raises(TypeError, match="cannot delete"):
+        del pool._h._aio
+
+
+def test_trampoline_skips_a_disarmed_drain():
+    # a wake scheduled before a disarm fires after it: the skipped drain
+    # leaves the waiter pending and the payload still receives
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            fut = host.recv_async()
+            peer.send(1)
+            host._h._notify_disarm()
+            await asyncio.sleep(0.05)  # the queued trampoline runs, skipping
+            assert not fut.done()
+            fut.cancel()
+            await asyncio.sleep(0)
+            assert host.recv(timeout=5) == 1
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_channel_destroy_inside_direct_drain_defers():
+    # a teardown landing inside the direct-mode drain (on the listener
+    # thread) hands off to a detached thread rather than deadlocking the
+    # watch stop on the watched callback
+    host, peer = chan_pair()
+    done = []
+    try:
+        host._h._notify_arm(None, lambda: (host.destroy(), done.append(True)))
+        peer.send(1)
+        deadline = time.monotonic() + 5
+        while not done:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        with pytest.raises(ValueError, match="closed"):
+            host.send(1)
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
 # -- pool: tasks ------------------------------------------------------------
 
 
@@ -300,6 +446,84 @@ def test_pool_destroy_settles():
         asyncio.run(main())
     finally:
         p.destroy()
+
+
+def test_pool_pump_error_fails_waiters():
+    # a handle broken under an armed pump fails the waiters with the
+    # closed-handle error
+    p = pymizu.Pool.create(1)
+    try:
+
+        async def main():
+            task = p.submit(sleep_ident, 0.5)
+            fut = task.collect_async()
+            p._h.destroy()
+            p._h._aio._pump()
+            with pytest.raises(ValueError, match="closed"):
+                await fut
+
+        asyncio.run(main())
+    finally:
+        p.destroy()
+
+
+def test_single_cancel_at_settle_detaches_late(pool):
+    # a future cancelled as its wake is queued: the pump skips the
+    # resolve, the late detach no-ops, and the result stays collectible
+    async def main():
+        task = pool.submit(sleep_ident, 0.2)
+        fut = task.collect_async()
+        deadline = time.monotonic() + 5
+        while not pool._h._tasks_terminal([task])[0]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)  # hold the loop: the wake queues behind it
+        time.sleep(0.05)  # the wake's trampoline is queued
+        fut.cancel()
+        await asyncio.sleep(0.05)
+        assert fut.cancelled()
+        assert task.collect(timeout=5) == 0.2
+
+    asyncio.run(main())
+
+
+def test_collect_async_on_destroyed_pool_rolls_back():
+    # an enrollment failing at the announce restores the task's flag (the
+    # engine called directly: the method's own guard raises first)
+    p = pymizu.Pool.create(1)
+    task = p.submit(square, 2)
+    p.destroy()
+    try:
+        from pymizu import _aio
+
+        async def main():
+            with pytest.raises(ValueError, match="closed"):
+                _aio.task_collect_async(task)
+            with pytest.raises(ValueError, match="closed"):
+                _aio.task_collect_async(task)  # the flag was restored
+
+        asyncio.run(main())
+    finally:
+        p.destroy()
+
+
+def test_task_verbs_reject_foreign_pool_tasks():
+    h1 = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    h2 = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        p2 = pymizu.Pool._wrap(h2)
+        task = p2.submit(square, 2)  # queued: no worker ever claims it
+        with pytest.raises(TypeError):
+            h1._task_notify([task])
+        with pytest.raises(ValueError, match="belong to this pool"):
+            h1._task_notify([task], True)
+        with pytest.raises(ValueError, match="belong to this pool"):
+            h1._tasks_terminal([task])
+        h2.destroy()
+        with pytest.raises(ValueError, match="closed"):
+            h2._tasks_terminal([task])
+    finally:
+        h1.destroy()
+        h2.destroy()
 
 
 # -- pool: collections ------------------------------------------------------
@@ -383,6 +607,95 @@ def test_collection_cancel_unenrolls(pool):
     asyncio.run(main())
 
 
+def test_collect_async_validation(pool):
+    async def main():
+        with pytest.raises(ValueError, match="non-empty"):
+            pool.collect_any_async([])
+        with pytest.raises(ValueError, match="non-empty"):
+            pool.collect_all_async([])
+        p2 = pymizu.Pool.create(1)
+        try:
+            foreign = p2.submit(square, 2)
+            with pytest.raises(ValueError, match="belong to this pool"):
+                pool.collect_all_async([foreign])
+            assert foreign.collect(timeout=5) == 4
+        finally:
+            p2.stop()
+
+    asyncio.run(main())
+
+
+def test_collection_enrollment_conflict_rolls_back(pool):
+    # a collection enrolling over an enrolled single raises and restores
+    # the other members' flags
+    async def main():
+        t1 = pool.submit(sleep_ident, 0.3)
+        t2 = pool.submit(square, 2)
+        fut = t1.collect_async()
+        with pytest.raises(pymizu.MizuError, match="one consumer per result"):
+            pool.collect_all_async([t2, t1])
+        assert await fut == 0.3
+        assert t2.collect(timeout=5) == 4
+
+    asyncio.run(main())
+
+
+def test_collection_cancel_at_settle_detaches_late(pool):
+    # a collection future cancelled as its wake is queued: the pump's
+    # settle skips it, the late detach no-ops, the task stays collectible
+    async def main():
+        task = pool.submit(sleep_ident, 0.2)
+        fut = pool.collect_all_async([task])
+        deadline = time.monotonic() + 5
+        while not pool._h._tasks_terminal([task])[0]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)  # hold the loop: the wake queues behind it
+        time.sleep(0.05)  # the wake's trampoline is queued
+        fut.cancel()
+        await asyncio.sleep(0.05)
+        assert fut.cancelled()
+        assert task.collect(timeout=5) == 0.2
+
+    asyncio.run(main())
+
+
+def test_pool_loop_change_fails_collection(pool):
+    # arming on a fresh loop after the old one closed fails the old
+    # loop's waiters with the loop-change error, collections included
+    holder = []
+
+    async def first():
+        task = pool.submit(sleep_ident, 1)
+        holder.append(pool.collect_all_async([task]))
+
+    asyncio.run(first())
+
+    async def second():
+        task = pool.submit(square, 2)
+        assert await task.collect_async() == 4
+
+    asyncio.run(second())
+    assert isinstance(holder[0].exception(), RuntimeError)
+
+
+def test_pool_destroy_settles_a_loop_less_state():
+    # an enrollment that failed before any arm leaves async state with no
+    # captured loop: the teardown settles in place
+    p = pymizu.Pool.create(1)
+    try:
+
+        async def main():
+            task = p.submit(sleep_ident, 0.3)
+            task._async_set(True)  # a consumer outside the async state
+            with pytest.raises(pymizu.MizuError, match="one consumer"):
+                p.collect_all_async([task])
+            p.destroy()
+
+        asyncio.run(main())
+    finally:
+        p.destroy()
+
+
 # -- pool: the map handle ---------------------------------------------------
 
 
@@ -464,11 +777,77 @@ def test_map_cancel_rejects_future(pool):
     asyncio.run(main())
 
 
+def test_map_cancel_rejects_future_with_queued_runners(pool):
+    # cancelled with its runners still queued behind the blockers: every
+    # runner abandons and nothing splices — the reject crosses the
+    # cancelled gather, never a runner's result
+    async def main():
+        blockers = [pool.submit(time.sleep, 2) for _ in range(2)]
+        m = pool.map(
+            sleep_on, list(range(2000)), args=(set(range(2000)), 0.05)
+        )
+        fut = m.collect_async()
+        m.cancel()
+        with pytest.raises(pymizu.CancelledError, match="cancelled"):
+            await fut
+        assert [b.collect(timeout=5) for b in blockers] == [None, None]
+
+    asyncio.run(main())
+
+
 def test_map_empty_collect_async(pool):
     async def main():
         assert await pool.map(square, []) == []
 
     asyncio.run(main())
+
+
+def test_map_collect_async_after_collect_raises(pool):
+    async def main():
+        m = pool.map(square, range(4))
+        assert m.collect() == [0, 1, 4, 9]
+        with pytest.raises(pymizu.MizuError, match="already collected"):
+            m.collect_async()
+
+    asyncio.run(main())
+
+
+def test_map_collect_async_twice_raises(pool):
+    async def main():
+        m = pool.map(sleep_ident, [0.2] * 4)
+        fut = m.collect_async()
+        with pytest.raises(pymizu.MizuError, match="one consumer per result"):
+            m.collect_async()
+        assert await fut == [0.2] * 4
+
+    asyncio.run(main())
+
+
+def test_map_collect_async_after_cancel_raises(pool):
+    async def main():
+        m = pool.map(square, range(4))
+        m.cancel()
+        with pytest.raises(pymizu.CancelledError, match="cancelled"):
+            m.collect_async()
+
+    asyncio.run(main())
+
+
+def test_map_collect_async_on_destroyed_pool_raises():
+    # the enrollment error restores the promised flag
+    p = pymizu.Pool.create(1)
+    m = p.map(sleep_ident, [0.5] * 4)
+    p.destroy()
+    try:
+
+        async def main():
+            with pytest.raises(ValueError, match="closed"):
+                m.collect_async()
+            assert not m._promised
+
+        asyncio.run(main())
+    finally:
+        p.destroy()
 
 
 def test_pool_edge_trigger():
@@ -503,6 +882,58 @@ def test_pool_edge_trigger():
             assert wk.dump()["local"]["notify_sends"] == 2
             assert await fut == [i * i for i in range(4)]
             assert blocker.collect(timeout=5) == 0.3
+
+        asyncio.run(main())
+    finally:
+        h.destroy()
+
+
+def test_pool_pump_quantum_split():
+    # a terminal burst over the drain quantum splits the pump across
+    # callbacks: order preserved, zero loss, the loop not starved
+    n = _quantum_n() + 1
+    h = _pymizu._pool_new(1, 1, 4096, 64, 4096, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        pool = pymizu.Pool._wrap(h)
+
+        async def main():
+            tasks = [pool.submit(square, i) for i in range(n)]
+            futs = [t.collect_async() for t in tasks]
+            th = threading.Thread(target=wk.run, daemon=True)
+            th.start()
+            deadline = time.monotonic() + 30
+            while any(t.state == "pending" for t in tasks):
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
+            probe = []
+            asyncio.get_running_loop().call_soon(probe.append, True)
+            assert await asyncio.gather(*futs) == [i * i for i in range(n)]
+            assert probe == [True]
+
+        asyncio.run(main())
+    finally:
+        h.destroy()
+
+
+def test_collection_pump_quantum_split():
+    # the same split on the pump's collection pass
+    n = _quantum_n() + 1
+    h = _pymizu._pool_new(1, 1, 4096, 64, 4096, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        pool = pymizu.Pool._wrap(h)
+
+        async def main():
+            tasks = [pool.submit(square, i) for i in range(n)]
+            futs = [pool.collect_all_async([t]) for t in tasks]
+            th = threading.Thread(target=wk.run, daemon=True)
+            th.start()
+            deadline = time.monotonic() + 30
+            while any(t.state == "pending" for t in tasks):
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
+            assert await asyncio.gather(*futs) == [[i * i] for i in range(n)]
 
         asyncio.run(main())
     finally:

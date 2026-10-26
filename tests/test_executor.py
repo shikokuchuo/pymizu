@@ -218,6 +218,84 @@ def test_asyncio_wrap_future(pool):
         assert asyncio.run(main()) == 49
 
 
+def test_drain_reentry_skips(pool, monkeypatch):
+    # a drain already running holds the lock: a concurrent call (the
+    # submit-time re-check) returns at once, covered by the running
+    # drain's re-check pass
+    ex = pymizu.PoolExecutor(pool)
+    fut = ex.submit(sleep_ident, 0.5)
+    orig_scan = ex._scan
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_scan(tasks):
+        entered.set()
+        assert release.wait(5)
+        return orig_scan(tasks)
+
+    monkeypatch.setattr(ex, "_scan", blocking_scan)
+    t = threading.Thread(target=ex._drain, daemon=True)
+    t.start()
+    assert entered.wait(5)
+    ex._drain()  # skips: the running drain covers this pass
+    release.set()
+    t.join(5)
+    assert fut.result(timeout=5) == 0.5
+    ex.shutdown()
+
+
+def test_drain_skips_future_cancelled_mid_scan(pool, monkeypatch):
+    # a future cancelled between the drain's snapshot and its resolve is
+    # dropped, not resolved
+    ex = pymizu.PoolExecutor(pool)
+    f0 = ex.submit(sleep_ident, 0.3)
+    f1 = ex.submit(sleep_ident, 0.6)
+
+    def cancelling_scan(tasks):
+        f1.cancel()  # detaches from the outstanding set mid-drain
+        return [task is f1._task for task in tasks]
+
+    monkeypatch.setattr(ex, "_scan", cancelling_scan)
+    ex._drain()
+    assert f1.cancelled()
+    monkeypatch.undo()
+    assert f0.result(timeout=5) == 0.3
+    ex.shutdown()
+
+
+def test_cancel_detaching_after_pool_destroy():
+    # cancelling after the pool is gone: the announce withdrawal fails
+    # into the pool's tombstone, tolerated
+    p = pymizu.Pool.create(1)
+    ex = pymizu.PoolExecutor(p)
+    fut = ex.submit(sleep_ident, 0.5)
+    p._h.destroy()  # bypass the facade hooks: the announce dies with it
+    assert fut.cancel()
+    assert fut.cancelled()
+    ex.shutdown(wait=False)
+    p.destroy()
+
+
+def test_done_callback_destroying_pool_defers():
+    # a teardown landing inside the drain (done callbacks run on the
+    # listener thread) hands off to a detached thread rather than
+    # deadlocking the watch stop on the watched callback
+    p = pymizu.Pool.create(1)
+    ex = pymizu.PoolExecutor(p)
+    destroyed = threading.Event()
+
+    def on_done(f):
+        p.destroy()
+        destroyed.set()
+
+    fut = ex.submit(square, 3)
+    fut.add_done_callback(on_done)
+    assert fut.result(timeout=5) == 9
+    assert destroyed.wait(5)
+    ex.shutdown(wait=False)
+    p.destroy()
+
+
 def test_no_drain_thread(pool):
     # futures resolve off the notify watch — the executor spawns no
     # thread of its own

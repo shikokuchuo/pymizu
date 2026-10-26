@@ -446,3 +446,22 @@ def test_stream_spec_map_view_collect_raises(r_pool):
             collect="view",
             stream=True,
         )
+
+
+def test_stream_spec_map_cancel(r_pool):
+    # cancelling sets the fail-fast word on every staged chunk region
+    fn = pymizu.call(source="Sys.sleep(0.2); x")
+    m = r_pool.map(fn, list(range(20)), stream=True, n_chunks=4)
+    m.cancel()
+    with pytest.raises(pymizu.CancelledError, match="cancelled"):
+        m.collect(timeout=15)
+
+
+def test_stream_spec_map_stage_decline_aborts(r_pool):
+    # a chunk the descriptor writer declines aborts the map at stage
+    # time, closing the chunks already staged
+    fn = pymizu.call("base::identity")
+    x = list(range(40))
+    x[20] = object()
+    with pytest.raises(pymizu.DeclinedError):
+        r_pool.map(fn, x, stream=True, n_chunks=2)

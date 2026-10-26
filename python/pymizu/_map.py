@@ -1941,7 +1941,7 @@ class _Map:
         queued task is skipped, an executing batch completes and its
         result drops. A pending collect — blocking or async — settles
         with [`CancelledError`](`pymizu.CancelledError`). Idempotent."""
-        if self._done or self._cancelled:
+        if self._cancelled:
             return
         self._cancelled = True
         if self.capsule is not None:

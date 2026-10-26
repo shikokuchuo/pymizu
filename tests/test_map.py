@@ -187,6 +187,21 @@ def test_map_prepared_submit_timeout(pool):
         pm.close()
 
 
+def test_prepared_run_dropped_uncollected_restages(pool):
+    # a dropped uncollected run cancels and drops the stage: the next run
+    # restages into a fresh region
+    import gc
+
+    pm = pool.map_prepare(square, list(range(2000)))
+    try:
+        m = pm.run()
+        del m
+        gc.collect()
+        assert pm.run(timeout=5).collect() == [i * i for i in range(2000)]
+    finally:
+        pm.close()
+
+
 def test_map_slots_exhausted():
     # no free result slot: the map fails fast rather than queuing runners
     p = pymizu.Pool.create(1, max_submitters=1, result_slots=2)
@@ -240,6 +255,30 @@ def test_map_timeout(pool):
     out = pool.map(sleep_ident, x).collect(timeout=0.2)
     assert out is pymizu.TIMEOUT
     # the cancellation drained: the pool is usable immediately after
+    assert pool.map(square, [2], timeout=15).collect() == [4]
+
+
+def test_map_double_collect_raises(pool):
+    m = pool.map(square, range(4))
+    assert m.collect() == [0, 1, 4, 9]
+    with pytest.raises(pymizu.MizuError, match="already collected"):
+        m.collect()
+
+
+def test_map_region_cancel_mid_collect(pool):
+    # a region map cancelled with its runners still queued behind the
+    # blockers: every runner abandons, nothing splices, and the pool is
+    # usable immediately after
+    blockers = [pool.submit(time.sleep, 2) for _ in range(2)]
+    m = pool.map(sleep_on, list(range(2000)), args=(set(range(2000)), 0.05))
+    timer = threading.Timer(0.2, m.cancel)
+    timer.start()
+    try:
+        with pytest.raises(pymizu.CancelledError, match="cancelled"):
+            m.collect(timeout=15)
+    finally:
+        timer.cancel()
+        assert [b.collect(timeout=5) for b in blockers] == [None, None]
     assert pool.map(square, [2], timeout=15).collect() == [4]
 
 

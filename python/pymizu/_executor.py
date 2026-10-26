@@ -253,7 +253,13 @@ class PoolExecutor(_Executor):
             return  # the running drain's re-check covers this call
         try:
             while True:
-                self._pool._h._notify_rearm()
+                try:
+                    self._pool._h._notify_rearm()
+                except Exception:
+                    # the pool was destroyed mid-drain (a done callback
+                    # tearing it down): the facade's hook already failed
+                    # every outstanding future — nothing left to scan
+                    return
                 with self._cond:
                     items = list(self._outstanding.items())
                 if not items:

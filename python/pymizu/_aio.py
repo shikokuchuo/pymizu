@@ -490,15 +490,16 @@ def task_collect_async(task: _Any) -> _asyncio.Future:
     pool_h = task.pool
     task._async_set(True)  # raises on a second consumer
     st = _pool_state(pool_h)
-    fut = loop.create_future()
-    st.singles[task] = fut
     try:
         pool_h._task_notify([task], 1)
         _arm(st, loop)
     except BaseException:
-        del st.singles[task]
         task._async_set(False)
         raise
+    # registered only after the arm: a loop change in _arm fails the old
+    # loop's waiters, never this fresh one (the channel's discipline)
+    fut = loop.create_future()
+    st.singles[task] = fut
     _on_cancel(fut, lambda: _detach_single(st, task))
     st._pump()
     return fut
