@@ -91,6 +91,26 @@ rest
 `pool.submit_batch()` submits one task per zero-argument callable in a single call.
 Bind arguments with `functools.partial`.
 
+## asyncio
+
+`await task` — or `task.collect_async()` — is the event-driven collect: an `asyncio.Future` resolving with the task's result (or raising the flattened remote error), driven by the worker's notify signal rather than any blocking or polling.
+Cancelling the Future detaches the waiter — a later blocking `collect()` works again — and never cancels the task (`task.cancel()` stays the explicit verb).
+An enrolled task refuses blocking collects: one consumer per result.
+
+`pool.collect_any_async(tasks)` and `pool.collect_all_async(tasks)` are the volume form: exactly one Future per collection, never one per task, resolved by a scan over the enrolled tasks on each wake.
+Semantics mirror the sync verbs: collect-all resolves in input order and the first error by position rejects with `index`; collect-any resolves `(index, value)` for the first terminal task.
+There are no timeout arguments: `asyncio.timeout` / `asyncio.wait_for` are the idiom.
+
+```{python}
+with pymizu.Pool.create(2) as pool:
+    tasks = [pool.submit(pow, 2, i) for i in range(4)]
+    rest = await pool.collect_all_async(tasks)
+
+rest
+```
+
+`await pool.map(fn, x)` resolves a map handle the same way (see [Parallel map](map.qmd)).
+
 ## Nested tasks
 
 Inside a task, `pymizu.current_pool()` returns the evaluating worker's own handle.
@@ -173,6 +193,7 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 `pymizu.PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface.
 Code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects.
 `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged.
+Futures resolve event-driven off the pool's notify endpoint — there is no drain thread and no polling bound.
 
 ```{python}
 with pymizu.PoolExecutor.create(4) as ex:

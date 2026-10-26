@@ -285,7 +285,7 @@ def fail_with_map_index(i, idx):
 def nested_map(n):
     """A map inside a task, on the evaluating worker's own pool handle."""
     pool = pymizu.current_pool()
-    return pool.map(square, list(range(n)))
+    return pool.map(square, list(range(n))).collect()
 
 
 def fail_or_sleep(i, bad, t):

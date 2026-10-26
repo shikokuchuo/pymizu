@@ -335,12 +335,12 @@ def main():
     )
 
     def map_overhead(p):
-        p.map(plus_one, xs)  # warm-up
+        p.map(plus_one, xs).collect()  # warm-up
         note_us(
             "map trivial f",
             "pymizu pool",
             k * n,
-            lambda: [p.map(plus_one, xs) for _ in range(k)],
+            lambda: [p.map(plus_one, xs).collect() for _ in range(k)],
             "us/elt",
         )
 
@@ -368,8 +368,8 @@ def main():
 
     def map_pool(p):
         xs = list(range(n))
-        p.map(winsum, xs)  # warm-up
-        note_rate("map", "pymizu pool", n, lambda: p.map(winsum, xs))
+        p.map(winsum, xs).collect()  # warm-up
+        note_rate("map", "pymizu pool", n, lambda: p.map(winsum, xs).collect())
 
     with_pool(4, map_pool)
 
@@ -393,11 +393,11 @@ def main():
 
     def map_skew(p):
         xs = list(range(n))
-        p.map(skewed, xs)  # warm-up
+        p.map(skewed, xs).collect()  # warm-up
         note(
             "map skewed f",
             "pymizu pool",
-            best_ms(lambda: p.map(skewed, xs)),
+            best_ms(lambda: p.map(skewed, xs).collect()),
             "ms wall",
         )
 

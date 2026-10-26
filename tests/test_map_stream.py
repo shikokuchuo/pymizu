@@ -39,46 +39,54 @@ def pool():
 
 def test_stream_roundtrip(pool):
     x = list(range(100))
-    assert pool.map(square, x, stream=True) == [i * i for i in x]
+    assert pool.map(square, x, stream=True).collect() == [i * i for i in x]
 
 
 def test_stream_matches_non_streaming(pool):
     x = list(range(200))
-    want = pool.map(square, x)
+    want = pool.map(square, x).collect()
     for chunks in (None, 1, 3, 64, 200):
-        assert pool.map(square, x, stream=True, n_chunks=chunks) == want
+        assert (
+            pool.map(square, x, stream=True, n_chunks=chunks).collect() == want
+        )
 
 
 def test_stream_empty(pool):
-    assert pool.map(square, [], stream=True) == []
+    assert pool.map(square, [], stream=True).collect() == []
 
 
 def test_stream_args_kwargs(pool):
     assert pool.map(
         scale_add, [1, 2], kwargs={"scale": 2, "add": 1}, stream=True
-    ) == [3, 5]
+    ).collect() == [3, 5]
 
 
 def test_stream_out_of_order_completion(pool):
     # chunk 0's first element sleeps, so chunks 1+ complete first — the
     # splice still assembles in input order
     x = list(range(32))
-    out = pool.map(sleep_on, x, args=({0},), n_chunks=8, stream=True)
+    out = pool.map(sleep_on, x, args=({0},), n_chunks=8, stream=True).collect()
     assert out == x
 
 
 def test_stream_seed_invariance(pool):
-    a = pool.map(rand_elt, list(range(50)), seed=42)
-    assert pool.map(rand_elt, list(range(50)), seed=42, stream=True) == a
+    a = pool.map(rand_elt, list(range(50)), seed=42).collect()
+    assert (
+        pool.map(rand_elt, list(range(50)), seed=42, stream=True).collect()
+        == a
+    )
     for chunks in (1, 3, 50):
         got = pool.map(
             rand_elt, list(range(50)), seed=42, stream=True, n_chunks=chunks
-        )
+        ).collect()
         assert got == a
     # and across window sizes (a 1-worker pool halves the window)
     p1 = pymizu.Pool.create(1)
     try:
-        assert p1.map(rand_elt, list(range(50)), seed=42, stream=True) == a
+        assert (
+            p1.map(rand_elt, list(range(50)), seed=42, stream=True).collect()
+            == a
+        )
     finally:
         p1.stop()
 
@@ -86,8 +94,10 @@ def test_stream_seed_invariance(pool):
 def test_stream_seed_offset(pool):
     # the split-map contract, unchanged: element i of the shifted map
     # draws stream i + 5 of the base map
-    whole = pool.map(rand_elt, list(range(10)), seed=7, stream=True)
-    tail = pool.map(rand_elt, list(range(10))[5:], seed=(7, 5), stream=True)
+    whole = pool.map(rand_elt, list(range(10)), seed=7, stream=True).collect()
+    tail = pool.map(
+        rand_elt, list(range(10))[5:], seed=(7, 5), stream=True
+    ).collect()
     assert whole[5:] == tail
 
 
@@ -96,7 +106,9 @@ def test_stream_fail_fast_element_index(pool):
     # must not clobber the envelope's element index (element 4 is in
     # chunk 2 of 4 here — the position would read 2)
     with pytest.raises(pymizu.TaskError) as exc_info:
-        pool.map(fail_at, list(range(8)), args=(4,), stream=True, n_chunks=4)
+        pool.map(
+            fail_at, list(range(8)), args=(4,), stream=True, n_chunks=4
+        ).collect()
     exc = exc_info.value
     assert exc.remote_type == "ValueError"
     assert exc.index == 4
@@ -115,7 +127,7 @@ def test_stream_fail_fast_min_index():
                 args=({3, 5},),
                 stream=True,
                 n_chunks=4,
-            )
+            ).collect()
         assert exc_info.value.index == 3
     finally:
         p.stop()
@@ -125,7 +137,9 @@ def test_stream_worker_died():
     p = pymizu.Pool.create(2)
     try:
         with pytest.raises(pymizu.WorkerDiedError) as exc_info:
-            p.map(kill_at, list(range(8)), args=(5,), stream=True, n_chunks=4)
+            p.map(
+                kill_at, list(range(8)), args=(5,), stream=True, n_chunks=4
+            ).collect()
         exc = exc_info.value
         assert exc.pid > 0
         # streaming chunks are fixed ranges: the lost set is the dead
@@ -136,10 +150,10 @@ def test_stream_worker_died():
 
 
 def test_stream_timeout(pool):
-    out = pool.map(sleep_ident, [0.4] * 8, timeout=0.2, stream=True)
+    out = pool.map(sleep_ident, [0.4] * 8, stream=True).collect(timeout=0.2)
     assert out is pymizu.TIMEOUT
     # the cancellation drained: the pool is usable immediately after
-    assert pool.map(square, [2], timeout=15) == [4]
+    assert pool.map(square, [2], timeout=15).collect() == [4]
 
 
 def test_stream_timeout_at_prime(pool):
@@ -162,7 +176,7 @@ def test_stream_submit_ring_full_timeout():
         assert pin1.collect(timeout=15) == 3.0
         assert pin2.collect(timeout=15) == 3.0
         # and the cancellation drained: the pool is usable after
-        assert p.map(square, [2], timeout=15) == [4]
+        assert p.map(square, [2], timeout=15).collect() == [4]
     finally:
         p.stop()
 
@@ -175,25 +189,23 @@ def _stage_stream_region(fn, n):
 def test_stream_window_expired_at_collect(pool):
     # the loop-head deadline check: refill passes, then expiry lands
     name, capsule = _stage_stream_region(identity, 2)
-    handles = [None] * 2
     script = iter([False, True])  # refill pre-check, then the loop head
+    win = _map_mod._StreamWindow(
+        pool,
+        pymizu,
+        name,
+        [(0, 1), (1, 2)],
+        1,
+        None,
+        lambda lo, hi: [0, 1][lo:hi],
+        False,
+    )
     try:
-        out = _map_mod._stream_window(
-            pool,
-            pymizu,
-            name,
-            [(0, 1), (1, 2)],
-            1,
-            None,
-            lambda lo, hi: [0, 1][lo:hi],
-            False,
-            lambda: None,
-            lambda: next(script, True),
-            handles,
-        )
+        assert win.refill(lambda: None, lambda: next(script, True))
+        out = win.drive(lambda: None, lambda: next(script, True))
         assert out is pymizu.TIMEOUT
     finally:
-        for h in handles:
+        for h in win.handles:
             if h is not None:
                 h.cancel()
         pymizu._pymizu._map_close(capsule)
@@ -203,26 +215,24 @@ def test_stream_window_expired_at_refill(pool):
     # the post-completion refill's deadline check: one chunk completes,
     # then the deadline expires before its replacement submits
     name, capsule = _stage_stream_region(identity, 2)
-    handles = [None] * 2
     # prime pre-check, the loop head, then the refill pre-check
     script = iter([False, False, True])
+    win = _map_mod._StreamWindow(
+        pool,
+        pymizu,
+        name,
+        [(0, 1), (1, 2)],
+        1,
+        None,
+        lambda lo, hi: [0, 1][lo:hi],
+        False,
+    )
     try:
-        out = _map_mod._stream_window(
-            pool,
-            pymizu,
-            name,
-            [(0, 1), (1, 2)],
-            1,
-            None,
-            lambda lo, hi: [0, 1][lo:hi],
-            False,
-            lambda: None,
-            lambda: next(script, True),
-            handles,
-        )
+        assert win.refill(lambda: None, lambda: next(script, True))
+        out = win.drive(lambda: None, lambda: next(script, True))
         assert out is pymizu.TIMEOUT
     finally:
-        for h in handles:
+        for h in win.handles:
             if h is not None:
                 h.cancel()
         pymizu._pymizu._map_close(capsule)
@@ -358,24 +368,26 @@ def test_stream_spec_fn_view_collect_raises(pool):
 def test_stream_spec_fn_own_shape(pool):
     # a spec stream over Python workers: the runner results arrive in this
     # binding's own (ranges, values) shape
-    out = pool.map(pymizu.call("math.sqrt"), [1.0, 4.0, 9.0], stream=True)
+    out = pool.map(
+        pymizu.call("math.sqrt"), [1.0, 4.0, 9.0], stream=True
+    ).collect()
     assert out == [1.0, 2.0, 3.0]
     x = list(range(60))
-    want = pool.map(pymizu.call("math.floor"), x)
+    want = pool.map(pymizu.call("math.floor"), x).collect()
     for chunks in (None, 1, 7, 60):
         got = pool.map(
             pymizu.call("math.floor"), x, stream=True, n_chunks=chunks
-        )
+        ).collect()
         assert got == want
 
 
 def test_stream_spec_fn_seed_invariance(pool):
     fn = pymizu.call(source="import random\nrandom.random()")
-    want = pool.map(fn, list(range(40)), seed=42)
+    want = pool.map(fn, list(range(40)), seed=42).collect()
     for chunks in (None, 1, 7, 40):
         got = pool.map(
             fn, list(range(40)), stream=True, seed=42, n_chunks=chunks
-        )
+        ).collect()
         assert got == want
 
 
@@ -387,7 +399,7 @@ def test_stream_spec_fn_error_index():
     p = pymizu.Pool.create(1)
     try:
         with pytest.raises(pymizu.TaskError) as exc_info:
-            p.map(fn, list(range(8)), stream=True, n_chunks=4)
+            p.map(fn, list(range(8)), stream=True, n_chunks=4).collect()
         # the global element index: collect_any's `position` names the
         # chunk, the envelope's index offsets by its base
         assert exc_info.value.index == 3
@@ -397,18 +409,20 @@ def test_stream_spec_fn_error_index():
 
 
 def test_stream_buffer_x_forms(pool):
-    assert pool.map(identity, bytes(range(10)), stream=True) == list(range(10))
-    assert pool.map(identity, bytearray(range(10)), stream=True) == list(
+    assert pool.map(identity, bytes(range(10)), stream=True).collect() == list(
         range(10)
     )
     assert pool.map(
+        identity, bytearray(range(10)), stream=True
+    ).collect() == list(range(10))
+    assert pool.map(
         identity, memoryview(bytes(range(10))), stream=True
-    ) == list(range(10))
+    ).collect() == list(range(10))
 
 
 def test_stream_list_x_shallow(pool):
     x = [[i] for i in range(6)]
-    out = pool.map(identity, x, stream=True)
+    out = pool.map(identity, x, stream=True).collect()
     assert out == x
     # the submitter-side slice aliases; the elements then cross serialized
     assert all(a is not b and a == b for a, b in zip(out, x, strict=True))
@@ -418,13 +432,13 @@ def test_stream_prepared(pool):
     pm = pool.map_prepare(square, list(range(8)), stream=True)
     try:
         name = pm._name
-        assert pm.run() == [i * i for i in range(8)]
-        assert pm.run() == [i * i for i in range(8)]
+        assert pm.run().collect() == [i * i for i in range(8)]
+        assert pm.run().collect() == [i * i for i in range(8)]
         assert pm._name == name  # one region throughout
         # a replacement x of any shape re-slices: no restage
-        assert pm.run(list(range(4))) == [0, 1, 4, 9]
+        assert pm.run(list(range(4))).collect() == [0, 1, 4, 9]
         assert pm._name == name
-        assert pm.run([1, 2, 3]) == [1, 4, 9]
+        assert pm.run([1, 2, 3]).collect() == [1, 4, 9]
         assert pm._name == name
     finally:
         pm.close()
@@ -434,7 +448,7 @@ def test_stream_prepared_seeded(pool):
     # a re-armed prepared run restarts every element's stream
     pm = pool.map_prepare(rand_elt, list(range(30)), seed=42, stream=True)
     try:
-        assert pm.run() == pm.run()
+        assert pm.run().collect() == pm.run().collect()
     finally:
         pm.close()
 
@@ -443,9 +457,9 @@ def test_stream_prepared_timeout_restages(pool):
     pm = pool.map_prepare(sleep_ident, [0.4, 0.1, 0.1], stream=True)
     try:
         name = pm._name
-        assert pm.run(timeout=0.2) is pymizu.TIMEOUT
+        assert pm.run().collect(timeout=0.2) is pymizu.TIMEOUT
         assert pm._capsule is None  # stale: the next run restages
-        assert pm.run(timeout=60) == [0.4, 0.1, 0.1]
+        assert pm.run(timeout=60).collect() == [0.4, 0.1, 0.1]
         assert pm._name != name
     finally:
         pm.close()
@@ -455,10 +469,10 @@ def test_stream_prepared_error_restages(pool):
     pm = pool.map_prepare(fail_at, list(range(4)), args=(2,), stream=True)
     try:
         with pytest.raises(pymizu.TaskError):
-            pm.run(timeout=60)
+            pm.run(timeout=60).collect()
         assert pm._capsule is None
         with pytest.raises(pymizu.TaskError) as exc_info:
-            pm.run(timeout=60)
+            pm.run(timeout=60).collect()
         assert exc_info.value.index == 2
     finally:
         pm.close()
@@ -471,7 +485,7 @@ def test_stream_ctx_cache_swept_on_idle():
     try:
         pm = p.map_prepare(square, list(range(16)), n_chunks=4, stream=True)
         try:
-            assert pm.run() == [i * i for i in range(16)]
+            assert pm.run().collect() == [i * i for i in range(16)]
             # poll until the completed map's context clears (pre-fix:
             # never); the sleeps let the worker park — a busy worker
             # never reaches the idle sweep
@@ -494,12 +508,12 @@ np = pytest.importorskip("numpy", reason="numpy not installed")
 
 def test_stream_numpy_x(pool):
     a = np.arange(1000, dtype=np.float64)
-    assert pool.map(identity, a, stream=True) == list(a)
+    assert pool.map(identity, a, stream=True).collect() == list(a)
 
 
 def test_stream_numpy_int64_x(pool):
     a = np.arange(10, dtype=np.int64) * (1 << 40)
-    out = pool.map(identity, a, stream=True)
+    out = pool.map(identity, a, stream=True).collect()
     assert out == list(a)
     assert all(isinstance(v, np.integer) for v in out)
 
@@ -507,13 +521,13 @@ def test_stream_numpy_int64_x(pool):
 def test_stream_numpy_strided_x_falls_back(pool):
     # a non-contiguous view is not raw-eligible: elements pickle per slice
     a = np.arange(20, dtype=np.float64)[::2]
-    assert pool.map(identity, a, stream=True) == list(a)
+    assert pool.map(identity, a, stream=True).collect() == list(a)
 
 
 def test_stream_template_copy(pool):
     out = pool.map(
         scalar_double, list(range(100)), template=np.empty(1), stream=True
-    )
+    ).collect()
     assert isinstance(out, np.ndarray)
     assert out.shape == (100,)
     np.testing.assert_array_equal(out, np.arange(100) * 2.0)
@@ -526,14 +540,16 @@ def test_stream_template_view(pool):
         template=np.empty(1),
         collect="view",
         stream=True,
-    )
+    ).collect()
     assert isinstance(out, np.ndarray)
     assert not out.flags.writeable
     np.testing.assert_array_equal(out, np.arange(100) * 2.0)
 
 
 def test_stream_template_m2(pool):
-    out = pool.map(pair_up, list(range(50)), template=np.empty(2), stream=True)
+    out = pool.map(
+        pair_up, list(range(50)), template=np.empty(2), stream=True
+    ).collect()
     assert out.shape == (50, 2)
     np.testing.assert_array_equal(out[:, 0], np.arange(50))
     np.testing.assert_array_equal(out[:, 1], np.arange(50) * 2)
@@ -545,9 +561,11 @@ def test_stream_prepared_template_length_change_restages(pool):
     )
     try:
         name = pm._name
-        np.testing.assert_array_equal(pm.run(), np.array([2.0, 4.0, 6.0]))
+        np.testing.assert_array_equal(
+            pm.run().collect(), np.array([2.0, 4.0, 6.0])
+        )
         assert pm._name == name
-        out = pm.run([1, 2, 3, 4])
+        out = pm.run([1, 2, 3, 4]).collect()
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0, 8.0]))
         assert pm._name != name  # the output area sizes off the staged n
     finally:
@@ -563,12 +581,14 @@ def test_stream_prepared_template_view_transfers(pool):
         stream=True,
     )
     try:
-        out = pm.run()
+        out = pm.run().collect()
         assert not out.flags.writeable
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0]))
         # the view pins its region: the next run stages fresh
         assert pm._capsule is None
-        np.testing.assert_array_equal(pm.run(), np.array([2.0, 4.0, 6.0]))
+        np.testing.assert_array_equal(
+            pm.run().collect(), np.array([2.0, 4.0, 6.0])
+        )
     finally:
         pm.close()
 
@@ -663,11 +683,7 @@ def test_stream_window_spec_submit_expiry(pool):
     plan = _map_mod._Plan(
         pool, pymizu.call(source="x"), (), None, None, None, None, None, True
     )
-    handles = [None, None]
-    capsules = [None, None]
-    remaining, _ = _map_mod._deadline(10)
-    checks = iter([False, True])
-    out = _map_mod._stream_window_spec(
+    win = _map_mod._StreamWindowSpec(
         pool,
         pymizu,
         [(0, 2), (2, 4)],
@@ -677,13 +693,11 @@ def test_stream_window_spec_submit_expiry(pool):
         [1, 2, 3, 4],
         None,
         None,
-        capsules,
-        remaining,
-        lambda: next(checks),
-        handles,
     )
-    assert out is pymizu.TIMEOUT
-    assert capsules == [None, None]  # the staged chunk was closed
+    remaining, _ = _map_mod._deadline(10)
+    checks = iter([False, True])
+    assert not win.refill(remaining, lambda: next(checks))
+    assert win.capsules == [None, None]  # the staged chunk was closed
 
 
 def test_stream_window_spec_loop_expiry(pool):
@@ -693,11 +707,7 @@ def test_stream_window_spec_loop_expiry(pool):
     plan = _map_mod._Plan(
         pool, pymizu.call(source="x"), (), None, None, None, None, None, True
     )
-    handles = [None, None]
-    capsules = [None, None]
-    remaining, _ = _map_mod._deadline(10)
-    checks = iter([False, False, True])
-    out = _map_mod._stream_window_spec(
+    win = _map_mod._StreamWindowSpec(
         pool,
         pymizu,
         [(0, 2), (2, 4)],
@@ -707,14 +717,14 @@ def test_stream_window_spec_loop_expiry(pool):
         [1, 2, 3, 4],
         None,
         None,
-        capsules,
-        remaining,
-        lambda: next(checks),
-        handles,
     )
+    remaining, _ = _map_mod._deadline(10)
+    checks = iter([False, False, True])
+    assert win.refill(remaining, lambda: next(checks))
+    out = win.drive(remaining, lambda: next(checks))
     assert out is pymizu.TIMEOUT
-    handles[0].cancel()
-    pymizu._pymizu._map_close(capsules[0])
+    win.handles[0].cancel()
+    pymizu._pymizu._map_close(win.capsules[0])
 
 
 def test_stream_window_spec_refill_expiry(pool):
@@ -725,11 +735,7 @@ def test_stream_window_spec_refill_expiry(pool):
     plan = _map_mod._Plan(
         pool, pymizu.call(source="x"), (), None, None, None, None, None, True
     )
-    handles = [None, None]
-    capsules = [None, None]
-    remaining, _ = _map_mod._deadline(10)
-    checks = iter([False, False, False, True])
-    out = _map_mod._stream_window_spec(
+    win = _map_mod._StreamWindowSpec(
         pool,
         pymizu,
         [(0, 2), (2, 4)],
@@ -739,11 +745,11 @@ def test_stream_window_spec_refill_expiry(pool):
         [1, 2, 3, 4],
         None,
         None,
-        capsules,
-        remaining,
-        lambda: next(checks),
-        handles,
     )
+    remaining, _ = _map_mod._deadline(10)
+    checks = iter([False, False, False, True])
+    assert win.refill(remaining, lambda: next(checks))
+    out = win.drive(remaining, lambda: next(checks))
     assert out is pymizu.TIMEOUT
-    assert capsules == [None, None]
-    assert handles == [None, None]
+    assert win.capsules == [None, None]
+    assert win.handles == [None, None]

@@ -27,7 +27,9 @@ package). The governing design document is the ipc plan in the libmizu repo
   sentinel singletons, the exception hierarchy (`TaskError` with
   remote_type/remote_traceback, `WorkerDiedError` with slot/pid,
   `TaskLostError` for the no-death-verdict lost task), the
-  `_Caught` outcome box the collect veneer unwraps and raises. The
+  `_Caught` outcome box the collect veneer unwraps and raises, and the
+  `MizuNotify` notify records bridging the core's notify endpoints to
+  asyncio (see Conventions). The
   create/attach/join verbs share `token_valid`, `parse_ident` (the
   test-only `_ident` override), and `handle_ctx_alloc`.
 - `src/map.c` / `src/pymap.h` — the `Pool.map` region layer (see
@@ -46,7 +48,9 @@ package). The governing design document is the ipc plan in the libmizu repo
 - `python/pymizu/` — the Python package. `child.py` / `worker.py` are the
   spawned-process entries (`python -m pymizu.child <token>`,
   `python -m pymizu.worker <suffix> <slot>`). `_r.py` holds the R-peer
-  launcher (`pymizu.r_launcher()`; see Conventions). Ships `py.typed` and
+  launcher (`pymizu.r_launcher()`; see Conventions). `_aio.py` is the
+  asyncio drain half (see Conventions), `_map.py` the map orchestration,
+  `_executor.py` the `concurrent.futures` adapter. Ships `py.typed` and
   the `_pymizu.pyi` stub as package data.
 - `tests/` — pytest; see Testing.
 - `benchmarks/` — `mizu-bench.py` (report-only, asserts nothing; records
@@ -120,7 +124,13 @@ a `PackageNotFoundError` fallback to `"0.0.0"`. Extras: `numpy` /
 note), `all` (self-referencing).
 
 The `.venv` install is non-editable: after editing `python/`, reinstall
-(`pip install .`) or tests import the stale copy.
+(`pip install .`) or tests import the stale copy. After editing `src/`
+(C), use `pip install . --no-cache-dir`: the version string is unchanged
+by source edits, so pip's wheel cache silently serves the previous build
+(the install "succeeds" with the old `.so` — the tell is a test that
+fails against code you just wrote; `--no-cache-dir` is cheap insurance).
+`make install` and `python setup.py build_ext --inplace` do not have the
+problem.
 
 `.pre-commit-config.yaml` runs the standard hygiene hooks plus
 `ruff-check --fix` and `ruff-format`. The ruff version is pinned
@@ -368,7 +378,83 @@ tools/vendor-libmizu.sh` for a local checkout).
 - Sentinels map to Python singletons; `MIZU_ERR` maps to an exception
   hierarchy mirroring the R package's classed errors. The mapping is
   per-verb, not global.
+- Event-driven surface (asyncio, over the core's notify endpoints —
+  `mizu_channel_notify_*` / `mizu_pool_notify_*` / `mizu_pool_task_notify`
+  in the vendored `mizu_ext.h`): no polling, no threads beyond the core's
+  listener machinery; a burst collapses to one wake per idle-to-data
+  transition (clear-on-send). The split: `_pymizu.c` owns a `MizuNotify`
+  record per armed handle (captured loop or NULL for the direct mode,
+  a coalesce CAS, refs create/armed/scheduled, the live-record registry
+  for the `Py_AtExit` fini); the watch callback takes the GIL and either
+  schedules a trampoline via `loop.call_soon_threadsafe` (a `RuntimeError`
+  there is a closed loop: disarm) or, for the executor's loop-free arm,
+  calls the drain in place. `python/pymizu/_aio.py` is the drain half —
+  the channel recv FIFO, the per-pool-handle enrollment (single tasks,
+  and one-Future collections for `collect_any_async` /
+  `collect_all_async` / maps), the bounded drain quantum (2048 items or
+  ~1 ms per callback, `loop.call_soon` re-schedule) — imported lazily by
+  the verbs so `import pymizu` never pays for asyncio. Verbs:
+  `Channel.recv_async()` + `async for` (terminals stay sentinel VALUES),
+  `await task` / `Task.collect_async()` (raises the flattened remote
+  error), `Pool.collect_any_async()` / `collect_all_async()` (sync-verb
+  semantics incl. `index`), `await` a map handle. Discipline:
+  - Enrollment is announce (`_task_notify(tasks, 1)`) before arm, then a
+    synchronous re-check; settle (resolve/reject/detach) withdraws every
+    announce, restoring each slot's one-writer regime — a detached task
+    is blocking-collectible again. Cancelling a Future only detaches,
+    never cancels the task/map.
+  - One consumer per result: an enrolled task carries the C
+    `async_pending` flag and refuses blocking collects and a second
+    enrollment ("one consumer per result"); a promise-armed map handle
+    likewise refuses a blocking `collect()`. The executor does NOT use
+    the flag (announces only): an outside collect of its task degrades
+    gracefully — the outside collect claims the slot's wake, the
+    executor's future fails "already collected" on the next wake.
+  - Drains re-arm the edge-triggered word per pass and re-scan until a
+    pass finds nothing new (the announce/recheck transplant); the pool
+    scan is one `_tasks_terminal` call per pass.
+  - Streaming maps refuse `collect_async()` (the sliding window needs
+    the blocking turn loop).
+  - Facade `destroy()`/`close()` settle pending futures through
+    `call_soon_threadsafe` (asyncio futures are loop-thread-confined);
+    futures on a closed loop are skipped on settle. `Pool.destroy()`
+    additionally runs the facade's `_destroy_hooks` — the executor
+    registers one to fail its outstanding futures (a destroy publishes
+    nothing, so no wake would ever reach its drain).
+  - Deadlock guard: a handle teardown landing inside the direct-mode
+    drain (on the listener thread) would run the core's watch stop from
+    inside the watched callback — its queue-drain sync deadlocks. The
+    teardown hands off to a detached thread then (`notify_cb_active`
+    TLS marker in `_pymizu.c`); the handoff's unwatch parks on the
+    handler's completion as designed.
+- `PoolExecutor` has no drain thread: the same watch+scan resolves
+  stdlib futures in the listener callback (`Future.set_result` is
+  thread-safe by design), so `asyncio.wrap_future` is thread-free and
+  the 50 ms collect bound is gone. Done callbacks run on the listener
+  thread (the stdlib executors' management-thread discipline).
+  `_TaskFuture.cancel()` also detaches the task from the outstanding
+  set at once (a cancelled queued task frees CANCEL->FREE with no
+  publish, so no wake would ever cover it).
 - Map conventions (`src/map.c`, `python/pymizu/_map.py`):
+  - Handle-first (breaking, mirrors mizu): `Pool.map()` /
+    `Pool.starmap()` / `PreparedMap.run()` stage + submit and return a
+    `_Map` handle immediately — `handle.collect()` blocks (list, or the
+    `_MapOutView` with `collect="view"`), `handle.collect_async()` /
+    `await handle` resolves one Future (never on a stream map),
+    `handle.cancel()` sets the morsel fail-fast word and cancels the
+    outstanding tasks (`CancelledError` settles a pending collect), and
+    a dropped uncollected handle cancels at GC. One collection per
+    handle. The `timeout=` of `map()`/`run()` bounds SUBMISSION only
+    (mid-submit expiry returns the `TIMEOUT` sentinel, no handle); the
+    collection deadline is `collect(timeout=)`.
+  - `_Map` holds the run state for its kind — `empty` (no region or
+    tasks), `blob` (inline chunk tasks), `region` (morsel runners),
+    `stream` (a `_StreamWindow` / `_StreamWindowSpec`, the sliding
+    submit/collect windows split into `refill()` at map time and
+    `drive()` at collect) — plus an optional `PreparedMap` back-ref: a
+    clean value collect keeps the stage for the O(1) re-arm, a view
+    collect hands the region to the view, an unclean run drops it (the
+    next run restages fresh).
   - The one-shot (`pool_map`) and prepared (`PreparedMap`) entries
     share the one path: `_Plan` (the fn/spec, args, seed, template,
     collect, and chunks gates — a bad `chunks` raises even on an empty
@@ -420,11 +506,12 @@ tools/vendor-libmizu.sh` for a local checkout).
     `_MapOutView` exporter that owns the region capsule (unlink defers
     to view teardown; the stage side drops its reference without
     `_map_close`).
-  - Prepared maps: `Pool.map_prepare` stages once; `Pool.map_run`
+  - Prepared maps: `Pool.map_prepare` stages once; `PreparedMap.run()`
     re-arms in O(1) (`_map_reset` bumps the generation and re-stamps the
     CLAIM array; the runner payload carries the run's generation, so a
-    prior run's straggler fails its first-call CAS). A view-collected
-    run restages into a fresh region.
+    prior run's straggler fails its first-call CAS) and returns the
+    run's `_Map` handle. A view-collected run restages into a fresh
+    region.
   - The element loop is Python (`_run_batch`, `_map_write` on the
     template path) — a C batch loop was tried and reverted 2026-08-24:
     the winsum scaling gap is memory bandwidth, not interpreter
@@ -443,7 +530,9 @@ tools/vendor-libmizu.sh` for a local checkout).
   points (they run at docs build; keep them under ~2 s, displayed values
   as top-level expressions). Prose paragraphs belong before the first
   section header — text after a section header parses as a section entry
-  and griffe reports "Could not parse line".
+  and griffe reports "Could not parse line". Docs cells (guides and
+  docstring examples) run in a Jupyter kernel that already has a running
+  event loop: never `asyncio.run()` there — use top-level `await`.
 - Commit messages are a single line (subject only, no body).
 - Never push without explicit approval — every push must be approved by
   the user first.
@@ -484,6 +573,20 @@ tools/vendor-libmizu.sh` for a local checkout).
   driver and its spawned workers. `tests/test_prune.py` hard-kills a
   creator to test `prune()`; `tests/test_trace.py` covers the trace hook;
   `tests/test_arrow.py` covers the Arrow exchange.
+- `tests/test_aio.py` covers the asyncio surface: `asyncio.run` unit
+  legs, the edge-trigger accounting (`notify_sends` on `Channel.info()`
+  and `Pool.dump()["local"]` — an in-process channel pair publishes from
+  the loop thread synchronously, an in-process worker publishes behind
+  a busy-waited loop, so the burst deterministically beats the drain),
+  quantum splitting, cancellation detachment, and the one-consumer
+  refusals. Its in-process pool legs use `_pool_new` +
+  `_pool_worker_join` (the worker's `run()` in a daemon thread).
+- Channel tests: `close_signal()` is the PEER's verb — the host calling
+  it short-circuits its OWN recv (the shared closed word checks either
+  bit, so the host's recv reports CLOSED once its rx ring drains). The
+  canonical echo teardown is a peer that breaks on a stop value (the
+  child epilogue's close then lands CLOSED) or reads the echoes before
+  signalling.
 
 ## CI
 

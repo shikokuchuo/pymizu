@@ -10,6 +10,51 @@ Initial pre-release.
 
 ### Added
 
+- asyncio integration: event-driven futures over the core's new
+  edge-triggered notify endpoints — no polling, and no threads beyond
+  the core's own listener machinery (a burst of publishes collapses to
+  one wake per idle-to-data transition).
+  - `Channel.recv_async()` returns an `asyncio.Future` for the next
+    payload, resolving with the identical object a blocking `recv()`
+    returns (zero-copy views included) or with the `CLOSED` /
+    `PEER_GONE` sentinel — terminals stay values. Outstanding calls
+    resolve in FIFO order. `async for x in ch` is the stream form,
+    ending on the terminal like the sync iterator.
+  - `await task` / `Task.collect_async()` resolves with the task's
+    result or raises the flattened remote error `collect()` raises.
+  - `Pool.collect_any_async()` and `Pool.collect_all_async()` resolve
+    exactly one Future per collection — never one per task — with the
+    sync verbs' semantics (input order; errors carry `index`).
+  - `await pool.map(fn, x)` / `map_handle.collect_async()` resolves one
+    Future with the same gather the blocking collect returns.
+  - There are no `timeout=` parameters: `asyncio.timeout` /
+    `asyncio.wait_for` are the idiom, composing through cancellation.
+    Cancelling a Future only detaches the waiter — a channel message
+    passes to the next waiter, and a task or collection returns to
+    blocking-collectible; it never cancels the task or the map.
+    Drains are bounded per event-loop callback and re-scheduled, so a
+    saturated ring cannot starve the loop.
+- `Channel.info()` and `Pool.dump()` now report `notify_sends`, the
+  count of notify signals the handle sent (armed consumers only).
+
+### Changed
+
+- **Breaking:** `Pool.map()`, `Pool.starmap()`, and `PreparedMap.run()`
+  are handle-first, mirroring mizu's map: they stage and submit, then
+  return the run's map handle immediately instead of the results.
+  `handle.collect()` blocks for the results (the previous return value);
+  `handle.collect_async()` / `await handle` resolves them event-driven;
+  `handle.cancel()` stops the run (`CancelledError` settles a pending
+  collect). The `timeout=` argument now bounds submission only — on its
+  expiry the call itself returns the `TIMEOUT` sentinel as before — and
+  the collection deadline moved to `handle.collect(timeout=...)`.
+- `PoolExecutor` no longer spawns its drain thread: futures resolve
+  event-driven off the pool's notify endpoint, so the 50 ms collect
+  bound and its completion latency are gone, and `asyncio.wrap_future`
+  over one is thread-free asyncio interop. Done callbacks now run on the
+  core's listener thread (the same discipline as the stdlib executors'
+  management thread).
+
 - Faithful metadata round trips with R (the `MIZU_CAP_LABELED`
   capability): named vectors keep their names, matrices and arrays keep
   their `dimnames` (axis names and the `table` class included), and

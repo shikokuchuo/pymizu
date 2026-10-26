@@ -263,6 +263,51 @@ class Channel:
         """
         return self._h.recv(timeout)
 
+    def recv_async(self) -> _Any:
+        """The event-driven receive: an `asyncio.Future` for the next
+        payload, driven by the channel's notify endpoint — never blocks,
+        never polls.
+
+        Returns
+        -------
+            An `asyncio.Future` resolving with the identical object a
+            blocking [`recv()`](`pymizu.Channel.recv`) would have
+            returned (the recv runs at drain time, on the loop thread),
+            zero-copy views included. Terminal states stay values: the
+            Future resolves with the `CLOSED` / `PEER_GONE` sentinel.
+
+        Details
+        -------
+        Several outstanding calls on one channel resolve in FIFO call
+        order, one message each, from the per-handle pending queue.
+        Arming is loss-free: data already in the ring resolves from the
+        arm's synchronous drain; only genuinely pending entries ride the
+        watch. Cancelling the Future detaches the waiter — the next
+        message goes to the next waiter. There is no `timeout` argument:
+        `asyncio.timeout` / `asyncio.wait_for` are the idiom. A spin
+        channel cannot arm (its publish path skips the wake checkpoint
+        by design) and raises.
+        """
+        from pymizu import _aio
+
+        return _aio.chan_recv_async(self)
+
+    async def __aiter__(self) -> _Any:
+        """Iterate over received payloads until CLOSED or PEER_GONE —
+        the async form of the sync iterator.
+
+        Yields payloads as they arrive, awaiting each through
+        [`recv_async()`](`pymizu.Channel.recv_async`). Between
+        iterations nothing is armed; the next iteration re-arms and the
+        arm's synchronous drain picks up whatever arrived meanwhile
+        (loss-free).
+        """
+        while True:
+            x = await self.recv_async()
+            if x is CLOSED or x is PEER_GONE:
+                return
+            yield x
+
     def recv_batch(
         self, n: int = 256, timeout: float | None = None
     ) -> list[_Any] | Sentinel:
@@ -276,6 +321,11 @@ class Channel:
         False (with a warning) on timeout, in which case resources
         release when the handle is garbage collected."""
         ok = self._h.close(timeout)
+        if ok and self._h._aio is not None:
+            # a completed close settles pending recv futures with CLOSED
+            from pymizu import _aio
+
+            _aio.settle_channel(self, CLOSED)
         if not ok:
             _warnings.warn(
                 "pymizu: close timed out waiting for the peer; resources "
@@ -297,7 +347,12 @@ class Channel:
         completes when the last one returns — an indefinite wait
         (recv, recv_batch, ready_wait, close) breaks out within a
         bounded slice, so the teardown (and the peer's observation of
-        it) follows promptly."""
+        it) follows promptly. Pending recv futures settle with
+        PEER_GONE."""
+        if self._h._aio is not None:
+            from pymizu import _aio
+
+            _aio.settle_channel(self, PEER_GONE)
         return self._h.destroy()
 
     def alive(self) -> bool:
@@ -535,6 +590,7 @@ class Pool:
     """
 
     _h: _pymizu._Pool
+    _destroy_hooks: list  # the PoolExecutor's settle callbacks (lazily)
 
     def __init__(self):
         raise TypeError("use Pool.create() or Pool.attach()")
@@ -805,6 +861,52 @@ class Pool:
         """
         return self._h.collect_all(tasks, timeout)
 
+    def collect_any_async(self, tasks: _Iterable[Task]) -> _Any:
+        """The event-driven [`collect_any()`](`pymizu.Pool.collect_any`):
+        exactly one `asyncio.Future` per collection — never one per task
+        — driven by the enrolled tasks' notify announces.
+
+        Parameters
+        ----------
+        tasks
+            The [`Task`](`pymizu.Task`) handles to wait on.
+
+        Returns
+        -------
+            An `asyncio.Future` resolving with the first terminal task's
+            ``(index, value)`` (the sync verb's tie-breaks); a non-OK
+            outcome rejects with the exception the sync verb raises
+            (``index`` attribute carried). There is no `timeout`
+            argument: `asyncio.timeout` / `asyncio.wait_for` are the
+            idiom. Cancelling the Future un-enrolls every task — each
+            returns to blocking-collectible — and never cancels them.
+        """
+        from pymizu import _aio
+
+        return _aio.collect_any_async(self, tasks)
+
+    def collect_all_async(self, tasks: _Iterable[Task]) -> _Any:
+        """The event-driven [`collect_all()`](`pymizu.Pool.collect_all`):
+        exactly one `asyncio.Future` per collection.
+
+        Parameters
+        ----------
+        tasks
+            The [`Task`](`pymizu.Task`) handles to wait on.
+
+        Returns
+        -------
+            An `asyncio.Future` resolving with all values in input
+            order; the first non-OK outcome by position rejects with the
+            exception the sync verb raises (``index`` attribute carried
+            — only that handle is consumed, the rest stay collectible).
+            Cancelling the Future un-enrolls every task and never
+            cancels them.
+        """
+        from pymizu import _aio
+
+        return _aio.collect_all_async(self, tasks)
+
     def map(
         self,
         fn: _Callable[..., _Any],
@@ -822,9 +924,9 @@ class Pool:
         template: _Any = None,
         collect: str | None = None,
         stream: bool = False,
-    ) -> list[_Any] | Sentinel | _Any:
+    ) -> _Any:
         """Map ``fn`` over the elements of ``x`` on the pool; return the
-        results as a list in input order.
+        run's map handle.
 
         Parameters
         ----------
@@ -859,16 +961,24 @@ class Pool:
 
         Returns
         -------
-            The results as a list in input order; with ``template``, the
-            gathered output area; on ``timeout`` expiry, the `TIMEOUT`
-            sentinel.
+            The run's map handle. ``handle.collect()`` blocks for the
+            results — a list in input order, or with ``template`` the
+            gathered output area (a view with ``collect="view"``) —
+            raising the errors below; ``handle.collect_async()`` /
+            ``await handle`` resolves one `asyncio.Future` with the same
+            gather (not on a streaming map: its sliding window needs the
+            blocking turn loop, so it collects blocking only);
+            ``handle.cancel()`` stops the run. On ``timeout`` expiry
+            mid-submission, `map()` itself returns the `TIMEOUT`
+            sentinel (no handle); a length-0 ``x`` returns a handle
+            whose collect yields the empty result.
 
         Raises
         ------
         TaskError
-            A task error re-raises as TaskError carrying the failing
-            element's 0-based ``index``; failure is fail-fast (peers
-            stop within about one batch).
+            A task error re-raises from the collect as TaskError
+            carrying the failing element's 0-based ``index``; failure is
+            fail-fast (peers stop within about one batch).
         WorkerDiedError
             Worker death carries the lost element ranges as ``lost``
             (0-based half-open ``(lo, hi)`` pairs, conservative).
@@ -966,8 +1076,10 @@ class Pool:
         ``TypeError`` on a streaming spec map, as does preparing one
         with [`map_prepare()`](`pymizu.Pool.map_prepare`).
 
-        On ``timeout`` expiry the outstanding work is cancelled and the
-        `TIMEOUT` sentinel is returned, never raised.
+        ``timeout`` bounds submission only (the ring-space wait staging
+        the tasks); the collection deadline is the handle's
+        ``collect(timeout)``, whose expiry cancels the outstanding work
+        and returns the `TIMEOUT` sentinel, never raised.
 
         [`starmap()`](`pymizu.Pool.starmap`) is the unpacking variant —
         ``fn(*element, *args, **kwargs)``, the
@@ -977,7 +1089,7 @@ class Pool:
         --------
         >>> import pymizu
         >>> with pymizu.Pool.create(2) as pool:
-        ...     results = pool.map(abs, range(-5, 5))
+        ...     results = pool.map(abs, range(-5, 5)).collect()
         >>> results
         [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
         """
@@ -1014,9 +1126,10 @@ class Pool:
         template: _Any = None,
         collect: str | None = None,
         stream: bool = False,
-    ) -> list[_Any] | Sentinel | _Any:
+    ) -> _Any:
         """Map ``fn`` over ``x``, unpacking each element as the call's
-        positional arguments: ``fn(*element, *args, **kwargs)``.
+        positional arguments: ``fn(*element, *args, **kwargs)``;
+        return the run's map handle, as [`map()`](`pymizu.Pool.map`).
 
         The `multiprocessing.Pool.starmap` convention; for the
         multi-iterable shape of `concurrent.futures.Executor.map`,
@@ -1074,8 +1187,9 @@ class Pool:
         ``timeout``, which is per-run and moves to
         ``PreparedMap.run``). The descriptor
         pickle, the region create, and the worker-side attach are paid
-        once here; each ``pm.run()`` re-arms in O(1) and reuses the
-        workers' cached contexts. A run collected with ``collect="view"``
+        once here; each ``pm.run()`` re-arms in O(1), reuses the
+        workers' cached contexts, and returns the run's map handle (the
+        collect happens on it). A run collected with ``collect="view"``
         hands its region to the view, so the next run restages into a
         fresh one. With ``stream=True`` the staged ``x`` stays
         submitter-side, so a replacement ``x`` of any shape simply
@@ -1183,7 +1297,16 @@ class Pool:
         collect_any, collect_all, ready_wait) breaks out within a
         bounded slice; stop() instead waits out its own deadline, and
         a worker's idle run() can delay the teardown (and the shutdown
-        observation) until it returns."""
+        observation) until it returns. Pending async consumers fail
+        with the closed-handle error."""
+        for hook in getattr(self, "_destroy_hooks", ()):
+            hook()
+        if self._h._aio is not None:
+            from pymizu import _aio
+
+            _aio.settle_pool(
+                self._h, ValueError("pymizu: pool handle is closed")
+            )
         return self._h.destroy()
 
     def status(self) -> dict:

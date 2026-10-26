@@ -2,9 +2,12 @@
 
 PoolExecutor maps submit/shutdown onto a pymizu Pool and resolves real
 concurrent.futures.Future objects, so wait / as_completed / wrap_future
-and the stdlib base Executor.map (over submit) work unchanged. A single
-daemon drain thread retires completed tasks through collect_any and
-resolves their futures; cancellation is advisory, mirroring Task.cancel.
+and the stdlib base Executor.map (over submit) work unchanged. There is
+no drain thread: the pool's notify endpoint wakes a scan (the core's
+edge-triggered signal rides the death-listener machinery), and
+concurrent.futures.Future.set_result — thread-safe by design, it is how
+executor workers resolve — resolves futures directly in the listener
+callback. Cancellation is advisory, mirroring Task.cancel.
 """
 
 from __future__ import annotations
@@ -23,40 +26,23 @@ if TYPE_CHECKING:
 
 _MISSING = object()
 
-# Drain collect bound: a submission made mid-collect waits at most this
-# long for the next snapshot — and, the verbs lock serializing the core
-# handle, for the drain's collect to release the lock. 50ms keeps late
-# submissions prompt; an idle re-park costs one syscall.
-_COLLECT_BOUND = 0.05
-
-# Burst bound: completions resolved back-to-back before the drain loops
-# back to merge _pending into the snapshot. The verbs lock is per-collect,
-# so a submit's lock wait is one scan at most regardless; the bound caps
-# how long a submission made mid-flood waits to join the collect set.
-_BURST_MAX = 256
-
-
-def _swap_remove(futures: list, tasks: list, index: int) -> None:
-    """O(1) removal from the drain's parallel snapshot lists (order is
-    insignificant to collect_any)."""
-    last = len(tasks) - 1
-    futures[index] = futures[last]
-    tasks[index] = tasks[last]
-    futures.pop()
-    tasks.pop()
-
 
 class _TaskFuture(_Future):
-    """A Future carrying its pymizu Task: cancel() cancels the task too."""
+    """A Future carrying its pymizu Task: cancel() cancels the task too,
+    and detaches it from the executor's outstanding set at once (its
+    slot drains when the worker's skip frees it — no publish, no wake)."""
 
-    def __init__(self, task: _pymizu._Task) -> None:
+    def __init__(self, task: _pymizu._Task, on_cancel: _Any = None) -> None:
         super().__init__()
         self._task = task
+        self._on_cancel = on_cancel
 
     def cancel(self) -> bool:
         if not super().cancel():
             return False
         self._task.cancel()
+        if self._on_cancel is not None:
+            self._on_cancel(self)
         return True
 
 
@@ -88,9 +74,13 @@ class PoolExecutor(_Executor):
     running task completes, but its result is discarded). An
     infrastructure failure (e.g. the wrapped pool is stopped from under
     the executor) fails every outstanding future; later submissions
-    raise instead of queueing onto a dead drain.
+    raise instead of queueing onto a broken executor.
+    Resolution — including any `add_done_callback` callables — runs on
+    the core's listener thread, the same discipline as the stdlib
+    executors' management thread: keep callbacks short, and never block
+    one on the pool itself.
     `map` is the stdlib base implementation over `submit` — for bulk
-    maps, `Pool.map` is the faster path.
+    maps, [`Pool.map`](`pymizu.Pool.map`) is the faster path.
 
     Examples
     --------
@@ -111,15 +101,25 @@ class PoolExecutor(_Executor):
         self._pool = pool
         self._stop_pool = stop_pool
         self._cond = _threading.Condition()
-        # one lock serializing the core verbs: a pool handle is
-        # single-threaded per side, so the caller thread's submit and the
-        # drain thread's collect_any must never run concurrently
-        self._verbs = _threading.Lock()
+        # one lock serializing the core submits: a pool handle's
+        # injection ring is single-producer, so concurrent submitters
+        # serialize (the drain never touches it — the scan's atomic
+        # loads and the terminal collects need no lock)
+        self._submits = _threading.Lock()
+        # serializes overlapping drains (the listener callback and the
+        # submit-time re-check): the skipped one is covered by the
+        # running one's re-check pass
+        self._draining = _threading.Lock()
         self._outstanding: dict[_TaskFuture, _pymizu._Task] = {}
-        self._pending: list[tuple[_TaskFuture, _pymizu._Task]] = []
-        self._drain: _threading.Thread | None = None
+        self._armed = False
         self._shutdown = False
         self._broken: Exception | None = None
+        # a pool destroy publishes nothing: the facade's hook fails the
+        # outstanding futures (its own teardown never wakes the drain)
+        hooks = getattr(pool, "_destroy_hooks", None)
+        if hooks is None:
+            hooks = pool._destroy_hooks = []
+        hooks.append(self._on_pool_destroy)
 
     @classmethod
     def create(cls, workers: int = 1, **pool_kwargs: _Any) -> PoolExecutor:
@@ -166,7 +166,7 @@ class PoolExecutor(_Executor):
             After shutdown.
         pymizu.MizuError
             The infrastructure failure that broke the executor (its
-            drain thread failed every outstanding future on it).
+            drain failed every outstanding future on it).
         """
         with self._cond:
             if self._shutdown:
@@ -175,21 +175,21 @@ class PoolExecutor(_Executor):
                 )
             if self._broken is not None:
                 raise self._broken
-            with self._verbs:
+            with self._submits:
                 task = self._pool.submit(fn, *args, **kwargs)
-            future = _TaskFuture(task)
+            future = _TaskFuture(task, self._detach)
             self._outstanding[future] = task
-            self._pending.append((future, task))
-            if self._drain is None:
-                self._drain = _threading.Thread(
-                    target=self._drain_loop,
-                    name="pymizu-executor-drain",
-                    daemon=True,
-                )
-                self._drain.start()
-            else:
-                self._cond.notify()
-            return future
+            if not self._armed:
+                # a NULL loop: the drain runs directly on the listener
+                # thread (set_result is thread-safe by design)
+                self._pool._h._notify_arm(None, self._drain)
+                self._armed = True
+            # the per-slot NOTIFY announce, then the re-check: a slot
+            # already terminal at this point resolves from the scan
+            # (announce before arming is the parker transplant)
+            self._pool._h._task_notify([task], True)
+        self._drain()
+        return future
 
     def shutdown(
         self, wait: bool = True, *, cancel_futures: bool = False
@@ -206,86 +206,89 @@ class PoolExecutor(_Executor):
         """
         with self._cond:
             self._shutdown = True
-            if cancel_futures:
-                for future in list(self._outstanding):
-                    future.cancel()
-            self._cond.notify_all()
-        if wait and self._drain is not None:
-            self._drain.join()
+            futures = list(self._outstanding) if cancel_futures else []
+        # outside the condition: cancel() detaches through it
+        for future in futures:
+            future.cancel()
+        if wait:
+            with self._cond:
+                while self._outstanding:
+                    self._cond.wait()
+        self._disarm()
+        hooks = getattr(self._pool, "_destroy_hooks", None)
+        if hooks is not None and self._on_pool_destroy in hooks:
+            hooks.remove(self._on_pool_destroy)
         if self._stop_pool:
             self._pool.stop()
 
-    def _drain_loop(self) -> None:
-        """The one drain thread: collect_any over the outstanding tasks,
-        resolving futures in completion order.
+    def _on_pool_destroy(self) -> None:
+        self._fail_all(ValueError("pymizu: pool handle is closed"))
 
-        The task list rides in a persistent snapshot — submissions append
-        to _pending and merge in bulk, resolves swap-remove in O(1) — so
-        a burst of n completions costs O(n) collects, never O(n^2) list
-        churn. The verbs lock is taken per collect, so a submit's lock
-        wait is one scan at most; _BURST_MAX instead bounds how many
-        completions resolve before _pending merges, keeping a
-        submission's wait to join the collect set short under a flood.
-        The first collect of a burst waits up to _COLLECT_BOUND, so a
-        submission made mid-collect joins the snapshot promptly and an
-        idle re-park costs one syscall."""
-        snap_futures: list[_TaskFuture] = []
-        snap_tasks: list[_pymizu._Task] = []
-        while True:
-            with self._cond:
-                while not self._outstanding and not self._shutdown:
-                    self._cond.wait()
-                if not self._outstanding:
-                    return
-                if self._pending:
-                    snap_futures.extend(f for f, _ in self._pending)
-                    snap_tasks.extend(t for _, t in self._pending)
-                    self._pending.clear()
-            timeout = _COLLECT_BOUND
-            for _ in range(_BURST_MAX):
-                if not snap_tasks:
-                    break
+    def _detach(self, future: _TaskFuture) -> None:
+        with self._cond:
+            task = self._outstanding.pop(future, None)
+            self._cond.notify_all()
+        if task is not None:
+            try:
+                self._pool._h._task_notify([task], False)
+            except Exception:
+                pass  # a destroyed pool: the announce dies with it
+
+    def _disarm(self) -> None:
+        if self._armed:
+            self._armed = False
+            self._pool._h._notify_disarm()
+
+    def _scan(self, tasks: list) -> list:
+        """The drain's terminal scan (one method for tests to seam)."""
+        return self._pool._h._tasks_terminal(tasks)
+
+    def _drain(self) -> None:
+        """One drain pass (the listener callback and the submit-time
+        re-check): re-arm the submitter word, scan the outstanding set,
+        resolve what turned terminal — looping until a pass finds
+        nothing new, so a publish racing the pass rides the re-armed
+        word's next signal (the announce/recheck transplant)."""
+        if not self._draining.acquire(blocking=False):
+            return  # the running drain's re-check covers this call
+        try:
+            while True:
                 try:
-                    with self._verbs:
-                        got = self._pool.collect_any(
-                            snap_tasks, timeout=timeout
-                        )
+                    self._pool._h._notify_rearm()
+                except Exception:
+                    # the pool was destroyed mid-drain (a done callback
+                    # tearing it down): the facade's hook already failed
+                    # every outstanding future — nothing left to scan
+                    return
+                with self._cond:
+                    items = list(self._outstanding.items())
+                if not items:
+                    self._disarm()
+                    return
+                try:
+                    terminal = self._scan([t for _, t in items])
                 except Exception as e:
-                    index = getattr(e, "index", None)
-                    if index is not None:
-                        future = snap_futures[index]
-                        _swap_remove(snap_futures, snap_tasks, index)
-                        self._resolve(future, exception=e)
-                        timeout = 0.0
-                        continue
-                    # a cancelled queued task is freed by the worker's
-                    # CANCEL->FREE skip, so a stale handle in the snapshot
-                    # fails collect_any's claim with a no-index "already
-                    # collected" error: drop the handles now reading
-                    # "collected" (the failed claim consumed nothing)
-                    # rather than failing every outstanding future
-                    stale = [
-                        i
-                        for i, t in enumerate(snap_tasks)
-                        if t.state == "collected"
-                    ]
-                    if stale:
-                        for i in reversed(stale):
-                            future = snap_futures[i]
-                            _swap_remove(snap_futures, snap_tasks, i)
-                            self._resolve(future, exception=e)
-                        timeout = 0.0
-                        continue
                     # infrastructure failure: fail everything outstanding
                     self._fail_all(e)
                     return
-                if isinstance(got, _pymizu.Sentinel):  # TIMEOUT: burst over
-                    break
-                index, value = got
-                future = snap_futures[index]
-                _swap_remove(snap_futures, snap_tasks, index)
-                self._resolve(future, result=value)
-                timeout = 0.0
+                progressed = False
+                for (future, task), term in zip(items, terminal, strict=False):
+                    if not term:
+                        continue
+                    with self._cond:
+                        if self._outstanding.pop(future, None) is None:
+                            continue
+                    try:
+                        value = task.collect(0)
+                    except Exception as e:
+                        self._resolve(future, exception=e)
+                    else:
+                        self._resolve(future, result=value)
+                    progressed = True
+                if not progressed:
+                    return
+        finally:
+            self._draining.release()
 
     def _resolve(
         self,
@@ -294,29 +297,28 @@ class PoolExecutor(_Executor):
         result: _Any = _MISSING,
         exception: _Any = _MISSING,
     ) -> None:
-        """Retire one task: pop it, then resolve its Future — outside the
-        condition, since set_result runs done callbacks that may
-        re-enter. A cancelled future's outcome is discarded."""
-        with self._cond:
-            if self._outstanding.pop(future, None) is None:
-                return
+        """Retire one task's future — set_result/set_exception outside
+        the condition, since they run done callbacks that may re-enter.
+        A cancelled future's outcome is discarded."""
         if not future.set_running_or_notify_cancel():
             return
         if exception is _MISSING:
             future.set_result(result)
         else:
             future.set_exception(exception)
+        with self._cond:
+            self._cond.notify_all()
 
     def _fail_all(self, exc: Exception) -> None:
         """Fail every outstanding future with the same infrastructure
-        error and break the executor: the drain thread exits on this
-        failure, so a later submission raises the error instead of
-        queueing onto a dead drain."""
+        error and break the executor: a later submission raises the
+        error instead of queueing onto a broken executor."""
         with self._cond:
             self._broken = exc
             futures = list(self._outstanding)
             self._outstanding.clear()
-            self._pending.clear()
+            self._cond.notify_all()
+        self._disarm()
         for future in futures:
             if future.set_running_or_notify_cancel():
                 future.set_exception(exc)

@@ -389,19 +389,21 @@ note_us(
 
 def map_overhead(p):
     tmpl = np.empty(1)
-    p.map(plus_one, xs)  # warm-up
+    p.map(plus_one, xs).collect()  # warm-up
     note_us(
         "map trivial f",
         "pymizu pool",
         k * n,
-        lambda: [p.map(plus_one, xs) for _ in range(k)],
+        lambda: [p.map(plus_one, xs).collect() for _ in range(k)],
         "us/elt",
     )
     note_us(
         "map trivial f",
         "pymizu template",
         k * n,
-        lambda: [p.map(plus_one, xs, template=tmpl) for _ in range(k)],
+        lambda: [
+            p.map(plus_one, xs, template=tmpl).collect() for _ in range(k)
+        ],
         "us/elt",
     )
     # deterministic per-element streams: the price of reproducibility
@@ -409,19 +411,19 @@ def map_overhead(p):
         "map trivial f",
         "pymizu seed",
         k * n,
-        lambda: [p.map(plus_one, xs, seed=42) for _ in range(k)],
+        lambda: [p.map(plus_one, xs, seed=42).collect() for _ in range(k)],
         "us/elt",
     )
     # prepared: stage once, run many — per-run cost is submit + collect,
     # and back-to-back runs hit the workers' cached map contexts
     pm = p.map_prepare(plus_one, xs)
     try:
-        pm.run()  # warm-up
+        pm.run().collect()  # warm-up
         note_us(
             "map trivial f",
             "pymizu prepared",
             k * n,
-            lambda: [pm.run() for _ in range(k)],
+            lambda: [pm.run().collect() for _ in range(k)],
             "us/elt",
         )
     finally:
@@ -440,8 +442,8 @@ note_rate("map", "in-process", n, lambda: [winsum(i) for i in range(n)])
 
 def map_pool(p):
     xs = list(range(n))
-    p.map(winsum, xs)  # warm-up
-    note_rate("map", "pymizu pool", n, lambda: p.map(winsum, xs))
+    p.map(winsum, xs).collect()  # warm-up
+    note_rate("map", "pymizu pool", n, lambda: p.map(winsum, xs).collect())
 
 
 with_pool(4, map_pool)
@@ -456,8 +458,8 @@ note_rate("map 20k", "in-process", n, lambda: [winsum(i) for i in range(n)])
 
 def map_pool_20k(p):
     xs = list(range(n))
-    p.map(winsum, xs)  # warm-up
-    note_rate("map 20k", "pymizu pool", n, lambda: p.map(winsum, xs))
+    p.map(winsum, xs).collect()  # warm-up
+    note_rate("map 20k", "pymizu pool", n, lambda: p.map(winsum, xs).collect())
 
 
 with_pool(4, map_pool_20k)
@@ -470,18 +472,18 @@ print("\n== 6c. template map (winsum x 20000 -> n x 2 float64, 4 workers) ==")
 def map_template(p):
     xs = list(range(n))
     tmpl = np.empty(2)
-    p.map(winsum_t, xs, template=tmpl)  # warm-up
+    p.map(winsum_t, xs, template=tmpl).collect()  # warm-up
     note_rate(
         "map template",
         "pymizu copy",
         n,
-        lambda: p.map(winsum_t, xs, template=tmpl),
+        lambda: p.map(winsum_t, xs, template=tmpl).collect(),
     )
     note_rate(
         "map template",
         "pymizu view",
         n,
-        lambda: p.map(winsum_t, xs, template=tmpl, collect="view"),
+        lambda: p.map(winsum_t, xs, template=tmpl, collect="view").collect(),
     )
 
 
@@ -498,11 +500,11 @@ n = 4000
 
 def map_skew(p):
     xs = list(range(n))
-    p.map(skewed, xs)  # warm-up
+    p.map(skewed, xs).collect()  # warm-up
     note(
         "map skewed f",
         "pymizu pool",
-        best_ms(lambda: p.map(skewed, xs)),
+        best_ms(lambda: p.map(skewed, xs).collect()),
         "ms wall",
     )
 

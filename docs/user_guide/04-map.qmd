@@ -3,7 +3,7 @@ title: "Parallel map"
 guide-section: "Guide"
 ---
 
-`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the results as a list in input order.
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the run's handle immediately — staging and submission happen at the call; collection happens on the handle.
 It is not a loop over `pool.submit()`.
 The function, its constant `args=`/`kwargs=`, and the data are written to shared memory once, and one *runner* task per worker divides up the elements:
 
@@ -11,10 +11,21 @@ The function, its constant `args=`/`kwargs=`, and the data are written to shared
 import pymizu
 
 with pymizu.Pool.create(4) as pool:
-    result = pool.map(abs, range(-5, 5))
+    result = pool.map(abs, range(-5, 5)).collect()
 
 result
 ```
+
+## The map handle
+
+A map collects exactly once, through the handle:
+
+- `handle.collect(timeout=None)` blocks for the results: a list in input order, or with `template=` the gathered output area (a view with `collect="view"`). On `timeout` expiry the outstanding work is cancelled and the `TIMEOUT` sentinel is returned, never raised.
+- `handle.collect_async()` — or simply `await handle` — resolves one `asyncio.Future` with the same results, driven by the workers' notify signals rather than any blocking or polling. Cancelling the Future only detaches the waiter (the handle collects blocking again); it never cancels the map. A streaming map (`stream=True`) collects blocking only: its sliding window needs the blocking turn loop.
+- `handle.cancel()` stops the run: workers halt within about one batch and a pending collect — blocking or async — settles with `CancelledError`.
+
+`Pool.map()`'s own `timeout=` bounds submission only: on its expiry the tasks already in are cancelled and `Pool.map()` itself returns the `TIMEOUT` sentinel (no handle).
+A dropped uncollected handle cancels at garbage collection, so no run of `fn` is wasted.
 
 ## Scheduling
 
@@ -30,7 +41,7 @@ Each worker views the same array in shared memory and reads its elements directl
 import numpy as np
 
 with pymizu.Pool.create(4) as pool:
-    result = pool.map(np.negative, np.arange(-5.0, 5.0))
+    result = pool.map(np.negative, np.arange(-5.0, 5.0)).collect()
 
 result
 ```
@@ -42,7 +53,7 @@ This is the `multiprocessing.Pool.starmap` convention:
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
-    result = pool.starmap(pow, [(2, 10), (3, 3)])
+    result = pool.starmap(pow, [(2, 10), (3, 3)]).collect()
 
 result
 ```
@@ -64,8 +75,8 @@ def draw(i):
     return random.random()
 
 with pymizu.Pool.create(4) as pool:
-    a = pool.map(draw, range(100), seed=123)
-    b = pool.map(draw, range(100), seed=123, n_chunks=10)
+    a = pool.map(draw, range(100), seed=123).collect()
+    b = pool.map(draw, range(100), seed=123, n_chunks=10).collect()
     print(a == b)
 ```
 
@@ -80,8 +91,8 @@ def draw_np(i):
     return pymizu.current_rng().random()
 
 with pymizu.Pool.create(4) as pool:
-    a = pool.map(draw_np, range(100), seed=123)
-    b = pool.map(draw_np, range(100), seed=123, n_chunks=10)
+    a = pool.map(draw_np, range(100), seed=123).collect()
+    b = pool.map(draw_np, range(100), seed=123, n_chunks=10).collect()
     print(a == b)
 ```
 
@@ -103,7 +114,7 @@ If `m == 1`, a plain Python scalar also works:
 import math
 
 with pymizu.Pool.create(4) as pool:
-    result = pool.map(math.log1p, [1.0, 2.0, 3.0], template=np.empty(1))
+    result = pool.map(math.log1p, [1.0, 2.0, 3.0], template=np.empty(1)).collect()
 
 result
 ```
@@ -127,7 +138,7 @@ The chunk count defaults to `min(len(x), 32 * live workers)`, and `n_chunks=` ov
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
-    result = pool.map(abs, range(-5, 5), stream=True)
+    result = pool.map(abs, range(-5, 5), stream=True).collect()
 
 result
 ```
@@ -147,13 +158,13 @@ Each chunk also writes its results separately, so they cannot combine into one v
 ## Prepared maps
 
 `pool.map_prepare()` prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once.
-Each `m.run()` then costs only the task submissions and the collection, and reuses each worker's cached map context:
+Each `m.run()` then returns the run's handle — costing only the task submissions and the collection — and reuses each worker's cached map context:
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
     with pool.map_prepare(abs, range(-5, 5)) as m:
-        print(m.run())
-        print(m.run())
+        print(m.run().collect())
+        print(m.run().collect())
 ```
 
 `m.run(x=...)` replaces the data for that and later runs.
@@ -170,7 +181,7 @@ The runner submissions push straight onto the worker's own deque, and the blocke
 
 ```{python}
 def nested_total(parts):
-    return sum(pymizu.current_pool().map(sum, parts))
+    return sum(pymizu.current_pool().map(sum, parts).collect())
 
 parts = [range(0, 250), range(250, 500), range(500, 750), range(750, 1000)]
 
