@@ -11,7 +11,7 @@
 <meta name="description" content="A map staged once into a persistent region, run many times.">
 
 <title>PreparedMap | pymizu 水</title>
-<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy shared-memory parallelism across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "PreparedMap - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/PreparedMap.html"}]</script>
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "PreparedMap - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/PreparedMap.html"}]</script>
 <meta property="og:type" content="website">
 <style>
 /* Default styles provided by pandoc.
@@ -913,7 +913,7 @@ Stream slices of <code>x</code> instead of staging it whole — as for <a href="
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Stage the map once, then re-run it over replacement data at memcpy cost (same dtype and length swap in place):</p>
-<div id="a3387645" class="cell" data-execution_count="1">
+<div id="676e515f" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>

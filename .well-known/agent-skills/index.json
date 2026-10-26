@@ -2,7 +2,7 @@
   "skills": [
     {
       "name": "pymizu",
-      "description": "Zero-copy shared-memory parallelism across Python and R. Use when writing Python code that uses the pymizu package.",
+      "description": "Zero-copy async and parallel IPC across Python and R. Use when writing Python code that uses the pymizu package.",
       "files": [
         "SKILL.md"
       ]

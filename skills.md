@@ -34,14 +34,14 @@ Or browse the [`SKILL.md`](skill.md) file.
 ---
 name: pymizu
 description: >
-  Zero-copy shared-memory parallelism across Python and R. Use when writing Python code that uses the pymizu package.
+  Zero-copy async and parallel IPC across Python and R. Use when writing Python code that uses the pymizu package.
 license: MIT
 compatibility: Requires Python >=3.10.
 ---
 
 # pymizu 水
 
-Zero-copy shared-memory parallelism across Python and R
+Zero-copy async and parallel IPC across Python and R
 
 ## Installation
 

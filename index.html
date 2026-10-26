@@ -8,10 +8,10 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Zero-copy shared-memory parallelism across Python and R">
+<meta name="description" content="Zero-copy async and parallel IPC across Python and R">
 
 <title>pymizu 水</title>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy shared-memory parallelism across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}</script>
 <meta property="og:type" content="website">
 <style>
 /* Default styles provided by pandoc.
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="pymizu 水 | pymizu 水">
-<meta property="og:description" content="Zero-copy shared-memory parallelism across Python and R">
+<meta property="og:description" content="Zero-copy async and parallel IPC across Python and R">
 <meta property="og:site_name" content="pymizu 水">
 <meta name="twitter:title" content="pymizu 水 | pymizu 水">
-<meta name="twitter:description" content="Zero-copy shared-memory parallelism across Python and R">
+<meta name="twitter:description" content="Zero-copy async and parallel IPC across Python and R">
 <meta name="twitter:card" content="summary">
 </head>
 
@@ -254,14 +254,15 @@ section.level2:first-of-type > h2:first-child,
     /  \ pymizu\
     \  /  水   /
      \/_______/</code></pre>
-<p>pymizu makes communication between Python processes fast enough to parallelize work at thread granularity.</p>
-<p>pymizu uses shared memory as the fastest IPC transport. Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets. This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see <a href="#benchmarks">Benchmarks</a>).</p>
+<p>pymizu uses shared memory to make communication between Python processes fast enough to parallelize work at thread granularity.</p>
+<p>Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). The hot path never enters the kernel and data is never copied through a system socket.</p>
 <p>In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes. Processes also isolate failures: a worker that crashes does not take the host down with it.</p>
-<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows). The hot path stays in user space. Data moves through single-producer single-consumer rings with batched publication. Waiting is spin-then-park, and peer death arrives as an OS event.</p>
+<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting, and peer death delivered as an OS event.</p>
 <p>pymizu is built on <a href="https://github.com/shikokuchuo/libmizu">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/mizu">mizu</a> binds the same core for R, so Python and R can talk to each other.</p>
 <ul>
 <li>Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)</li>
 <li>Drop-in <code>concurrent.futures.Executor</code> — real <code>Future</code>s, <code>wait</code>, <code>as_completed</code>, <code>asyncio.wrap_future</code></li>
+<li>Event-driven asyncio — <code>await</code> tasks and maps, <code>async for</code> and <a href="./reference/Channel.recv_async.html#pymizu.Channel.recv_async" class="gdls-link gdls-code">recv_async()</a> on channels — edge-triggered wakeups, no polling threads</li>
 <li>Reproducible parallel randomness (<code>seed=</code>), invariant for any worker count or steal order</li>
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
 </ul>
@@ -275,7 +276,7 @@ section.level2:first-of-type > h2:first-child,
 </section>
 <section id="quickstart" class="level2">
 <h2 class="anchored" data-anchor-id="quickstart">Quickstart</h2>
-<div id="7837face" class="cell" data-execution_count="1">
+<div id="d80753d1" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -371,7 +372,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="drop-in-concurrent.futures" class="level2">
 <h2 class="anchored" data-anchor-id="drop-in-concurrent.futures">Drop-in <code>concurrent.futures</code></h2>
 <p><a href="./reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface — code written against <code>ProcessPoolExecutor</code> drops in, and <code>submit</code> returns real <code>Future</code> objects:</p>
-<div id="4c742065" class="cell" data-execution_count="2">
+<div id="f75fb10e" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
@@ -387,7 +388,7 @@ section.level2:first-of-type > h2:first-child,
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the run’s handle immediately. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor. <code>handle.collect()</code> returns the results in order — or <code>await handle</code> in asyncio code.</p>
 <p>A map also nests — the mapped function can map over its own pool with <a href="./reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a>, deadlock-free.</p>
-<div id="39e4c5f4" class="cell" data-execution_count="3">
+<div id="6031a648" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>)).collect()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>

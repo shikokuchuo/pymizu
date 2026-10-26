@@ -1,6 +1,6 @@
 # pymizu
 
-> Zero-copy shared-memory parallelism across Python and R
+> Zero-copy async and parallel IPC across Python and R
 
 ## Docs
 
