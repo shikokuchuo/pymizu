@@ -1829,6 +1829,11 @@ class _Map:
             out = self._collect(pymizu, remaining, expired)
         except BaseException:
             self._cleanup(True)
+            if self._cancelled:
+                # the cancel owns the outcome: a claimed runner's collect
+                # raises CancelledError, a skipped queued one's frees to
+                # "already collected" — both fold to the documented one
+                raise pymizu.CancelledError("pymizu: map cancelled") from None
             raise
         if out is pymizu.TIMEOUT:
             self._cleanup(True)
