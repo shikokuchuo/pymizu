@@ -92,7 +92,7 @@ back = ch.recv(timeout=5)
 back.names         # ('total_bill', 'day')
 ```
 
-R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a `Date` or `POSIXct` for a `datetime64` array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. Labels cross with the values they name: a named R vector arrives as a [`DimArray`](../reference/DimArray.md#pymizu.DimArray) carrying its names, and labels you attach in Python ride to R as [names](../reference/Frame.names.md#pymizu.Frame.names) or `dimnames`.
+R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a `Date` or `POSIXct` for a `datetime64` array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. An ordered categorical (an R ordered factor, a polars `Enum`, an ordered pyarrow dictionary) crosses as an ordered factor in R, and the [Frame](../reference/Frame.md#pymizu.Frame)'s Arrow export keeps the ordered flag, so pandas and polars see an ordered categorical and a round trip is `identical()`. Labels cross with the values they name: a named R vector arrives as a [`DimArray`](../reference/DimArray.md#pymizu.DimArray) carrying its names, and labels you attach in Python ride to R as [names](../reference/Frame.names.md#pymizu.Frame.names) or `dimnames`.
 
 ## What doesn't cross
 
@@ -112,9 +112,9 @@ except pymizu.DeclinedError as e:
 ch.close()
 ```
 
-From Python, also declined: Arrow nested, `date64`, `time`, and `interval` columns, and ordered dictionaries. Cast a polars `Enum` to `pl.Categorical` first. An Arrow `uint8` column *with nulls* is a `TypeError`: an R raw vector has no `NA`.
+From Python, also declined: Arrow nested, `date64`, `time`, and `interval` columns. An Arrow `uint8` column *with nulls* is a `TypeError`: an R raw vector has no `NA`.
 
-From R: a `POSIXlt` time, a character matrix, and S4 objects stay on R's side. So does a named vector with a class or of character type (a named character vector, factor, `Date`, or `POSIXct`), since names ride only on the plain atomic vectors. Among data frames: a data.table, a groupedData-style frame (a formula attribute), an ordered-factor column, and a column that is itself a labeled matrix.
+From R: a `POSIXlt` time, a character matrix, and S4 objects stay on R's side. So does a named vector with a class or of character type (a named character vector, factor, `Date`, or `POSIXct`), since names ride only on the plain atomic vectors. Among data frames: a data.table, a groupedData-style frame (a formula attribute), and a column that is itself a labeled matrix.
 
 ## pymizu.Frame
 
@@ -172,7 +172,7 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | int32 | integer |  |
 | uint32 | double | widened, exact |
 | int64 | integer64 (bit64's layout) | bit-exact; `INT64_MIN` reads as `NA` |
-| uint64 | double + `NA` past 2^53 (warned) | the frame column and `mizu_as_arrow()` are bit-exact |
+| uint64 | integer64 (`NA` past 2^63 - 1, warned) | the frame column and `mizu_as_arrow()` are bit-exact |
 | float16 / float32 / float64 | double | float16 and float32 widened, exact |
 | bool | logical |  |
 | complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
@@ -181,7 +181,7 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
 | Arrow `duration[u]` | `difftime` (secs) | the frame column exports back as `duration[us]` |
 | timedelta64 (any non-calendar unit) | `difftime` (secs) | `NaT` reads as `NA`; the unit converts to seconds |
-| Arrow dictionary-encoded | factor | ordered dictionaries decline (`polars Enum`: cast to `pl.Categorical`) |
+| Arrow dictionary-encoded | factor | an ordered dictionary (polars `Enum`) arrives as an ordered factor |
 | Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks are concatenated |
 | Arrow nested, decimal, time32/64, interval | -- | [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at send time |
 
@@ -205,7 +205,7 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | int32 | integer | int32 | exact |
 | uint32 | double | float64 | exact |
 | int64 | integer64 | int64 | exact |
-| uint64 | double + `NA` past 2^53 (warned) | uint64 | the column and R's Arrow export are bit-exact |
+| uint64 | integer64 (`NA` past 2^63 - 1, warned) | uint64 | the column and R's Arrow export are bit-exact |
 | float16 | double | float64 | widened, values exact |
 | float32 | double | float64 | widened, values exact |
 | float64 | double | float64 | exact |
@@ -225,4 +225,4 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 
 Between two Python processes, on a channel or a pool, the conversions on this page never run. The identity dtypes cross unchanged, and everything else pickles. An exact Python-to-Python send of a non-identity dtype needs no work. They apply only when the other end runs R.
 
-[^1]: Below the floor, a value crosses as one quick copy. At any size, these types cross: Python scalars (`bool`, `int`, `float`, `complex`, `str`, `None`), lists, dicts with `str` keys (a tuple arrives as a `list` in R), `bytes` (an R raw vector), and `datetime.date` / `datetime.datetime` scalars (length-1 dates and times in R). A few round trips change the container but never the values. A standalone R factor comes back as strings, a length-1 `NA` arrives as `None` and sent back is R's `NULL`, and an R logical vector with `NA`s comes back as integer. A `POSIXct` timezone normalizes to UTC (the instant is exact), and `difftime` units normalize to seconds. The bit patterns `-2147483648` (int32) and `-9223372036854775808` (int64) collide with R's own `NA` sentinels and read as `NA` in R. A `uint64` past 2^53 crosses as `NA` with a warning at send.
+[^1]: Below the floor, a value crosses as one quick copy. At any size, these types cross: Python scalars (`bool`, `int`, `float`, `complex`, `str`, `None`), lists, dicts with `str` keys (a tuple arrives as a `list` in R), `bytes` (an R raw vector), and `datetime.date` / `datetime.datetime` scalars (length-1 dates and times in R). A few round trips change the container but never the values. A standalone R factor comes back as strings, a length-1 `NA` arrives as `None` and sent back is R's `NULL`, and an R logical vector with `NA`s comes back as integer. A `POSIXct` timezone normalizes to UTC (the instant is exact), and `difftime` units normalize to seconds. The bit patterns `-2147483648` (int32) and `-9223372036854775808` (int64) collide with R's own `NA` sentinels and read as `NA` in R. A `uint64` up to 2^63 - 1 converts exactly to `integer64`; past that it crosses as `NA` with a warning at send.

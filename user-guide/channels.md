@@ -139,7 +139,8 @@ Values cross exactly, but types normalize. A column also copies, never declines,
 | `string_view` | `large_string` (copies) |
 | `bool` | `bool` (copies: bit-packed) |
 | int8 / int16 / uint16 | int32 (copies) |
-| uint32 / uint64 / half_float / float32 | float64 (copies) |
+| uint32 / half_float / float32 | float64 (copies) |
+| uint64 | uint64 (adopts) |
 | timestamp\[s / ms / us / ns\] | timestamp\[s / ms / us / ns\] (adopts) |
 | duration\[s / ms / us / ns\] | duration\[s / ms / us / ns\] (adopts) |
 | dictionary\<i32, utf8\> | dictionary\<i32, string\> (adopts; other index widths copy) |
