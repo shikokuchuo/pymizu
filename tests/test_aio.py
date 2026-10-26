@@ -929,17 +929,20 @@ def test_pool_signal_coalesces_into_one_wake():
             while t1.state == "pending":
                 assert time.monotonic() < deadline
                 time.sleep(0.001)  # hold the loop: the wake queues
+            time.sleep(0.05)  # the wake is queued behind the busy loop
             pool._h._notify_rearm()  # re-arm ahead of the pump
+            blocker = pool.submit(sleep_ident, 0.5)  # occupy the worker
             t2 = pool.submit(square, 2)
-            f2 = t2.collect_async()
+            f2 = t2.collect_async()  # its announce lands while it sleeps
             deadline = time.monotonic() + 5
             while t2.state == "pending":
                 assert time.monotonic() < deadline
                 time.sleep(0.001)
-            time.sleep(0.05)  # both wakes process behind the busy loop
+            time.sleep(0.05)  # the second wake coalesces into the first
             assert await f1 == 1
             assert await f2 == 4
             assert wk.dump()["local"]["notify_sends"] == 2
+            assert blocker.collect(timeout=5) == 0.5
 
         asyncio.run(main())
     finally:
