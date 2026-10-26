@@ -202,6 +202,30 @@ def test_channel_quantum_split():
         peer.destroy()
 
 
+def test_channel_signal_coalesces_into_one_wake():
+    # two armed transitions while a wake is still queued collapse to one
+    # scheduled drain: nothing is lost, order is preserved
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_async()
+            peer.send(1)  # transition 1: signals
+            time.sleep(0.05)  # the wake is queued behind the busy loop
+            host._h._notify_rearm()  # re-arm ahead of the drain
+            peer.send(2)  # transition 2: coalesces into the queued wake
+            time.sleep(0.05)
+            f2 = host.recv_async()
+            assert await f1 == 1
+            assert await f2 == 2
+            assert peer.info()["notify_sends"] == 2
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
 def _quantum_n():
     from pymizu import _aio
 
@@ -882,6 +906,40 @@ def test_pool_edge_trigger():
             assert wk.dump()["local"]["notify_sends"] == 2
             assert await fut == [i * i for i in range(4)]
             assert blocker.collect(timeout=5) == 0.3
+
+        asyncio.run(main())
+    finally:
+        h.destroy()
+
+
+def test_pool_signal_coalesces_into_one_wake():
+    # the submitter word's two armed transitions while a wake is queued
+    # collapse to one scheduled pump: nothing is lost
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        pool = pymizu.Pool._wrap(h)
+
+        async def main():
+            t1 = pool.submit(square, 1)
+            f1 = t1.collect_async()
+            th = threading.Thread(target=wk.run, daemon=True)
+            th.start()
+            deadline = time.monotonic() + 5
+            while t1.state == "pending":
+                assert time.monotonic() < deadline
+                time.sleep(0.001)  # hold the loop: the wake queues
+            pool._h._notify_rearm()  # re-arm ahead of the pump
+            t2 = pool.submit(square, 2)
+            f2 = t2.collect_async()
+            deadline = time.monotonic() + 5
+            while t2.state == "pending":
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
+            time.sleep(0.05)  # both wakes process behind the busy loop
+            assert await f1 == 1
+            assert await f2 == 4
+            assert wk.dump()["local"]["notify_sends"] == 2
 
         asyncio.run(main())
     finally:
