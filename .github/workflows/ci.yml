@@ -110,9 +110,7 @@ jobs:
           GITHUB_PAT: ${{ secrets.CROSSLANG_PAT }}
         run: |
           install.packages(c("bit64", "pak", "arrow", "nanoarrow"))
-          # @async until mizu's async branch lands on main (notify
-          # endpoints + handle-first mizu_map)
-          pak::pak("shikokuchuo/mizu@async")
+          pak::pak("shikokuchuo/mizu")
         shell: Rscript {0}
 
       - name: Import smoke
@@ -169,9 +167,7 @@ jobs:
           GITHUB_PAT: ${{ secrets.CROSSLANG_PAT }}
         run: |
           install.packages(c("bit64", "pak", "arrow", "nanoarrow"))
-          # @async until mizu's async branch lands on main (notify
-          # endpoints + handle-first mizu_map)
-          pak::pak("shikokuchuo/mizu@async")
+          pak::pak("shikokuchuo/mizu")
         shell: Rscript {0}
       - name: Test
         # %p keeps each process's profraw distinct; the profile runtime
