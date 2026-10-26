@@ -12,25 +12,22 @@
     \  /  水   /
      \/_______/
 
-pymizu makes communication between Python processes fast enough to parallelize work at thread granularity.
+pymizu uses shared memory to make communication between Python processes fast enough to parallelize work at thread granularity.
 
-pymizu uses shared memory as the fastest IPC transport.
-Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets.
-This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see [Benchmarks](#benchmarks)).
+Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
+The hot path never enters the kernel and data is never copied through a system socket.
 
 In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
 Processes also isolate failures: a worker that crashes does not take the host down with it.
 
-Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
-The hot path stays in user space.
-Data moves through single-producer single-consumer rings with batched publication.
-Waiting is spin-then-park, and peer death arrives as an OS event.
+Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting, and peer death delivered as an OS event.
 
 pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [mizu](https://github.com/shikokuchuo/mizu) binds the same core for R, so Python and R can talk to each other.
 
 - Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)
 - Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`
+- Event-driven asyncio — `await` tasks and maps, `async for` and `recv_async()` on channels — edge-triggered wakeups, no polling threads
 - Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 

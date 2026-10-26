@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pymizu"
 dynamic = ["version"]
-description = "Zero-copy shared-memory parallelism across Python and R"
+description = "Zero-copy async and parallel IPC across Python and R"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
