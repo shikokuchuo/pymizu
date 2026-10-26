@@ -20,6 +20,8 @@
 - [Channel.send](https://shikokuchuo.net/pymizu/reference/Channel.send.html)
 - [Channel.send_batch](https://shikokuchuo.net/pymizu/reference/Channel.send_batch.html)
 - [Channel.recv](https://shikokuchuo.net/pymizu/reference/Channel.recv.html)
+- [Channel.recv_async](https://shikokuchuo.net/pymizu/reference/Channel.recv_async.html)
+- [Channel.__aiter__](https://shikokuchuo.net/pymizu/reference/Channel.__aiter__.html)
 - [Channel.recv_batch](https://shikokuchuo.net/pymizu/reference/Channel.recv_batch.html)
 - [Channel.close](https://shikokuchuo.net/pymizu/reference/Channel.close.html)
 - [Channel.close_signal](https://shikokuchuo.net/pymizu/reference/Channel.close_signal.html)
@@ -48,6 +50,8 @@
 - [Pool.submit_batch](https://shikokuchuo.net/pymizu/reference/Pool.submit_batch.html)
 - [Pool.collect_any](https://shikokuchuo.net/pymizu/reference/Pool.collect_any.html)
 - [Pool.collect_all](https://shikokuchuo.net/pymizu/reference/Pool.collect_all.html)
+- [Pool.collect_any_async](https://shikokuchuo.net/pymizu/reference/Pool.collect_any_async.html)
+- [Pool.collect_all_async](https://shikokuchuo.net/pymizu/reference/Pool.collect_all_async.html)
 - [Pool.map](https://shikokuchuo.net/pymizu/reference/Pool.map.html)
 - [Pool.starmap](https://shikokuchuo.net/pymizu/reference/Pool.starmap.html)
 - [Pool.map_prepare](https://shikokuchuo.net/pymizu/reference/Pool.map_prepare.html)
@@ -62,6 +66,17 @@
 - [Pool.trace](https://shikokuchuo.net/pymizu/reference/Pool.trace.html)
 - [Pool.__enter__](https://shikokuchuo.net/pymizu/reference/Pool.__enter__.html)
 - [Pool.__exit__](https://shikokuchuo.net/pymizu/reference/Pool.__exit__.html)
+
+#### Task Methods
+> Methods for the Task class
+
+- [Task.state](https://shikokuchuo.net/pymizu/reference/Task.state.html)
+- [Task.pool](https://shikokuchuo.net/pymizu/reference/Task.pool.html)
+- [Task.collect](https://shikokuchuo.net/pymizu/reference/Task.collect.html)
+- [Task.result](https://shikokuchuo.net/pymizu/reference/Task.result.html)
+- [Task.cancel](https://shikokuchuo.net/pymizu/reference/Task.cancel.html)
+- [Task.collect_async](https://shikokuchuo.net/pymizu/reference/Task.collect_async.html)
+- [Task.__await__](https://shikokuchuo.net/pymizu/reference/Task.__await__.html)
 
 #### Cross-language interop
 > R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.

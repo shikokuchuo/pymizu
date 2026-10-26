@@ -1,10 +1,10 @@
 # using_pool()
 
-Use `pool` as the default for the with block, then restore.
+Use [pool](../reference/Task.pool.md#pymizu.Task.pool) as the default for the with block, then restore.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1385-L1404)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1508-L1527)
 
 ``` python
 using_pool(pool)

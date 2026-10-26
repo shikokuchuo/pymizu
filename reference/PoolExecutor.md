@@ -4,7 +4,7 @@ A `concurrent.futures.Executor` over a pymizu pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L63-L322)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L49-L324)
 
 ``` python
 PoolExecutor(
@@ -26,7 +26,7 @@ When True, `shutdown()` stops the wrapped pool.
 
 ## Notes
 
-Deltas from stdlib semantics: a task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) (the remote error envelope); `Future.running()` is always False (futures resolve at completion); cancellation is advisory, mirroring [`Task.cancel()`](../reference/Task.md#pymizu.Task) -- and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An infrastructure failure (e.g. the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a dead drain. [map](../reference/Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit` -- for bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) is the faster path.
+Deltas from stdlib semantics: a task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) (the remote error envelope); `Future.running()` is always False (futures resolve at completion); cancellation is advisory, mirroring [`Task.cancel()`](../reference/Task.md#pymizu.Task) -- and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An infrastructure failure (e.g. the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a broken executor. Resolution -- including any `add_done_callback` callables -- runs on the core's listener thread, the same discipline as the stdlib executors' management thread: keep callbacks short, and never block one on the pool itself. [map](../reference/Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit` -- for bulk maps, [`Pool.map`](../reference/Pool.map.md#pymizu.Pool.map) is the faster path.
 
 ## Examples
 
@@ -86,7 +86,7 @@ Stdlib shutdown.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L194-L216)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L194-L222)
 
 ``` python
 shutdown(
@@ -142,4 +142,4 @@ Keyword arguments for `fn`.
 After shutdown.
 
 `pymizu.MizuError`  
-The infrastructure failure that broke the executor (its drain thread failed every outstanding future on it).
+The infrastructure failure that broke the executor (its drain failed every outstanding future on it).

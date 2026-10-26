@@ -4,7 +4,7 @@ A shared-memory SPSC channel handle (process-private).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L85-L329)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L85-L384)
 
 ``` python
 Channel()

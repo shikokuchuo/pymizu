@@ -68,6 +68,24 @@ rest
 
 `pool.submit_batch()` submits one task per zero-argument callable in a single call. Bind arguments with `functools.partial`.
 
+## asyncio
+
+`await task` -- or `task.collect_async()` -- is the event-driven collect: an `asyncio.Future` resolving with the task's result (or raising the flattened remote error), driven by the worker's notify signal rather than any blocking or polling. Cancelling the Future detaches the waiter -- a later blocking [collect()](../reference/Task.collect.md#pymizu.Task.collect) works again -- and never cancels the task (`task.cancel()` stays the explicit verb). An enrolled task refuses blocking collects: one consumer per result.
+
+`pool.collect_any_async(tasks)` and `pool.collect_all_async(tasks)` are the volume form: exactly one Future per collection, never one per task, resolved by a scan over the enrolled tasks on each wake. Semantics mirror the sync verbs: collect-all resolves in input order and the first error by position rejects with `index`; collect-any resolves `(index, value)` for the first terminal task. There are no timeout arguments: `asyncio.timeout` / `asyncio.wait_for` are the idiom.
+
+``` python
+with pymizu.Pool.create(2) as pool:
+    tasks = [pool.submit(pow, 2, i) for i in range(4)]
+    rest = await pool.collect_all_async(tasks)
+
+rest
+```
+
+    [1, 2, 4, 8]
+
+`await pool.map(fn, x)` resolves a map handle the same way (see [Parallel map](map.md)).
+
 ## Nested tasks
 
 Inside a task, [pymizu.current_pool()](../reference/current_pool.md#pymizu.current_pool) returns the evaluating worker's own handle. A nested submit pushes straight onto the worker's own work-stealing deque, with no ring and no wake. A worker waiting on a nested result executes other work instead of sleeping. Divide-and-conquer runs at fork/join cost and never deadlocks the pool:
@@ -96,7 +114,7 @@ total
 
 Package code can read a process-wide default pool with [pymizu.default_pool()](../reference/default_pool.md#pymizu.default_pool). `pymizu.set_default_pool(pool)` sets it (`None` clears it) and returns the previous default, so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted. `pymizu.using_pool(pool)` scopes the default to a `with` block and restores the previous default on exit, including on exception.
 
-Resolve an optional pool in this order: an explicit `pool` argument, [current_pool()](../reference/current_pool.md#pymizu.current_pool) inside a task, [default_pool()](../reference/default_pool.md#pymizu.default_pool), then your own fallback (sequential execution or an error). The default never overrides [current_pool()](../reference/current_pool.md#pymizu.current_pool): inside a task the worker's own handle wins, so nested submission is never shadowed. Setting a default checks the type only. A stopped pool is accepted and fails at use time. Handles from [Pool.attach()](../reference/Pool.attach.md#pymizu.Pool.attach) are valid defaults.
+Resolve an optional pool in this order: an explicit [pool](../reference/Task.pool.md#pymizu.Task.pool) argument, [current_pool()](../reference/current_pool.md#pymizu.current_pool) inside a task, [default_pool()](../reference/default_pool.md#pymizu.default_pool), then your own fallback (sequential execution or an error). The default never overrides [current_pool()](../reference/current_pool.md#pymizu.current_pool): inside a task the worker's own handle wins, so nested submission is never shadowed. Setting a default checks the type only. A stopped pool is accepted and fails at use time. Handles from [Pool.attach()](../reference/Pool.attach.md#pymizu.Pool.attach) are valid defaults.
 
 ``` python
 def run(x, pool=None):
@@ -134,7 +152,7 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 
 ## concurrent.futures interop
 
-[pymizu.PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface. Code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects. `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged.
+[pymizu.PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface. Code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects. `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged. Futures resolve event-driven off the pool's notify endpoint -- there is no drain thread and no polling bound.
 
 ``` python
 with pymizu.PoolExecutor.create(4) as ex:
@@ -146,7 +164,7 @@ result
 
     [1, 2, 4, 8]
 
-Wrap an existing pool with `PoolExecutor(pool)`. Its lifetime then stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` spawns an owned pool that `shutdown` stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation is advisory, like [Task.cancel](../reference/Task.md#pymizu.Task.cancel). For bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path: the executor's [map](../reference/Pool.map.md#pymizu.Pool.map) runs one task per element.
+Wrap an existing pool with `PoolExecutor(pool)`. Its lifetime then stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` spawns an owned pool that `shutdown` stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation is advisory, like [Task.cancel](../reference/Task.cancel.md#pymizu.Task.cancel). For bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path: the executor's [map](../reference/Pool.map.md#pymizu.Pool.map) runs one task per element.
 
 ## Sizing a pool
 

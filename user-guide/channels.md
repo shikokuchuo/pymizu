@@ -56,6 +56,21 @@ ch.recv_batch(4, timeout=5)
 
 `ch.alive()` reports whether the peer still runs, without touching the rings. `ch.info()` returns a read-only snapshot of the channel's state.
 
+## asyncio
+
+`ch.recv_async()` is the event-driven receive: an `asyncio.Future` for the next value, resolved off the channel's notify endpoint -- no blocking, no polling, and no timeout argument (`asyncio.timeout` / `asyncio.wait_for` are the idiom). Terminal states stay values: the Future resolves with `CLOSED` / `PEER_GONE`. Several outstanding calls resolve in FIFO order, one message each. Cancelling the Future detaches the waiter, passing the next message to the one after.
+
+``` python
+ch.send(1)
+assert await ch.recv_async() == 1
+ch.send(2)
+await ch.recv_async()
+```
+
+    2
+
+`async for x in ch` is the stream form: it awaits each value through [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async) and ends on `CLOSED` or `PEER_GONE`, exactly as the sync iterator ends.
+
 ## Closing
 
 `ch.close()` is the orderly shutdown: it signals the peer and waits for it to finish draining before releasing the shared resources:

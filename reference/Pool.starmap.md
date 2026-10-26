@@ -4,7 +4,7 @@ Map `fn` over `x`, unpacking each element as the call's
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1000-L1051)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1112-L1164)
 
 ``` python
 Pool.starmap(
@@ -22,6 +22,6 @@ Pool.starmap(
 )
 ```
 
-positional arguments: `fn(*element, *args, **kwargs)`.
+positional arguments: `fn(*element, *args, **kwargs)`; return the run's map handle, as [`map()`](../reference/Pool.map.md#pymizu.Pool.map).
 
 The `multiprocessing.Pool.starmap` convention; for the multi-iterable shape of `concurrent.futures.Executor.map`, zip first: `pool.starmap(fn, zip(xs, ys))`. Elements must be iterables (a 2-D buffer's rows qualify; a 1-D buffer's scalars do not). A [`call`](../reference/call.md#pymizu.call) spec cannot starmap: element unpacking is Python-only. Everything else -- seeding, templates, streaming, the error taxonomy -- is exactly [`map()`](../reference/Pool.map.md#pymizu.Pool.map)'s.

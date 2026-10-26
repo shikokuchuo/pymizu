@@ -153,9 +153,9 @@ To map an R function over Python data, pass a [pymizu.call()](../reference/call.
 
 ``` python
 pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
-pool.map(pymizu.call("stats::median"), x)
+pool.map(pymizu.call("stats::median"), x).collect()
 pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
-         folds, template=0.0)   # each fold a dict; the element binds as x
+         folds, template=0.0).collect()   # each fold a dict; the element binds as x
 pool.stop()
 ```
 

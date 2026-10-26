@@ -29,6 +29,12 @@ Send several payloads in one crossing; return the number
 [Channel.recv()](Channel.recv.md#pymizu.Channel.recv)  
 Receive one payload.
 
+[Channel.recv_async()](Channel.recv_async.md#pymizu.Channel.recv_async)  
+The event-driven receive: an `asyncio.Future` for the next
+
+[Channel.\_\_aiter\_\_()](Channel.__aiter__.md#pymizu.Channel.__aiter__)  
+Iterate over received payloads until CLOSED or PEER_GONE --
+
 [Channel.recv_batch()](Channel.recv_batch.md#pymizu.Channel.recv_batch)  
 Receive up to `n` payloads in one crossing; a list
 
@@ -95,6 +101,12 @@ Wait on several tasks.
 [Pool.collect_all()](Pool.collect_all.md#pymizu.Pool.collect_all)  
 Wait until every task is terminal.
 
+[Pool.collect_any_async()](Pool.collect_any_async.md#pymizu.Pool.collect_any_async)  
+The event-driven [`collect_any()`](../reference/Pool.collect_any.md#pymizu.Pool.collect_any):
+
+[Pool.collect_all_async()](Pool.collect_all_async.md#pymizu.Pool.collect_all_async)  
+The event-driven [`collect_all()`](../reference/Pool.collect_all.md#pymizu.Pool.collect_all):
+
 [Pool.map()](Pool.map.md#pymizu.Pool.map)  
 Map `fn` over the elements of `x` on the pool; return the
 
@@ -134,6 +146,29 @@ Register a hook called as `fn(event, id)` at each task
 [Pool.\_\_enter\_\_()](Pool.__enter__.md#pymizu.Pool.__enter__)  
 
 [Pool.\_\_exit\_\_()](Pool.__exit__.md#pymizu.Pool.__exit__)  
+
+## Task Methods
+
+Methods for the Task class
+
+[Task.state](Task.state.md#pymizu.Task.state)  
+
+[Task.pool](Task.pool.md#pymizu.Task.pool)  
+
+[Task.collect()](Task.collect.md#pymizu.Task.collect)  
+collect(timeout=None) -\> value \| sentinel
+
+[Task.result()](Task.result.md#pymizu.Task.result)  
+result(timeout=None) -\> value \| sentinel
+
+[Task.cancel()](Task.cancel.md#pymizu.Task.cancel)  
+cancel() -\> bool
+
+[Task.collect_async()](Task.collect_async.md#pymizu.Task.collect_async)  
+collect_async() -\> asyncio.Future
+
+[Task.\_\_await\_\_()](Task.__await__.md#pymizu.Task.__await__)  
+Return an iterator to be used in await expression.
 
 ## Cross-language interop
 
@@ -230,7 +265,7 @@ The process-wide default pool, or None when none is set.
 Set the process-wide default pool; None clears it.
 
 [using_pool()](using_pool.md#pymizu.using_pool)  
-Use `pool` as the default for the with block, then restore.
+Use [pool](../reference/Task.pool.md#pymizu.Task.pool) as the default for the with block, then restore.
 
 [current_pool()](current_pool.md#pymizu.current_pool)  
 The evaluating worker's own pool handle, inside a task.

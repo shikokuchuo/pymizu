@@ -4,7 +4,7 @@ Map `fn` over the elements of `x` on the pool; return the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L808-L998)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L910-L1110)
 
 ``` python
 Pool.map(
@@ -22,7 +22,7 @@ Pool.map(
 )
 ```
 
-results as a list in input order.
+run's map handle.
 
 ## Parameters
 
@@ -58,13 +58,13 @@ Stream slices of `x` to workers instead of staging the whole of `x` in shared me
 
 ## Returns
 
-`The results as a list in input order; with template, the`  
-gathered output area; on `timeout` expiry, the `TIMEOUT` sentinel.
+`The run's map handle. handle.collect() blocks for the`  
+results -- a list in input order, or with `template` the gathered output area (a view with `collect="view"`) -- raising the errors below; `handle.collect_async()` / `await handle` resolves one `asyncio.Future` with the same gather (not on a streaming map: its sliding window needs the blocking turn loop, so it collects blocking only); `handle.cancel()` stops the run. On `timeout` expiry mid-submission, [map()](../reference/Pool.map.md#pymizu.Pool.map) itself returns the `TIMEOUT` sentinel (no handle); a length-0 `x` returns a handle whose collect yields the empty result.
 
 ## Raises
 
 `TaskError`  
-A task error re-raises as TaskError carrying the failing element's 0-based `index`; failure is fail-fast (peers stop within about one batch).
+A task error re-raises from the collect as TaskError carrying the failing element's 0-based `index`; failure is fail-fast (peers stop within about one batch).
 
 `WorkerDiedError`  
 Worker death carries the lost element ranges as `lost` (0-based half-open `(lo, hi)` pairs, conservative).
@@ -85,9 +85,9 @@ One call stages `fn`, the constant `args`/`kwargs`, and `x` exactly once (a shar
 
 `template` declares that every `fn` result is `m` values of the exemplar's dtype: results are written in place into a shared `n x m` output area and never serialized. Each result must be a matching buffer -- or, for `m == 1`, a plain Python scalar. With a template, `collect="copy"` (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape `(n, m)` -- `(n,)` for `m == 1`; `collect="view"` returns it zero-copy, with the map region's teardown deferred to the view's.
 
-With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work; the return value is unchanged. Fixed x-slices ride ordinary chunk tasks under a sliding submit/collect window of at most `min(n_chunks, 2 * live workers, free result slots)` outstanding tasks, so shared-memory residency is bounded by `window x slice` instead of `sizeof(x)` -- with the default chunk count (`min(len(x), 32 * live workers)`) that is roughly `(2 * workers) / n_chunks` of the serialized `x`. `n_chunks=` overrides the chunk count outright (`n_chunks=len(x)` is the mirai-style extreme of one element per task). Everything else -- result order, `template` and [collect](../reference/Task.md#pymizu.Task.collect), `seed` invariance, the error taxonomy -- is exactly the non-streaming map's. Fail-fast latency coarsens from about one adaptive morsel batch to about one chunk (the bound moves with `n_chunks`), the adaptive batch sizing of the morsel machinery is lost (skew mitigation is to raise `n_chunks`), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A [`call`](../reference/call.md#pymizu.call) spec as `fn` streams too, over workers of any language: each chunk in the window stages a small shared region of its own (the slice plus the task that runs on it, one runner task per chunk), removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by `sizeof(x)`. Each chunk also writes its results separately, so they cannot combine into one view: `collect="view"` raises `TypeError` on a streaming spec map, as does preparing one with [`map_prepare()`](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare).
+With `stream=True`, the map never stages the whole of `x` into shared memory: it streams slices of `x` to workers as they take work; the return value is unchanged. Fixed x-slices ride ordinary chunk tasks under a sliding submit/collect window of at most `min(n_chunks, 2 * live workers, free result slots)` outstanding tasks, so shared-memory residency is bounded by `window x slice` instead of `sizeof(x)` -- with the default chunk count (`min(len(x), 32 * live workers)`) that is roughly `(2 * workers) / n_chunks` of the serialized `x`. `n_chunks=` overrides the chunk count outright (`n_chunks=len(x)` is the mirai-style extreme of one element per task). Everything else -- result order, `template` and [collect](../reference/Task.collect.md#pymizu.Task.collect), `seed` invariance, the error taxonomy -- is exactly the non-streaming map's. Fail-fast latency coarsens from about one adaptive morsel batch to about one chunk (the bound moves with `n_chunks`), the adaptive batch sizing of the morsel machinery is lost (skew mitigation is to raise `n_chunks`), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit's serialization rather than the raw section's zero-copy slicing. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A [`call`](../reference/call.md#pymizu.call) spec as `fn` streams too, over workers of any language: each chunk in the window stages a small shared region of its own (the slice plus the task that runs on it, one runner task per chunk), removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by `sizeof(x)`. Each chunk also writes its results separately, so they cannot combine into one view: `collect="view"` raises `TypeError` on a streaming spec map, as does preparing one with [`map_prepare()`](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare).
 
-On `timeout` expiry the outstanding work is cancelled and the `TIMEOUT` sentinel is returned, never raised.
+`timeout` bounds submission only (the ring-space wait staging the tasks); the collection deadline is the handle's `collect(timeout)`, whose expiry cancels the outstanding work and returns the `TIMEOUT` sentinel, never raised.
 
 [`starmap()`](../reference/Pool.starmap.md#pymizu.Pool.starmap) is the unpacking variant -- `fn(*element, *args, **kwargs)`, the `multiprocessing.Pool.starmap` convention.
 
@@ -96,7 +96,7 @@ On `timeout` expiry the outstanding work is cancelled and the `TIMEOUT` sentinel
 ``` python
 >>> import pymizu
 >>> with pymizu.Pool.create(2) as pool:
-...     results = pool.map(abs, range(-5, 5))
+...     results = pool.map(abs, range(-5, 5)).collect()
 >>> results
 [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 ```

@@ -4,7 +4,7 @@ A task specification for a pool of another language's workers.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L370-L452)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L425-L507)
 
 ``` python
 call(

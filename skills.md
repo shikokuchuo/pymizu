@@ -67,6 +67,8 @@ Methods for the Channel class
 - `Channel.send`
 - `Channel.send_batch`
 - `Channel.recv`
+- `Channel.recv_async`
+- `Channel.__aiter__`
 - `Channel.recv_batch`
 - `Channel.close`
 - `Channel.close_signal`
@@ -97,6 +99,8 @@ Methods for the Pool class
 - `Pool.submit_batch`
 - `Pool.collect_any`
 - `Pool.collect_all`
+- `Pool.collect_any_async`
+- `Pool.collect_all_async`
 - `Pool.map`
 - `Pool.starmap`
 - `Pool.map_prepare`
@@ -111,6 +115,18 @@ Methods for the Pool class
 - `Pool.trace`
 - `Pool.__enter__`
 - `Pool.__exit__`
+
+### Task Methods
+
+Methods for the Task class
+
+- `Task.state`
+- `Task.pool`
+- `Task.collect`
+- `Task.result`
+- `Task.cancel`
+- `Task.collect_async`
+- `Task.__await__`
 
 ### Cross-language interop
 

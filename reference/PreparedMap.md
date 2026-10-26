@@ -4,7 +4,7 @@ A map staged once into a persistent region, run many times.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1662-L2064)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1982-L2321)
 
 ``` python
 PreparedMap(
@@ -22,7 +22,7 @@ PreparedMap(
 )
 ```
 
-Create with [`Pool.map_prepare()`](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare); run with [run()](../reference/PreparedMap.md#pymizu.PreparedMap.run). Re-arming is O(1) -- a generation bump, a cursor reset, a cancel-word clear -- and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with `close()` (or a with block) to unlink the region.
+Create with [`Pool.map_prepare()`](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare); run with [run()](../reference/PreparedMap.md#pymizu.PreparedMap.run), which returns the run's map handle (the collect happens on it, as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map)). Re-arming is O(1) -- a generation bump, a cursor reset, a cancel-word clear -- and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with `close()` (or a with block) to unlink the region.
 
 ## Parameters
 
@@ -66,8 +66,10 @@ import pymizu
 
 with pymizu.Pool.create(2) as pool:
     with pool.map_prepare(np.square, np.arange(4.0)) as pm:
-        first = pm.run(timeout=10)
-        second = pm.run(np.array([4.0, -5.0, 6.0, 7.0]), timeout=10)
+        first = pm.run().collect(timeout=10)
+        second = pm.run(np.array([4.0, -5.0, 6.0, 7.0])).collect(
+            timeout=10
+        )
 second
 ```
 
@@ -78,7 +80,7 @@ second
 | Name | Description |
 |----|----|
 | [close()](#close) | Unlink the staged region (idempotent; the GC backstop is the |
-| [run()](#run) | Run the prepared map once; return its results (the same |
+| [run()](#run) | Run the prepared map once; return the run's map handle. |
 
 ### close()
 
@@ -86,7 +88,7 @@ Unlink the staged region (idempotent; the GC backstop is the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2048-L2054)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2305-L2311)
 
 ``` python
 close()
@@ -96,11 +98,11 @@ capsule destructor).
 
 ### run()
 
-Run the prepared map once; return its results (the same
+Run the prepared map once; return the run's map handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1880-L1990)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2205-L2303)
 
 ``` python
 run(
@@ -109,17 +111,15 @@ run(
 )
 ```
 
-shapes and outcome taxonomy as [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map)).
-
 #### Parameters
 
 `x: _Any = None`  
 Replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region's x section -- the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.
 
 `timeout: float | None = None`  
-Seconds before the run gives up; on expiry the outstanding work is cancelled and the TIMEOUT [`Sentinel`](../reference/Sentinel.md#pymizu.Sentinel) is returned, never raised.
+Seconds before the run's submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT [`Sentinel`](../reference/Sentinel.md#pymizu.Sentinel) is returned (no handle). The collection deadline is the handle's [collect()](../reference/Task.collect.md#pymizu.Task.collect).
 
 #### Returns
 
-`The results -- the same shapes and outcome taxonomy as`  
-[`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map).
+`The run's map handle -- collected exactly once, by`  
+[collect()](../reference/Task.collect.md#pymizu.Task.collect) (blocking) or [collect_async()](../reference/Task.collect_async.md#pymizu.Task.collect_async) (event-driven). A clean value collect keeps the stage for the O(1) re-arm; a view collect hands the region to the view, and an unclean run (timeout, an error, a worker death) drops it -- the next run restages into a fresh one either way.

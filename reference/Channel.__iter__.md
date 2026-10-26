@@ -4,7 +4,7 @@ Iterate over received payloads until CLOSED or PEER_GONE.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L318-L329)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L373-L384)
 
 ``` python
 Channel.__iter__()
