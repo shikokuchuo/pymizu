@@ -1992,7 +1992,7 @@ def test_identity_exchange_reports_foreign(r_mizu):
     # the word is read off the region, no launcher attribute
     ch = pymizu.Channel.create(R_ECHO, launcher=r_mizu)
     try:
-        assert ch._h._peer_ident() == (2, 223)  # R: all caps but MIZL_TSN
+        assert ch._h._peer_ident() == (2, 479)  # R: all caps but MIZL_TSN
     finally:
         ch.close()
 
@@ -2312,7 +2312,7 @@ report_err <- function(x) {
                 error = function(e) conditionMessage(e))
   mizu::mizu_send(ch, e)
 }
-report_err(ordered(c("a", "b")))
+mizu::mizu_send(ch, ordered(c("a", "b")))
 df <- data.frame(x = 1:2)
 class(df) <- c("tbl_df", "tbl", "data.frame") # a tibble's shape, no package
 mizu::mizu_send(ch, df)   # a tibble crosses now (MIZU_CAP_LABELED)
@@ -2322,8 +2322,8 @@ report_err(bs)
 """
     ch = pymizu.Channel.create(src, launcher=r_mizu)
     try:
-        got = ch.recv(30)
-        assert "not portable" in got
+        got = ch.recv(30)  # the ordered factor: list[str | None]
+        assert got == ["a", "b"]
         f = ch.recv(30)  # the tibble: the full class vector rides the stash
         assert isinstance(f, pymizu.Frame)
         assert f._r_attrs[0] == ("tbl_df", "tbl", "data.frame")
@@ -2342,18 +2342,22 @@ report_err(bs)
         with pytest.raises(pymizu.DeclinedError, match="no portable home"):
             ch.send(pa.table({"t": pa.array([1], type=pa.time32("s"))}))
         pl = pytest.importorskip("polars")
-        with pytest.raises(pymizu.DeclinedError, match="pl.Categorical"):
-            ch.send(pl.Series("e", ["a"], dtype=pl.Enum(["a", "b"])))
-        with pytest.raises(pymizu.DeclinedError, match="ordered"):
-            ch.send(
-                pa.table(
-                    {
-                        "c": pa.DictionaryArray.from_arrays(
-                            [0], pa.array(["a"]), ordered=True
-                        )
-                    }
-                )
+        # a polars Enum (exports ordered) now crosses as an ordered factor:
+        # the standalone home is list[str | None]
+        ch.send(pl.Series("e", ["a"], dtype=pl.Enum(["a", "b"])))
+        assert ch.recv(30) == ["a"]
+        # an ordered pyarrow dictionary: the Frame's export carries ORDERED
+        ch.send(
+            pa.table(
+                {
+                    "c": pa.DictionaryArray.from_arrays(
+                        [0], pa.array(["a"]), ordered=True
+                    )
+                }
             )
+        )
+        got = ch.recv(30)
+        assert pa.table(got).schema.field("c").type.ordered
         pd = pytest.importorskip("pandas")
         with pytest.raises(pymizu.DeclinedError):
             ch.send(

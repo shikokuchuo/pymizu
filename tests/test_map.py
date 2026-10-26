@@ -1146,7 +1146,7 @@ def test_map_probe_x_convert_flag():
         np.int16: (13, 4),
         np.uint16: (13, 4),
         np.uint32: (14, 8),  # -> REAL
-        np.uint64: (14, 8),
+        np.uint64: (32, 8),  # -> INT64
         np.float16: (14, 8),
         np.float32: (14, 8),
         np.bool_: (10, 4),  # -> LGL
@@ -1255,7 +1255,7 @@ def test_map_stage_conversion_warning_as_error():
     import warnings
 
     desc = pickle.dumps((identity, (), {}), 4)
-    x = np.array([2**62, 1], dtype=np.uint64)
+    x = np.array([2**63, 1], dtype=np.uint64)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):

@@ -10,6 +10,18 @@ Initial pre-release.
 
 ### Added
 
+- Ordered factors cross both ways with R (the `MIZU_CAP_ORDERED`
+  capability): an R ordered factor arrives like a plain one
+  (`list[str | None]` standalone, a dictionary column inside a `Frame`),
+  and the `Frame`'s Arrow export sets `ARROW_FLAG_DICTIONARY_ORDERED` on
+  the column's schema, so pandas and polars see an ordered categorical
+  and an unmodified round trip is `identical()` in R. Ordered Arrow
+  dictionaries (pyarrow `DictionaryArray(ordered=True)`, polars `Enum`)
+  send to R as ordered factors; a peer build without the capability
+  declines at send rather than silently degrading to a plain factor.
+  `esoph`, `CO2`, and `ChickWeight` now echo exactly (the groupedData
+  frames minus their `formula`/`units` metadata, which stays declined).
+
 - asyncio integration: event-driven futures over the core's new
   edge-triggered notify endpoints — no polling, and no threads beyond
   the core's own listener machinery (a burst of publishes collapses to
@@ -174,7 +186,7 @@ Initial pre-release.
 - `PoolExecutor`: when the drain thread fails every outstanding future
   on an infrastructure error, later submissions raise that error
   instead of silently queueing onto the dead drain thread.
-- Conversion warnings (e.g. uint64 past 2^53, the missing-value
+- Conversion warnings (e.g. uint64 past 2^63 - 1, the missing-value
   sentinels) now fire for `pymizu.call` spec tasks whose stream is
   rewritten past the inline budget — previously the warning record was
   cut short and the rewrite's record never raised, so the lossy
@@ -244,8 +256,9 @@ Initial pre-release.
 - Spec maps to R workers now convert fixed-width non-identity numpy
   dtypes once at stage time, through the same table channel sends use:
   int8/16, uint16/32/64, float16/32, bool, and complex64 `x` buffers
-  ride the map region's byte section as converted values (uint64 past
-  2^53 warns and lands `NA` on the R side) instead of pickling every
+  ride the map region's byte section as converted values (uint64
+  converts to integer64 in range; past 2^63 - 1 it warns and lands `NA`
+  on the R side) instead of pickling every
   element through the descriptor, so each worker slices bare bytes
   rather than unpickling all of `x`. Same-language maps keep the
   lossless pickle semantics, and `template=` still takes the exemplar
@@ -266,9 +279,10 @@ Initial pre-release.
   wire the column stages as a verbatim INT64 MIZL leaf carrying a
   `u64 = TRUE` attribute. R's value landing stays double + `NA` past
   2^53, warned at the read; the Arrow export (`pa.table(frame)`, R's
-  `mizu_as_arrow()`) is bit-exact. Bare numpy / Arrow uint64 arrays keep
-  converting with the range warning, whose text is now "N uint64
-  value(s) beyond +/-2^53 convert to NA_real_".
+  `mizu_as_arrow()`) is bit-exact. Bare numpy / Arrow uint64 arrays now
+  convert exactly to `integer64` in range (previously double, lossy past
+  2^53); past 2^63 - 1 the lanes land `NA` with the range warning, whose
+  text is now "N uint64 value(s) beyond 2^63 - 1 convert to NA".
 - An Arrow int64 column with a validity bitmap and a genuine
   `-9223372036854775808` on a valid lane now warns at send ("read as
   NA_integer64_ in R"), mirroring the int32 warning. Both R-semantics
@@ -620,8 +634,9 @@ Initial pre-release.
   native wire type: it crosses bit-identically and lands in R as an
   `integer64` vector (bit64's layout), with `INT64_MIN` as the missing
   sentinel. bool, int8/16, uint16/32/64, float32, and complex64 convert
-  to the nearest R-compatible type at send time. A uint64 value past 2^53
-  in magnitude becomes `NA`, and the send issues a `RuntimeWarning`. Pool
+  to the nearest R-compatible type at send time. A uint64 value up to
+  2^63 - 1 converts exactly to `integer64`; past that it becomes `NA`,
+  and the send issues a `RuntimeWarning`. Pool
   results keep the lossless pickle path, because pools are Python at both
   ends. On a channel, a tuple or a list around an array keeps its exact
   pickle path.

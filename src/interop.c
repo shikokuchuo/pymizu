@@ -2301,8 +2301,11 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
   const attr_ent *dnm = NULL, *dn = NULL;
   if (cls != NULL && lv != NULL && nent == 2 &&
-      class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
+      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
+       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
+      vtype == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+    /* a standalone ordered factor surfaces like a plain one */
     int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
       (one_i > -2147483648LL && one_i <= 2147483647LL ? (int32_t) one_i : 0);
     const int32_t *src = vit.kind == MIZU_IX_INT ? &one32 :
@@ -2631,7 +2634,9 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
     const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
     if (cls != NULL && lv != NULL && nent == 2 &&
-        class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && vtype == MIZU_TYPE_INT &&
+        (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
+         class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
+        vtype == MIZU_TYPE_INT &&
         (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
       int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
         (one_i > -2147483648LL && one_i <= 2147483647LL ?
@@ -2645,6 +2650,8 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
         c->kind = FCOL_DICT;
         c->n = (int64_t) vn;
         c->values = (uint8_t *) codes;
+        c->ordered = class_is(cls, MIZU_IX_CLASS_ORDERED,
+                              MIZU_IX_CLASS_FACTOR);
         rc = 0;
       }
     } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
@@ -3331,7 +3338,9 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   const attr_ent *ts = attr_find(ents, nent, MIZU_IX_ATTR_TSCALE);
   if (cls != NULL && lv != NULL && nent == 2 &&
-      class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && tag == MIZU_TYPE_INT &&
+      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
+       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
+      tag == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
     if (levels_read(lv, &c->lev_off, &c->bytes, &c->nlev,
                     &c->bytes_len) == 0) {
@@ -3340,6 +3349,8 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
       c->values = (uint8_t *) data;   /* the 1-based codes */
       c->codes1 = 1;
       c->borrowed = 1;
+      c->ordered = class_is(cls, MIZU_IX_CLASS_ORDERED,
+                            MIZU_IX_CLASS_FACTOR);
       tree_valid(c, base, e->valid);
       rc = 0;
     }
@@ -3536,8 +3547,11 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
   const attr_ent *nm2 = NULL, *dn = NULL;
   if (cls != NULL && lv != NULL && nent == 2 &&
-      class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) && type == MIZU_TYPE_INT &&
+      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
+       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
+      type == MIZU_TYPE_INT &&
       (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+    /* a standalone ordered factor surfaces like a plain one */
     int32_t *lev_off = NULL, *codes = NULL;
     uint8_t *lev_bytes = NULL;
     int64_t nlev = 0, blen = 0;
@@ -4055,24 +4069,25 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     }
     break;
   case FCOL_U64: {
-    /* uint64 has no 'I' form: the REAL conversion an older-version
-       reader lands (the core's CVT_U64_REAL rule — past-2^53 valid
-       lanes NA, counted; the MIZL frame path is verbatim for a peer
-       advertising MIZU_CAP_MIZL_U64V) */
+    /* uint64's by-value form: the integer64 conversion an older-version
+       reader lands (the core's CVT_U64_INT64 rule — in-range exact,
+       past-INT64_MAX lanes the int64 NA sentinel, counted; the MIZL
+       frame path is verbatim for a peer advertising MIZU_CAP_MIZL_U64V) */
     const uint64_t *us = (const uint64_t *) c->values;
-    IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, (uint64_t) c->n));
+    IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_I64V, (uint64_t) c->n));
     if (w->decline) return;
     if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
       uint8_t *dst = w->dst + w->total;
       for (int64_t i = 0; i < c->n; i++) {
         const int na = c->valid != NULL && !bitmap_at(c->valid, i);
-        if (na || us[i] > 9007199254740992ULL) {
-          store_na_r(dst + 8 * i);
+        int64_t v;
+        if (na || us[i] > (uint64_t) INT64_MAX) {
+          v = MIZU_NA_INT64;
           w->warn.n_range += !na;
         } else {
-          double v = (double) us[i];
-          memcpy(dst + 8 * i, &v, 8);
+          v = (int64_t) us[i];
         }
+        memcpy(dst + 8 * i, &v, 8);
       }
     } else if (w->dst != NULL) {
       w->overflow = 1;
@@ -4159,6 +4174,13 @@ static void ixe_fcol(ixw *w, const fcol *c) {
   }
   case FCOL_DICT: {
     static const char *cls[1] = { MIZU_IX_CLASS_FACTOR };
+    static const char *ocls[2] = { MIZU_IX_CLASS_ORDERED,
+                                   MIZU_IX_CLASS_FACTOR };
+    /* the two-element class is a gated emission (decline, never strip) */
+    if (c->ordered && !(w->caps & MIZU_CAP_ORDERED)) {
+      ixw_decline(w, "the peer predates the ordered factor capability");
+      break;
+    }
     const int32_t *codes = (const int32_t *) c->values;
     /* an adopted column's codes are 0-based (the wire is 1-based) with
        bitmap-only nulls; the region's codes1 are already 1-based */
@@ -4200,7 +4222,7 @@ static void ixe_fcol(ixw *w, const fcol *c) {
                   c->lev_off[i + 1] - c->lev_off[i]));
     }
     ixe_key(w, MIZU_IX_ATTR_CLASS);
-    ixe_class(w, cls, 1);
+    ixe_class(w, c->ordered ? ocls : cls, c->ordered ? 2 : 1);
     break;
   }
   case FCOL_DATE: {
@@ -4389,8 +4411,10 @@ static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names,
 static void ixe_scalar_dtype(ixw *w, const char *f, Py_ssize_t itemsize,
                              const uint8_t *data) {
   const cvt_row *row = mizu_py_cvt_for_buffer(f, itemsize);
-  if (row == NULL || row->cvt == CVT_U64_REAL) {
-    if (row != NULL && row->cvt == CVT_U64_REAL && itemsize == 8) {
+  if (row == NULL || row->cvt == CVT_U64_INT64) {
+    /* the uint64 scalar stays a hand case: past INT64_MAX it declines
+       (a scalar's loss is silent next to no vector warning) */
+    if (row != NULL && row->cvt == CVT_U64_INT64 && itemsize == 8) {
       uint64_t v;
       memcpy(&v, data, 8);
       if (v <= INT64_MAX) {
@@ -5649,9 +5673,11 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   /* the classification and validation are the core's (the single column
      wrapped as a one-column struct), the TLS decline re-raised here; the
      handle stays open through the emit — the column bodies and dicts are
-     its per-column writers */
+     its per-column writers. The peer's caps word serves the gated
+     classify verdicts (the ordered dictionary's two-element class); the
+     by-value writers convert regardless */
   void *keep1, *keep2;
-  mizu_arrow *ar = ixs_arrow_open(x, 0, &keep1, &keep2);
+  mizu_arrow *ar = ixs_arrow_open(x, x->caps, &keep1, &keep2);
   if (ar == NULL) {
     if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
     return 1;
@@ -5728,7 +5754,7 @@ static int ixs_run(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
    probed bound method, stolen. */
 static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
                                 uint8_t *payload, uint32_t inline_max,
-                                mizu_handle *h) {
+                                mizu_handle *h, uint32_t peer_caps) {
   PyObject *pair = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (pair == NULL) return 1;   /* the object claimed the interface */
@@ -5749,6 +5775,7 @@ static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
   ixs x;
   memset(&x, 0, sizeof(x));
   x.cap = pair;
+  x.caps = peer_caps;
   memcpy(&x.schema, schema, sizeof(x.schema));
   x.schema.release = NULL;
   ArrowArray one;
@@ -5781,7 +5808,7 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
     prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
     if (prc < 0) return 1;
     if (fn == NULL) return -1;
-    return ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h);
+    return ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h, peer_caps);
   }
   PyObject *cap = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
@@ -6252,6 +6279,8 @@ static int fcol_build_dict(ixs *x, int col, fcol *c, char **names) {
   c->bytes = bytes;
   c->nlev = nlev;
   c->bytes_len = (int64_t) blen;
+  c->ordered = (x->schema.children[col]->flags &
+                MIZU_ARROW_FLAG_DICTIONARY_ORDERED) != 0;
   return 0;
 fail:
   free(offs);
@@ -6339,6 +6368,8 @@ static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
     c->lev_off = (int32_t *) d->buffers[1];
     c->nlev = d->length;
     c->bytes_len = d->length > 0 ? c->lev_off[d->length] : 0;
+    c->ordered = (x->schema.children[col]->flags &
+                  MIZU_ARROW_FLAG_DICTIONARY_ORDERED) != 0;
     break;
   }
   case PC_DATE:

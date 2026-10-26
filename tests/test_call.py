@@ -102,7 +102,7 @@ def test_spec_task_conversion_warning_survives_the_rewrite():
     # argument warns exactly once at submit (P-06)
     np = pytest.importorskip("numpy")
     with pymizu.Pool.create(1) as p:
-        arr = np.full(200_000, 2**60, dtype=np.uint64)
+        arr = np.full(200_000, 2**63, dtype=np.uint64)
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
             assert (
@@ -129,8 +129,8 @@ def test_pool_word_zero_and_attach_race():
         # the queued private frame runs once a worker exists, and both
         # submitters read the word without re-attaching
         assert t.collect(timeout=10) == 1
-        assert pool._h._worker_ident() == (3, 255)  # this build's caps word
-        assert att._h._worker_ident() == (3, 255)
+        assert pool._h._worker_ident() == (3, 511)  # this build's caps word
+        assert att._h._worker_ident() == (3, 511)
     finally:
         h.destroy()
 

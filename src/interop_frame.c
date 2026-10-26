@@ -884,7 +884,9 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     }
     s->format = fmt;
     s->name = fc->cname_ptrs[i];
-    s->flags = MIZU_ARROW_FLAG_NULLABLE;
+    s->flags = MIZU_ARROW_FLAG_NULLABLE |
+      (c->kind == FCOL_DICT && c->ordered ?
+       MIZU_ARROW_FLAG_DICTIONARY_ORDERED : 0);
     s->n_children = 0;
     s->release = NULL;
     a->length = c->n;
@@ -1133,7 +1135,12 @@ static PyObject *Frame_reduce(MizuFrame *self, PyObject *Py_UNUSED(a)) {
         }
         PyList_SET_ITEM(levels, (Py_ssize_t) j, s);
       }
-      tuple = PyTuple_Pack(3, kobj, payload, levels);
+      if (c->ordered) {
+        PyObject *oo = Py_True;
+        tuple = PyTuple_Pack(4, kobj, payload, levels, oo);
+      } else {
+        tuple = PyTuple_Pack(3, kobj, payload, levels);
+      }
       Py_DECREF(levels);
     } else if (c->kind == FCOL_TS) {
       PyObject *tzobj = PyUnicode_FromString(c->tz);
@@ -1324,6 +1331,13 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
       }
       c->values = (uint8_t *) codes;
       c->lev_off = loffs;
+      /* the ordered mark rides a 4th element when set (a 3-tuple is the
+         plain form — older pickles read identically) */
+      if (PyTuple_GET_SIZE(t) >= 4) {
+        const int ord = PyObject_IsTrue(PyTuple_GET_ITEM(t, 3));
+        if (ord < 0) goto dict_malformed;
+        c->ordered = (uint8_t) ord;
+      }
       c->bytes = bytes;
       c->nlev = nlev;
       c->bytes_len = (int64_t) blen;

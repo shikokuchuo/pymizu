@@ -472,7 +472,8 @@ def _frame_home(cols, attrs, klass=None):
 def attr_home(x, attrs):
     klass = attrs.get("class")
     klass = _str_list(klass) if klass is not None else None
-    if klass == ["factor"]:
+    if klass == ["factor"] or klass == ["ordered", "factor"]:
+        # a standalone ordered factor surfaces like a plain one
         levels = _str_list(attrs["levels"])
         codes = np.atleast_1d(x)
         return _factor_home(codes, levels)

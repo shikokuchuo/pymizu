@@ -685,22 +685,34 @@ def test_from_arrow_ns_edge_cases():
     assert pa.table(f).schema.field("t").type == pa.timestamp("ns")
 
 
-def test_from_arrow_uint64_past_2_to_53_warns():
+def test_from_arrow_uint64_conversion_boundary():
     # exact at adoption (no conversion, no warning); the warning fires at
     # the loss — a foreign send to a peer without MIZU_CAP_MIZL_U64V (bits
-    # 0-5 pass the MIZL gate), on the MIZL-writer and 'I'-writer paths alike
+    # 0-5 pass the MIZL gate), on the MIZL-writer and 'I'-writer paths
+    # alike. In-range lanes convert exactly to int64; past INT64_MAX rides
+    # the int64 NA sentinel, warned at the send and at the sentinel-carrying
+    # read
     from tests.helpers import foreign_pair
 
     t = pa.table({"u": pa.array([2**53 + 1] * 20000, type=pa.uint64())})
     f = pymizu.Frame.from_arrow(t)
     assert f.to_dict()["u"].tolist() == [2**53 + 1] * 20000
     h, p = foreign_pair(caps=63)
-    with pytest.warns(RuntimeWarning, match=r"2\^53"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         assert h.send(t) is None
-    assert np.isnan(p.recv(30).to_dict()["u"][0])
-    with pytest.warns(RuntimeWarning, match=r"2\^53"):
-        assert h.send(f) is None
-    assert np.isnan(p.recv(30).to_dict()["u"][0])
+    assert p.recv(30).to_dict()["u"][0] == 2**53 + 1
+    t2 = pa.table({"u": pa.array([2**63] * 20000, type=pa.uint64())})
+    with pytest.warns(RuntimeWarning, match="beyond"):
+        assert h.send(t2) is None
+    got = p.recv(30)
+    assert got.to_dict()["u"][0] == -(2**63)
+    # the Frame's own 'I' emit takes the same conversion
+    f2 = pymizu.Frame.from_arrow(t2)
+    with pytest.warns(RuntimeWarning, match="beyond"):
+        assert h.send(f2) is None
+    got = p.recv(30)
+    assert got.to_dict()["u"][0] == -(2**63)
     p.destroy()
     h.destroy()
 

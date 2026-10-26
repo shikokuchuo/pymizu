@@ -56,7 +56,6 @@ repeat {
       int = stopifnot(is.integer(x), identical(x, c(-1L, 2L, 3L))),
       intpos = stopifnot(is.integer(x), identical(x, c(1L, 2L, 3L))),
       dbl = stopifnot(is.double(x), identical(x, c(-1, 2, 3))),
-      dblpos = stopifnot(is.double(x), identical(x, c(1, 2, 3))),
       u32max = stopifnot(is.double(x), identical(x, c(0, 1, 4294967295))),
       i64 = stopifnot(
         inherits(x, "integer64"),
@@ -64,6 +63,19 @@ repeat {
                                     0xff, 0xff, 0xff, 0xff,
                                     2, 0, 0, 0, 0, 0, 0, 0,
                                     3, 0, 0, 0, 0, 0, 0, 0)))),
+      i64pos = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(1, 0, 0, 0, 0, 0, 0, 0,
+                                    2, 0, 0, 0, 0, 0, 0, 0,
+                                    3, 0, 0, 0, 0, 0, 0, 0)))),
+      i64max = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(0, 0, 0, 0, 0, 0, 0x20, 0,
+                                    0xff, 0xff, 0xff, 0xff,
+                                    0xff, 0xff, 0xff, 0x7f)))),
+      i64na1 = stopifnot(
+        inherits(x, "integer64"),
+        identical(i64le(x), as.raw(c(0, 0, 0, 0, 0, 0, 0, 0x80)))),
       i64edge = stopifnot(
         inherits(x, "integer64"),
         identical(i64le(x), as.raw(c(0, 0, 0, 0, 0, 0, 0x20, 0,
@@ -82,7 +94,6 @@ repeat {
         inherits(x, "integer64"),
         identical(i64le(x), as.raw(c(1, 0, 0, 0, 0, 0, 0x20, 0,
                                     0, 0, 0, 0, 0, 0, 0, 0x80)))),
-      over1 = stopifnot(is.double(x), length(x) == 1L, is.na(x)),
       lgl = stopifnot(is.logical(x), identical(x, c(TRUE, FALSE, TRUE))),
       cplx = stopifnot(is.complex(x), identical(x, c(1+2i, -3+0.5i))),
       intna = stopifnot(is.integer(x), identical(x, c(1L, NA_integer_, 3L))),
@@ -217,7 +228,7 @@ def test_numpy_dtype_matrix(rcheck):
         ("int", np.array([-1, 2, 3], dtype=np.int32)),
         ("u32max", np.array([0, 1, 4294967295], dtype=np.uint32)),
         ("i64", np.array([-1, 2, 3], dtype=np.int64)),
-        ("dblpos", np.array([1, 2, 3], dtype=np.uint64)),
+        ("i64pos", np.array([1, 2, 3], dtype=np.uint64)),
         ("dbl", np.array([-1, 2, 3], dtype=np.float32)),
         ("dbl", np.array([-1.0, 2.0, 3.0], dtype=np.float64)),
         ("lgl", np.array([True, False, True], dtype=np.bool_)),
@@ -261,9 +272,13 @@ def test_int64_exact_and_sentinel(rcheck):
             rcheck, "i64na2", np.array([2**53 + 1, -(2**63)], dtype=np.int64)
         )
     assert list(b) == [2**53 + 1, -(2**63)]
-    # uint64 stays lossy: past 2^53 warns and converts to NA_real_
+    # uint64 converts exactly through INT64_MAX: 2^53 and INT64_MAX cross
+    # exact with no warning; past it warns and the lane reads NA_integer64_
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        r_case(rcheck, "i64max", np.array([2**53, 2**63 - 1], dtype=np.uint64))
     with pytest.warns(RuntimeWarning, match="beyond"):
-        r_case(rcheck, "over1", np.array([2**53 + 1], dtype=np.uint64))
+        r_case(rcheck, "i64na1", np.array([2**63], dtype=np.uint64))
 
 
 def test_range_warning_as_error():
@@ -274,7 +289,7 @@ def test_range_warning_as_error():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="beyond"):
-            h.send(np.array([2**53 + 1], dtype=np.uint64))
+            h.send(np.array([2**63], dtype=np.uint64))
     assert h.send(np.array([1.0, 2.0])) is None
     assert np.array_equal(p.recv(timeout=5), [1.0, 2.0])
     p.destroy()
@@ -282,18 +297,19 @@ def test_range_warning_as_error():
 
 
 def test_uint64_frame_columns_convert_with_a_warning():
-    # the frame policy is the container policy: exact values cross as
-    # doubles, past 2^53 converts to NA with one warning
+    # the frame policy is the container policy: in-range values cross as
+    # int64, past INT64_MAX converts to the int64 NA sentinel with one
+    # warning
     h, p = foreign_pair()
     t = pa.table({"a": pa.array([1, 2], type=pa.uint64())})
     assert h.send(t) is None
     got = p.recv(5)
-    assert list(got.to_dict()["a"]) == [1.0, 2.0]
-    t2 = pa.table({"a": pa.array([2**62], type=pa.uint64())})
+    assert list(got.to_dict()["a"]) == [1, 2]
+    t2 = pa.table({"a": pa.array([2**63], type=pa.uint64())})
     with pytest.warns(RuntimeWarning, match="beyond"):
         assert h.send(t2) is None
     got = p.recv(5)
-    assert np.isnan(got.to_dict()["a"][0])
+    assert got.to_dict()["a"][0] == -(2**63)
     # raised as an error it rolls back: the channel stages on
     with warnings.catch_warnings():
         warnings.simplefilter("error")

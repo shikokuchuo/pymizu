@@ -307,7 +307,7 @@ def test_cvt_warning_raises_after_the_spilled_write():
     # raises — raised as an error it rolls the reservation back, never a
     # half-written chunk
     h, p = foreign_pair()
-    a = (np.arange(4000, dtype=np.uint64) + 2**62)[::2]
+    a = (np.arange(4000, dtype=np.uint64) + 2**63)[::2]
     with pytest.warns(RuntimeWarning, match="beyond"):
         assert len(_pymizu._write_stream(a)) > 1024 - 16
     with warnings.catch_warnings():
@@ -321,7 +321,7 @@ def test_cvt_warning_raises_after_the_spilled_write():
         assert h.send(a) is None
     assert any(w.category is RuntimeWarning for w in seen)
     got = p.recv(5)
-    assert isinstance(got, np.ndarray) and np.isnan(got).all()
+    assert isinstance(got, np.ndarray) and (got == -(2**63)).all()
     p.destroy()
     h.destroy()
 
@@ -434,15 +434,18 @@ def test_float16_widens_to_double():
 
 
 def test_nested_uint64_converts_with_a_warning():
+    # in-range lanes convert exactly to int64; past INT64_MAX warns and
+    # the lane rides the int64 NA sentinel
     got = _read(
         _pymizu._write_stream({"a": np.array([1, 2], dtype=np.uint64)})
     )
-    assert np.array_equal(got["a"], [1.0, 2.0])
+    assert got["a"].dtype == np.int64
+    assert np.array_equal(got["a"], [1, 2])
     with pytest.warns(RuntimeWarning, match="beyond"):
         got = _read(
-            _pymizu._write_stream([np.array([2**62], dtype=np.uint64)])
+            _pymizu._write_stream([np.array([2**63], dtype=np.uint64)])
         )
-    assert np.isnan(got[0][0])
+    assert got[0][0] == -(2**63)
 
 
 def test_buffer_conversion_rows():
@@ -460,10 +463,10 @@ def test_buffer_conversion_rows():
         assert got.dtype == np.int64
         assert got.tolist() == [1, -2, 3]
         with pytest.warns(RuntimeWarning, match="beyond"):
-            assert h.send(array.array("Q", [1, 2**60])) is None
+            assert h.send(array.array("Q", [1, 2**63])) is None
         got = p.recv(10)
-        assert got.dtype == np.float64
-        assert got[0] == 1.0 and np.isnan(got[1])
+        assert got.dtype == np.int64
+        assert got[0] == 1 and got[1] == -(2**63)
     finally:
         p.destroy()
         h.destroy()
@@ -1810,12 +1813,13 @@ def test_frame_dict_scalar_column_reemits():
 
 
 def test_frame_u64_clean_reemit():
-    # the 'I' frame emit's uint64 conversion: lanes within 2^53 convert
-    # exact (past-2^53 lanes NA with a warning, covered elsewhere)
+    # the 'I' frame emit's uint64 conversion: in-range lanes convert
+    # exact to i64v (past-INT64_MAX lanes the sentinel with a warning,
+    # covered elsewhere)
     t = pa.table({"u": pa.array([1, 2, 3], type=pa.uint64())})
     f = pymizu.Frame.from_arrow(t)
     out = _read(_pymizu._write_stream(f))
-    assert out.to_dict()["u"].tolist() == [1.0, 2.0, 3.0]
+    assert out.to_dict()["u"].tolist() == [1, 2, 3]
 
 
 def test_writer_declines_buffer_forms():
@@ -2012,7 +2016,7 @@ def test_write_hooks_write_pass_failure():
 def test_write_hooks_warn_as_error():
     # the conversion-warning record raises as error after the write pass,
     # on each two-pass writer
-    a = np.array([2**60], dtype=np.uint64)
+    a = np.array([2**63], dtype=np.uint64)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(RuntimeWarning, match="uint64"):

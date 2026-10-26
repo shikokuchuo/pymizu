@@ -561,7 +561,7 @@ static const cvt_row CVT_ROW_U16 = { MIZU_TYPE_INT, CVT_U16_INT, 2, 4 };
 static const cvt_row CVT_ROW_I32 = { MIZU_TYPE_INT, CVT_COPY, 4, 4 };
 static const cvt_row CVT_ROW_U32 = { MIZU_TYPE_REAL, CVT_U32_REAL, 4, 8 };
 static const cvt_row CVT_ROW_I64 = { MIZU_TYPE_INT64, CVT_COPY, 8, 8 };
-static const cvt_row CVT_ROW_U64 = { MIZU_TYPE_REAL, CVT_U64_REAL, 8, 8 };
+static const cvt_row CVT_ROW_U64 = { MIZU_TYPE_INT64, CVT_U64_INT64, 8, 8 };
 static const cvt_row CVT_ROW_F16 = { MIZU_TYPE_REAL, CVT_F16_REAL, 2, 8 };
 static const cvt_row CVT_ROW_F32 = { MIZU_TYPE_REAL, CVT_F32_REAL, 4, 8 };
 static const cvt_row CVT_ROW_F64 = { MIZU_TYPE_REAL, CVT_COPY, 8, 8 };
@@ -620,8 +620,8 @@ const cvt_row *mizu_py_cvt_for_buffer(const char *f, Py_ssize_t itemsize) {
 int mizu_py_cvt_warn(const cvt_warn *warn, uint32_t peer_lang) {
   if (warn->n_range != 0 &&
       PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
-                       "pymizu: %llu uint64 value(s) beyond +/-2^53 convert "
-                       "to NA_real_",
+                       "pymizu: %llu uint64 value(s) beyond 2^63 - 1 "
+                       "convert to NA",
                        (unsigned long long) warn->n_range) < 0)
     return 1;
   if (peer_lang != MIZU_LANG_R) return 0;

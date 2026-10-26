@@ -68,6 +68,8 @@ typedef struct {
                          runs (the LGL bit-pack still builds) */
   uint8_t codes1;     /* DICT: the region's 1-based R codes — the export
                          shifts to 0-based into codes0 */
+  uint8_t ordered;    /* DICT: an ordered factor — the class strv's
+                         two-element form, the export's ORDERED flag */
   uint8_t enc_ok;     /* STR64: the encoding check ran (once, at export) */
   mizu_shm *hold;     /* a remote column's referenced-region mapping,
                          borrowed from the column block's deduped holds —

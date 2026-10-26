@@ -158,9 +158,10 @@ def test_prepared_spec_map_re_arms_without_restage(r_pool):
 
 
 def test_prepared_swap_conversion_warning_escalates(r_pool):
-    # a uint64 x converts to double for R workers; values past 2^53 warn
-    # after the write. Under warnings-as-errors the swap raises, the
-    # staged state is dropped, and the next run restages fresh.
+    # a uint64 x converts to integer64 for R workers; values past
+    # INT64_MAX warn after the write. Under warnings-as-errors the swap
+    # raises, the staged state is dropped, and the next run restages
+    # fresh.
     import warnings
 
     import numpy as np
@@ -171,7 +172,7 @@ def test_prepared_swap_conversion_warning_escalates(r_pool):
     try:
         assert pm.run().collect() == [0.0, 1.0, 2.0, 3.0]
         name = pm._name
-        bad = np.full(4, 2**60, dtype=np.uint64)
+        bad = np.full(4, 2**63, dtype=np.uint64)
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             with pytest.raises(RuntimeWarning, match="uint64"):
@@ -313,15 +314,16 @@ def test_map_spec_converted_dtypes(r_pool):
         assert [complex(v) for v in out] == [complex(v) * 2 for v in a]
 
 
-def test_map_spec_uint64_past_2p53_warns(r_pool):
+def test_map_spec_uint64_past_int64_max_warns(r_pool):
     import numpy as np
 
-    a = np.array([2**63 - 1, 1], dtype=np.uint64)
-    with pytest.warns(RuntimeWarning, match=r"beyond \+/-2\^53"):
+    # in-range values convert exactly to integer64 both ways; past
+    # INT64_MAX warns at the write and the lane lands NA_integer64_ on
+    # the R side, the sentinel riding back (its read warns again)
+    a = np.array([2**63, 1], dtype=np.uint64)
+    with pytest.warns(RuntimeWarning, match="beyond"):
         out = r_pool.map(pymizu.call(source="x"), a).collect()
-    # the out-of-range value lands NA_real_ on the R side and crosses back
-    # as an NA-payload NaN; the in-range value survives
-    assert np.isnan(out[0]) and out[1] == 1
+    assert out[0] == -(2**63) and out[1] == 1
 
 
 def test_prepared_spec_map_converted_swap(r_pool):

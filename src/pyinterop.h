@@ -147,7 +147,7 @@ typedef mizu_arrow_warn cvt_warn;
 #define CVT_I16_INT   MIZU_CVT_I16_INT
 #define CVT_U16_INT   MIZU_CVT_U16_INT
 #define CVT_U32_REAL  MIZU_CVT_U32_REAL
-#define CVT_U64_REAL  MIZU_CVT_U64_REAL
+#define CVT_U64_INT64 MIZU_CVT_U64_INT64
 #define CVT_F16_REAL  MIZU_CVT_F16_REAL
 #define CVT_F32_REAL  MIZU_CVT_F32_REAL
 #define CVT_BOOL8_LGL MIZU_CVT_BOOL8_LGL
@@ -248,7 +248,7 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 #define MIZU_PY_CAPS \
   (MIZU_CAP_MIZS | MIZU_CAP_ATTRS | MIZU_CAP_MIZL | MIZU_CAP_TASKREF | \
    MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN | MIZU_CAP_MIZL_U64V | \
-   MIZU_CAP_LABELED)
+   MIZU_CAP_LABELED | MIZU_CAP_ORDERED)
 #define MIZU_PY_IDENT MIZU_IDENT(MIZU_LANG_PYTHON, MIZU_PY_CAPS)
 
 /* The MIZL remote-leaf directory tag (F2): the column lives in another
