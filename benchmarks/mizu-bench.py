@@ -24,6 +24,11 @@ nothing.
                             20,000-element scaling row, a template row at
                             that size, and the skew regime (1% heavy
                             elements, ms wall)
+  9. event-driven           asyncio over the notify endpoints: the armed
+                            channel row, await-per-message and
+                            await-per-task rows, one-future collections,
+                            64 concurrent waiters, and the PoolExecutor
+                            outstanding-count regression guard (9b)
 
 Timings are best-of-3 after warm-up; single runs on a busy machine still
 jitter.
@@ -34,6 +39,7 @@ which is what makes benchmarks.tasks importable to them):
   python benchmarks/mizu-bench.py
 """
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -962,6 +968,171 @@ while (TRUE) {
             h.destroy()
     finally:
         ch.close(timeout=10)
+
+# 9. event-driven consumers (asyncio, notify endpoints) -----------------------
+
+print("\n== 9. event-driven consumers (asyncio) ==")
+
+n = 10000
+k = 10  # bursts per rep
+
+
+def armed_channel(ch):
+    # a recv future pending the whole run: the producer pays one endpoint
+    # signal total (the first publish clears the edge-triggered bit); the
+    # rate must sit in the band of the unarmed pipelined row
+    async def rep():
+        fut = ch.recv_async()
+        for _ in range(k):
+            for _ in range(n):
+                ch.send(1)
+                ch.recv(timeout=30)
+        ch.send(1)
+        assert (await fut) == 1  # settles via the wake, disarming the rep
+
+    warmup(lambda: (ch.send(1), ch.recv(timeout=30)))
+    note_rate(
+        "event-driven",
+        "channel armed",
+        k * n,
+        lambda: asyncio.run(rep()),
+        "rt/s",
+    )
+
+
+with_channel(ECHO_PEER, armed_channel, capacity=1024)
+
+
+def recv_async_channel(ch):
+    # one awaited future per message: the per-item async cost (enroll,
+    # drain, resolve) against the sync pipelined row's anchor
+    batch = [1] * 4096
+
+    async def drain(m):
+        for _ in range(m):
+            assert (await ch.recv_async()) == 1
+
+    async def rep():
+        for _ in range(k):
+            sent = 0
+            while sent < n:
+                want = min(4096, n - sent)
+                sent += ch.send_batch(batch[:want])
+            await drain(n)
+
+    async def warm():
+        sent = 0
+        while sent < 100:
+            sent += ch.send_batch(batch[:100])
+        await drain(100)
+
+    asyncio.run(warm())
+    note_rate(
+        "event-driven",
+        "channel recv_async",
+        k * n,
+        lambda: asyncio.run(rep()),
+        "rt/s",
+    )
+
+
+with_channel(BATCH_PEER, recv_async_channel)
+
+
+def collect_async_pool(p):
+    # one enrollment per task: the per-enroll/settle cost the collection
+    # forms below amortize
+    async def warm():
+        for t in [p.submit(const) for _ in range(200)]:
+            await t.collect_async()
+
+    async def rep():
+        ts = [p.submit(const) for _ in range(n)]
+        for t in ts:
+            await t.collect_async()
+
+    asyncio.run(warm())
+    note_rate(
+        "event-driven", "pool collect_async", n, lambda: asyncio.run(rep())
+    )
+
+
+with_pool(1, collect_async_pool, result_slots=20480)
+
+
+def collect_all_async_pool(p):
+    # one future per collection: the async counterpart of the pool batch row
+    fns = [const] * n
+
+    async def warm():
+        await p.collect_all_async(p.submit_batch(fns[:100], timeout=30))
+
+    async def rep():
+        for _ in range(k):
+            await p.collect_all_async(p.submit_batch(fns, timeout=30))
+
+    asyncio.run(warm())
+    note_rate(
+        "event-driven",
+        "pool collect_all_async",
+        k * n,
+        lambda: asyncio.run(rep()),
+    )
+
+
+with_pool(1, collect_all_async_pool, result_slots=20480)
+
+
+def many_waiters_pool(p):
+    # w concurrent collections: every wake scans every enrolled waiter on
+    # the submitter's one coalescing word
+    w, t = 64, 156  # 9,984 tasks <= the 10,240 result-slot share
+    fns = [const] * t
+
+    async def rep():
+        cols = [
+            p.collect_all_async(p.submit_batch(fns, timeout=30))
+            for _ in range(w)
+        ]
+        await asyncio.gather(*cols)
+
+    asyncio.run(rep())
+    note_rate(
+        "event-driven", "pool 64 waiters", w * t, lambda: asyncio.run(rep())
+    )
+
+
+with_pool(1, many_waiters_pool, result_slots=20480)
+
+print("\n== 9b. executor (PoolExecutor, 4 workers) ==")
+
+
+def executor_rows():
+    # the 2026-10-20 regression-guard harness (benchmarks/notes.md), now in
+    # the canonical suite: trivial tasks fanned out m at a time, awaited
+    # via wrap_future + gather — per-submit re-checks and per-pass scans
+    # grow with the outstanding count
+    with pymizu.PoolExecutor.create(
+        4, max_submitters=2, result_slots=16384, launcher=worker_launcher
+    ) as ex:
+        for m in (500, 1000, 2000, 4000):
+
+            async def rep(m=m):
+                futs = [
+                    asyncio.wrap_future(ex.submit(winsum, 0)) for _ in range(m)
+                ]
+                await asyncio.gather(*futs)
+
+            asyncio.run(rep())
+            note_rate(
+                "executor outstanding",
+                f"{m:>5}",
+                m,
+                lambda: asyncio.run(rep()),
+            )
+
+
+executor_rows()
 
 # summary ---------------------------------------------------------------------
 

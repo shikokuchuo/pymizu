@@ -188,7 +188,12 @@ class PoolExecutor(_Executor):
             # already terminal at this point resolves from the scan
             # (announce before arming is the parker transplant)
             self._pool._h._task_notify([task], True)
-        self._drain()
+        # the re-check covers a publish that beat the announce: scan the
+        # new task only (a full-drain per submit costs O(outstanding) per
+        # submission); a publish past the announce rides the armed word's
+        # wake instead
+        if self._scan([task])[0]:
+            self._drain()
         return future
 
     def shutdown(
@@ -285,7 +290,11 @@ class PoolExecutor(_Executor):
                     else:
                         self._resolve(future, result=value)
                     progressed = True
-                if not progressed:
+                if progressed:
+                    # one shutdown-waiter wake per pass, not per resolve
+                    with self._cond:
+                        self._cond.notify_all()
+                else:
                     return
         finally:
             self._draining.release()
@@ -299,15 +308,14 @@ class PoolExecutor(_Executor):
     ) -> None:
         """Retire one task's future — set_result/set_exception outside
         the condition, since they run done callbacks that may re-enter.
-        A cancelled future's outcome is discarded."""
+        A cancelled future's outcome is discarded. The shutdown-waiter
+        wake is the drain's, batched per pass."""
         if not future.set_running_or_notify_cancel():
             return
         if exception is _MISSING:
             future.set_result(result)
         else:
             future.set_exception(exception)
-        with self._cond:
-            self._cond.notify_all()
 
     def _fail_all(self, exc: Exception) -> None:
         """Fail every outstanding future with the same infrastructure

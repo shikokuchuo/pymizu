@@ -51,6 +51,21 @@ Initial pre-release.
 
 ### Changed
 
+- asyncio efficiency pass on the event-driven surface (A/B numbers in
+  `benchmarks/notes.md`): the channel drain receives bursts through one
+  GIL-held call (`_recv_burst`) instead of a GIL-dropping `recv(0)` per
+  message; waiter futures are a `Future` subclass whose `cancel()` runs
+  the enrollment's detach directly, dropping the no-op done-callback
+  every resolution used to schedule; the pool pump's terminal scan is
+  the subset form (`_tasks_terminal_set`) instead of a bool list and a
+  dict of the whole enrolled set per pass; repeated pool arms on an
+  already-armed handle are no-ops; `PoolExecutor.submit()` re-checks
+  only the submitted task instead of draining the full outstanding set
+  per submission, and the executor batches its shutdown-waiter wake per
+  drain pass. The vendored core additionally load-gates the pool
+  publish's coalescing-word RMW (one shared load per result in a burst,
+  not a locked RMW) and skips the endpoint drain on re-arms of a
+  continuously armed word.
 - **Breaking:** `Pool.map()`, `Pool.starmap()`, and `PreparedMap.run()`
   are handle-first, mirroring mizu's map: they stage and submit, then
   return the run's map handle immediately instead of the results.

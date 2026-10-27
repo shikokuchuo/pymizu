@@ -5075,6 +5075,9 @@ typedef struct MizuNotify {
   struct MizuNotify *next; /* the live-record registry (the AtExit fini) */
   PyObject *loop;          /* the captured asyncio loop; NULL in direct mode */
   PyObject *drain_cb;      /* the Python drain callable */
+  PyObject *call_soon;     /* cached loop.call_soon_threadsafe (NULL in
+                              direct mode or on a lookup failure, which
+                              falls back to the by-name call per wake) */
   PyObject *capsule;       /* this record as the trampoline's argument */
   void *core;              /* the mizu_channel/mizu_pool while watching */
   _Atomic int scheduled;   /* the coalescing flag: one wake per burst */
@@ -5160,6 +5163,7 @@ static void notify_teardown(MizuNotify **slot, int core_ok) {
   }
   Py_CLEAR(rec->loop);
   Py_CLEAR(rec->drain_cb);
+  Py_CLEAR(rec->call_soon);
   notify_unref(rec);           /* the create ref (the capsule rides it) */
 }
 
@@ -5221,8 +5225,14 @@ static void notify_cb(void *ctx) {
     return;
   }
   atomic_fetch_add_explicit(&rec->refs, 1, memory_order_relaxed);
-  PyObject *r = PyObject_CallMethod(rec->loop, "call_soon_threadsafe", "OO",
-                                    notify_trampoline, rec->capsule);
+  PyObject *r;
+  if (rec->call_soon != NULL) {
+    PyObject *cargs[2] = {notify_trampoline, rec->capsule};
+    r = PyObject_Vectorcall(rec->call_soon, cargs, 2, NULL);
+  } else {
+    r = PyObject_CallMethod(rec->loop, "call_soon_threadsafe", "OO",
+                            notify_trampoline, rec->capsule);
+  }
   if (r == NULL) {
     if (PyErr_ExceptionMatches(PyExc_RuntimeError)) {
       PyErr_Clear();
@@ -5231,6 +5241,7 @@ static void notify_cb(void *ctx) {
         notify_core_disarm(rec);
         Py_CLEAR(rec->loop);
         Py_CLEAR(rec->drain_cb);
+        Py_CLEAR(rec->call_soon);
         notify_unref(rec);     /* the armed ref */
       }
     } else {
@@ -5273,10 +5284,17 @@ static void notify_store(MizuNotify *rec, PyObject *loop, PyObject *cb) {
   if (loop == Py_None) loop = NULL;
   Py_INCREF(cb);
   Py_XINCREF(loop);
+  PyObject *call_soon = NULL;
+  if (loop != NULL) {
+    call_soon = PyObject_GetAttrString(loop, "call_soon_threadsafe");
+    if (call_soon == NULL) PyErr_Clear();   /* the by-name call retries */
+  }
   Py_XDECREF(rec->loop);
   Py_XDECREF(rec->drain_cb);
+  Py_XDECREF(rec->call_soon);
   rec->loop = loop;
   rec->drain_cb = cb;
+  rec->call_soon = call_soon;
   if (!rec->armed) {
     rec->armed = 1;
     atomic_fetch_add_explicit(&rec->refs, 1, memory_order_relaxed);
@@ -5297,6 +5315,7 @@ static void notify_disarm(void *core, MizuNotify *rec, int is_pool) {
   }
   Py_CLEAR(rec->loop);
   Py_CLEAR(rec->drain_cb);
+  Py_CLEAR(rec->call_soon);
   notify_unref(rec);           /* the armed ref */
 }
 
@@ -5627,6 +5646,54 @@ static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
     st = MIZU_CLOSED;   /* destroyed mid-wait */
   if (st == MIZU_OK) return (PyObject *) obj;
   return status_or_sentinel(st, Py_None);
+}
+
+PyDoc_STRVAR(recv_burst_doc,
+"_recv_burst(n) -> list\n\n\
+The async drain's burst receive: up to n messages in one GIL-held call,\n\
+each a non-blocking receive. A drained ring ends the list early; a\n\
+terminal state is the list's last element. Skips the per-call GIL drop\n\
+recv() pays for its indefinite wait — a burst never blocks.");
+
+static PyObject *Channel_recv_burst(MizuChannel *self, PyObject *arg) {
+  Py_ssize_t cap = PyLong_AsSsize_t(arg);
+  if (cap == -1 && PyErr_Occurred()) return NULL;
+  if (cap < 1) {
+    PyErr_SetString(PyExc_ValueError, "pymizu: expected n >= 1");
+    return NULL;
+  }
+  mizu_channel *c = chan_get(self);
+  if (c == NULL) return NULL;
+  PyObject *out = PyList_New(0);
+  if (out == NULL) return NULL;
+  mizu_status st = MIZU_OK;
+  self->in_flight++;   /* the destroy pin, as CHAN_ALLOW_THREADS (GIL held) */
+  for (Py_ssize_t i = 0; i < cap; i++) {
+    void *obj = NULL;
+    st = mizu_channel_recv(c, &obj, 0);
+    if (st != MIZU_OK) break;
+    if (PyList_Append(out, (PyObject *) obj) < 0) {
+      Py_DECREF((PyObject *) obj);
+      Py_DECREF(out);
+      chan_in_flight_done(self);
+      return NULL;   /* the Python error stands */
+    }
+    Py_DECREF((PyObject *) obj);
+  }
+  if (chan_call_done(self, c, st)) {
+    Py_DECREF(out);
+    return NULL;
+  }
+  if (st == MIZU_CLOSED || st == MIZU_PEER_GONE) {
+    PyObject *sent = status_or_sentinel(st, Py_None);
+    if (sent == NULL || PyList_Append(out, sent) < 0) {
+      Py_XDECREF(sent);
+      Py_DECREF(out);
+      return NULL;
+    }
+    Py_DECREF(sent);
+  }
+  return out;
 }
 
 PyDoc_STRVAR(recv_batch_doc,
@@ -6051,6 +6118,8 @@ static PyMethodDef Channel_methods[] = {
    chan_notify_arm_doc},
   {"_notify_rearm", (PyCFunction) Channel_notify_rearm, METH_NOARGS,
    chan_notify_rearm_doc},
+  {"_recv_burst", (PyCFunction) Channel_recv_burst, METH_O,
+   recv_burst_doc},
   {"_notify_disarm", (PyCFunction) Channel_notify_disarm, METH_NOARGS,
    chan_notify_disarm_doc},
   {NULL, NULL, 0, NULL}
@@ -7568,6 +7637,54 @@ static PyObject *Pool_tasks_terminal(MizuPool *self, PyObject *arg) {
   return out;
 }
 
+PyDoc_STRVAR(pool_tasks_terminal_set_doc,
+"_tasks_terminal_set(tasks) -> set\n\n\
+The per-wake scan's subset form: the enrolled tasks whose result slot\n\
+is no longer pending, as a set for O(1) membership. The drain resolves\n\
+only what turned terminal, so it never builds the full bool list.");
+
+static PyObject *Pool_tasks_terminal_set(MizuPool *self, PyObject *arg) {
+  PyObject *seq = PySequence_Fast(arg, "pymizu: expected a task sequence");
+  if (seq == NULL) return NULL;
+  mizu_task *ts;
+  size_t n;
+  MizuPool *pool = tasks_get(seq, &ts, &n, 0);
+  if (pool == NULL) {
+    Py_DECREF(seq);
+    return NULL;
+  }
+  if (pool != self) {
+    PyMem_Free(ts);
+    Py_DECREF(seq);
+    PyErr_SetString(PyExc_ValueError,
+                    "pymizu: task handles must belong to this pool handle");
+    return NULL;
+  }
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) {
+    PyMem_Free(ts);
+    Py_DECREF(seq);
+    return NULL;
+  }
+  PyObject *out = PySet_New(NULL);
+  if (out == NULL) {
+    PyMem_Free(ts);
+    Py_DECREF(seq);
+    return NULL;
+  }
+  for (size_t i = 0; i < n; i++)
+    if (mizu_pool_task_state(p, &ts[i]) != MIZU_RS_PENDING &&
+        PySet_Add(out, PySequence_Fast_GET_ITEM(seq, (Py_ssize_t) i)) < 0) {
+      PyMem_Free(ts);
+      Py_DECREF(seq);
+      Py_DECREF(out);
+      return NULL;
+    }
+  PyMem_Free(ts);
+  Py_DECREF(seq);
+  return out;
+}
+
 static PyObject *Pool_aio_get(MizuPool *self, void *Py_UNUSED(closure)) {
   return aio_get(self->aio_state);
 }
@@ -7616,6 +7733,8 @@ static PyMethodDef Pool_methods[] = {
    pool_notify_disarm_doc},
   {"_task_notify", (PyCFunction) Pool_task_notify, METH_VARARGS,
    pool_task_notify_doc},
+  {"_tasks_terminal_set", (PyCFunction) Pool_tasks_terminal_set, METH_O,
+   pool_tasks_terminal_set_doc},
   {"_tasks_terminal", (PyCFunction) Pool_tasks_terminal, METH_O,
    pool_tasks_terminal_doc},
   {NULL, NULL, 0, NULL}

@@ -34,7 +34,6 @@ from typing import Any as _Any
 
 from pymizu._pymizu import CLOSED as _CLOSED
 from pymizu._pymizu import PEER_GONE as _GONE
-from pymizu._pymizu import TIMEOUT as _TIMEOUT
 
 if _TYPE_CHECKING:  # pragma: no cover
     import pymizu
@@ -47,15 +46,24 @@ _QUANTUM_N = 2048
 _QUANTUM_SEC = 0.001
 
 
-def _on_cancel(fut: _asyncio.Future, detach: _Any) -> None:
-    """Route a Future.cancel() to the enrollment's detach half (settle
-    callbacks are not cancellations)."""
+class _WaiterFuture(_asyncio.Future):
+    """The enrollment waiters: cancel() routes straight to the detach
+    half (never the task or collection), dropping the per-settle
+    done-callback that the add_done_callback form scheduled on every
+    resolution. Detach runs on the cancelling thread — the loop's, by
+    asyncio's own thread-confinement discipline."""
 
-    def cb(f: _asyncio.Future) -> None:
-        if f.cancelled():
+    __slots__ = ("_detach",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._detach: _Any = None
+
+    def cancel(self, msg: _Any = None) -> bool:
+        detach, self._detach = self._detach, None
+        if detach is not None and not self.done():
             detach()
-
-    fut.add_done_callback(cb)
+        return super().cancel(msg)
 
 
 def _settle(fut: _asyncio.Future, value: _Any, exc: bool = False) -> None:
@@ -103,43 +111,52 @@ class _ChanState:
         without blocking, resolving the FIFO in arrival order. Ends
         disarmed (the FIFO emptied) or re-armed — the announce/recheck
         transplant: a publish racing the re-arm clears the bit and
-        signals, riding the next wake."""
+        signals, riding the next wake. The receives ride one GIL-held
+        burst verb per pass, not a recv(0) per message."""
         if not self.armed:
             return
         work = 0
         deadline = _time.monotonic() + _QUANTUM_SEC
         try:
             while True:
-                while self.fifo:
-                    fut = self.fifo[0]
-                    if fut.done():
-                        # a cancelled waiter detaches: the next message
-                        # goes to the next waiter
-                        self.fifo.popleft()
-                        continue
-                    x = self.ch._h.recv(0)
-                    if x is _TIMEOUT:
-                        break
+                while self.fifo and self.fifo[0].done():
+                    # a cancelled waiter detaches: the next message goes
+                    # to the next waiter
                     self.fifo.popleft()
+                if not self.fifo:
+                    self._disarm()
+                    return
+                want = min(len(self.fifo), _QUANTUM_N - work)
+                if want <= 0:
+                    assert self.loop is not None
+                    self.loop.call_soon(self._drain)
+                    return
+                burst = self.ch._h._recv_burst(want)
+                n = 0
+                for x in burst:
                     if x is _CLOSED or x is _GONE:
-                        fut.set_result(x)
                         for f in self.fifo:
                             if not f.done():
                                 f.set_result(x)
                         self.fifo.clear()
                         self._disarm()
                         return
-                    fut.set_result(x)
-                    work += 1
-                    if work >= _QUANTUM_N or _time.monotonic() >= deadline:
-                        assert self.loop is not None
-                        self.loop.call_soon(self._drain)
+                    fut = self.fifo.popleft()
+                    if not fut.done():
+                        fut.set_result(x)
+                    n += 1
+                work += n
+                if work >= _QUANTUM_N or (
+                    (work & 63) == 0 and _time.monotonic() >= deadline
+                ):
+                    assert self.loop is not None
+                    self.loop.call_soon(self._drain)
+                    return
+                if len(burst) < want:
+                    # the ring drained: re-arm, then the availability
+                    # report decides — False stays armed, waiting
+                    if not self.ch._h._notify_rearm():
                         return
-                if not self.fifo:
-                    self._disarm()
-                    return
-                if not self.ch._h._notify_rearm():
-                    return
         except Exception as e:
             self._fail(e)
             self._disarm()
@@ -162,9 +179,9 @@ def chan_recv_async(ch: pymizu.Channel) -> _asyncio.Future:
         # the user's signal, as for any asyncio primitive
         st._fail(RuntimeError("pymizu: event loop changed"))
         st.armed = False
-    fut = loop.create_future()
+    fut = _WaiterFuture()
+    fut._detach = lambda: _detach_chan(st, fut)
     st.fifo.append(fut)
-    _on_cancel(fut, lambda: _detach_chan(st, fut))
     if not st.armed:
         try:
             ch._h._notify_arm(loop, st._drain)
@@ -300,11 +317,10 @@ class _PoolState:
                 if not tasks:
                     self._disarm()
                     return
-                terminal = self.pool_h._tasks_terminal(tasks)
-                term = dict(zip(tasks, terminal, strict=True))
+                term = self.pool_h._tasks_terminal_set(tasks)
                 progressed = False
                 for task in list(self.singles):
-                    if not term[task]:
+                    if task not in term:
                         continue
                     fut = self.singles.pop(task)
                     task._async_set(False)
@@ -315,7 +331,9 @@ class _PoolState:
                             fut.set_exception(e)
                     progressed = True
                     work += 1
-                    if work >= _QUANTUM_N or _time.monotonic() >= deadline:
+                    if work >= _QUANTUM_N or (
+                        (work & 63) == 0 and _time.monotonic() >= deadline
+                    ):
                         assert self.loop is not None
                         self.loop.call_soon(self._pump)
                         return
@@ -331,7 +349,9 @@ class _PoolState:
                     _settle_collection(self, c)
                     progressed = True
                     work += 1
-                    if work >= _QUANTUM_N or _time.monotonic() >= deadline:
+                    if work >= _QUANTUM_N or (
+                        (work & 63) == 0 and _time.monotonic() >= deadline
+                    ):
                         assert self.loop is not None
                         self.loop.call_soon(self._pump)
                         return
@@ -342,10 +362,10 @@ class _PoolState:
             self._disarm()
 
 
-def _collection_ready(c: _Collection, term: dict) -> bool:
+def _collection_ready(c: _Collection, term: set) -> bool:
     if c.kind == "any":
-        return any(term[t] for t in c.tasks)
-    return all(term[t] for t in c.tasks)
+        return any(t in term for t in c.tasks)
+    return all(t in term for t in c.tasks)
 
 
 def _settle_collection(st: _PoolState, c: _Collection) -> None:
@@ -412,6 +432,10 @@ def _arm(st: _PoolState, loop: _asyncio.AbstractEventLoop) -> None:
         # re-capture
         _fail_all(st, RuntimeError("pymizu: event loop changed"))
         st.armed = False
+    if st.armed:
+        # the announce stands (the core's re-arm is a no-op on an armed
+        # word); the enrollment's synchronous re-check follows
+        return
     st.pool_h._notify_arm(loop, st._pump)
     st.armed = True
     st.loop = loop
@@ -429,7 +453,7 @@ def _enroll_collection(
     """The shared collection enrollment: flag per task (a second consumer
     raises here), announce, arm, and the synchronous re-check. One Future
     per collection — never one per task."""
-    fut = loop.create_future()
+    fut = _WaiterFuture()
     c = _Collection(kind, list(tasks), fut, finish, pre_scan, ondetach)
     announced = False
     try:
@@ -449,7 +473,7 @@ def _enroll_collection(
             t._async_set(False)
         raise
     st.collections.append(c)
-    _on_cancel(fut, lambda: _detach_collection(st, c))
+    fut._detach = lambda: _detach_collection(st, c)
     if c.tasks:
         st._pump()
     else:
@@ -498,9 +522,9 @@ def task_collect_async(task: _Any) -> _asyncio.Future:
         raise
     # registered only after the arm: a loop change in _arm fails the old
     # loop's waiters, never this fresh one (the channel's discipline)
-    fut = loop.create_future()
+    fut = _WaiterFuture()
+    fut._detach = lambda: _detach_single(st, task)
     st.singles[task] = fut
-    _on_cancel(fut, lambda: _detach_single(st, task))
     st._pump()
     return fut
 

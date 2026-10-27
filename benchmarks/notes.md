@@ -77,6 +77,12 @@ probes and A/B isolations stay in the log.
 | submit plan k = 1 (W2 row) | 280.7 us/task | 2026-10-04 |
 | submit plan k = 4 (W2 row) | 301.9 us/task | 2026-10-04 |
 | submit plan k = 16 (W2 row) | 351.8 us/task | 2026-10-04 |
+| event-driven, channel armed | 2.62M rt/s | 2026-10-27 |
+| event-driven, channel recv_async | 607k rt/s | 2026-10-27 |
+| event-driven, pool collect_async | 489k tasks/s | 2026-10-27 |
+| event-driven, pool collect_all_async | 1.41M tasks/s | 2026-10-27 |
+| event-driven, pool 64 waiters | 1.99M tasks/s | 2026-10-27 |
+| executor outstanding 500 / 1,000 / 2,000 / 4,000 | 64.1k / 65.0k / 61.9k / 61.9k tasks/s | 2026-10-27 |
 
 ## Run log
 
@@ -953,3 +959,53 @@ further headroom.
 
 Status: full suite 890 pass, 7 skip (pandas/duckdb-absence, one
 platform skip); ruff + pyrefly clean.
+
+## 2026-10-27 — asyncio rows land in the canonical suite
+
+Section 9 of mizu-bench.py benchmarks the event-driven surface ahead of
+the async audit's efficiency work: the armed-channel row (one recv
+future pending the whole run), the await-per-message and await-per-task
+rows, one-future collections, 64 concurrent waiters (the per-wake scan
+regime on the one coalescing submitter word), and — as section 9b — the
+PoolExecutor outstanding-count guard, the 2026-10-20 A/B harness (until
+now examples/shiny/bench.py, not in the repo) moved into the suite.
+First recordings on a non-quiet machine: the rows exist for A/B, so the
+deltas from here matter more than the absolutes.
+
+Results: channel armed 2.62M rt/s; channel recv_async 403k rt/s; pool
+collect_async 268k tasks/s; pool collect_all_async 1.38M tasks/s; pool
+64 waiters 1.80M tasks/s; executor 60.7k / 59.3k / 61.9k / 59.9k
+tasks/s at 500 / 1,000 / 2,000 / 4,000 outstanding (flat — no
+per-submit rescan growth at these counts).
+Status: ruff check + format clean; suite not run (bench-only change).
+
+## 2026-10-27 — async efficiency: burst drain, waiter futures, per-submit re-check [(with libmizu notify efficiency)]
+
+The async audit's binding-side findings land: the channel drain moves to
+one GIL-held `_recv_burst` verb per pass (a per-message recv(0) paid two
+GIL transitions and a kwargs parse); waiter futures are a Future
+subclass whose cancel() routes to the detach (the add_done_callback
+form scheduled a no-op loop callback per resolution); the pool pump's
+terminal scan is the new `_tasks_terminal_set` subset form (no bool
+list + dict of the whole enrolled set per pass); the pool arm guards on
+already-armed (each collect_async enrollment paid an endpoint drain);
+the executor's submit re-check scans just the new task (a full-drain
+per submit was O(outstanding) per submission) and batches its
+shutdown-waiter wake per pass; the loop thread's call_soon_threadsafe
+is cached on the notify record and vectorcalled; the drain quantum's
+clock reads stride 64. Core-side (vendored): the pool publish's
+coalescing-word RMW is load-gated, re-arms of a continuously armed word
+skip the endpoint drain, and the tx opens before the edge is claimed
+(a lost-wake hole on open failure).
+
+Results (A/B, this build vs the morning's first recordings; same-day
+sync anchors pipelined channel 4.02M rt/s, pool 1.82M tasks/s — the
+host reads slow): channel recv_async 403k -> 607k rt/s; pool
+collect_async 268k -> 489k tasks/s; pool collect_all_async 1.38M ->
+1.41M tasks/s; pool 64 waiters 1.80M -> 1.99M tasks/s; executor
+60.7/59.3/61.9/59.9k -> 64.1/65.0/61.9/61.9k. Channel armed 2.62M ->
+2.08-2.22M across three runs = 0.52-0.55x the day's pipelined anchor,
+inside the before run's ratio band (the publish path is
+instruction-identical for the case; drift, not a regression).
+Status: full suite 1019 pass, 7 skip (pandas/duckdb-absence); ruff +
+pyrefly clean.

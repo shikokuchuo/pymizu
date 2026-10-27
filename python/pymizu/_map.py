@@ -1923,13 +1923,13 @@ class _Map:
         remaining, expired = _deadline(None)
         return self._resolve(pymizu, remaining, expired)
 
-    def _pre_scan(self, term: dict) -> None:
+    def _pre_scan(self, term: set) -> None:
         """The morsel trim per wake, as the sync collect's passes: a
         still-queued runner is dead weight once the cursor exhausts —
         cancel it into a CANCEL publish (its wake) instead of parking on
         a busy peer's no-op claim."""
         for k, h in enumerate(self.handles):
-            if h is not None and not term.get(h, True):
+            if h is not None and h not in term:
                 if _pymizu._map_abandon(self.capsule, k, self.gen) == 2:
                     h.cancel()
 
