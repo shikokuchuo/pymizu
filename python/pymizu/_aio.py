@@ -364,8 +364,8 @@ class _PoolState:
 
 def _collection_ready(c: _Collection, term: set) -> bool:
     if c.kind == "any":
-        return any(t in term for t in c.tasks)
-    return all(t in term for t in c.tasks)
+        return not term.isdisjoint(c.tasks)
+    return term.issuperset(c.tasks)
 
 
 def _settle_collection(st: _PoolState, c: _Collection) -> None:
