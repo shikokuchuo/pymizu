@@ -6547,10 +6547,12 @@ static PyObject *Pool_exec_fail(MizuPool *self, PyObject *arg) {
 
 PyDoc_STRVAR(pool_submit_batch_doc,
 "submit_batch(payloads, timeout=None) -> list of _Task\n\n\
-One task per payload in a single crossing. Ring-full past `timeout` ends\n\
-the batch short — the accepted handles stay valid and collectible; the\n\
-fatal outcomes still raise. A mid-batch failure raises with an `accepted`\n\
-attribute holding the handles already submitted.");
+One task per payload in a single crossing: zero-arg callables are framed\n\
+in C (the facade's batch contract); ready _TaskFrame payloads pass\n\
+through. Ring-full past `timeout` ends the batch short — the accepted\n\
+handles stay valid and collectible; the fatal outcomes still raise. A\n\
+mid-batch failure raises with an `accepted` attribute holding the\n\
+handles already submitted.");
 
 static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
                                    PyObject *kw) {
@@ -6563,24 +6565,53 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   if (p == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  PyObject *fast;
-  Py_ssize_t n;
-  void **objs = batch_snapshot(seq, &fast, &n);
-  if (objs == NULL) return NULL;
+  PyObject *fast = PySequence_Tuple(seq);
+  if (fast == NULL) return NULL;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
+  PyObject **items = PySequence_Fast_ITEMS(fast);
+  /* frame the zero-arg callables in C (one shared empty args/kwargs per
+     call): the whole batch validates before any submission */
+  PyObject *frames = PyList_New(n);
+  if (frames == NULL) {
+    Py_DECREF(fast);
+    return NULL;
+  }
+  PyObject *empty_args = NULL, *empty_kwargs = NULL;
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *it = items[i];
+    if (PyObject_TypeCheck(it, &MizuTaskFrameType)) {
+      Py_INCREF(it);
+    } else {
+      if (!PyCallable_Check(it)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "pymizu: batch items must be callable");
+        goto wrap_fail;
+      }
+      if (empty_args == NULL) {
+        empty_args = PyTuple_New(0);
+        empty_kwargs = PyDict_New();
+        if (empty_args == NULL || empty_kwargs == NULL) goto wrap_fail;
+      }
+      it = task_frame_new(it, empty_args, empty_kwargs);
+      if (it == NULL) goto wrap_fail;
+    }
+    PyList_SET_ITEM(frames, i, it);
+  }
   mizu_task *ts = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(mizu_task));
   if (ts == NULL) {
-    PyMem_Free(objs);
-    PyMem_Free(ts);
-    Py_DECREF(fast);
-    return PyErr_NoMemory();
+    PyErr_NoMemory();
+    goto wrap_fail;
   }
   size_t done = 0;
   mizu_status st;
   POOL_ALLOW_THREADS(self);
-  st = mizu_pool_submit_batch(p, objs, (size_t) n, ts, &done, ms);
+  st = mizu_pool_submit_batch(p, (void **) PySequence_Fast_ITEMS(frames),
+                              (size_t) n, ts, &done, ms);
   POOL_RESUME();
-  PyMem_Free(objs);
+  Py_DECREF(frames);
   Py_DECREF(fast);
+  Py_XDECREF(empty_args);
+  Py_XDECREF(empty_kwargs);
   if (pool_call_done(self, p, st)) {
     if (done == 0) {
       PyMem_Free(ts);
@@ -6625,6 +6656,12 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   }
   PyMem_Free(ts);
   return out;
+wrap_fail:
+  Py_DECREF(frames);
+  Py_DECREF(fast);
+  Py_XDECREF(empty_args);
+  Py_XDECREF(empty_kwargs);
+  return NULL;
 }
 
 PyDoc_STRVAR(pool_collect_any_doc,

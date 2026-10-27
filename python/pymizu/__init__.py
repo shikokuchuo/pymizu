@@ -810,12 +810,8 @@ class Pool:
             submitted, which stay valid and collectible.
         """
         _check_native(self._h._worker_ident(), "Pool.submit_batch")
-        payloads = []
-        for fn in fns:
-            if not callable(fn):
-                raise TypeError("pymizu: batch items must be callable")
-            payloads.append(_task_frame(fn, (), {}))
-        return self._h.submit_batch(payloads, timeout)
+        # the C verb frames the zero-arg callables itself (one crossing)
+        return self._h.submit_batch(fns, timeout)
 
     def collect_any(
         self, tasks: _Iterable[Task], timeout: float | None = None

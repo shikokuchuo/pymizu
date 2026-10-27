@@ -42,7 +42,7 @@ probes and A/B isolations stay in the log.
 | pipelined, channel | 4.68M rt/s | 2026-10-03 |
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
-| pipelined, pool batch | 1.25M tasks/s | 2026-10-01 |
+| pipelined, pool batch | 1.82M tasks/s | 2026-10-27 |
 | payload 8,000 B | 2.4 us/task | 2026-09-30 |
 | payload 800,000 B | 58.7 us/task | 2026-09-13 |
 | payload 8,000,000 B | 107.2 us/task | 2026-10-03 |
@@ -80,8 +80,8 @@ probes and A/B isolations stay in the log.
 | event-driven, channel armed | 2.62M rt/s | 2026-10-27 |
 | event-driven, channel recv_async | 622k rt/s | 2026-10-27 |
 | event-driven, pool collect_async | 520k tasks/s | 2026-10-27 |
-| event-driven, pool collect_all_async | 1.49M tasks/s | 2026-10-27 |
-| event-driven, pool 64 waiters | 2.11M tasks/s | 2026-10-27 |
+| event-driven, pool collect_all_async | 1.72M tasks/s | 2026-10-27 |
+| event-driven, pool 64 waiters | 2.28M tasks/s | 2026-10-27 |
 | executor outstanding 500 / 1,000 / 2,000 / 4,000 | 64.1k / 65.0k / 61.9k / 61.9k tasks/s | 2026-10-27 |
 
 ## Run log
@@ -1041,4 +1041,27 @@ the absolutes ride the host. Channel armed 1.67M, its documented drift
 band (the change touches no channel path).
 
 Status: full suite 1021 pass, 7 skip (pandas/duckdb-absence, one
+platform skip); ruff + pyrefly clean.
+
+## 2026-10-27 — submit_batch frames its callables in C
+
+`Pool.submit_batch`'s payload loop moves from the facade (one
+`_task_frame` call per item, in Python) into the C verb: items that are
+not ready _TaskFrame payloads must be zero-arg callables, framed against
+one shared empty args/kwargs pair per call — the whole batch still
+validates before any submission, and the accepted-attribute and
+ring-full contracts are unchanged. The facade body is one line.
+
+A/B (standalone harness replicating the canonical shapes, best-of-3,
+back-to-back against the pre-change build): pipelined pool batch 1.52M
+-> 1.78-1.81M tasks/s (+17-19%); pool collect_all_async 1.85M ->
+1.96-2.04M (+6-10%); pool 64 waiters 2.05M -> 2.12-2.28M (+3-11%); the
+collect_async control (no submit_batch in its path) flat at 505-511k.
+
+Canonical suite after the change: pool batch 1.82M (table swap from
+1.25M), collect_all_async 1.72M and 64 waiters 2.28M (swaps over the
+morning's 1.49M / 2.11M); collect_async 518k, recv_async 609k, channel
+armed 2.46M (no swaps).
+
+Status: full suite 1022 pass, 7 skip (pandas/duckdb-absence, one
 platform skip); ruff + pyrefly clean.

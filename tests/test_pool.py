@@ -435,6 +435,14 @@ def test_submit_batch(pool):
     assert [t.collect(timeout=5) for t in tasks] == [2**i for i in range(10)]
 
 
+def test_submit_batch_payload_forms(pool):
+    # the C verb frames zero-arg callables itself; ready frames pass
+    tasks = pool._h.submit_batch(
+        [partial(len, [1]), _pymizu._task_frame(len, ([1, 2],), {})]
+    )
+    assert [t.collect(timeout=5) for t in tasks] == [1, 2]
+
+
 def test_submit_ring_full_raises():
     # ring capacity 2 with the one worker busy: polls raise, never stall
     p = pymizu.Pool.create(1, injection_cap=2)

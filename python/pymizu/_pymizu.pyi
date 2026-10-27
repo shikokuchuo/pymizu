@@ -131,7 +131,7 @@ class _Pool:
         self, payload: tuple, timeout: float | None = None
     ) -> _Task: ...
     def submit_batch(
-        self, payloads: list, timeout: float | None = None
+        self, payloads: Iterable, timeout: float | None = None
     ) -> list: ...
     def collect_any(
         self, tasks: Iterable[_Task], timeout: float | None = None
