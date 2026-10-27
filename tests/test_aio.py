@@ -455,6 +455,37 @@ def test_blocking_collect_refuses_armed_task(pool):
     asyncio.run(main())
 
 
+def test_failed_collection_enroll_keeps_existing_consumer(pool):
+    # a conflicting collection enrollment is all-or-nothing: it must not
+    # disturb the conflicting task's existing consumer (the old per-task
+    # rollback cleared every task's flag, including that legitimate one)
+    async def main():
+        t1 = pool.submit(square, 5)
+        t2 = pool.submit(square, 6)
+        fut = t1.collect_async()
+        with pytest.raises(pymizu.MizuError, match="one consumer per result"):
+            pool.collect_all_async([t2, t1])
+        # t1's consumer survived: blocking collects still refuse it
+        with pytest.raises(pymizu.MizuError, match="one consumer per result"):
+            t1.collect(timeout=0)
+        # t2 was not left flagged by the failed enrollment
+        assert t2.collect(timeout=5) == 36
+        assert await fut == 25
+
+    asyncio.run(main())
+
+
+def test_tasks_enroll_validates_pool_membership(pool):
+    other = pymizu.Pool.create(1)
+    try:
+        task = other.submit(square, 5)
+        with pytest.raises(ValueError, match="belong"):
+            pool._h._tasks_enroll([task])
+        assert task.collect(timeout=5) == 25  # untouched by the failure
+    finally:
+        other.destroy()
+
+
 def test_pool_destroy_settles():
     p = pymizu.Pool.create(1)
 

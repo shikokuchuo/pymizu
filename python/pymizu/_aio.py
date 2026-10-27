@@ -371,16 +371,12 @@ def _collection_ready(c: _Collection, term: set) -> bool:
 def _settle_collection(st: _PoolState, c: _Collection) -> None:
     c.done = True
     st.collections.remove(c)
-    # un-enroll every member: a consumed slot's announce was consumed by
-    # its publish (withdrawal restores the plain announce only where this
-    # submitter's still stands), the unconsumed return to
+    # un-enroll every member in one call: a consumed slot's announce was
+    # consumed by its publish (the withdrawal restores the plain announce
+    # only where this submitter's still stands), the unconsumed return to
     # blocking-collectible
-    try:
-        if c.tasks:
-            st.pool_h._task_notify(c.tasks, 0)
-    finally:
-        for t in c.tasks:
-            t._async_set(False)
+    if c.tasks:
+        st.pool_h._tasks_release(c.tasks)
     if c.fut.done():
         return
     try:
@@ -404,13 +400,10 @@ def _fail_all(st: _PoolState, exc: BaseException) -> None:
     st.singles = {}
     st.collections = []
     tasks = [*singles, *(t for c in colls for t in c.tasks)]
-    try:
-        if tasks:
-            st.pool_h._task_notify(tasks, 0)
-    except Exception:
-        pass  # the pool is already gone — nothing to withdraw from
-    for t in tasks:
-        t._async_set(False)
+    if tasks:
+        # best-effort: the pool may already be gone — nothing to withdraw
+        # from then, and the flags still clear
+        st.pool_h._tasks_release(tasks)
     for fut in singles.values():
         _settle(fut, exc, exc=True)
     for c in colls:
@@ -450,27 +443,19 @@ def _enroll_collection(
     pre_scan: _Any = None,
     ondetach: _Any = None,
 ) -> _asyncio.Future:
-    """The shared collection enrollment: flag per task (a second consumer
-    raises here), announce, arm, and the synchronous re-check. One Future
-    per collection — never one per task."""
+    """The shared collection enrollment: one fused enroll (flag per task +
+    announce, all-or-nothing — a second consumer raises here), arm, and
+    the synchronous re-check. One Future per collection — never one per
+    task."""
     fut = _WaiterFuture()
     c = _Collection(kind, list(tasks), fut, finish, pre_scan, ondetach)
-    announced = False
+    if c.tasks:
+        st.pool_h._tasks_enroll(c.tasks)
     try:
-        for t in c.tasks:
-            t._async_set(True)
-        if c.tasks:
-            st.pool_h._task_notify(c.tasks, 1)
-            announced = True
         _arm(st, loop)
     except BaseException:
-        if announced:
-            try:
-                st.pool_h._task_notify(c.tasks, 0)
-            except Exception:
-                pass
-        for t in c.tasks:
-            t._async_set(False)
+        if c.tasks:
+            st.pool_h._tasks_release(c.tasks)  # best-effort, never raises
         raise
     st.collections.append(c)
     fut._detach = lambda: _detach_collection(st, c)
@@ -495,13 +480,10 @@ def _detach_collection(st: _PoolState, c: _Collection) -> None:
         st.collections.remove(c)
     except ValueError:
         pass
-    try:
-        if c.tasks:
-            st.pool_h._task_notify(c.tasks, 0)
-    except Exception:
-        pass  # a destroyed pool: teardown settles everything
-    for t in c.tasks:
-        t._async_set(False)
+    if c.tasks:
+        # best-effort withdraw: a destroyed pool has nothing to withdraw
+        # from (teardown settles everything)
+        st.pool_h._tasks_release(c.tasks)
     if c.ondetach is not None:
         c.ondetach()
     st._maybe_disarm()
@@ -512,13 +494,12 @@ def task_collect_async(task: _Any) -> _asyncio.Future:
     C method forwards here)."""
     loop = _asyncio.get_running_loop()
     pool_h = task.pool
-    task._async_set(True)  # raises on a second consumer
     st = _pool_state(pool_h)
+    pool_h._tasks_enroll([task])  # raises on a second consumer
     try:
-        pool_h._task_notify([task], 1)
         _arm(st, loop)
     except BaseException:
-        task._async_set(False)
+        pool_h._tasks_release([task])
         raise
     # registered only after the arm: a loop change in _arm fails the old
     # loop's waiters, never this fresh one (the channel's discipline)
@@ -534,11 +515,8 @@ def _detach_single(st: _PoolState, task: _Any) -> None:
     task leaves the armed set, so a later blocking collect() works."""
     if st.singles.pop(task, None) is None:
         return
-    try:
-        st.pool_h._task_notify([task], 0)
-    except Exception:
-        pass  # a destroyed pool: teardown settles everything
-    task._async_set(False)
+    # best-effort withdraw: a destroyed pool has nothing to withdraw from
+    st.pool_h._tasks_release([task])
     st._maybe_disarm()
 
 

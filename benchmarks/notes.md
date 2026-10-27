@@ -78,10 +78,10 @@ probes and A/B isolations stay in the log.
 | submit plan k = 4 (W2 row) | 301.9 us/task | 2026-10-04 |
 | submit plan k = 16 (W2 row) | 351.8 us/task | 2026-10-04 |
 | event-driven, channel armed | 2.62M rt/s | 2026-10-27 |
-| event-driven, channel recv_async | 607k rt/s | 2026-10-27 |
-| event-driven, pool collect_async | 489k tasks/s | 2026-10-27 |
-| event-driven, pool collect_all_async | 1.41M tasks/s | 2026-10-27 |
-| event-driven, pool 64 waiters | 1.99M tasks/s | 2026-10-27 |
+| event-driven, channel recv_async | 622k rt/s | 2026-10-27 |
+| event-driven, pool collect_async | 520k tasks/s | 2026-10-27 |
+| event-driven, pool collect_all_async | 1.49M tasks/s | 2026-10-27 |
+| event-driven, pool 64 waiters | 2.11M tasks/s | 2026-10-27 |
 | executor outstanding 500 / 1,000 / 2,000 / 4,000 | 64.1k / 65.0k / 61.9k / 61.9k tasks/s | 2026-10-27 |
 
 ## Run log
@@ -1009,3 +1009,36 @@ inside the before run's ratio band (the publish path is
 instruction-identical for the case; drift, not a regression).
 Status: full suite 1019 pass, 7 skip (pandas/duckdb-absence); ruff +
 pyrefly clean.
+
+## 2026-10-27 — asyncio enrollment fusion (_tasks_enroll / _tasks_release)
+
+The pool's asyncio enrollment moves behind two fused C verbs, the pymizu
+counterpart of mizu's same-day waiter-registry work:
+`_tasks_enroll(tasks)` flags every task's async-consumer marker and
+announces NOTIFY in one call, all-or-nothing (a conflicting task raises
+with nothing flagged or announced); `_tasks_release(tasks)` clears the
+flags unconditionally and withdraws the announces best-effort (a
+destroyed pool has nothing to withdraw from). `_aio.py` loses its
+per-task `_async_set` loops at enroll, settle, detach, and fail-all —
+2T Python->C crossings per collection down to 2 calls. The fusion also
+fixes a rollback bug: a collection enrollment hitting an
+already-enrolled task raised mid-loop and the rollback cleared the flag
+on EVERY task, including the conflicting task's legitimate consumer —
+silently dropping its one-consumer protection.
+
+A/B (standalone harness replicating the section-9 shapes, best-of-3,
+back-to-back against the pre-change build): pool collect_async 510k ->
+507-522k tasks/s (parity — two calls saved of the whole enroll/settle
+path); pool collect_all_async 1.78M -> 1.86-1.88M (+5%); pool 64 waiters
+1.95M -> 2.06-2.14M (+6-10%). The executor is untouched (it announces
+without flags by design).
+
+Canonical suite after the change: recv_async 622k, collect_async 520k,
+collect_all_async 1.49M, 64 waiters 2.11M — over the morning's bests,
+with the sync anchors reading ~10% faster this run (pipelined pool
+2.03M vs 1.82M), so the A/B ratios above are the change's effect and
+the absolutes ride the host. Channel armed 1.67M, its documented drift
+band (the change touches no channel path).
+
+Status: full suite 1021 pass, 7 skip (pandas/duckdb-absence, one
+platform skip); ruff + pyrefly clean.

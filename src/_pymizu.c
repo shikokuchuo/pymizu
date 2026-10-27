@@ -7597,6 +7597,89 @@ static PyObject *Pool_task_notify(MizuPool *self, PyObject *args) {
   Py_RETURN_NONE;
 }
 
+PyDoc_STRVAR(pool_tasks_enroll_doc,
+"_tasks_enroll(tasks) -> None\n\n\
+The asyncio enrollment (pymizu._aio), fused: flag every task's\n\
+async-consumer marker and announce NOTIFY on its slot, all-or-nothing —\n\
+a task with a pending async consumer raises with nothing flagged or\n\
+announced. Announce before arming the submitter word, then re-check.");
+
+static PyObject *Pool_tasks_enroll(MizuPool *self, PyObject *arg) {
+  PyObject *seq = PySequence_Fast(arg, "pymizu: expected a task sequence");
+  if (seq == NULL) return NULL;
+  mizu_task *ts;
+  size_t n;
+  MizuPool *pool = tasks_get(seq, &ts, &n, 0);
+  if (pool == NULL) {
+    Py_DECREF(seq);
+    return NULL;
+  }
+  if (pool != self) {
+    PyMem_Free(ts);
+    Py_DECREF(seq);
+    PyErr_SetString(PyExc_ValueError,
+                    "pymizu: task handles must belong to this pool handle");
+    return NULL;
+  }
+  PyObject **items = PySequence_Fast_ITEMS(seq);
+  for (size_t i = 0; i < n; i++) {
+    if (((MizuTask *) items[i])->async_pending) {
+      PyMem_Free(ts);
+      Py_DECREF(seq);
+      PyErr_SetString(MizuError,
+                      "pymizu: task has a pending async consumer — one "
+                      "consumer per result");
+      return NULL;
+    }
+  }
+  for (size_t i = 0; i < n; i++) ((MizuTask *) items[i])->async_pending = 1;
+  mizu_status st = mizu_pool_task_notify(self->core, ts, n, 1);
+  if (st != MIZU_OK) {
+    for (size_t i = 0; i < n; i++)
+      ((MizuTask *) items[i])->async_pending = 0;
+    PyMem_Free(ts);
+    Py_DECREF(seq);
+    return pool_raise(self->core);
+  }
+  PyMem_Free(ts);
+  Py_DECREF(seq);
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_tasks_release_doc,
+"_tasks_release(tasks) -> None\n\n\
+The enrollment unwind: clear every task's async-consumer flag, then\n\
+best-effort withdraw this submitter's announces — a consumed announce is\n\
+already gone, a destroyed pool has nothing to withdraw from. The flags\n\
+are cleared unconditionally; only a non-task sequence raises.");
+
+static PyObject *Pool_tasks_release(MizuPool *self, PyObject *arg) {
+  PyObject *seq = PySequence_Fast(arg, "pymizu: expected a task sequence");
+  if (seq == NULL) return NULL;
+  Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+  PyObject **items = PySequence_Fast_ITEMS(seq);
+  for (Py_ssize_t i = 0; i < n; i++) {
+    if (Py_TYPE(items[i]) != &MizuTaskType) {
+      Py_DECREF(seq);
+      PyErr_SetString(PyExc_TypeError, "pymizu: not a task handle");
+      return NULL;
+    }
+    ((MizuTask *) items[i])->async_pending = 0;
+  }
+  mizu_task *ts;
+  size_t tn;
+  MizuPool *pool = tasks_get(seq, &ts, &tn, 0);
+  if (pool == NULL) {
+    PyErr_Clear();  /* closed/destroyed handle: nothing to withdraw from */
+    Py_DECREF(seq);
+    Py_RETURN_NONE;
+  }
+  if (pool == self) mizu_pool_task_notify(self->core, ts, tn, 0);
+  PyMem_Free(ts);
+  Py_DECREF(seq);
+  Py_RETURN_NONE;
+}
+
 PyDoc_STRVAR(pool_tasks_terminal_doc,
 "_tasks_terminal(tasks) -> list of bool\n\n\
 The per-wake terminal scan (atomic loads only, one call for the whole\n\
@@ -7733,6 +7816,10 @@ static PyMethodDef Pool_methods[] = {
    pool_notify_disarm_doc},
   {"_task_notify", (PyCFunction) Pool_task_notify, METH_VARARGS,
    pool_task_notify_doc},
+  {"_tasks_enroll", (PyCFunction) Pool_tasks_enroll, METH_O,
+   pool_tasks_enroll_doc},
+  {"_tasks_release", (PyCFunction) Pool_tasks_release, METH_O,
+   pool_tasks_release_doc},
   {"_tasks_terminal_set", (PyCFunction) Pool_tasks_terminal_set, METH_O,
    pool_tasks_terminal_set_doc},
   {"_tasks_terminal", (PyCFunction) Pool_tasks_terminal, METH_O,
