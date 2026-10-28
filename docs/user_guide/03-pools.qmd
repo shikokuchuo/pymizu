@@ -192,7 +192,7 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 
 A pool handle is single-producer: serialize its submit family — `submit()`, `submit_batch()`, `map()` — on one thread.
 A concurrent second producer raises `ConcurrentUseError` rather than corrupt the injection ring; the guard is a check, not a lock — it never waits, it reports the misuse.
-The waiting half (the blocking collects) likewise belongs to one thread, which may be a different one from the producer's.
+The waiting half (the blocking collects, `ready_wait()`, `stop()`) likewise serializes on one thread — a concurrent second wait raises the same error — and it may be a different thread from the producer's.
 This is libmizu's handle-threading contract: the wire structs carry no mutex by design.
 
 Three ways to produce from several threads, in rough order of preference:

@@ -5087,6 +5087,7 @@ typedef struct MizuNotify {
   int watching;            /* the core watch is active */
   int armed;               /* the core arm and the armed ref are held */
   int dead;                /* torn down: a queued trampoline no-ops */
+  unsigned long arm_thread; /* the arming thread (the drain's loop thread) */
 } MizuNotify;
 
 static MizuNotify *notify_registry;
@@ -5298,6 +5299,7 @@ static void notify_store(MizuNotify *rec, PyObject *loop, PyObject *cb) {
   rec->call_soon = call_soon;
   if (!rec->armed) {
     rec->armed = 1;
+    rec->arm_thread = PyThread_get_thread_ident();
     atomic_fetch_add_explicit(&rec->refs, 1, memory_order_relaxed);
   }
 }
@@ -5386,6 +5388,14 @@ static const char pool_producer_msg[] =
   "single-producer; serialize its submit family on one thread, attach() "
   "one submitter handle per thread, or use PoolExecutor (libmizu 'Handle "
   "threading')";
+static const char pool_waiter_msg[] =
+  "pymizu: concurrent waits on one pool handle — a pool handle's waiting "
+  "half (collect, collect_any, collect_all, ready_wait, stop) is confined "
+  "to one thread at a time; it may differ from the producer's thread "
+  "(libmizu 'Handle threading')";
+static const char chan_async_msg[] =
+  "pymizu: a blocking receive on a side with an armed async consumer is "
+  "confined to the consumer's event-loop thread";
 
 /* The pin release (F1's D4): a ref-carrying task stream pins the spec
    object at stage — one INCREF there, this DECREF at the entry's
@@ -5671,6 +5681,14 @@ static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
   if (c == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  /* an armed consumer's drain runs on its own loop thread: a blocking
+     receive there can never race it; from any other thread it fails at
+     the call site */
+  if (self->notify != NULL && self->notify->armed &&
+      self->notify->arm_thread != PyThread_get_thread_ident()) {
+    PyErr_SetString(MizuConcurrentUseError, chan_async_msg);
+    return NULL;
+  }
   if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   void *obj = NULL;
   mizu_status st = MIZU_OK;
@@ -5777,6 +5795,12 @@ static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
   if (c == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  /* the armed-consumer check: as recv */
+  if (self->notify != NULL && self->notify->armed &&
+      self->notify->arm_thread != PyThread_get_thread_ident()) {
+    PyErr_SetString(MizuConcurrentUseError, chan_async_msg);
+    return NULL;
+  }
   if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   PyObject *out = PyList_New((Py_ssize_t) n);
   if (out == NULL) {
@@ -5955,7 +5979,9 @@ static PyObject *Channel_ready_wait(MizuChannel *self, PyObject *tmo) {
   if (c == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  mizu_status st;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   /* Sliced like recv(): a mid-wait destroy breaks out as False. */
   double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
   for (;;) {
@@ -5971,9 +5997,14 @@ static PyObject *Channel_ready_wait(MizuChannel *self, PyObject *tmo) {
       hc->peer_lang = MIZU_PY_IDENT_LANG(ident);
       hc->peer_caps = MIZU_PY_IDENT_CAPS(ident);
     }
-    if (chan_call_done(self, c, st)) return NULL;
+    if (chan_call_done(self, c, st)) {
+      err = 1;
+      break;
+    }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
   }
+  role_leave(&self->verb_active);
+  if (err) return NULL;
   return PyBool_FromLong(st == MIZU_OK);
 }
 
@@ -6233,6 +6264,9 @@ typedef struct {
   MizuNotify *notify;  /* the notify record, lazily from the first arm */
   PyObject *aio_state; /* the Python async state (pymizu._aio), owned */
   MIZU_ATOMIC(unsigned) producer_active;  /* the single-producer guard */
+  MIZU_ATOMIC(unsigned) waiter_active;    /* the one-waiter guard: parking
+                                             waits only — a zero-timeout
+                                             poll never announces or parks */
 } MizuPool;
 
 typedef struct {
@@ -6775,8 +6809,14 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *args,
   }
   void *v = NULL;
   size_t idx = 0;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   mizu_pool *p = self->core;
+  const int parks = ms != 0;
+  if (parks && role_enter(&self->waiter_active, pool_waiter_msg)) {
+    PyMem_Free(ts);
+    return NULL;
+  }
   /* Sliced like Task_collect: a Pool_destroy breaks the wait out. */
   double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
   for (;;) {
@@ -6784,12 +6824,14 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *args,
     st = mizu_pool_collect_any(p, ts, n, &idx, &v, slice);
     POOL_RESUME();
     if (pool_call_done(self, p, st)) {
-      PyMem_Free(ts);
-      return NULL;
+      err = 1;
+      break;
     }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
   }
+  if (parks) role_leave(&self->waiter_active);
   PyMem_Free(ts);
+  if (err) return NULL;
   if (st == MIZU_TIMEOUT) {
     if (ms < 0) {
       pool_get(self);   /* destroyed mid-wait: the closed-handle ValueError */
@@ -6846,8 +6888,15 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
     return NULL;
   }
   size_t err_idx = 0, consumed = 0;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   mizu_pool *p = self->core;
+  const int parks = ms != 0;
+  if (parks && role_enter(&self->waiter_active, pool_waiter_msg)) {
+    PyMem_Free(ts);
+    Py_DECREF(out);
+    return NULL;
+  }
   /* Sliced like collect: each call is all-or-nothing (the core's timeout
      consumes nothing), so a timed-out slice re-enters with the same set —
      the only prefix consumer is the terminal error path below. */
@@ -6858,34 +6907,39 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
                                   &consumed, slice);
     POOL_RESUME();
     if (pool_call_done(self, p, st)) {
-      if (consumed == 0) {
-        PyMem_Free(ts);
-        Py_DECREF(out);
-        return NULL;
-      }
-      /* a mid-batch read failure: the consumed prefix's slots are already
-         freed, so the values live only here — attach them (and the
-         failing slot's 0-based index) to the exception rather than
-         dropping them */
-      PyObject *et, *ev, *tb;
-      PyErr_Fetch(&et, &ev, &tb);
-      PyErr_NormalizeException(&et, &ev, &tb);
-      if (ev != NULL) {
-        PyObject *prefix = PyList_GetSlice(out, 0, (Py_ssize_t) consumed);
-        PyObject *i = PyLong_FromSize_t(err_idx);
-        if (prefix == NULL || i == NULL ||
-            PyObject_SetAttrString(ev, "index", i) < 0 ||
-            PyObject_SetAttrString(ev, "values", prefix) < 0)
-          PyErr_Clear();
-        Py_XDECREF(prefix);
-        Py_XDECREF(i);
-      }
-      PyMem_Free(ts);
-      Py_DECREF(out);
-      PyErr_Restore(et, ev, tb);
-      return NULL;
+      err = 1;
+      break;
     }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
+  }
+  if (parks) role_leave(&self->waiter_active);
+  if (err) {
+    if (consumed == 0) {
+      PyMem_Free(ts);
+      Py_DECREF(out);
+      return NULL;
+    }
+    /* a mid-batch read failure: the consumed prefix's slots are already
+       freed, so the values live only here — attach them (and the
+       failing slot's 0-based index) to the exception rather than
+       dropping them */
+    PyObject *et, *ev, *tb;
+    PyErr_Fetch(&et, &ev, &tb);
+    PyErr_NormalizeException(&et, &ev, &tb);
+    if (ev != NULL) {
+      PyObject *prefix = PyList_GetSlice(out, 0, (Py_ssize_t) consumed);
+      PyObject *i = PyLong_FromSize_t(err_idx);
+      if (prefix == NULL || i == NULL ||
+          PyObject_SetAttrString(ev, "index", i) < 0 ||
+          PyObject_SetAttrString(ev, "values", prefix) < 0)
+        PyErr_Clear();
+      Py_XDECREF(prefix);
+      Py_XDECREF(i);
+    }
+    PyMem_Free(ts);
+    Py_DECREF(out);
+    PyErr_Restore(et, ev, tb);
+    return NULL;
   }
   PyMem_Free(ts);
   if (st == MIZU_TIMEOUT) {
@@ -6952,7 +7006,13 @@ static PyObject *Pool_ready_wait(MizuPool *self, PyObject *args,
     slots[i] = (uint32_t) s;
   }
   Py_DECREF(fast);
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
+  const int parks = ms != 0;
+  if (parks && role_enter(&self->waiter_active, pool_waiter_msg)) {
+    PyMem_Free(slots);
+    return NULL;
+  }
   /* Sliced like stop: a Pool_destroy breaks the wait out as False. */
   double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
   for (;;) {
@@ -6960,12 +7020,14 @@ static PyObject *Pool_ready_wait(MizuPool *self, PyObject *args,
     st = mizu_pool_ready_wait(p, slots, (size_t) n, slice);
     POOL_RESUME();
     if (pool_call_done(self, p, st)) {
-      PyMem_Free(slots);
-      return NULL;
+      err = 1;
+      break;
     }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
   }
+  if (parks) role_leave(&self->waiter_active);
   PyMem_Free(slots);
+  if (err) return NULL;
   return PyBool_FromLong(st == MIZU_OK);
 }
 
@@ -7023,13 +7085,18 @@ static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
   }
   mizu_status st;
   mizu_pool *p = self->core;
+  const int parks = ms != 0;
+  if (parks && role_enter(&self->waiter_active, pool_waiter_msg))
+    return NULL;
   /* Not sliced like the other waits: each stop call releases the handle,
      so a re-entered stop short-circuits to OK on the released handle —
      an indefinite stop waits out its own deadline past a destroy. */
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_stop(p, ms);
   POOL_RESUME();
-  if (pool_call_done(self, p, st)) return NULL;
+  int err = pool_call_done(self, p, st);
+  if (parks) role_leave(&self->waiter_active);
+  if (err) return NULL;
   /* the handle stays alive (a post-stop submit reads the shutdown flag as
      StoppedError); the finalizer's destroy is a no-op after */
   return PyBool_FromLong(st == MIZU_OK);
@@ -8004,8 +8071,14 @@ static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
   }
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  /* the executor's drain settles with collect(0) alongside an outside
+     blocking collect by design: polls stay unguarded */
+  const int parks = ms != 0;
+  if (parks && role_enter(&pool->waiter_active, pool_waiter_msg))
+    return NULL;
   void *v = NULL;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   mizu_pool *p = pool->core;
   /* An indefinite wait slices into bounded core calls: a Pool_destroy on
      another thread nulls pool->core between slices, breaking the wait out
@@ -8017,9 +8090,14 @@ static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
     POOL_ALLOW_THREADS(pool);
     st = mizu_pool_collect(p, &t, &v, slice);
     POOL_RESUME();
-    if (pool_call_done(pool, p, st)) return NULL;
+    if (pool_call_done(pool, p, st)) {
+      err = 1;
+      break;
+    }
     if (st != MIZU_TIMEOUT || ms >= 0 || pool->core == NULL) break;
   }
+  if (parks) role_leave(&pool->waiter_active);
+  if (err) return NULL;
   if (st == MIZU_TIMEOUT) {
     if (ms < 0) {
       pool_get(pool);   /* destroyed mid-wait: the closed-handle ValueError */

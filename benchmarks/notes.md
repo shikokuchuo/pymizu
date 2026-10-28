@@ -1086,3 +1086,26 @@ A/B on the wave harness: 20.0 -> 19.7 us (within noise).
 
 Status: full suite 1026 pass, 7 skip (pandas/duckdb-absence, one
 platform skip); ruff + pyrefly clean.
+
+## 2026-10-28 — waiter-side + ready_wait guards, armed-consumer check
+
+Extends the threading-contract guards to the roles 64cb933 left
+documented-only: the pool's waiting half (Task.collect / collect_any /
+collect_all / ready_wait / stop — parking waits only; zero-timeout polls
+never announce or park, so the executor drain's collect(0) settles
+alongside an outside blocking collect stay unguarded), the channel
+ready_wait, and the blocking-vs-async receive exclusion, thread-scoped:
+a blocking receive from off the armed consumer's loop thread raises at
+the call site, while on the loop thread it can never race the drain
+(the "channel armed" row pins that pattern). No table swap — an A/B
+isolation run, logged per convention.
+
+A/B (canonical suite, back-to-back against the 64cb933 build on the
+same host): swing band is host noise, proven by the R-side control
+rows the change cannot touch — R pool plan rows 1.010-1.046, echo rows
+1.058-1.065, frame 10col relay R 1.064-1.158. pymizu rows inside the
+same band: sequential rt 1.000 / 1.143 (0.7 -> 0.8 us absolute),
+pipelined 0.946-1.150 both directions, payload 0.992-1.160, streaming
+0.972, event-driven 0.925-1.037, executor 0.997-1.032.
+
+Status: full suite 1031 pass, 7 skip; ruff + pyrefly clean.

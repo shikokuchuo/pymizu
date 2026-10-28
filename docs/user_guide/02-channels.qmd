@@ -104,9 +104,9 @@ An indefinite wait (`recv()`, `recv_batch()`, `ready_wait()`, `close()`) breaks 
 ## Threading
 
 A channel side is confined to one thread at a time — this is libmizu's handle-threading contract, not a pymizu limitation: the wire structs carry no mutex by design.
-Serialize a side's verbs — `send()`, `recv()`, their batch forms — on one thread; a concurrent second verb raises `ConcurrentUseError` rather than corrupt the single-producer ring.
+Serialize a side's verbs — `send()`, `recv()`, their batch forms, `ready_wait()` — on one thread; a concurrent second verb raises `ConcurrentUseError` rather than corrupt the single-producer ring.
 The guard is a check, not a lock: it never waits, it reports the misuse.
-Blocking receives and `recv_async()` consumers are likewise exclusive on a side (the drain runs its own receives on the loop thread).
+Blocking receives and `recv_async()` consumers are likewise exclusive on a side: a blocking receive while async waiters are pending raises `ConcurrentUseError` at the call site, on any thread but the consumer's event loop — receives on the loop thread itself can never race the drain that runs there.
 Full-duplex traffic driven from two threads wants two channels — one per direction, each confined to its thread — or one channel whose verbs are funneled through a single thread.
 `destroy()` is the exception: it is safe from any thread, pinning verbs in flight as described in Closing.
 

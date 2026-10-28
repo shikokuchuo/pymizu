@@ -97,10 +97,13 @@ class Channel:
     [`recv()`](`pymizu.Channel.recv`), their batch forms) on one
     thread; a concurrent second verb raises
     [`ConcurrentUseError`](`pymizu.ConcurrentUseError`). Blocking and
-    async receives are likewise exclusive on a side, and full-duplex
-    traffic between two threads wants two channels. Teardown is the
-    exception: [`destroy()`](`pymizu.Channel.destroy`) is safe from
-    any thread.
+    async receives are likewise exclusive on a side: a blocking
+    receive while a [`recv_async()`](`pymizu.Channel.recv_async`)
+    consumer is armed raises it too — from any thread but the
+    consumer's event loop, whose own receives can never race the
+    drain that runs there. Full-duplex traffic between two threads
+    wants two channels. Teardown is the exception:
+    [`destroy()`](`pymizu.Channel.destroy`) is safe from any thread.
     """
 
     _h: _pymizu._Channel
@@ -282,8 +285,10 @@ class Channel:
         ------
         ConcurrentUseError
             Another verb is in flight on this side from a second
-            thread (or an async consumer is armed): a side is
-            confined to one thread and one consumer form at a time.
+            thread, or a [`recv_async()`](`pymizu.Channel.recv_async`)
+            consumer is armed and this is not its event-loop thread:
+            a side is confined to one thread and one consumer form at
+            a time.
         """
         return self._h.recv(timeout)
 
@@ -623,8 +628,10 @@ class Pool:
     [`map()`](`pymizu.Pool.map`) — serializes on one thread; a
     concurrent second producer raises
     [`ConcurrentUseError`](`pymizu.ConcurrentUseError`). The waiting
-    half — the blocking collects — likewise belongs to one thread,
-    which may be a different one from the producer's. To produce from
+    half — the blocking collects and
+    [`stop()`](`pymizu.Pool.stop`) — likewise serializes on one
+    thread, which may be a different one from the producer's. To
+    produce from
     several threads, [`attach()`](`pymizu.Pool.attach`) one handle per
     thread (each is its own producer, with its own injection ring), or
     use [`PoolExecutor`](`pymizu.PoolExecutor`), whose submits are
@@ -891,6 +898,14 @@ class Pool:
             ``(index, value)`` of the first terminal task, or the
             `TIMEOUT` sentinel. A non-OK outcome raises with an
             ``index`` attribute (0-based).
+
+        Raises
+        ------
+        ConcurrentUseError
+            Another wait-half verb (a blocking collect, `stop()`) is
+            in flight on this handle from a second thread: the
+            waiting half is confined to one thread (the class
+            docstring).
         """
         return self._h.collect_any(tasks, timeout)
 
@@ -915,6 +930,14 @@ class Pool:
             that fails to read raises with ``index`` and a ``values``
             attribute carrying the consumed prefix. The `TIMEOUT`
             sentinel consumes nothing.
+
+        Raises
+        ------
+        ConcurrentUseError
+            Another wait-half verb (a blocking collect, `stop()`) is
+            in flight on this handle from a second thread: the
+            waiting half is confined to one thread (the class
+            docstring).
         """
         return self._h.collect_all(tasks, timeout)
 
@@ -1334,6 +1357,13 @@ class Pool:
         Returns
         -------
             True on clean worker exits within ``timeout``.
+
+        Raises
+        ------
+        ConcurrentUseError
+            A blocking collect is in flight on this handle from a
+            second thread: the waiting half is confined to one thread
+            (the class docstring).
         """
         ok = self._h.stop(timeout)
         if not ok:

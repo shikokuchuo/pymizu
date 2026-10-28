@@ -35,6 +35,11 @@ def busy(i):
     return i * 2
 
 
+def slow(i):
+    time.sleep(0.3)
+    return i
+
+
 def raise_long(msg):
     raise ValueError(msg)
 
