@@ -2228,6 +2228,8 @@ class PreparedMap:
         -------
             The run's map handle — collected exactly once, by
             `collect()` (blocking) or `collect_async()` (event-driven).
+            A run is a producer on the pool handle: a concurrent run or
+            submit from a second thread raises `ConcurrentUseError`.
             A clean value collect keeps the stage for the O(1) re-arm;
             a view collect hands the region to the view, and an unclean
             run (timeout, an error, a worker death) drops it — the next

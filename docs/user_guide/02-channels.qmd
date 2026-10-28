@@ -101,6 +101,15 @@ A destroy is safe from any thread.
 A verb in flight on another thread pins the handle, and teardown completes when the last one returns.
 An indefinite wait (`recv()`, `recv_batch()`, `ready_wait()`, `close()`) breaks out within a bounded slice, so the teardown and the peer's observation of it follow promptly.
 
+## Threading
+
+A channel side is confined to one thread at a time — this is libmizu's handle-threading contract, not a pymizu limitation: the wire structs carry no mutex by design.
+Serialize a side's verbs — `send()`, `recv()`, their batch forms — on one thread; a concurrent second verb raises `ConcurrentUseError` rather than corrupt the single-producer ring.
+The guard is a check, not a lock: it never waits, it reports the misuse.
+Blocking receives and `recv_async()` consumers are likewise exclusive on a side (the drain runs its own receives on the loop thread).
+Full-duplex traffic driven from two threads wants two channels — one per direction, each confined to its thread — or one channel whose verbs are funneled through a single thread.
+`destroy()` is the exception: it is safe from any thread, pinning verbs in flight as described in Closing.
+
 ## What crosses a channel
 
 pymizu moves each value the cheapest way it can:

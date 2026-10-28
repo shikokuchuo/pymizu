@@ -70,6 +70,7 @@ reference:
         - TaskError
         - WorkerDiedError
         - DeclinedError
+        - ConcurrentUseError
     - title: Housekeeping
       desc: >-
         The process-wide default pool, the evaluating worker's own pool

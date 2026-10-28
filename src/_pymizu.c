@@ -81,6 +81,7 @@ static PyObject *MizuWorkerDiedError;
 static PyObject *MizuTaskLostError;   /* the claimant's own gone verdict */
 static PyObject *MizuTaskError;       /* a task's own error, re-raised */
 static PyObject *MizuDeclinedError;   /* a foreign-handle send-time decline */
+static PyObject *MizuConcurrentUseError;  /* two verbs, one handle role */
 
 /* traceback.format_exception, resolved lazily on the first task error (the
    error path is cold; importing it at module init is not). */
@@ -5355,7 +5356,36 @@ typedef struct {
   MizuViewCache *vcache; /* the binding.ctx view cache, for teardown */
   MizuNotify *notify;    /* the notify record, lazily from the first arm */
   PyObject *aio_state;   /* the Python async state (pymizu._aio), owned */
+  MIZU_ATOMIC(unsigned) verb_active;  /* the one-thread-per-side guard */
 } MizuChannel;
+
+/* The threading-contract guards (libmizu "Handle threading" — the contract
+   comment rides the vendored mizu.h): one thread per handle role at a
+   time. Non-blocking — a second concurrent verb in the same role raises
+   ConcurrentUseError instead of racing the core's single-writer words
+   (ring tails, the staging checkout, the result-slot scan), whose failure
+   modes are silent. A plain acquire/release pair on the handle object:
+   correct with or without the GIL, two atomics per verb. */
+static int role_enter(MIZU_ATOMIC(unsigned) *slot, const char *msg) {
+  if (atomic_exchange_explicit(slot, 1u, memory_order_acquire)) {
+    PyErr_SetString(MizuConcurrentUseError, msg);
+    return -1;
+  }
+  return 0;
+}
+static void role_leave(MIZU_ATOMIC(unsigned) *slot) {
+  atomic_store_explicit(slot, 0u, memory_order_release);
+}
+
+static const char chan_concurrent_msg[] =
+  "pymizu: concurrent verbs on one channel side — a channel side is "
+  "confined to one thread at a time; serialize its send/recv calls "
+  "(libmizu 'Handle threading')";
+static const char pool_producer_msg[] =
+  "pymizu: concurrent submits on one pool handle — a pool handle is "
+  "single-producer; serialize its submit family on one thread, attach() "
+  "one submitter handle per thread, or use PoolExecutor (libmizu 'Handle "
+  "threading')";
 
 /* The pin release (F1's D4): a ref-carrying task stream pins the spec
    object at stage — one INCREF there, this DECREF at the entry's
@@ -5528,11 +5558,14 @@ closed or dead peer; None on a successful publish.");
 static PyObject *Channel_send(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   mizu_status st;
   CHAN_ALLOW_THREADS(self);
   st = mizu_channel_send(c, (void *) arg);
   CHAN_RESUME();
-  if (chan_call_done(self, c, st)) return NULL;
+  int err = chan_call_done(self, c, st);
+  role_leave(&self->verb_active);
+  if (err) return NULL;
   return status_or_sentinel(st, Py_None);
 }
 
@@ -5554,13 +5587,18 @@ static PyObject *Channel_send_error(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
   MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
+  /* the err_exc bracket lives inside the guard: two _send_error calls can
+     no longer interleave set/clear across the GIL drop */
   hctx->err_exc = arg;
   mizu_status st;
   CHAN_ALLOW_THREADS(self);
   st = mizu_channel_send(c, (void *) arg);
   CHAN_RESUME();
   hctx->err_exc = NULL;
-  if (chan_call_done(self, c, st)) return NULL;
+  int err = chan_call_done(self, c, st);
+  role_leave(&self->verb_active);
+  if (err) return NULL;
   return PyBool_FromLong(st == MIZU_OK);
 }
 
@@ -5596,10 +5634,14 @@ closed midway; send the next element singly to learn which.");
 static PyObject *Channel_send_batch(MizuChannel *self, PyObject *arg) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   PyObject *seq;
   Py_ssize_t n;
   void **objs = batch_snapshot(arg, &seq, &n);
-  if (objs == NULL) return NULL;
+  if (objs == NULL) {
+    role_leave(&self->verb_active);
+    return NULL;
+  }
   size_t accepted = 0;
   mizu_status st;
   CHAN_ALLOW_THREADS(self);
@@ -5607,7 +5649,9 @@ static PyObject *Channel_send_batch(MizuChannel *self, PyObject *arg) {
   CHAN_RESUME();
   PyMem_Free(objs);
   Py_DECREF(seq);
-  if (chan_call_done(self, c, st)) return NULL;
+  int err = chan_call_done(self, c, st);
+  role_leave(&self->verb_active);
+  if (err) return NULL;
   return PyLong_FromSize_t(accepted);
 }
 
@@ -5627,8 +5671,10 @@ static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
   if (c == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   void *obj = NULL;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   /* An indefinite wait slices into bounded core calls: a destroy on
      another thread nulls self->core between slices, breaking the wait out
      so the deferred teardown (and its peer-visible signaling) runs
@@ -5639,9 +5685,14 @@ static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
     CHAN_ALLOW_THREADS(self);
     st = mizu_channel_recv(c, &obj, slice);
     CHAN_RESUME();
-    if (chan_call_done(self, c, st)) return NULL;
+    if (chan_call_done(self, c, st)) {
+      err = 1;
+      break;
+    }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
   }
+  role_leave(&self->verb_active);
+  if (err) return NULL;
   if (st == MIZU_TIMEOUT && ms < 0)
     st = MIZU_CLOSED;   /* destroyed mid-wait */
   if (st == MIZU_OK) return (PyObject *) obj;
@@ -5664,8 +5715,12 @@ static PyObject *Channel_recv_burst(MizuChannel *self, PyObject *arg) {
   }
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   PyObject *out = PyList_New(0);
-  if (out == NULL) return NULL;
+  if (out == NULL) {
+    role_leave(&self->verb_active);
+    return NULL;
+  }
   mizu_status st = MIZU_OK;
   self->in_flight++;   /* the destroy pin, as CHAN_ALLOW_THREADS (GIL held) */
   for (Py_ssize_t i = 0; i < cap; i++) {
@@ -5676,11 +5731,14 @@ static PyObject *Channel_recv_burst(MizuChannel *self, PyObject *arg) {
       Py_DECREF((PyObject *) obj);
       Py_DECREF(out);
       chan_in_flight_done(self);
+      role_leave(&self->verb_active);
       return NULL;   /* the Python error stands */
     }
     Py_DECREF((PyObject *) obj);
   }
-  if (chan_call_done(self, c, st)) {
+  int err = chan_call_done(self, c, st);
+  role_leave(&self->verb_active);
+  if (err) {
     Py_DECREF(out);
     return NULL;
   }
@@ -5719,10 +5777,15 @@ static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
   if (c == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   PyObject *out = PyList_New((Py_ssize_t) n);
-  if (out == NULL) return NULL;
+  if (out == NULL) {
+    role_leave(&self->verb_active);
+    return NULL;
+  }
   size_t count = 0;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   /* Sliced like recv(): the wait covers only the first message, so a
      timed-out slice consumed nothing and re-entry is clean. */
   double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
@@ -5732,10 +5795,15 @@ static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
                                     slice);
     CHAN_RESUME();
     if (chan_call_done(self, c, st)) {
-      Py_DECREF(out);
-      return NULL;
+      err = 1;
+      break;
     }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
+  }
+  role_leave(&self->verb_active);
+  if (err) {
+    Py_DECREF(out);
+    return NULL;
   }
   if (st == MIZU_TIMEOUT && ms < 0)
     st = MIZU_CLOSED;   /* destroyed mid-wait */
@@ -6164,6 +6232,7 @@ typedef struct {
   PyObject *trace_fn;  /* the registered trace callable, or NULL */
   MizuNotify *notify;  /* the notify record, lazily from the first arm */
   PyObject *aio_state; /* the Python async state (pymizu._aio), owned */
+  MIZU_ATOMIC(unsigned) producer_active;  /* the single-producer guard */
 } MizuPool;
 
 typedef struct {
@@ -6487,8 +6556,10 @@ static PyObject *Pool_submit(MizuPool *self, PyObject *args, PyObject *kw) {
   if (p == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  if (role_enter(&self->producer_active, pool_producer_msg)) return NULL;
   mizu_task t;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   /* Sliced like collect: a Pool_destroy breaks the wait out. A FULL slice
      staged nothing (the space wait precedes staging), so re-entry is
      clean. */
@@ -6497,9 +6568,14 @@ static PyObject *Pool_submit(MizuPool *self, PyObject *args, PyObject *kw) {
     POOL_ALLOW_THREADS(self);
     st = mizu_pool_submit(p, (void *) payload, &t, slice);
     POOL_RESUME();
-    if (pool_call_done(self, p, st)) return NULL;
+    if (pool_call_done(self, p, st)) {
+      err = 1;
+      break;
+    }
     if (st != MIZU_FULL || ms >= 0 || self->core == NULL) break;
   }
+  role_leave(&self->producer_active);
+  if (err) return NULL;
   if (st == MIZU_OK) return (PyObject *) task_wrap(self, &t);
   if (st == MIZU_FULL && ms < 0) {
     pool_get(self);   /* destroyed mid-wait: the closed-handle ValueError */
@@ -6604,15 +6680,21 @@ static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
   }
   size_t done = 0;
   mizu_status st;
+  if (role_enter(&self->producer_active, pool_producer_msg)) {
+    PyMem_Free(ts);
+    goto wrap_fail;
+  }
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_submit_batch(p, (void **) PySequence_Fast_ITEMS(frames),
                               (size_t) n, ts, &done, ms);
   POOL_RESUME();
+  int err = pool_call_done(self, p, st);
+  role_leave(&self->producer_active);
   Py_DECREF(frames);
   Py_DECREF(fast);
   Py_XDECREF(empty_args);
   Py_XDECREF(empty_kwargs);
-  if (pool_call_done(self, p, st)) {
+  if (err) {
     if (done == 0) {
       PyMem_Free(ts);
       return NULL;
@@ -7530,8 +7612,10 @@ static PyObject *Pool_submit_runner(MizuPool *self, PyObject *args,
   if (p == NULL) return NULL;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  if (role_enter(&self->producer_active, pool_producer_msg)) return NULL;
   mizu_task t;
-  mizu_status st;
+  mizu_status st = MIZU_OK;
+  int err = 0;
   /* Sliced like Pool_submit. */
   double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
   for (;;) {
@@ -7539,9 +7623,14 @@ static PyObject *Pool_submit_runner(MizuPool *self, PyObject *args,
     st = mizu_pool_submit_flags(p, (void *) payload, MIZU_ENTRY_RUNNER, &t,
                                 slice);
     POOL_RESUME();
-    if (pool_call_done(self, p, st)) return NULL;
+    if (pool_call_done(self, p, st)) {
+      err = 1;
+      break;
+    }
     if (st != MIZU_FULL || ms >= 0 || self->core == NULL) break;
   }
+  role_leave(&self->producer_active);
+  if (err) return NULL;
   if (st == MIZU_OK) return (PyObject *) task_wrap(self, &t);
   if (st == MIZU_FULL && ms < 0) {
     pool_get(self);   /* destroyed mid-wait: the closed-handle ValueError */
@@ -8947,7 +9036,12 @@ PyInit__pymizu(void)
                     PyExc_TypeError, NULL,
                     "A send on a foreign-language channel of a value "
                     "outside the portable interchange subset. Carries "
-                    "'path' and 'reason' attributes.") < 0) {
+                    "'path' and 'reason' attributes.") < 0 ||
+      add_exception(m, &MizuConcurrentUseError, "pymizu.ConcurrentUseError",
+                    MizuError, NULL,
+                    "A verb ran concurrently with another verb in the "
+                    "same handle role: each handle role is confined to "
+                    "one thread at a time (libmizu 'Handle threading').") < 0) {
     Py_DECREF(m);
     return NULL;
   }

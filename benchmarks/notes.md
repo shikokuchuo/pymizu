@@ -1065,3 +1065,24 @@ armed 2.46M (no swaps).
 
 Status: full suite 1022 pass, 7 skip (pandas/duckdb-absence, one
 platform skip); ruff + pyrefly clean.
+
+## 2026-10-28 — threading-contract guards (ConcurrentUseError)
+
+Non-blocking atomic role guards on the channel send/recv verbs and the
+pool submit family (the single-producer / one-thread-per-side contract):
+two atomics per guarded verb (micro: guard pair 1.2 ns vs uncontended
+pthread mutex pair 3.8 ns). No table swap — an A/B isolation run, logged
+per convention.
+
+A/B (canonical suite, back-to-back against the pre-guard build on the
+same host): every guarded hot path flat — sequential round-trip channel
+1.000 / pool 1.000, pipelined 0.995-1.024 across the four rows, payload
+0.993-1.000, streaming 1.028, stage rows 0.969-1.042, event-driven
+0.980-1.016, map rows 0.984-1.059. Rows past +/-5% are all same-build
+jitter, proven by two baseline runs swinging as much: frame 10col relay
+R (one computed col) 171 vs 217 pre-vs-pre (27%), executor outstanding
+1000 67.3k vs 62.9k pre-vs-pre, the skew wall-time row. Facade submit
+A/B on the wave harness: 20.0 -> 19.7 us (within noise).
+
+Status: full suite 1026 pass, 7 skip (pandas/duckdb-absence, one
+platform skip); ruff + pyrefly clean.

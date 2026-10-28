@@ -26,6 +26,7 @@ from pymizu._pymizu import (
     PEER_GONE,
     TIMEOUT,
     CancelledError,
+    ConcurrentUseError,
     DeclinedError,
     Frame,
     MizuError,
@@ -90,6 +91,16 @@ class Channel:
     [`Channel.attach()`](`pymizu.Channel.attach`) —
     ``python -m pymizu.child`` does this. Handles do not survive
     ``fork()``.
+
+    Threading: a side is confined to one thread at a time — serialize
+    its verbs ([`send()`](`pymizu.Channel.send`),
+    [`recv()`](`pymizu.Channel.recv`), their batch forms) on one
+    thread; a concurrent second verb raises
+    [`ConcurrentUseError`](`pymizu.ConcurrentUseError`). Blocking and
+    async receives are likewise exclusive on a side, and full-duplex
+    traffic between two threads wants two channels. Teardown is the
+    exception: [`destroy()`](`pymizu.Channel.destroy`) is safe from
+    any thread.
     """
 
     _h: _pymizu._Channel
@@ -232,6 +243,12 @@ class Channel:
         -------
             None, or the `FULL` / `CLOSED` / `PEER_GONE` sentinel
             (identity-tested).
+
+        Raises
+        ------
+        ConcurrentUseError
+            Another verb is in flight on this side from a second
+            thread: a side is confined to one thread at a time.
         """
         return self._h.send(x)
 
@@ -260,6 +277,13 @@ class Channel:
         -------
             The payload, or the `TIMEOUT` / `CLOSED` / `PEER_GONE`
             sentinel on the non-payload outcomes.
+
+        Raises
+        ------
+        ConcurrentUseError
+            Another verb is in flight on this side from a second
+            thread (or an async consumer is armed): a side is
+            confined to one thread and one consumer form at a time.
         """
         return self._h.recv(timeout)
 
@@ -286,7 +310,10 @@ class Channel:
         message goes to the next waiter. There is no `timeout` argument:
         `asyncio.timeout` / `asyncio.wait_for` are the idiom. A spin
         channel cannot arm (its publish path skips the wake checkpoint
-        by design) and raises.
+        by design) and raises. The async consumer is the side's one
+        consumer: a blocking [`recv()`](`pymizu.Channel.recv`) on the
+        same side while waiters are pending raises
+        [`ConcurrentUseError`](`pymizu.ConcurrentUseError`).
         """
         from pymizu import _aio
 
@@ -342,13 +369,15 @@ class Channel:
     def destroy(self) -> None:
         """Tear down the handle immediately, without the close
         handshake: the peer observes the channel closed (PEER_GONE is
-        the hard-death outcome). Safe from any thread: a verb in
-        flight on another thread pins the handle, and teardown
-        completes when the last one returns — an indefinite wait
-        (recv, recv_batch, ready_wait, close) breaks out within a
-        bounded slice, so the teardown (and the peer's observation of
-        it) follows promptly. Pending recv futures settle with
-        PEER_GONE."""
+        the hard-death outcome). Safe from any thread — the one verb
+        that is: a verb in flight on another thread pins the handle,
+        and teardown completes when the last one returns — an
+        indefinite wait (recv, recv_batch, ready_wait, close) breaks
+        out within a bounded slice, so the teardown (and the peer's
+        observation of it) follows promptly. Pending recv futures
+        settle with PEER_GONE. The any-thread license covers this
+        verb only; every other verb stays thread-confined (the class
+        docstring)."""
         if self._h._aio is not None:
             from pymizu import _aio
 
@@ -587,6 +616,20 @@ class Pool:
     Task callables ride pickle: under stock pickle a submitted callable
     must be an importable reference (the multiprocessing constraint);
     installing cloudpickle lifts that transparently.
+
+    Threading: a handle has two single-threaded halves. The producing
+    half — [`submit()`](`pymizu.Pool.submit`),
+    [`submit_batch()`](`pymizu.Pool.submit_batch`),
+    [`map()`](`pymizu.Pool.map`) — serializes on one thread; a
+    concurrent second producer raises
+    [`ConcurrentUseError`](`pymizu.ConcurrentUseError`). The waiting
+    half — the blocking collects — likewise belongs to one thread,
+    which may be a different one from the producer's. To produce from
+    several threads, [`attach()`](`pymizu.Pool.attach`) one handle per
+    thread (each is its own producer, with its own injection ring), or
+    use [`PoolExecutor`](`pymizu.PoolExecutor`), whose submits are
+    thread-safe. Teardown is the exception:
+    [`destroy()`](`pymizu.Pool.destroy`) is safe from any thread.
     """
 
     _h: _pymizu._Pool
@@ -697,6 +740,13 @@ class Pool:
         Returns
         -------
             The submitter-side pool handle.
+
+        Details
+        -------
+        Each attached handle is its own producer with its own
+        injection ring: attaching one handle per thread (or per
+        process) is how several submitters drive one pool without
+        serializing.
         """
         if not _TOKEN_RE.fullmatch(token):
             raise ValueError("pymizu: malformed join token")
@@ -744,6 +794,10 @@ class Pool:
             When no result slot is free.
         StoppedError
             When the pool is stopped.
+        ConcurrentUseError
+            Another submit-family verb is in flight on this handle
+            from a second thread: a pool handle is single-producer
+            (the class docstring).
 
         Details
         -------
@@ -808,6 +862,13 @@ class Pool:
             stay valid and collectible. A mid-batch failure raises with
             an ``accepted`` attribute holding the handles already
             submitted, which stay valid and collectible.
+
+        Raises
+        ------
+        ConcurrentUseError
+            Another submit-family verb is in flight on this handle
+            from a second thread: a pool handle is single-producer
+            (the class docstring).
         """
         _check_native(self._h._worker_ident(), "Pool.submit_batch")
         # the C verb frames the zero-arg callables itself (one crossing)
@@ -1081,6 +1142,10 @@ class Pool:
         ``fn(*element, *args, **kwargs)``, the
         `multiprocessing.Pool.starmap` convention.
 
+        Threading: a map is a producer on the handle — it raises
+        `ConcurrentUseError` when another map or a submit is in flight
+        from a second thread (the class docstring).
+
         Examples
         --------
         >>> import pymizu
@@ -1287,14 +1352,16 @@ class Pool:
     def destroy(self) -> None:
         """Tear down the pool handle immediately, without the shutdown
         broadcast or the wait. Workers exit once they observe the
-        controller gone. Safe from any thread: a verb in flight on
-        another thread pins the handle, and teardown completes when the
-        last one returns — an indefinite wait (submit, collect,
-        collect_any, collect_all, ready_wait) breaks out within a
-        bounded slice; stop() instead waits out its own deadline, and
-        a worker's idle run() can delay the teardown (and the shutdown
-        observation) until it returns. Pending async consumers fail
-        with the closed-handle error."""
+        controller gone. Safe from any thread — the one verb that is:
+        a verb in flight on another thread pins the handle, and
+        teardown completes when the last one returns — an indefinite
+        wait (submit, collect, collect_any, collect_all, ready_wait)
+        breaks out within a bounded slice; stop() instead waits out
+        its own deadline, and a worker's idle run() can delay the
+        teardown (and the shutdown observation) until it returns.
+        Pending async consumers fail with the closed-handle error.
+        The any-thread license covers this verb only; every other
+        verb stays thread-confined (the class docstring)."""
         for hook in getattr(self, "_destroy_hooks", ()):
             hook()
         if self._h._aio is not None:
@@ -1546,6 +1613,7 @@ __all__ = [
     "TIMEOUT",
     "CancelledError",
     "Channel",
+    "ConcurrentUseError",
     "DeclinedError",
     "DimArray",
     "Frame",

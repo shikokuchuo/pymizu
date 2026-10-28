@@ -188,6 +188,22 @@ pool.dump()     # every slot in full detail — the first tool when a pool hangs
 pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 ```
 
+## Threading
+
+A pool handle is single-producer: serialize its submit family — `submit()`, `submit_batch()`, `map()` — on one thread.
+A concurrent second producer raises `ConcurrentUseError` rather than corrupt the injection ring; the guard is a check, not a lock — it never waits, it reports the misuse.
+The waiting half (the blocking collects) likewise belongs to one thread, which may be a different one from the producer's.
+This is libmizu's handle-threading contract: the wire structs carry no mutex by design.
+
+Three ways to produce from several threads, in rough order of preference:
+
+1. `PoolExecutor` — its `submit()` is thread-safe by internal lock, and it resolves futures event-driven (see the next section).
+2. Funnel submissions through one thread — e.g. `run_in_executor` with a single-worker `ThreadPoolExecutor` — while collects stay on their own thread.
+3. `Pool.attach(token)` one handle per thread: each attached handle is its own producer with its own injection ring.
+
+The trap to avoid is `asyncio.to_thread(pool.submit, ...)` from concurrent coroutines: the default executor is multi-threaded, so the submits race and raise `ConcurrentUseError`.
+`destroy()` is the one any-thread verb, as with channels.
+
 ## concurrent.futures interop
 
 `pymizu.PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface.

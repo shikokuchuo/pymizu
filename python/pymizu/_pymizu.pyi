@@ -79,6 +79,10 @@ class TaskLostError(MizuError):
     """The claimant's read of the task's payload region failed without a
     death verdict (a vanished or unreadable region, not a dead worker)."""
 
+class ConcurrentUseError(MizuError):
+    """A verb ran concurrently with another verb in the same handle role:
+    each handle role is confined to one thread at a time."""
+
 class _Task:
     """A submitted-task handle."""
 

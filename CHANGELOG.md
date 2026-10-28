@@ -10,6 +10,20 @@ Initial pre-release.
 
 ### Added
 
+- The threading contract is now documented and guarded: each handle
+  role is confined to one thread at a time — a channel side (all of
+  its send/recv verbs), a pool handle's producing half (the submit
+  family, `map` included), and a pool handle's waiting half (the
+  blocking collects, which may use a different thread from the
+  producer's). A concurrent verb in the same role previously raced
+  the core's single-writer words silently (torn ring entries, aliased
+  result slots, duplicated or dropped messages); it now raises the new
+  `pymizu.ConcurrentUseError` from a non-blocking guard — the check
+  costs two atomics per verb and never waits. To produce from several
+  threads: `Pool.attach` one handle per thread (its own injection
+  ring) or use `PoolExecutor`, whose submits are thread-safe.
+  `destroy()` stays safe from any thread.
+
 - Ordered factors cross both ways with R (the `MIZU_CAP_ORDERED`
   capability): an R ordered factor arrives like a plain one
   (`list[str | None]` standalone, a dictionary column inside a `Frame`),

@@ -65,6 +65,10 @@ class PoolExecutor(_Executor):
 
     Notes
     -----
+    `submit()` (and the stdlib `map` over it) is thread-safe, as the
+    `concurrent.futures` contract requires: an internal lock
+    serializes the single-producer pool handle. This is the adapter
+    to reach for when several threads must submit to one pool.
     Deltas from stdlib semantics: a task's failure surfaces as
     `pymizu.TaskError` (the remote error envelope);
     `Future.running()` is always False (futures resolve at completion);
