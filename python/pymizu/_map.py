@@ -2217,6 +2217,7 @@ class PreparedMap:
     def run(
         self,
         x: _Any = None,
+        *,
         seed: int
         | bytes
         | bytearray
