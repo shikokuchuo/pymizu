@@ -16,8 +16,8 @@ Pool.create(
     per_worker_cap=1024,
     result_slots=4096,
     slot_size=512,
-    launcher=None,
     startup_timeout=30.0,
+    launcher=None,
 )
 ```
 
@@ -44,11 +44,11 @@ Bounds each submitter's outstanding (uncollected) tasks.
 `slot_size: int = 512`  
 Bytes per queue entry and result slot -- a payload past the inline budget travels in a fresh region per payload.
 
-`launcher: _Callable[[str, int], _Any] | None = None`  
-A `callable(token, slot)` arranging for a Python process to run `python -m pymizu.worker <token> <slot>`; the default spawns `sys.executable` directly.
-
 `startup_timeout: float = 30.0`  
 Seconds to wait for the workers to attach.
+
+`launcher: _Callable[[str, int], _Any] | None = None`  
+A `callable(token, slot)` arranging for a Python process to run `python -m pymizu.worker <token> <slot>`; the default spawns `sys.executable` directly.
 
 ## Returns
 

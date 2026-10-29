@@ -13,12 +13,12 @@ Pool.starmap(
     *,
     args=(),
     kwargs=None,
+    template=None,
     n_chunks=None,
     seed=None,
     timeout=None,
-    template=None,
-    collect=None,
     stream=False,
+    collect=None,
 )
 ```
 

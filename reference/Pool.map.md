@@ -13,12 +13,12 @@ Pool.map(
     *,
     args=(),
     kwargs=None,
+    template=None,
     n_chunks=None,
     seed=None,
     timeout=None,
-    template=None,
-    collect=None,
     stream=False,
+    collect=None,
 )
 ```
 
@@ -38,6 +38,9 @@ Constant positional arguments appended to every call.
 `kwargs: dict[str, _Any] | None = None`  
 Constant keyword arguments of every call.
 
+`template: _Any = None`  
+An exemplar buffer (e.g. `numpy.empty(m, dtype=...)`) declaring that every `fn` result is `m` values of that dtype; see Details.
+
 `n_chunks: int | None = None`  
 Overrides the morsel count (the scheduling granularity).
 
@@ -47,14 +50,11 @@ An int or bytes deriving deterministic per-element streams of the stdlib `random
 `timeout: float | None = None`  
 Seconds to wait for completion; None waits indefinitely.
 
-`template: _Any = None`  
-An exemplar buffer (e.g. `numpy.empty(m, dtype=...)`) declaring that every `fn` result is `m` values of that dtype; see Details.
+`stream: bool = False`  
+Stream slices of `x` to workers instead of staging the whole of `x` in shared memory; see Details.
 
 `collect: str | None = None`  
 `"copy"` (the default) or `"view"`; governs how a template-backed output area is returned.
-
-`stream: bool = False`  
-Stream slices of `x` to workers instead of staging the whole of `x` in shared memory; see Details.
 
 ## Returns
 

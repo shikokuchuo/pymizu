@@ -411,7 +411,7 @@ results
 Methods for the Pool class
 
 
-create(workers: 'int' = 1, *, max_workers: 'int | None' = None, max_submitters: 'int' = 8, injection_cap: 'int' = 1024, per_worker_cap: 'int' = 1024, result_slots: 'int' = 4096, slot_size: 'int' = 512, launcher: '_Callable[[str, int], _Any] | None' = None, startup_timeout: 'float' = 30.0) -> 'Pool'
+create(workers: 'int' = 1, *, max_workers: 'int | None' = None, max_submitters: 'int' = 8, injection_cap: 'int' = 1024, per_worker_cap: 'int' = 1024, result_slots: 'int' = 4096, slot_size: 'int' = 512, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str, int], _Any] | None' = None) -> 'Pool'
 
 Create a pool and spawn its worker processes.
 
@@ -433,12 +433,12 @@ result_slots
 slot_size
     Bytes per queue entry and result slot — a payload past the
     inline budget travels in a fresh region per payload.
+startup_timeout
+    Seconds to wait for the workers to attach.
 launcher
     A ``callable(token, slot)`` arranging for a Python process
     to run ``python -m pymizu.worker <token> <slot>``; the
     default spawns ``sys.executable`` directly.
-startup_timeout
-    Seconds to wait for the workers to attach.
 
 Returns
 -------
@@ -660,7 +660,7 @@ Returns
     Cancelling the Future un-enrolls every task and never
     cancels them.
 
-map(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> '_Any'
+map(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, template: '_Any' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, stream: 'bool' = False, collect: 'str | None' = None) -> '_Any'
 
 Map ``fn`` over the elements of ``x`` on the pool; return the
 run's map handle.
@@ -675,6 +675,10 @@ args
     Constant positional arguments appended to every call.
 kwargs
     Constant keyword arguments of every call.
+template
+    An exemplar buffer (e.g. ``numpy.empty(m, dtype=...)``)
+    declaring that every ``fn`` result is ``m`` values of that
+    dtype; see Details.
 n_chunks
     Overrides the morsel count (the scheduling granularity).
 seed
@@ -685,16 +689,12 @@ seed
     processes.
 timeout
     Seconds to wait for completion; None waits indefinitely.
-template
-    An exemplar buffer (e.g. ``numpy.empty(m, dtype=...)``)
-    declaring that every ``fn`` result is ``m`` values of that
-    dtype; see Details.
-collect
-    ``"copy"`` (the default) or ``"view"``; governs how a
-    template-backed output area is returned.
 stream
     Stream slices of ``x`` to workers instead of staging the
     whole of ``x`` in shared memory; see Details.
+collect
+    ``"copy"`` (the default) or ``"view"``; governs how a
+    template-backed output area is returned.
 
 Returns
 -------
@@ -834,7 +834,7 @@ Examples
 >>> results
 [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
-starmap(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> '_Any'
+starmap(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, template: '_Any' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, timeout: 'float | None' = None, stream: 'bool' = False, collect: 'str | None' = None) -> '_Any'
 
 Map ``fn`` over ``x``, unpacking each element as the call's
 positional arguments: ``fn(*element, *args, **kwargs)``;
@@ -849,7 +849,7 @@ unpacking is Python-only. Everything else — seeding, templates,
 streaming, the error taxonomy — is exactly
 [`map()`](`pymizu.Pool.map`)'s.
 
-map_prepare(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'PreparedMap'
+map_prepare(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, template: '_Any' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, stream: 'bool' = False, collect: 'str | None' = None) -> 'PreparedMap'
 
 Stage a map once for repeated runs; return a
 [`PreparedMap`](`pymizu.PreparedMap`).
@@ -873,7 +873,7 @@ retire(self, slot: 'int') -> 'None'
 Ask the worker in ``slot`` to exit cleanly (non-blocking,
 controller only).
 
-spawn_workers(self, n: 'int' = 1, *, launcher: '_Callable[[str, int], _Any] | None' = None, startup_timeout: 'float' = 30.0) -> 'list[int]'
+spawn_workers(self, n: 'int' = 1, *, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str, int], _Any] | None' = None) -> 'list[int]'
 
 Spawn ``n`` additional workers into free registry slots and
 wait for them to join (controller only).
@@ -882,11 +882,11 @@ Parameters
 ----------
 n
     Number of workers to spawn.
+startup_timeout
+    Seconds to wait for the workers to attach.
 launcher
     As for [`Pool.create()`](`pymizu.Pool.create`); the default
     spawns ``sys.executable`` directly.
-startup_timeout
-    Seconds to wait for the workers to attach.
 
 Returns
 -------

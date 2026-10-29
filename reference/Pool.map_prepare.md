@@ -13,11 +13,11 @@ Pool.map_prepare(
     *,
     args=(),
     kwargs=None,
+    template=None,
     n_chunks=None,
     seed=None,
-    template=None,
-    collect=None,
     stream=False,
+    collect=None,
 )
 ```
 
