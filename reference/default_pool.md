@@ -4,7 +4,7 @@ The process-wide default pool, or None when none is set.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1455-L1478)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1552-L1575)
 
 ``` python
 default_pool()

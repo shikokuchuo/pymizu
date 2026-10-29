@@ -150,6 +150,18 @@ pool.dump()     # every slot in full detail -- the first tool when a pool hangs
 pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 ```
 
+## Threading
+
+A pool handle is single-producer: serialize its submit family -- `submit()`, [submit_batch()](../reference/Pool.submit_batch.md#pymizu.Pool.submit_batch), [map()](../reference/Pool.map.md#pymizu.Pool.map) -- on one thread. A concurrent second producer raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) rather than corrupt the injection ring; the guard is a check, not a lock -- it never waits, it reports the misuse. The waiting half (the blocking collects, `ready_wait()`, [stop()](../reference/Pool.stop.md#pymizu.Pool.stop)) likewise serializes on one thread -- a concurrent second wait raises the same error -- and it may be a different thread from the producer's. This is libmizu's handle-threading contract: the wire structs carry no mutex by design.
+
+Three ways to produce from several threads, in rough order of preference:
+
+1.  [PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) -- its `submit()` is thread-safe by internal lock, and it resolves futures event-driven (see the next section).
+2.  Funnel submissions through one thread -- e.g. `run_in_executor` with a single-worker `ThreadPoolExecutor` -- while collects stay on their own thread.
+3.  `Pool.attach(token)` one handle per thread: each attached handle is its own producer with its own injection ring.
+
+The trap to avoid is `asyncio.to_thread(pool.submit, ...)` from concurrent coroutines: the default executor is multi-threaded, so the submits race and raise [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError). `destroy()` is the one any-thread verb, as with channels.
+
 ## concurrent.futures interop
 
 [pymizu.PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface. Code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects. `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged. Futures resolve event-driven off the pool's notify endpoint -- there is no drain thread and no polling bound.

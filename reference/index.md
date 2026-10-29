@@ -254,6 +254,9 @@ The executing worker died mid-task. Carries 'slot' and 'pid' attributes identify
 [DeclinedError](DeclinedError.md#pymizu.DeclinedError)  
 A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes.
 
+[ConcurrentUseError](ConcurrentUseError.md#pymizu.ConcurrentUseError)  
+A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu 'Handle threading').
+
 ## Housekeeping
 
 The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.

@@ -4,7 +4,7 @@ Submit one task per zero-arg callable in `fns` in one
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L786-L814)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L847-L882)
 
 ``` python
 Pool.submit_batch(
@@ -28,3 +28,8 @@ Seconds to wait for injection-ring space; None waits indefinitely.
 
 `A list of Task handles. Ring-full past`  
 `timeout` ends the batch short -- the returned handles stay valid and collectible. A mid-batch failure raises with an `accepted` attribute holding the handles already submitted, which stay valid and collectible.
+
+## Raises
+
+`ConcurrentUseError`  
+Another submit-family verb is in flight on this handle from a second thread: a pool handle is single-producer (the class docstring).

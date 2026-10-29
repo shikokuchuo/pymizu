@@ -85,7 +85,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="site_libs/bootstrap/bootstrap-8ba9dd9b3dca29dc8f1219ed02261ac6.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-51f0867a3a5f79c6e42a1899f94f9a22.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -371,24 +371,25 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-134"><a href="#cb1-134" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`TaskError`</span>: The task callable raised. Carries 'remote_type' and 'remote_traceback' attributes describing the worker-side exception</span>
 <span id="cb1-135"><a href="#cb1-135" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`WorkerDiedError`</span>: The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker</span>
 <span id="cb1-136"><a href="#cb1-136" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`DeclinedError`</span>: A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes</span>
-<span id="cb1-137"><a href="#cb1-137" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-138"><a href="#cb1-138" aria-hidden="true" tabindex="-1"></a><span class="fu">### Housekeeping</span></span>
-<span id="cb1-139"><a href="#cb1-139" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-140"><a href="#cb1-140" aria-hidden="true" tabindex="-1"></a>The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.</span>
-<span id="cb1-141"><a href="#cb1-141" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-142"><a href="#cb1-142" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`default_pool`</span>: The process-wide default pool, or None when none is set</span>
-<span id="cb1-143"><a href="#cb1-143" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`set_default_pool`</span>: Set the process-wide default pool; None clears it</span>
-<span id="cb1-144"><a href="#cb1-144" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`using_pool`</span>: Use ``pool`` as the default for the with block, then restore</span>
-<span id="cb1-145"><a href="#cb1-145" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`current_pool`</span>: The evaluating worker's own pool handle, inside a task</span>
-<span id="cb1-146"><a href="#cb1-146" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`current_rng`</span>: The running element's own numpy Generator, inside a seeded map</span>
-<span id="cb1-147"><a href="#cb1-147" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`prune`</span>: Remove orphaned shared memory regions</span>
-<span id="cb1-148"><a href="#cb1-148" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-149"><a href="#cb1-149" aria-hidden="true" tabindex="-1"></a><span class="fu">## Resources</span></span>
-<span id="cb1-150"><a href="#cb1-150" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb1-151"><a href="#cb1-151" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">Full documentation</span><span class="co">](https://shikokuchuo.net/pymizu/)</span></span>
-<span id="cb1-152"><a href="#cb1-152" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">llms.txt</span><span class="co">](llms.txt)</span> — Indexed API reference for LLMs</span>
-<span id="cb1-153"><a href="#cb1-153" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">llms-full.txt</span><span class="co">](llms-full.txt)</span> — Comprehensive documentation for LLMs</span>
-<span id="cb1-154"><a href="#cb1-154" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">Source code</span><span class="co">](https://github.com/shikokuchuo/pymizu)</span></span></code></pre></div>
+<span id="cb1-137"><a href="#cb1-137" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`ConcurrentUseError`</span>: A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu 'Handle threading')</span>
+<span id="cb1-138"><a href="#cb1-138" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-139"><a href="#cb1-139" aria-hidden="true" tabindex="-1"></a><span class="fu">### Housekeeping</span></span>
+<span id="cb1-140"><a href="#cb1-140" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-141"><a href="#cb1-141" aria-hidden="true" tabindex="-1"></a>The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.</span>
+<span id="cb1-142"><a href="#cb1-142" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-143"><a href="#cb1-143" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`default_pool`</span>: The process-wide default pool, or None when none is set</span>
+<span id="cb1-144"><a href="#cb1-144" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`set_default_pool`</span>: Set the process-wide default pool; None clears it</span>
+<span id="cb1-145"><a href="#cb1-145" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`using_pool`</span>: Use ``pool`` as the default for the with block, then restore</span>
+<span id="cb1-146"><a href="#cb1-146" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`current_pool`</span>: The evaluating worker's own pool handle, inside a task</span>
+<span id="cb1-147"><a href="#cb1-147" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`current_rng`</span>: The running element's own numpy Generator, inside a seeded map</span>
+<span id="cb1-148"><a href="#cb1-148" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`prune`</span>: Remove orphaned shared memory regions</span>
+<span id="cb1-149"><a href="#cb1-149" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-150"><a href="#cb1-150" aria-hidden="true" tabindex="-1"></a><span class="fu">## Resources</span></span>
+<span id="cb1-151"><a href="#cb1-151" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-152"><a href="#cb1-152" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">Full documentation</span><span class="co">](https://shikokuchuo.net/pymizu/)</span></span>
+<span id="cb1-153"><a href="#cb1-153" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">llms.txt</span><span class="co">](llms.txt)</span> — Indexed API reference for LLMs</span>
+<span id="cb1-154"><a href="#cb1-154" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">llms-full.txt</span><span class="co">](llms-full.txt)</span> — Comprehensive documentation for LLMs</span>
+<span id="cb1-155"><a href="#cb1-155" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="co">[</span><span class="ot">Source code</span><span class="co">](https://github.com/shikokuchuo/pymizu)</span></span></code></pre></div>
 </pre>
 
 

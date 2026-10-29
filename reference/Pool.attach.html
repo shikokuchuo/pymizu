@@ -85,7 +85,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-8ba9dd9b3dca29dc8f1219ed02261ac6.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-51f0867a3a5f79c6e42a1899f94f9a22.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -747,6 +747,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="menu-text">DeclinedError</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/ConcurrentUseError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">ConcurrentUseError</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -808,6 +814,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <ul>
   <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
   <li><a href="#returns" id="toc-returns" class="nav-link" data-scroll-target="#returns">Returns</a></li>
+  <li><a href="#details" id="toc-details" class="nav-link" data-scroll-target="#details">Details</a></li>
   </ul>
 </nav>
     </div>
@@ -838,7 +845,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L687-L703" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L737-L760" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">attach</span>(<span class="va">token</span>)</span></code></pre></div>
@@ -864,6 +871,10 @@ The join token; it travels out of band and is <code>pool.token</code> on the cre
 </dd>
 </dl>
 </div>
+</section>
+<section id="details" class="level2 doc-details">
+<h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
+<p>Each attached handle is its own producer with its own injection ring: attaching one handle per thread (or per process) is how several submitters drive one pool without serializing.</p>
 
 
 </section>

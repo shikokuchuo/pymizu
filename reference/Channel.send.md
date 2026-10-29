@@ -4,7 +4,7 @@ Send one payload.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L221-L236)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L235-L256)
 
 ``` python
 Channel.send(x)
@@ -19,3 +19,8 @@ The payload. `None` itself is a valid payload; bytes and numpy arrays travel raw
 
 `None, or the FULL / CLOSED / PEER_GONE sentinel`  
 (identity-tested).
+
+## Raises
+
+`ConcurrentUseError`  
+Another verb is in flight on this side from a second thread: a side is confined to one thread at a time.

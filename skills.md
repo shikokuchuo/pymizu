@@ -167,6 +167,7 @@ Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLO
 - `TaskError`: The task callable raised. Carries 'remote_type' and 'remote_traceback' attributes describing the worker-side exception
 - `WorkerDiedError`: The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker
 - `DeclinedError`: A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes
+- `ConcurrentUseError`: A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu 'Handle threading')
 
 ### Housekeeping
 

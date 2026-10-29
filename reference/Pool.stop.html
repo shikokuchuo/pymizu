@@ -85,7 +85,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-8ba9dd9b3dca29dc8f1219ed02261ac6.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-51f0867a3a5f79c6e42a1899f94f9a22.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -747,6 +747,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="menu-text">DeclinedError</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/ConcurrentUseError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">ConcurrentUseError</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -807,6 +813,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
    
   <ul>
   <li><a href="#returns" id="toc-returns" class="nav-link active" data-scroll-target="#returns">Returns</a></li>
+  <li><a href="#raises" id="toc-raises" class="nav-link" data-scroll-target="#raises">Raises</a></li>
   </ul>
 </nav>
     </div>
@@ -837,7 +844,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1262-L1280" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1350-L1375" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">stop</span>(<span class="va">timeout</span><span class="op">=</span><span class="fl">5.0</span>)</span></code></pre></div>
@@ -852,6 +859,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <dt><code> <span class="doc-parameter-annotation">True on clean worker exits within <code>timeout</code>.</span></code></dt>
 <dd>
 
+</dd>
+</dl>
+</div>
+</section>
+<section id="raises" class="level2 doc-raises">
+<h2 class="doc-raises anchored" data-anchor-id="raises">Raises</h2>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">ConcurrentUseError</span></code></dt>
+<dd>
+A blocking collect is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring).
 </dd>
 </dl>
 </div>

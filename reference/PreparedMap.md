@@ -4,7 +4,7 @@ A map staged once into a persistent region, run many times.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1982-L2321)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1982-L2323)
 
 ``` python
 PreparedMap(
@@ -88,7 +88,7 @@ Unlink the staged region (idempotent; the GC backstop is the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2305-L2311)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2307-L2313)
 
 ``` python
 close()
@@ -102,7 +102,7 @@ Run the prepared map once; return the run's map handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2205-L2303)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2205-L2305)
 
 ``` python
 run(
@@ -122,4 +122,4 @@ Seconds before the run's submission gives up; on expiry the tasks already in are
 #### Returns
 
 `The run's map handle -- collected exactly once, by`  
-[collect()](../reference/Task.collect.md#pymizu.Task.collect) (blocking) or [collect_async()](../reference/Task.collect_async.md#pymizu.Task.collect_async) (event-driven). A clean value collect keeps the stage for the O(1) re-arm; a view collect hands the region to the view, and an unclean run (timeout, an error, a worker death) drops it -- the next run restages into a fresh one either way.
+[collect()](../reference/Task.collect.md#pymizu.Task.collect) (blocking) or [collect_async()](../reference/Task.collect_async.md#pymizu.Task.collect_async) (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError). A clean value collect keeps the stage for the O(1) re-arm; a view collect hands the region to the view, and an unclean run (timeout, an error, a worker death) drops it -- the next run restages into a fresh one either way.

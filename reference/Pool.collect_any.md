@@ -4,7 +4,7 @@ Wait on several tasks.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L816-L834)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L884-L910)
 
 ``` python
 Pool.collect_any(
@@ -25,3 +25,8 @@ Seconds to wait; None waits indefinitely.
 
 `(index, value) of the first terminal task, or the`  
 `TIMEOUT` sentinel. A non-OK outcome raises with an `index` attribute (0-based).
+
+## Raises
+
+`ConcurrentUseError`  
+Another wait-half verb (a blocking collect, [stop()](../reference/Pool.stop.md#pymizu.Pool.stop)) is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring).

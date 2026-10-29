@@ -4,7 +4,7 @@ Alias for [`stop()`](../reference/Pool.stop.md#pymizu.Pool.stop) -- the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1282-L1285)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1377-L1380)
 
 ``` python
 Pool.shutdown(timeout=5.0)

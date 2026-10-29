@@ -4,7 +4,7 @@ Send several payloads in one crossing; return the number
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L246-L249)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L266-L269)
 
 ``` python
 Channel.send_batch(xs)

@@ -4,7 +4,7 @@ Submit `fn(*args, **kwargs)` as a task; return a Task handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L710-L784)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L767-L845)
 
 ``` python
 Pool.submit(
@@ -46,6 +46,9 @@ When no result slot is free.
 
 `StoppedError`  
 When the pool is stopped.
+
+`ConcurrentUseError`  
+Another submit-family verb is in flight on this handle from a second thread: a pool handle is single-producer (the class docstring).
 
 ## Details
 

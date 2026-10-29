@@ -85,7 +85,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-8ba9dd9b3dca29dc8f1219ed02261ac6.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-51f0867a3a5f79c6e42a1899f94f9a22.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -747,6 +747,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="menu-text">DeclinedError</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/ConcurrentUseError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">ConcurrentUseError</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -838,7 +844,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L266-L293" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L295-L325" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Channel</span><span class="op">.</span><span class="fu">recv_async</span>()</span></code></pre></div>
@@ -859,7 +865,7 @@ blocking <a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="gdl
 </section>
 <section id="details" class="level2 doc-details">
 <h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
-<p>Several outstanding calls on one channel resolve in FIFO call order, one message each, from the per-handle pending queue. Arming is loss-free: data already in the ring resolves from the arm’s synchronous drain; only genuinely pending entries ride the watch. Cancelling the Future detaches the waiter — the next message goes to the next waiter. There is no <code>timeout</code> argument: <code>asyncio.timeout</code> / <code>asyncio.wait_for</code> are the idiom. A spin channel cannot arm (its publish path skips the wake checkpoint by design) and raises.</p>
+<p>Several outstanding calls on one channel resolve in FIFO call order, one message each, from the per-handle pending queue. Arming is loss-free: data already in the ring resolves from the arm’s synchronous drain; only genuinely pending entries ride the watch. Cancelling the Future detaches the waiter — the next message goes to the next waiter. There is no <code>timeout</code> argument: <code>asyncio.timeout</code> / <code>asyncio.wait_for</code> are the idiom. A spin channel cannot arm (its publish path skips the wake checkpoint by design) and raises. The async consumer is the side’s one consumer: a blocking <a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="gdls-link"><code>recv()</code></a> on the same side while waiters are pending raises <a href="../reference/ConcurrentUseError.html#pymizu.ConcurrentUseError" class="gdls-link"><code>ConcurrentUseError</code></a>.</p>
 
 
 </section>

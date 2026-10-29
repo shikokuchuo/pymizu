@@ -2,7 +2,7 @@
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L366-L367)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L400-L401)
 
 ``` python
 Channel.__enter__()

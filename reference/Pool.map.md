@@ -4,7 +4,7 @@ Map `fn` over the elements of `x` on the pool; return the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L906-L1106)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L990-L1194)
 
 ``` python
 Pool.map(
@@ -90,6 +90,8 @@ With `stream=True`, the map never stages the whole of `x` into shared memory: it
 `timeout` bounds submission only (the ring-space wait staging the tasks); the collection deadline is the handle's `collect(timeout)`, whose expiry cancels the outstanding work and returns the `TIMEOUT` sentinel, never raised.
 
 [`starmap()`](../reference/Pool.starmap.md#pymizu.Pool.starmap) is the unpacking variant -- `fn(*element, *args, **kwargs)`, the `multiprocessing.Pool.starmap` convention.
+
+Threading: a map is a producer on the handle -- it raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) when another map or a submit is in flight from a second thread (the class docstring).
 
 ## Examples
 

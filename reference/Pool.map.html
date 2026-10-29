@@ -85,7 +85,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-bf27225e3a48a9273f3daa8f8e829971.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-8ba9dd9b3dca29dc8f1219ed02261ac6.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-51f0867a3a5f79c6e42a1899f94f9a22.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -747,6 +747,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
  <span class="menu-text">DeclinedError</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../reference/ConcurrentUseError.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">ConcurrentUseError</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item sidebar-item-section">
@@ -841,7 +847,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L906-L1106" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L990-L1194" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">map</span>(</span>
@@ -951,6 +957,7 @@ With a spec, a non-portable constant or element at stage time.
 <p>With <code>stream=True</code>, the map never stages the whole of <code>x</code> into shared memory: it streams slices of <code>x</code> to workers as they take work; the return value is unchanged. Fixed x-slices ride ordinary chunk tasks under a sliding submit/collect window of at most <code>min(n_chunks, 2 * live workers, free result slots)</code> outstanding tasks, so shared-memory residency is bounded by <code>window x slice</code> instead of <code>sizeof(x)</code> — with the default chunk count (<code>min(len(x), 32 * live workers)</code>) that is roughly <code>(2 * workers) / n_chunks</code> of the serialized <code>x</code>. <code>n_chunks=</code> overrides the chunk count outright (<code>n_chunks=len(x)</code> is the mirai-style extreme of one element per task). Everything else — result order, <code>template</code> and <a href="../reference/Task.collect.html#pymizu.Task.collect" class="gdls-link gdls-code">collect</a>, <code>seed</code> invariance, the error taxonomy — is exactly the non-streaming map’s. Fail-fast latency coarsens from about one adaptive morsel batch to about one chunk (the bound moves with <code>n_chunks</code>), the adaptive batch sizing of the morsel machinery is lost (skew mitigation is to raise <code>n_chunks</code>), and slices cross via the serialized tiers, so per-chunk staging costs an ordinary submit’s serialization rather than the raw section’s zero-copy slicing. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec as <code>fn</code> streams too, over workers of any language: each chunk in the window stages a small shared region of its own (the slice plus the task that runs on it, one runner task per chunk), removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by <code>sizeof(x)</code>. Each chunk also writes its results separately, so they cannot combine into one view: <code>collect="view"</code> raises <code>TypeError</code> on a streaming spec map, as does preparing one with <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link"><code>map_prepare()</code></a>.</p>
 <p><code>timeout</code> bounds submission only (the ring-space wait staging the tasks); the collection deadline is the handle’s <code>collect(timeout)</code>, whose expiry cancels the outstanding work and returns the <code>TIMEOUT</code> sentinel, never raised.</p>
 <p><a href="../reference/Pool.starmap.html#pymizu.Pool.starmap" class="gdls-link"><code>starmap()</code></a> is the unpacking variant — <code>fn(*element, *args, **kwargs)</code>, the <code>multiprocessing.Pool.starmap</code> convention.</p>
+<p>Threading: a map is a producer on the handle — it raises <a href="../reference/ConcurrentUseError.html#pymizu.ConcurrentUseError" class="gdls-link gdls-code">ConcurrentUseError</a> when another map or a submit is in flight from a second thread (the class docstring).</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
