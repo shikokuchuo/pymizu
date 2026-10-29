@@ -292,7 +292,7 @@ _Task()
 
 A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
 
-PreparedMap(pool: 'pymizu.Pool', fn: '_Callable[..., _Any]', x: '_Any', *, args: '_Any' = (), kwargs: 'dict | None' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, template: '_Any' = None, collect: 'str | None' = None, stream: 'bool' = False) -> 'None'
+PreparedMap(pool: 'pymizu.Pool', fn: '_Callable[..., _Any]', x: '_Any', *, args: '_Any' = (), kwargs: 'dict | None' = None, n_chunks: 'int | None' = None, template: '_Any' = None, stream: 'bool' = False) -> 'None'
 
 A map staged once into a persistent region, run many times.
 
@@ -321,17 +321,15 @@ kwargs
     Constant keyword arguments for every call.
 n_chunks
     Overrides the morsel count (the scheduling granularity).
-seed
-    Deterministic per-element seeding — as for
-    [`Pool.map()`](`pymizu.Pool.map`).
 template
     An exemplar buffer declaring each result's dtype and length —
     as for [`Pool.map()`](`pymizu.Pool.map`).
-collect
-    'copy' or 'view' with `template`; 'list' without.
 stream
     Stream slices of `x` instead of staging it whole — as for
-    [`Pool.map()`](`pymizu.Pool.map`).
+    [`Pool.map()`](`pymizu.Pool.map`). The recipe is staged here;
+    `seed` and `collect` are per-run options of
+    [`PreparedMap.run()`](`pymizu.PreparedMap.run`) (mirroring
+    mizu's `mizu_map_run()`).
 
 Examples
 --------
@@ -849,14 +847,15 @@ unpacking is Python-only. Everything else — seeding, templates,
 streaming, the error taxonomy — is exactly
 [`map()`](`pymizu.Pool.map`)'s.
 
-map_prepare(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, template: '_Any' = None, n_chunks: 'int | None' = None, seed: 'int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None' = None, stream: 'bool' = False, collect: 'str | None' = None) -> 'PreparedMap'
+map_prepare(self, fn: '_Callable[..., _Any]', x: '_Iterable[_Any]', *, args: '_Iterable[_Any]' = (), kwargs: 'dict[str, _Any] | None' = None, template: '_Any' = None, n_chunks: 'int | None' = None, stream: 'bool' = False) -> 'PreparedMap'
 
 Stage a map once for repeated runs; return a
 [`PreparedMap`](`pymizu.PreparedMap`).
 
 Takes the same arguments as [`map()`](`pymizu.Pool.map`) (minus
-``timeout``, which is per-run and moves to
-``PreparedMap.run``). The descriptor
+``seed``, ``timeout``, and ``collect`` — the per-run options,
+which move to [`PreparedMap.run()`](`pymizu.PreparedMap.run`)).
+The descriptor
 pickle, the region create, and the worker-side attach are paid
 once here; each ``pm.run()`` re-arms in O(1), reuses the
 workers' cached contexts, and returns the run's map handle (the
@@ -2281,6 +2280,7 @@ Any other replacement is written out fresh.
 A streaming prepared map keeps `x` submitter-side, so a replacement of any shape re-slices.
 Only a length change under `template=` uses fresh shared memory.
 After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
+`m.run(seed=...)` reseeds the run's element streams, and `m.run(collect=...)` chooses the result form: both are per-run options — the seed rides the run's runner tasks, never the staged region.
 
 ## Nested maps
 

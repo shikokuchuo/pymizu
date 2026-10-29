@@ -4,7 +4,7 @@ Spawn `n` additional workers into free registry slots and
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1304-L1348)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1297-L1341)
 
 ``` python
 Pool.spawn_workers(

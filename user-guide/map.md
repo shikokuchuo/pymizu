@@ -146,7 +146,7 @@ with pymizu.Pool.create(4) as pool:
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
     [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
 
-`m.run(x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape re-slices. Only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
+`m.run(x=...)` replaces the data for that and later runs. A raw-buffer replacement of the same dtype and length swaps in place at memcpy cost. Any other replacement is written out fresh. A streaming prepared map keeps `x` submitter-side, so a replacement of any shape re-slices. Only a length change under `template=` uses fresh shared memory. After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view. `m.run(seed=...)` reseeds the run's element streams, and `m.run(collect=...)` chooses the result form: both are per-run options -- the seed rides the run's runner tasks, never the staged region.
 
 ## Nested maps
 

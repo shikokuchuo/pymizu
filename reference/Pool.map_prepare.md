@@ -4,7 +4,7 @@ Stage a map once for repeated runs; return a
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1250-L1297)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1250-L1290)
 
 ``` python
 Pool.map_prepare(
@@ -15,12 +15,10 @@ Pool.map_prepare(
     kwargs=None,
     template=None,
     n_chunks=None,
-    seed=None,
     stream=False,
-    collect=None,
 )
 ```
 
 [`PreparedMap`](../reference/PreparedMap.md#pymizu.PreparedMap).
 
-Takes the same arguments as [`map()`](../reference/Pool.map.md#pymizu.Pool.map) (minus `timeout`, which is per-run and moves to [PreparedMap.run](../reference/PreparedMap.md#pymizu.PreparedMap.run)). The descriptor pickle, the region create, and the worker-side attach are paid once here; each `pm.run()` re-arms in O(1), reuses the workers' cached contexts, and returns the run's map handle (the collect happens on it). A run collected with `collect="view"` hands its region to the view, so the next run restages into a fresh one. With `stream=True` the staged `x` stays submitter-side, so a replacement `x` of any shape simply re-slices -- only a length change under `template` restages (the output area is sized for the staged length). Close the handle (or use it as a context manager) to unlink the region.
+Takes the same arguments as [`map()`](../reference/Pool.map.md#pymizu.Pool.map) (minus `seed`, `timeout`, and [collect](../reference/Task.collect.md#pymizu.Task.collect) -- the per-run options, which move to [`PreparedMap.run()`](../reference/PreparedMap.md#pymizu.PreparedMap.run)). The descriptor pickle, the region create, and the worker-side attach are paid once here; each `pm.run()` re-arms in O(1), reuses the workers' cached contexts, and returns the run's map handle (the collect happens on it). A run collected with `collect="view"` hands its region to the view, so the next run restages into a fresh one. With `stream=True` the staged `x` stays submitter-side, so a replacement `x` of any shape simply re-slices -- only a length change under `template` restages (the output area is sized for the staged length). Close the handle (or use it as a context manager) to unlink the region.

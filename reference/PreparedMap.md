@@ -4,7 +4,7 @@ A map staged once into a persistent region, run many times.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1982-L2323)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2006-L2358)
 
 ``` python
 PreparedMap(
@@ -15,9 +15,7 @@ PreparedMap(
     args=(),
     kwargs=None,
     n_chunks=None,
-    seed=None,
     template=None,
-    collect=None,
     stream=False,
 )
 ```
@@ -44,17 +42,11 @@ Constant keyword arguments for every call.
 `n_chunks: int | None = None`  
 Overrides the morsel count (the scheduling granularity).
 
-`seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None`  
-Deterministic per-element seeding -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map).
-
 `template: _Any = None`  
 An exemplar buffer declaring each result's dtype and length -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map).
 
-`collect: str | None = None`  
-'copy' or 'view' with `template`; 'list' without.
-
 `stream: bool = False`  
-Stream slices of `x` instead of staging it whole -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map).
+Stream slices of `x` instead of staging it whole -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map). The recipe is staged here; `seed` and [collect](../reference/Task.collect.md#pymizu.Task.collect) are per-run options of [`PreparedMap.run()`](../reference/PreparedMap.md#pymizu.PreparedMap.run) (mirroring mizu's `mizu_map_run()`).
 
 ## Examples
 
@@ -88,7 +80,7 @@ Unlink the staged region (idempotent; the GC backstop is the
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2307-L2313)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2342-L2348)
 
 ``` python
 close()
@@ -102,12 +94,14 @@ Run the prepared map once; return the run's map handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2205-L2305)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2217-L2340)
 
 ``` python
 run(
     x=None,
+    seed=None,
     timeout=None,
+    collect=None,
 )
 ```
 
@@ -116,8 +110,14 @@ run(
 `x: _Any = None`  
 Replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region's x section -- the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.
 
+`seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None`  
+Deterministic per-element seeding for this run, as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map); `None` (the default) runs unseeded. The seed rides the run's runner payloads, never the staged region, so reseeding a run is free -- the repeated-simulation loop varies `seed` per run while the stage is paid once.
+
 `timeout: float | None = None`  
 Seconds before the run's submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT [`Sentinel`](../reference/Sentinel.md#pymizu.Sentinel) is returned (no handle). The collection deadline is the handle's [collect()](../reference/Task.collect.md#pymizu.Task.collect).
+
+`collect: str | None = None`  
+`"copy"` or `"view"` with `template`; `"list"` without -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map). The choice is per run.
 
 #### Returns
 

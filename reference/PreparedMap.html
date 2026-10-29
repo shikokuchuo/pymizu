@@ -849,7 +849,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1982-L2323" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2006-L2358" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">PreparedMap</span>(</span>
@@ -860,11 +860,9 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="va">args</span><span class="op">=</span>(),</span>
 <span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="va">kwargs</span><span class="op">=</span><span class="cn">None</span>,</span>
 <span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="va">n_chunks</span><span class="op">=</span><span class="cn">None</span>,</span>
-<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="va">seed</span><span class="op">=</span><span class="cn">None</span>,</span>
-<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="va">template</span><span class="op">=</span><span class="cn">None</span>,</span>
-<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="va">collect</span><span class="op">=</span><span class="cn">None</span>,</span>
-<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="va">stream</span><span class="op">=</span><span class="bn">False</span>,</span>
-<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="va">template</span><span class="op">=</span><span class="cn">None</span>,</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="va">stream</span><span class="op">=</span><span class="bn">False</span>,</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
 <p>Create with <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link"><code>Pool.map_prepare()</code></a>; run with <a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link gdls-code">run()</a>, which returns the run’s map handle (the collect happens on it, as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>). Re-arming is O(1) — a generation bump, a cursor reset, a cancel-word clear — and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with <code>close()</code> (or a with block) to unlink the region.</p>
@@ -897,21 +895,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <dd>
 <p>Overrides the morsel count (the scheduling granularity).</p>
 </dd>
-<dt><code><span class="doc-parameter-name">seed</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
-<dd>
-<p>Deterministic per-element seeding — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.</p>
-</dd>
 <dt><code><span class="doc-parameter-name">template</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>
 <p>An exemplar buffer declaring each result’s dtype and length — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.</p>
 </dd>
-<dt><code><span class="doc-parameter-name">collect</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">str | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
-<dd>
-<p>‘copy’ or ‘view’ with <code>template</code>; ‘list’ without.</p>
-</dd>
 <dt><code><span class="doc-parameter-name">stream</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">False</span></span></code></dt>
 <dd>
-Stream slices of <code>x</code> instead of staging it whole — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>.
+Stream slices of <code>x</code> instead of staging it whole — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>. The recipe is staged here; <code>seed</code> and <a href="../reference/Task.collect.html#pymizu.Task.collect" class="gdls-link gdls-code">collect</a> are per-run options of <a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link"><code>PreparedMap.run()</code></a> (mirroring mizu’s <code>mizu_map_run()</code>).
 </dd>
 </dl>
 </div>
@@ -919,7 +909,7 @@ Stream slices of <code>x</code> instead of staging it whole — as for <a href="
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Stage the map once, then re-run it over replacement data at memcpy cost (same dtype and length swap in place):</p>
-<div id="665f11e4" class="cell" data-execution_count="1">
+<div id="f0b4f959" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -962,7 +952,7 @@ Stream slices of <code>x</code> instead of staging it whole — as for <a href="
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2307-L2313" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2342-L2348" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb4"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">close</span>()</span></code></pre></div>
@@ -978,13 +968,15 @@ Stream slices of <code>x</code> instead of staging it whole — as for <a href="
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2205-L2305" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2217-L2340" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb5"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">run</span>(</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">x</span><span class="op">=</span><span class="cn">None</span>,</span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="va">timeout</span><span class="op">=</span><span class="cn">None</span>,</span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="va">seed</span><span class="op">=</span><span class="cn">None</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="va">timeout</span><span class="op">=</span><span class="cn">None</span>,</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="va">collect</span><span class="op">=</span><span class="cn">None</span>,</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <section id="parameters-1" class="level4 doc-parameters">
 <h4 class="doc-parameters anchored" data-anchor-id="parameters-1">Parameters</h4>
@@ -994,9 +986,17 @@ Stream slices of <code>x</code> instead of staging it whole — as for <a href="
 <dd>
 <p>Replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region’s x section — the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.</p>
 </dd>
+<dt><code><span class="doc-parameter-name">seed</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>Deterministic per-element seeding for this run, as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>; <code>None</code> (the default) runs unseeded. The seed rides the run’s runner payloads, never the staged region, so reseeding a run is free — the repeated-simulation loop varies <code>seed</code> per run while the stage is paid once.</p>
+</dd>
 <dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>
-Seconds before the run’s submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT <a href="../reference/Sentinel.html#pymizu.Sentinel" class="gdls-link"><code>Sentinel</code></a> is returned (no handle). The collection deadline is the handle’s <a href="../reference/Task.collect.html#pymizu.Task.collect" class="gdls-link gdls-code">collect()</a>.
+<p>Seconds before the run’s submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT <a href="../reference/Sentinel.html#pymizu.Sentinel" class="gdls-link"><code>Sentinel</code></a> is returned (no handle). The collection deadline is the handle’s <a href="../reference/Task.collect.html#pymizu.Task.collect" class="gdls-link gdls-code">collect()</a>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">collect</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">str | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<code>"copy"</code> or <code>"view"</code> with <code>template</code>; <code>"list"</code> without — as for <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a>. The choice is per run.
 </dd>
 </dl>
 </div>
