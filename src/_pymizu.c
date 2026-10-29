@@ -5141,10 +5141,18 @@ static void notify_core_unwatch(MizuNotify *rec) {
    callback may be blocked acquiring the GIL its stopper holds — held
    throughout, the two park on each other. Drop the GIL around the stop
    (dead is stored before the unwatch, so the callback no-ops once it
-   runs). notify_fini may fire with the interpreter half-down: only
-   release a GIL we actually hold. */
+   runs). notify_fini fires with the interpreter half-down: only release
+   a GIL we actually hold. The held probe is version-split: on < 3.12
+   PyGILState_Check() returns 1 unconditionally once finalization has
+   deleted the GILState TSS key, while GetThisThreadState stays
+   NULL-safe (the AtExit stage has it return NULL, falling to the direct
+   call); on 3.12+ PyGILState_Check() tests the real holder. */
 static void notify_unwatch_sync(MizuNotify *rec) {
+#if PY_VERSION_HEX >= 0x030C0000
   if (PyGILState_Check()) {
+#else
+  if (PyGILState_GetThisThreadState() != NULL) {
+#endif
     PyThreadState *save = PyEval_SaveThread();
     notify_core_unwatch(rec);
     PyEval_RestoreThread(save);
