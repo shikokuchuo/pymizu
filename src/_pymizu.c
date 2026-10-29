@@ -5086,7 +5086,8 @@ typedef struct MizuNotify {
   int is_pool;
   int watching;            /* the core watch is active */
   int armed;               /* the core arm and the armed ref are held */
-  int dead;                /* torn down: a queued trampoline no-ops */
+  _Atomic int dead;        /* torn down: a queued trampoline no-ops (also
+                              read lock-free by the watch callback) */
   unsigned long arm_thread; /* the arming thread (the drain's loop thread) */
 } MizuNotify;
 
@@ -5104,7 +5105,9 @@ static PyObject *notify_trampoline;
    run on the loop's thread, never here). */
 static _Thread_local MizuNotify *notify_cb_active;
 
-static int deferred_teardown(PyObject *self, void *core, int is_pool);
+static int deferred_teardown(MizuNotify **notify_slot,
+                             MizuViewCache **vcache_slot, void *core,
+                             int is_pool);
 
 static void notify_unref(MizuNotify *rec) {
   if (atomic_fetch_sub_explicit(&rec->refs, 1, memory_order_acq_rel) == 1) {
@@ -5134,6 +5137,22 @@ static void notify_core_unwatch(MizuNotify *rec) {
     (void) mizu_channel_notify_unwatch((mizu_channel *) rec->core);
 }
 
+/* The core's watch stop waits out an in-flight callback, and that
+   callback may be blocked acquiring the GIL its stopper holds — held
+   throughout, the two park on each other. Drop the GIL around the stop
+   (dead is stored before the unwatch, so the callback no-ops once it
+   runs). notify_fini may fire with the interpreter half-down: only
+   release a GIL we actually hold. */
+static void notify_unwatch_sync(MizuNotify *rec) {
+  if (PyGILState_Check()) {
+    PyThreadState *save = PyEval_SaveThread();
+    notify_core_unwatch(rec);
+    PyEval_RestoreThread(save);
+  } else {
+    notify_core_unwatch(rec);
+  }
+}
+
 static void notify_core_disarm(MizuNotify *rec) {
   if (rec->is_pool)
     (void) mizu_pool_notify_arm((mizu_pool *) rec->core, 0);
@@ -5156,7 +5175,7 @@ static void notify_teardown(MizuNotify **slot, int core_ok) {
   rec->dead = 1;
   if (core_ok && rec->watching) {
     rec->watching = 0;
-    notify_core_unwatch(rec);
+    notify_unwatch_sync(rec);
   }
   if (rec->armed) {
     rec->armed = 0;
@@ -5176,7 +5195,7 @@ static void notify_fini(void) {
   for (MizuNotify *rec = notify_registry; rec != NULL; rec = rec->next)
     if (rec->watching) {
       rec->watching = 0;
-      notify_core_unwatch(rec);
+      notify_unwatch_sync(rec);
     }
 }
 
@@ -5213,6 +5232,13 @@ static void notify_cb(void *ctx) {
                                                memory_order_acq_rel,
                                                memory_order_acquire))
     return;
+  /* a torn-down record needs no wake: return without the GIL — the
+     teardown's stop sync may be parked on this very callback, so the time
+     spent blocked on the GIL here is the deadlock window */
+  if (atomic_load_explicit(&rec->dead, memory_order_acquire)) {
+    atomic_store_explicit(&rec->scheduled, 0, memory_order_release);
+    return;
+  }
   PyGILState_STATE gil = PyGILState_Ensure();
   if (rec->loop == NULL) {
     notify_cb_active = rec;
@@ -5482,8 +5508,9 @@ static PyObject *status_or_sentinel(mizu_status st, PyObject *on_ok) {
    with the count at zero — no core call can be inside, and chan_get
    fails every later one. */
 static void chan_teardown(MizuChannel *self, mizu_channel *c) {
-  if (notify_cb_active != NULL && self->notify == notify_cb_active &&
-      deferred_teardown((PyObject *) self, c, 0))
+  if (notify_cb_active != NULL && self->notify != NULL &&
+      self->notify == notify_cb_active &&
+      deferred_teardown(&self->notify, &self->vcache, c, 0))
     return;
   notify_teardown(&self->notify, 1);
   mizu_channel_destroy(c);
@@ -6112,6 +6139,13 @@ static int Channel_clear(MizuChannel *self) {
 static void Channel_dealloc(MizuChannel *self) {
   PyObject_GC_UnTrack(self);
   int own = self->self_pid == mizu_self_pid();
+  /* collected inside this handle's own direct-mode drain (a cyclic GC on
+     the listener thread): hand the blocking half off as the destroy path
+     does — the detached slots turn the rest of this dealloc into no-ops */
+  if (own && notify_cb_active != NULL && self->notify != NULL &&
+      self->notify == notify_cb_active &&
+      deferred_teardown(&self->notify, &self->vcache, self->core, 0))
+    self->core = NULL;
   notify_teardown(&self->notify, own);
   /* destroy signals close and runs the non-blocking rendezvous check; a
      forked child's copy abandons instead — only its own mapping and heap
@@ -6338,48 +6372,48 @@ static PyObject *pool_raise(mizu_pool *p) {
 }
 
 typedef struct {
-  PyObject *self;   /* the handle object (a ref held across the handoff) */
-  void *core;       /* the deferred mizu_channel/mizu_pool */
+  MizuNotify *notify;   /* the handle's record, detached from the object */
+  MizuViewCache *vcache;
+  void *core;           /* the deferred mizu_channel/mizu_pool */
   int is_pool;
 } MizuDeferredTeardown;
 
 static void deferred_teardown_main(void *arg) {
   MizuDeferredTeardown *dt = (MizuDeferredTeardown *) arg;
   PyGILState_STATE gil = PyGILState_Ensure();
-  if (dt->is_pool) {
-    MizuPool *self = (MizuPool *) dt->self;
-    notify_teardown(&self->notify, 1);
-    mizu_pool_destroy((mizu_pool *) dt->core);
-    view_cache_free(self->vcache);
-    self->vcache = NULL;
-  } else {
-    MizuChannel *self = (MizuChannel *) dt->self;
-    notify_teardown(&self->notify, 1);
-    mizu_channel_destroy((mizu_channel *) dt->core);
-    view_cache_free(self->vcache);
-    self->vcache = NULL;
+  notify_teardown(&dt->notify, 1);
+  if (dt->core != NULL) {
+    if (dt->is_pool)
+      mizu_pool_destroy((mizu_pool *) dt->core);
+    else
+      mizu_channel_destroy((mizu_channel *) dt->core);
   }
-  Py_DECREF(dt->self);
+  view_cache_free(dt->vcache);
   PyGILState_Release(gil);
   free(dt);
 }
 
 /* Teardown inside this handle's own watch callback hands off (the
-   notify_cb_active marker): the handle was already tombstoned by the
-   destroy veneer (or the in-flight count completed it), so only the
-   core-side work moves. Returns nonzero when it handed off. */
-static int deferred_teardown(PyObject *self, void *core, int is_pool) {
+   notify_cb_active marker): the stop sync would otherwise wait on the
+   very callback running it. The handle's slots are detached into the
+   payload only once the thread is up, so the object needs no ref held
+   across the handoff (a dealloc can hand off and free on its own frame).
+   Returns nonzero when it handed off. */
+static int deferred_teardown(MizuNotify **notify_slot,
+                             MizuViewCache **vcache_slot, void *core,
+                             int is_pool) {
   MizuDeferredTeardown *dt = malloc(sizeof(*dt));
   if (dt == NULL) return 0;   /* fall through to the in-place teardown */
-  Py_INCREF(self);
-  dt->self = self;
+  dt->notify = *notify_slot;
+  dt->vcache = *vcache_slot;
   dt->core = core;
   dt->is_pool = is_pool;
   if (PyThread_start_new_thread(deferred_teardown_main, dt) < 0) {
-    Py_DECREF(self);
     free(dt);
     return 0;
   }
+  *notify_slot = NULL;
+  *vcache_slot = NULL;
   return 1;
 }
 
@@ -6388,8 +6422,9 @@ static int deferred_teardown(PyObject *self, void *core, int is_pool) {
    count at zero — no core call can be inside, and pool_get fails every
    later one. */
 static void pool_teardown(MizuPool *self, mizu_pool *p) {
-  if (notify_cb_active != NULL && self->notify == notify_cb_active &&
-      deferred_teardown((PyObject *) self, p, 1))
+  if (notify_cb_active != NULL && self->notify != NULL &&
+      self->notify == notify_cb_active &&
+      deferred_teardown(&self->notify, &self->vcache, p, 1))
     return;
   notify_teardown(&self->notify, 1);
   mizu_pool_destroy(p);
@@ -7584,6 +7619,13 @@ static int Pool_clear(MizuPool *self) {
 static void Pool_dealloc(MizuPool *self) {
   PyObject_GC_UnTrack(self);
   int own = self->self_pid == mizu_self_pid();
+  /* collected inside this handle's own direct-mode drain (a cyclic GC on
+     the listener thread): hand the blocking half off as the destroy path
+     does — the detached slots turn the rest of this dealloc into no-ops */
+  if (own && notify_cb_active != NULL && self->notify != NULL &&
+      self->notify == notify_cb_active &&
+      deferred_teardown(&self->notify, &self->vcache, self->core, 1))
+    self->core = NULL;
   notify_teardown(&self->notify, own);
   /* a controller destroy broadcasts shutdown (no wait); a participant
      releases its slot; a forked child's copy abandons instead — only its

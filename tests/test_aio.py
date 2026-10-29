@@ -6,6 +6,9 @@ extra threads: the watch rides the core's listener machinery.
 """
 
 import asyncio
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 
@@ -396,6 +399,40 @@ def test_channel_destroy_inside_direct_drain_defers():
     finally:
         host.destroy()
         peer.destroy()
+
+
+def test_destroy_racing_an_in_flight_callback_does_not_deadlock():
+    # the publish signals the armed endpoint; the listener callback claims
+    # the wake and blocks in PyGILState_Ensure while the main thread, GIL
+    # held by the spin, enters destroy -> watch stop, which waits for that
+    # callback. The GIL release around the stop is the fix; a subprocess
+    # under a timeout keeps a regression from hanging the suite.
+    script = textwrap.dedent("""
+        import time
+        from pymizu import _pymizu
+
+        for _ in range(20):
+            h = _pymizu._channel_new(64, 256, 1 << 16, False, b"")
+            p, _ = _pymizu._channel_attach(h.token)
+            p.ready_set()
+            assert h.ready_wait(5.0)
+            h._notify_arm(None, lambda: None)  # direct mode: cb takes the GIL
+            p.send(1)                          # signals the armed endpoint
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < 0.002:
+                pass                           # GIL held, no I/O
+            h.destroy()
+            p.destroy()
+        print("ok", flush=True)
+    """)
+    res = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "ok" in res.stdout
 
 
 # -- pool: tasks ------------------------------------------------------------
