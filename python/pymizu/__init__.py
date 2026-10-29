@@ -662,8 +662,8 @@ class Pool:
         per_worker_cap: int = 1024,
         result_slots: int = 4096,
         slot_size: int = 512,
-        launcher: _Callable[[str, int], _Any] | None = None,
         startup_timeout: float = 30.0,
+        launcher: _Callable[[str, int], _Any] | None = None,
     ) -> Pool:
         """Create a pool and spawn its worker processes.
 
@@ -685,12 +685,12 @@ class Pool:
         slot_size
             Bytes per queue entry and result slot — a payload past the
             inline budget travels in a fresh region per payload.
+        startup_timeout
+            Seconds to wait for the workers to attach.
         launcher
             A ``callable(token, slot)`` arranging for a Python process
             to run ``python -m pymizu.worker <token> <slot>``; the
             default spawns ``sys.executable`` directly.
-        startup_timeout
-            Seconds to wait for the workers to attach.
 
         Returns
         -------
@@ -994,6 +994,7 @@ class Pool:
         *,
         args: _Iterable[_Any] = (),
         kwargs: dict[str, _Any] | None = None,
+        template: _Any = None,
         n_chunks: int | None = None,
         seed: int
         | bytes
@@ -1001,9 +1002,8 @@ class Pool:
         | tuple[int | bytes | bytearray, int]
         | None = None,
         timeout: float | None = None,
-        template: _Any = None,
-        collect: str | None = None,
         stream: bool = False,
+        collect: str | None = None,
     ) -> _Any:
         """Map ``fn`` over the elements of ``x`` on the pool; return the
         run's map handle.
@@ -1018,6 +1018,10 @@ class Pool:
             Constant positional arguments appended to every call.
         kwargs
             Constant keyword arguments of every call.
+        template
+            An exemplar buffer (e.g. ``numpy.empty(m, dtype=...)``)
+            declaring that every ``fn`` result is ``m`` values of that
+            dtype; see Details.
         n_chunks
             Overrides the morsel count (the scheduling granularity).
         seed
@@ -1028,16 +1032,12 @@ class Pool:
             processes.
         timeout
             Seconds to wait for completion; None waits indefinitely.
-        template
-            An exemplar buffer (e.g. ``numpy.empty(m, dtype=...)``)
-            declaring that every ``fn`` result is ``m`` values of that
-            dtype; see Details.
-        collect
-            ``"copy"`` (the default) or ``"view"``; governs how a
-            template-backed output area is returned.
         stream
             Stream slices of ``x`` to workers instead of staging the
             whole of ``x`` in shared memory; see Details.
+        collect
+            ``"copy"`` (the default) or ``"view"``; governs how a
+            template-backed output area is returned.
 
         Returns
         -------
@@ -1185,12 +1185,12 @@ class Pool:
             x,
             args,
             kwargs,
-            n_chunks,
-            seed,
-            timeout,
-            template,
-            collect,
-            stream,
+            n_chunks=n_chunks,
+            seed=seed,
+            timeout=timeout,
+            template=template,
+            collect=collect,
+            stream=stream,
         )
 
     def starmap(
@@ -1200,6 +1200,7 @@ class Pool:
         *,
         args: _Iterable[_Any] = (),
         kwargs: dict[str, _Any] | None = None,
+        template: _Any = None,
         n_chunks: int | None = None,
         seed: int
         | bytes
@@ -1207,9 +1208,8 @@ class Pool:
         | tuple[int | bytes | bytearray, int]
         | None = None,
         timeout: float | None = None,
-        template: _Any = None,
-        collect: str | None = None,
         stream: bool = False,
+        collect: str | None = None,
     ) -> _Any:
         """Map ``fn`` over ``x``, unpacking each element as the call's
         positional arguments: ``fn(*element, *args, **kwargs)``;
@@ -1239,12 +1239,12 @@ class Pool:
             list(x),
             args,
             kwargs,
-            n_chunks,
-            seed,
-            timeout,
-            template,
-            collect,
-            stream,
+            n_chunks=n_chunks,
+            seed=seed,
+            timeout=timeout,
+            template=template,
+            collect=collect,
+            stream=stream,
         )
 
     def map_prepare(
@@ -1254,15 +1254,15 @@ class Pool:
         *,
         args: _Iterable[_Any] = (),
         kwargs: dict[str, _Any] | None = None,
+        template: _Any = None,
         n_chunks: int | None = None,
         seed: int
         | bytes
         | bytearray
         | tuple[int | bytes | bytearray, int]
         | None = None,
-        template: _Any = None,
-        collect: str | None = None,
         stream: bool = False,
+        collect: str | None = None,
     ) -> PreparedMap:
         """Stage a map once for repeated runs; return a
         [`PreparedMap`](`pymizu.PreparedMap`).
@@ -1305,8 +1305,8 @@ class Pool:
         self,
         n: int = 1,
         *,
-        launcher: _Callable[[str, int], _Any] | None = None,
         startup_timeout: float = 30.0,
+        launcher: _Callable[[str, int], _Any] | None = None,
     ) -> list[int]:
         """Spawn ``n`` additional workers into free registry slots and
         wait for them to join (controller only).
@@ -1315,11 +1315,11 @@ class Pool:
         ----------
         n
             Number of workers to spawn.
+        startup_timeout
+            Seconds to wait for the workers to attach.
         launcher
             As for [`Pool.create()`](`pymizu.Pool.create`); the default
             spawns ``sys.executable`` directly.
-        startup_timeout
-            Seconds to wait for the workers to attach.
 
         Returns
         -------
