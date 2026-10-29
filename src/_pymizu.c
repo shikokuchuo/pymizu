@@ -5921,6 +5921,10 @@ static PyObject *Channel_close(MizuChannel *self, PyObject *args,
     return NULL;
   }
   mizu_channel *c = self->core;
+  /* the rendezvous release unmaps the region inside the core call: the
+     side's guard must exclude every other verb for the whole wait, not
+     just pin — a recv parked on the mapping could never return */
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
   mizu_status st;
   /* Sliced like recv(): a mid-rendezvous destroy breaks the wait out. A
      timed-out slice re-enters close: re-signal is an idempotent OR. */
@@ -5936,9 +5940,13 @@ static PyObject *Channel_close(MizuChannel *self, PyObject *args,
       self->core = NULL;
       self->zombie = c;
     }
-    if (chan_call_done(self, c, st)) return NULL;
+    if (chan_call_done(self, c, st)) {
+      role_leave(&self->verb_active);
+      return NULL;
+    }
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
   }
+  role_leave(&self->verb_active);
   if (st == MIZU_OK) Py_RETURN_TRUE;
   /* MIZU_TIMEOUT (incl. a mid-wait destroy): destroy retries the
      rendezvous */
@@ -7130,9 +7138,15 @@ static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
   }
   mizu_status st;
   mizu_pool *p = self->core;
-  const int parks = ms != 0;
-  if (parks && role_enter(&self->waiter_active, pool_waiter_msg))
+  /* the stop releases (unmaps) the pool inside the core call, so it must
+     exclude both halves for the whole wait — the waiter guard alone left
+     a producer-thread submit parked on the mapping */
+  if (role_enter(&self->producer_active, pool_producer_msg))
     return NULL;
+  if (role_enter(&self->waiter_active, pool_waiter_msg)) {
+    role_leave(&self->producer_active);
+    return NULL;
+  }
   /* Not sliced like the other waits: each stop call releases the handle,
      so a re-entered stop short-circuits to OK on the released handle —
      an indefinite stop waits out its own deadline past a destroy. */
@@ -7140,7 +7154,8 @@ static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
   st = mizu_pool_stop(p, ms);
   POOL_RESUME();
   int err = pool_call_done(self, p, st);
-  if (parks) role_leave(&self->waiter_active);
+  role_leave(&self->waiter_active);
+  role_leave(&self->producer_active);
   if (err) return NULL;
   /* the handle stays alive (a post-stop submit reads the shutdown flag as
      StoppedError); the finalizer's destroy is a no-op after */

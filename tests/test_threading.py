@@ -99,6 +99,31 @@ def test_pool_concurrent_submit_raises():
     assert blocked == ["closed"]  # the parked submit broke out cleanly
 
 
+def test_pool_stop_while_submit_in_flight_raises():
+    # the stop's release unmaps the region: it must refuse an in-flight
+    # submit, not unmap under it (injection_cap 2, no workers — the
+    # third submit parks on ring space holding the producer guard)
+    pool = _pymizu._pool_new(1, 1, 2, 8, 64, 512)
+    pool.submit(None)
+    pool.submit(None)
+    blocked = []
+    parked = threading.Thread(
+        target=lambda: blocked.append(_capture(pool.submit, None))
+    )
+    parked.start()
+    time.sleep(0.1)  # the submit parks inside the producer guard
+    try:
+        with pytest.raises(pymizu.ConcurrentUseError):
+            pool.stop(0.1)
+        with pytest.raises(pymizu.ConcurrentUseError):
+            pool.stop(0)
+    finally:
+        pool.destroy()
+        parked.join(timeout=5)
+    assert not parked.is_alive()
+    assert blocked == ["closed"]  # the parked submit broke out cleanly
+
+
 def test_pool_concurrent_submit_collect_stays_loud_and_exact():
     # the shiny-bench P3 repro: threads submit+collect on ONE handle.
     # Overlaps raise ConcurrentUseError; every accepted task collects
@@ -160,6 +185,27 @@ def test_channel_ready_wait_holds_the_side():
         parked.join(timeout=5)
     assert not parked.is_alive()
     assert waiting == [False]  # the mid-wait destroy broke it out
+
+
+def test_channel_close_while_recv_in_flight_raises():
+    # the close rendezvous unmaps the region inside the core call: it
+    # must refuse a recv parked on the mapping, not unmap under it
+    h, p = _chan_pair()
+    received = []
+    parked = threading.Thread(target=lambda: received.append(h.recv()))
+    parked.start()
+    time.sleep(0.1)  # the recv parks inside the guard
+    try:
+        with pytest.raises(pymizu.ConcurrentUseError):
+            h.close(0.1)
+        p.close_signal()
+        parked.join(timeout=5)
+        assert not parked.is_alive()
+        assert received == [pymizu.CLOSED]
+        assert h.close(5)  # the freed guard: the rendezvous completes
+    finally:
+        h.destroy()
+        p.destroy()
 
 
 def test_pool_concurrent_collects_raise():

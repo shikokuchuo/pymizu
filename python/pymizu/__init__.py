@@ -351,7 +351,14 @@ class Channel:
         """Orderly close: signal the peer and wait up to ``timeout``
         seconds for it to observe the close. True on a clean handshake;
         False (with a warning) on timeout, in which case resources
-        release when the handle is garbage collected."""
+        release when the handle is garbage collected.
+
+        Raises
+        ------
+        ConcurrentUseError
+            A verb is in flight on this side from a second thread: the
+            side is confined to one thread (the class docstring).
+        """
         ok = self._h.close(timeout)
         if ok and self._h._aio is not None:
             # a completed close settles pending recv futures with CLOSED
@@ -1354,8 +1361,8 @@ class Pool:
         Raises
         ------
         ConcurrentUseError
-            A blocking collect is in flight on this handle from a
-            second thread: the waiting half is confined to one thread
+            A blocking collect or a submit is in flight on this handle
+            from a second thread: each half is confined to one thread
             (the class docstring).
         """
         ok = self._h.stop(timeout)
