@@ -123,8 +123,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <meta name="gd-wide-layout" data-default="normal" data-min-viewport="1600">
 <style id="gd-wide-layout-vars">:root{--gd-wide-content-scale:1.5;--gd-wide-sidebar-scale:1.2;}</style>
 <script src="../theme-init.js"></script>
-<style>:root{--gd-nav-prefix-api:"API";--gd-nav-prefix-cli:"CLI";--gd-nav-prefix-mcp:"MCP";}</style>
 <meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.5">
+<style>:root{--gd-nav-prefix-api:"API";--gd-nav-prefix-cli:"CLI";--gd-nav-prefix-mcp:"MCP";}</style>
 <link rel="canonical" href="https://shikokuchuo.net/pymizu/reference/PoolExecutor.html">
 <meta property="og:url" content="https://shikokuchuo.net/pymizu/reference/PoolExecutor.html">
 <link rel="alternate" type="text/markdown" href="PoolExecutor.md">
@@ -885,7 +885,7 @@ When True, <code>shutdown()</code> stops the wrapped pool.
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Use as a drop-in <code>concurrent.futures.Executor</code>:</p>
-<div id="6c5a4b41" class="cell" data-execution_count="1">
+<div id="b6349374" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">2</span>) <span class="im">as</span> ex:</span>
