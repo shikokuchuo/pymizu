@@ -8358,10 +8358,10 @@ static PyObject *pymizu_channel_new(PyObject *Py_UNUSED(module),
               "pymizu: slot_size must be a power of two between 64 and 2^20");
     return NULL;
   }
-  if (arena % 64 != 0) {
+  if (arena % 128 != 0) {
     PyBuffer_Release(&drop);
     PyErr_SetString(PyExc_ValueError,
-                    "pymizu: arena_size must be a non-negative multiple of 64");
+                    "pymizu: arena_size must be a non-negative multiple of 128");
     return NULL;
   }
   mizu_channel_opts opts;
