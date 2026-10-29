@@ -5331,9 +5331,11 @@ static void notify_store(MizuNotify *rec, PyObject *loop, PyObject *cb) {
   rec->loop = loop;
   rec->drain_cb = cb;
   rec->call_soon = call_soon;
+  /* the arming thread moves with every store: a loop change re-arms from
+     the new loop's thread without a C disarm */
+  rec->arm_thread = PyThread_get_thread_ident();
   if (!rec->armed) {
     rec->armed = 1;
-    rec->arm_thread = PyThread_get_thread_ident();
     atomic_fetch_add_explicit(&rec->refs, 1, memory_order_relaxed);
   }
 }

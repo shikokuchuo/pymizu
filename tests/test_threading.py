@@ -268,4 +268,61 @@ def test_blocking_recv_while_async_armed_raises():
         asyncio.run(main())
     finally:
         h.destroy()
+
+
+def test_arm_thread_follows_a_loop_change():
+    # a pending recv_async abandoned at loop close, then a re-arm from a
+    # new loop on another thread: the arm thread must move with it, or
+    # the blocking-recv check refuses the new loop's thread
+    h, p = _chan_pair()
+    holder = []
+    idents = []
+    release = threading.Event()
+
+    async def arm():
+        holder.append(h.recv_async())
+
+    def t1_main():
+        asyncio.run(arm())
+        idents.append(threading.get_ident())
+        release.wait(5)  # keep the ident alive (it recycles on thread exit)
+
+    t1 = threading.Thread(target=t1_main)
+    t1.start()
+    while not idents:
+        time.sleep(0.01)
+    try:
+
+        async def rearm():
+            assert threading.get_ident() != idents[0]  # the premise
+            h.recv_async()  # the loop change re-arms from this thread
+            p.send(1)
+            assert h.recv(5) == 1  # the drain's own thread: still legal
+
+            def off_loop():
+                with pytest.raises(pymizu.ConcurrentUseError):
+                    h.recv(0)
+
+            await asyncio.to_thread(off_loop)
+
+        errs = []
+
+        def run_rearm():
+            try:
+                asyncio.run(rearm())
+            except BaseException as e:
+                errs.append(e)
+
+        t2 = threading.Thread(target=run_rearm)
+        t2.start()
+        t2.join(timeout=5)
+        assert not t2.is_alive()
+        assert not errs
+        # the stale waiter failed with the loop-change error
+        assert holder[0].exception() is not None
+    finally:
+        release.set()
+        t1.join(timeout=5)
+        h.destroy()
+        p.destroy()
         p.destroy()
