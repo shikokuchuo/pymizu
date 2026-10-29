@@ -446,9 +446,9 @@ def test_stream_prepared(pool):
 
 def test_stream_prepared_seeded(pool):
     # a re-armed prepared run restarts every element's stream
-    pm = pool.map_prepare(rand_elt, list(range(30)), seed=42, stream=True)
+    pm = pool.map_prepare(rand_elt, list(range(30)), stream=True)
     try:
-        assert pm.run().collect() == pm.run().collect()
+        assert pm.run(seed=42).collect() == pm.run(seed=42).collect()
     finally:
         pm.close()
 
@@ -577,17 +577,16 @@ def test_stream_prepared_template_view_transfers(pool):
         scalar_double,
         [1, 2, 3],
         template=np.empty(1),
-        collect="view",
         stream=True,
     )
     try:
-        out = pm.run().collect()
+        out = pm.run(collect="view").collect()
         assert not out.flags.writeable
         np.testing.assert_array_equal(out, np.array([2.0, 4.0, 6.0]))
         # the view pins its region: the next run stages fresh
         assert pm._capsule is None
         np.testing.assert_array_equal(
-            pm.run().collect(), np.array([2.0, 4.0, 6.0])
+            pm.run(collect="view").collect(), np.array([2.0, 4.0, 6.0])
         )
     finally:
         pm.close()
@@ -681,7 +680,7 @@ def test_stream_window_spec_submit_expiry(pool):
     # TIMEOUT. The scripted expiry stands in for a deadline landing
     # mid-stage, between the refill and submit pre-checks.
     plan = _map_mod._Plan(
-        pool, pymizu.call(source="x"), (), None, None, None, None, None, True
+        pool, pymizu.call(source="x"), (), None, None, None, True
     )
     win = _map_mod._StreamWindowSpec(
         pool,
@@ -691,6 +690,7 @@ def test_stream_window_spec_submit_expiry(pool):
         plan,
         pymizu.call(source="x"),
         [1, 2, 3, 4],
+        None,
         None,
         None,
     )
@@ -705,7 +705,7 @@ def test_stream_window_spec_loop_expiry(pool):
     # collect: TIMEOUT, with the chunk's region and runner handle handed
     # back for the caller's backstop
     plan = _map_mod._Plan(
-        pool, pymizu.call(source="x"), (), None, None, None, None, None, True
+        pool, pymizu.call(source="x"), (), None, None, None, True
     )
     win = _map_mod._StreamWindowSpec(
         pool,
@@ -715,6 +715,7 @@ def test_stream_window_spec_loop_expiry(pool):
         plan,
         pymizu.call(source="x"),
         [1, 2, 3, 4],
+        None,
         None,
         None,
     )
@@ -733,7 +734,7 @@ def test_stream_window_spec_refill_expiry(pool):
     # The scripted expiry stands in for a deadline landing between the
     # collect and the refill's pre-check.
     plan = _map_mod._Plan(
-        pool, pymizu.call(source="x"), (), None, None, None, None, None, True
+        pool, pymizu.call(source="x"), (), None, None, None, True
     )
     win = _map_mod._StreamWindowSpec(
         pool,
@@ -743,6 +744,7 @@ def test_stream_window_spec_refill_expiry(pool):
         plan,
         pymizu.call(source="x"),
         [1, 2, 3, 4],
+        None,
         None,
         None,
     )

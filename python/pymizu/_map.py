@@ -681,20 +681,19 @@ def _write_desc(
 class _Plan:
     """The validated map entry, shared by `pool_map` and
     [`PreparedMap`](`pymizu.PreparedMap`): the spec/language verdict,
-    normalized args/kwargs, the carried seed form (the wire pair on a
-    spec map, `(seed_bytes, offset)` otherwise), the template probe, the
-    resolved collect mode, n_chunks, the streaming verdict, and the
-    conversion gate (a spec map on R workers converts non-identity
-    buffers at stage time, the channel's policy)."""
+    normalized args/kwargs, the template probe, n_chunks, the streaming
+    verdict, and the conversion gate (a spec map on R workers converts
+    non-identity buffers at stage time, the channel's policy). Seed and
+    collect are not plan state: both resolve per run through
+    `_resolve_seed` / `_resolve_collect` — the runner payloads carry the
+    seed, so a prepared run reseeds for free."""
 
     __slots__ = (
         "spec",
         "lang",
         "args",
         "kwargs",
-        "seed",
         "tprobe",
-        "collect",
         "n_chunks",
         "stream",
         "convert",
@@ -707,9 +706,7 @@ class _Plan:
         args: _Any,
         kwargs: dict | None,
         n_chunks: int | None,
-        seed: _Any,
         template: _Any,
-        collect: str | None,
         stream: bool = False,
     ) -> None:
         spec, lang = _map_check_native(pool, fn)
@@ -728,29 +725,38 @@ class _Plan:
         self.kwargs = kwargs
         # the convert gate is the worker language, never 'spec' alone
         self.convert = spec and lang == _LANG_R
-        self.seed = _seed_wire(seed, lang) if spec else _seed_spec(seed)
         self.tprobe = None if template is None else _template_probe(template)
-        if self.tprobe is None:
-            if collect not in (None, "list"):
-                raise ValueError(
-                    "pymizu: collect must be 'list' without template"
-                )
-            collect = "list"
-        else:
-            if collect is None:
-                collect = "copy"
-            if collect not in ("copy", "view"):
-                raise ValueError("pymizu: collect must be 'copy' or 'view'")
-        if spec and stream and collect == "view":
-            raise TypeError(
-                "pymizu: collect='view' cannot compose a streaming spec "
-                "map — per-chunk output areas cannot compose into one view"
-            )
-        self.collect = collect
         if n_chunks is not None and n_chunks < 1:
             raise ValueError("pymizu: n_chunks must be a positive number")
         self.n_chunks = n_chunks
         self.stream = stream
+
+
+def _resolve_seed(plan: _Plan, seed: _Any) -> tuple | None:
+    """The per-run seed gate, against the plan's language verdict: the
+    i64 wire pair on a spec map, the `(seed_bytes, offset)` spec
+    otherwise. `None` runs unseeded — a prepared map's runs seed
+    independently, whatever a previous run took."""
+    return _seed_wire(seed, plan.lang) if plan.spec else _seed_spec(seed)
+
+
+def _resolve_collect(plan: _Plan, collect: str | None) -> str:
+    """The per-run collect-mode gate, against the plan's template and
+    streaming verdicts (`None` selects the default form)."""
+    if plan.tprobe is None:
+        if collect not in (None, "list"):
+            raise ValueError("pymizu: collect must be 'list' without template")
+        return "list"
+    if collect is None:
+        collect = "copy"
+    if collect not in ("copy", "view"):
+        raise ValueError("pymizu: collect must be 'copy' or 'view'")
+    if plan.spec and plan.stream and collect == "view":
+        raise TypeError(
+            "pymizu: collect='view' cannot compose a streaming spec "
+            "map — per-chunk output areas cannot compose into one view"
+        )
+    return collect
 
 
 def pool_map(
@@ -775,9 +781,9 @@ def pool_map(
     the call site with the same backstop."""
     import pymizu
 
-    plan = _Plan(
-        pool, fn, args, kwargs, n_chunks, seed, template, collect, stream
-    )
+    plan = _Plan(pool, fn, args, kwargs, n_chunks, template, stream)
+    seed_spec = _resolve_seed(plan, seed)
+    collect_mode = _resolve_collect(plan, collect)
     probe, x, n = _probe_x(plan.spec, x, plan.convert, plan.stream)
     if n == 0:
         return _Map._empty(pool, plan)
@@ -806,11 +812,13 @@ def pool_map(
         and (probe is None or probe[2] <= inline_entry)
     ):
         cand = _pickle.dumps((fn, plan.args, plan.kwargs, x), 4)
-        worst = _pickle.dumps((_chunk, (cand, n, n, plan.seed), {}), 4)
+        worst = _pickle.dumps((_chunk, (cand, n, n, seed_spec), {}), 4)
         if len(worst) <= inline_entry:
             blob = cand
 
     m = _Map(pool, plan)
+    m.seed = seed_spec
+    m.collect_mode = collect_mode
     m.n = n
     m.live = live
     try:
@@ -1086,6 +1094,7 @@ class _StreamWindowSpec:
         "x",
         "probe",
         "template",
+        "seed",
         "capsules",
         "desc0",
         "slicer",
@@ -1105,6 +1114,7 @@ class _StreamWindowSpec:
         x: _Any,
         probe: tuple | None,
         template: _Any,
+        seed: tuple[int, int] | None,
     ) -> None:
         self.spec = True
         self.pool = pool
@@ -1116,6 +1126,7 @@ class _StreamWindowSpec:
         self.x = x
         self.probe = probe
         self.template = template
+        self.seed = seed
         self.capsules: list = [None] * len(ranges)
         # x-free when the slices ride the raw section: build the 'I'
         # descriptor once; a descriptor-riding x rebuilds it per chunk
@@ -1165,8 +1176,8 @@ class _StreamWindowSpec:
             # the same-language slice's global-index seeding
             seed_pair = (
                 None
-                if plan.seed is None
-                else (plan.seed[0], plan.seed[1] + lo)
+                if self.seed is None
+                else (self.seed[0], self.seed[1] + lo)
             )
             scratch: list = []
             if _submit_runners(
@@ -1505,6 +1516,8 @@ class _Map:
     __slots__ = (
         "pool",
         "plan",
+        "seed",
+        "collect_mode",
         "kind",
         "n",
         "live",
@@ -1525,6 +1538,8 @@ class _Map:
     def __init__(self, pool: pymizu.Pool, plan: _Plan) -> None:
         self.pool = pool
         self.plan = plan
+        self.seed = None  # the run's resolved wire seed
+        self.collect_mode = "list"  # the run's resolved collect mode
         self.kind = ""
         self.n = 0
         self.live = 0
@@ -1586,7 +1601,7 @@ class _Map:
                 return True
             hi = lo + sizes[k]
             h = self.pool._h.submit(
-                (_chunk, (blob, lo, hi, self.plan.seed), {}), remaining()
+                (_chunk, (blob, lo, hi, self.seed), {}), remaining()
             )
             self.handles.append(h)
             self.ranges.append((lo, hi))
@@ -1638,7 +1653,7 @@ class _Map:
             name,
             r,
             0,
-            plan.seed,
+            self.seed,
             remaining,
             expired,
             self.handles,
@@ -1671,7 +1686,16 @@ class _Map:
         self.ranges = ranges
         if plan.spec:
             self.run = _StreamWindowSpec(
-                self.pool, pymizu, ranges, w, plan, fn, x, probe, template
+                self.pool,
+                pymizu,
+                ranges,
+                w,
+                plan,
+                fn,
+                x,
+                probe,
+                template,
+                self.seed,
             )
             return not self.run.refill(remaining, expired)
         desc = _pickle.dumps((fn, plan.args, plan.kwargs), 4)
@@ -1686,7 +1710,7 @@ class _Map:
             name,
             ranges,
             w,
-            plan.seed,  # pyrefly: ignore [bad-argument-type]
+            self.seed,  # pyrefly: ignore [bad-argument-type]
             _stream_slicer(x, probe),
             plan.tprobe is not None,
         )
@@ -1751,7 +1775,7 @@ class _Map:
             if out is pymizu.TIMEOUT or plan.spec or plan.tprobe is None:
                 return out
             got, transferred = _gather_out(
-                self.capsule, plan.tprobe, self.n, plan.collect
+                self.capsule, plan.tprobe, self.n, self.collect_mode
             )
             if transferred:
                 self._transferred = True
@@ -1778,7 +1802,7 @@ class _Map:
         if out is pymizu.TIMEOUT or plan.tprobe is None:
             return out
         out, transferred = _gather_out(
-            self.capsule, plan.tprobe, self.n, plan.collect
+            self.capsule, plan.tprobe, self.n, self.collect_mode
         )
         if transferred:
             self._transferred = True
@@ -2007,17 +2031,15 @@ class PreparedMap:
         Constant keyword arguments for every call.
     n_chunks
         Overrides the morsel count (the scheduling granularity).
-    seed
-        Deterministic per-element seeding — as for
-        [`Pool.map()`](`pymizu.Pool.map`).
     template
         An exemplar buffer declaring each result's dtype and length —
         as for [`Pool.map()`](`pymizu.Pool.map`).
-    collect
-        'copy' or 'view' with `template`; 'list' without.
     stream
         Stream slices of `x` instead of staging it whole — as for
-        [`Pool.map()`](`pymizu.Pool.map`).
+        [`Pool.map()`](`pymizu.Pool.map`). The recipe is staged here;
+        `seed` and `collect` are per-run options of
+        [`PreparedMap.run()`](`pymizu.PreparedMap.run`) (mirroring
+        mizu's `mizu_map_run()`).
 
     Examples
     --------
@@ -2047,22 +2069,14 @@ class PreparedMap:
         args: _Any = (),
         kwargs: dict | None = None,
         n_chunks: int | None = None,
-        seed: int
-        | bytes
-        | bytearray
-        | tuple[int | bytes | bytearray, int]
-        | None = None,
         template: _Any = None,
-        collect: str | None = None,
         stream: bool = False,
     ) -> None:
         import pymizu
 
         if not isinstance(pool, pymizu.Pool):
             raise TypeError("pymizu: pool must be a pymizu.Pool")
-        plan = _Plan(
-            pool, fn, args, kwargs, n_chunks, seed, template, collect, stream
-        )
+        plan = _Plan(pool, fn, args, kwargs, n_chunks, template, stream)
         if plan.spec and plan.stream:
             raise TypeError(
                 "pymizu: a prepared map with a pymizu.call() spec as 'fn' "
@@ -2075,9 +2089,7 @@ class PreparedMap:
         self._spec = plan.spec
         self._lang = plan.lang
         self._convert = plan.convert
-        self._seed_spec = plan.seed
         self._tprobe = plan.tprobe
-        self._collect_mode = plan.collect
         self._stream = plan.stream
         self._fn = fn
         self._args = plan.args
@@ -2203,7 +2215,15 @@ class PreparedMap:
         self._name, self._capsule, self._gen = name, capsule, 0
 
     def run(
-        self, x: _Any = None, timeout: float | None = None
+        self,
+        x: _Any = None,
+        seed: int
+        | bytes
+        | bytearray
+        | tuple[int | bytes | bytearray, int]
+        | None = None,
+        timeout: float | None = None,
+        collect: str | None = None,
     ) -> _Map | _pymizu.Sentinel:
         """Run the prepared map once; return the run's map handle.
 
@@ -2218,11 +2238,22 @@ class PreparedMap:
             sweeps) runs at memcpy cost, skipping the region create and
             the worker-side re-attach. Any other x restages
             transparently on this run.
+        seed
+            Deterministic per-element seeding for this run, as for
+            [`Pool.map()`](`pymizu.Pool.map`); ``None`` (the default)
+            runs unseeded. The seed rides the run's runner payloads,
+            never the staged region, so reseeding a run is free — the
+            repeated-simulation loop varies ``seed`` per run while the
+            stage is paid once.
         timeout
             Seconds before the run's submission gives up; on expiry the
             tasks already in are cancelled and the TIMEOUT
             [`Sentinel`](`pymizu.Sentinel`) is returned (no handle). The
             collection deadline is the handle's `collect()`.
+        collect
+            ``"copy"`` or ``"view"`` with ``template``; ``"list"``
+            without — as for [`Pool.map()`](`pymizu.Pool.map`). The
+            choice is per run.
 
         Returns
         -------
@@ -2238,6 +2269,8 @@ class PreparedMap:
         pymizu = self._pymizu
         if self._closed:
             raise pymizu.MizuError("pymizu: map handle is closed")
+        seed_spec = _resolve_seed(self._plan, seed)
+        collect_mode = _resolve_collect(self._plan, collect)
         if x is not None:
             self._swap_x(x)
         if self._n == 0:
@@ -2262,6 +2295,8 @@ class PreparedMap:
         m.pm = self
         m.n = self._n
         m.live = live
+        m.seed = seed_spec
+        m.collect_mode = collect_mode
         if self._stream:
             c = len(self._ranges)
             w = max(1, min(c, 2 * max(1, live), free_rs))
@@ -2276,7 +2311,7 @@ class PreparedMap:
                 self._ranges,
                 w,
                 # never a spec map here: the (seed_bytes, offset) form
-                self._seed_spec,  # pyrefly: ignore [bad-argument-type]
+                seed_spec,  # pyrefly: ignore [bad-argument-type]
                 _stream_slicer(self._x, self._probe),
                 self._tprobe is not None,
             )
@@ -2293,7 +2328,7 @@ class PreparedMap:
                 name,
                 r,
                 self._gen,
-                self._seed_spec,
+                seed_spec,
                 remaining,
                 expired,
                 m.handles,

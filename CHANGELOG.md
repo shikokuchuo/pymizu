@@ -92,6 +92,15 @@ Initial pre-release.
   collect). The `timeout=` argument now bounds submission only — on its
   expiry the call itself returns the `TIMEOUT` sentinel as before — and
   the collection deadline moved to `handle.collect(timeout=...)`.
+- **Breaking:** prepared maps take `seed` and `collect` per run, not at
+  prepare: both options moved from `Pool.map_prepare()` to
+  `PreparedMap.run()` (`run(x=None, seed=None, timeout=None,
+  collect=None)`), mirroring mizu's `mizu_map_run()`. The seed rides
+  the run's runner payloads rather than the staged region, so a
+  prepared run reseeds for free — `pm.run(seed=s)` varies the element
+  streams per run for repeated stochastic simulation, the headline
+  prepared-map use. A `None` seed runs unseeded, whatever a previous
+  run took; `collect=None` defaults as at `Pool.map()`.
 - `PoolExecutor` no longer spawns its drain thread: futures resolve
   event-driven off the pool's notify endpoint, so the 50 ms collect
   bound and its completion latency are gone, and `asyncio.wrap_future`

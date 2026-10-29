@@ -142,16 +142,14 @@ def test_seed_offset_past_exact_range_on_r_workers_errors_locally(r_pool):
 
 
 def test_prepared_spec_map_re_arms_without_restage(r_pool):
-    pm = r_pool.map_prepare(
-        pymizu.call(source="runif(1)"), list(range(12)), seed=7
-    )
+    pm = r_pool.map_prepare(pymizu.call(source="runif(1)"), list(range(12)))
     try:
         name = pm._name
-        r1 = pm.run().collect()
+        r1 = pm.run(seed=7).collect()
         assert pm._name == name
-        r2 = pm.run().collect()
+        r2 = pm.run(seed=7).collect()
         assert pm._name == name
-        # the prepared seed re-arms per run: identical streams
+        # the run seed re-arms per run: identical streams
         assert r1 == r2
     finally:
         pm.close()

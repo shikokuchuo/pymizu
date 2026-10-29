@@ -1256,20 +1256,15 @@ class Pool:
         kwargs: dict[str, _Any] | None = None,
         template: _Any = None,
         n_chunks: int | None = None,
-        seed: int
-        | bytes
-        | bytearray
-        | tuple[int | bytes | bytearray, int]
-        | None = None,
         stream: bool = False,
-        collect: str | None = None,
     ) -> PreparedMap:
         """Stage a map once for repeated runs; return a
         [`PreparedMap`](`pymizu.PreparedMap`).
 
         Takes the same arguments as [`map()`](`pymizu.Pool.map`) (minus
-        ``timeout``, which is per-run and moves to
-        ``PreparedMap.run``). The descriptor
+        ``seed``, ``timeout``, and ``collect`` — the per-run options,
+        which move to [`PreparedMap.run()`](`pymizu.PreparedMap.run`)).
+        The descriptor
         pickle, the region create, and the worker-side attach are paid
         once here; each ``pm.run()`` re-arms in O(1), reuses the
         workers' cached contexts, and returns the run's map handle (the
@@ -1290,9 +1285,7 @@ class Pool:
             args=args,
             kwargs=kwargs,
             n_chunks=n_chunks,
-            seed=seed,
             template=template,
-            collect=collect,
             stream=stream,
         )
 

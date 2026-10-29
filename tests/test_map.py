@@ -518,9 +518,32 @@ def test_map_seed_numpy_template(pool):
 
 def test_map_seed_numpy_prepared_rerun(pool):
     # a re-armed prepared run restarts every element's stream
-    pm = pool.map_prepare(np_rand_elt, list(range(30)), seed=42)
+    pm = pool.map_prepare(np_rand_elt, list(range(30)))
     try:
-        assert pm.run().collect() == pm.run().collect()
+        assert pm.run(seed=42).collect() == pm.run(seed=42).collect()
+    finally:
+        pm.close()
+
+
+def test_map_prepared_run_seed_is_per_run(pool):
+    pm = pool.map_prepare(rand_elt, list(range(30)))
+    try:
+        first = pm.run(seed=1).collect()
+        assert pm.run(seed=1).collect() == first
+        assert pm.run(seed=2).collect() != first
+        # None is unseeded, whatever the previous run took
+        assert pm.run().collect() != first
+    finally:
+        pm.close()
+
+
+def test_map_prepared_run_validates_seed_and_collect(pool):
+    pm = pool.map_prepare(scalar_double, list(range(4)))
+    try:
+        with pytest.raises(TypeError, match="seed must be an int or bytes"):
+            pm.run(seed="bad")
+        with pytest.raises(ValueError, match="collect must be 'list'"):
+            pm.run(collect="view")
     finally:
         pm.close()
 
@@ -747,14 +770,12 @@ def test_map_prepared_empty_template(pool):
 
 
 def test_map_prepared_view_restages(pool):
-    pm = pool.map_prepare(
-        scalar_double, list(range(50)), template=np.empty(1), collect="view"
-    )
+    pm = pool.map_prepare(scalar_double, list(range(50)), template=np.empty(1))
     try:
-        v1 = pm.run().collect()
+        v1 = pm.run(collect="view").collect()
         np.testing.assert_array_equal(v1, np.arange(50) * 2.0)
         # the view owns the first region; the second run restages fresh
-        v2 = pm.run().collect()
+        v2 = pm.run(collect="view").collect()
         np.testing.assert_array_equal(v2, np.arange(50) * 2.0)
         np.testing.assert_array_equal(v1, np.arange(50) * 2.0)
     finally:
@@ -795,11 +816,12 @@ def test_map_prepared_unclean_run_restages(pool):
         np.array([100.0, 1.0, 2.0, 3.0]),
         args=({100.0}, 2.0),
         template=np.zeros(1),
-        collect="view",
     )
     try:
-        assert pm.run().collect(timeout=0.3) is pymizu.TIMEOUT
-        out = pm.run(np.array([200.0, 1.0, 2.0, 3.0]), timeout=15).collect()
+        assert pm.run(collect="view").collect(timeout=0.3) is pymizu.TIMEOUT
+        out = pm.run(
+            np.array([200.0, 1.0, 2.0, 3.0]), timeout=15, collect="view"
+        ).collect()
         np.testing.assert_array_equal(np.asarray(out), [200.0, 1.0, 2.0, 3.0])
         time.sleep(2.2)  # the straggler's write lands now, into the void
         np.testing.assert_array_equal(np.asarray(out), [200.0, 1.0, 2.0, 3.0])
@@ -1108,19 +1130,18 @@ def test_map_spec_seed_determinism(pool):
 
 def test_map_spec_prepared(pool):
     # a prepared spec map re-arms per run (a fresh generation and the
-    # prepared seed on the kind-2 runner fields) without restaging
+    # run's seed on the kind-2 runner fields) without restaging
     pm = pool.map_prepare(
         pymizu.call(source="import random\nrandom.random()"),
         list(range(12)),
-        seed=7,
     )
     try:
         name = pm._name
-        r1 = pm.run().collect()
+        r1 = pm.run(seed=7).collect()
         assert pm._name == name
-        r2 = pm.run().collect()
+        r2 = pm.run(seed=7).collect()
         assert pm._name == name
-        # the prepared seed re-arms per run: identical streams
+        # the run seed re-arms per run: identical streams
         assert r1 == r2
     finally:
         pm.close()

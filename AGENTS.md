@@ -451,19 +451,24 @@ tools/vendor-libmizu.sh` for a local checkout).
     tasks), `blob` (inline chunk tasks), `region` (morsel runners),
     `stream` (a `_StreamWindow` / `_StreamWindowSpec`, the sliding
     submit/collect windows split into `refill()` at map time and
-    `drive()` at collect) — plus an optional `PreparedMap` back-ref: a
-    clean value collect keeps the stage for the O(1) re-arm, a view
-    collect hands the region to the view, an unclean run drops it (the
-    next run restages fresh).
+    `drive()` at collect) — plus the run's resolved `seed` /
+    `collect_mode` (named for the `_Map.collect()` method, which a
+    `collect` slot would shadow) and an optional `PreparedMap`
+    back-ref: a clean value collect keeps the stage for the O(1)
+    re-arm, a view collect hands the region to the view, an unclean
+    run drops it (the next run restages fresh).
   - The one-shot (`pool_map`) and prepared (`PreparedMap`) entries
-    share the one path: `_Plan` (the fn/spec, args, seed, template,
-    collect, and chunks gates — a bad `chunks` raises even on an empty
-    x, identically from both entries), `_probe_x` (the raw-x gate),
+    share the one path: `_Plan` (the fn/spec, args, template, and
+    chunks gates — a bad `chunks` raises even on an empty x,
+    identically from both entries), `_probe_x` (the raw-x gate),
     `_write_desc` (the descriptor), `_morsel_geometry`, and
     `_gather_out` (the template gather; its ownership-transfer flag
     tells the caller to skip the unlink). The seed shape checks live in
     `_seed_pair`; `_seed_spec` (the bytes form) and `_seed_wire` (the
-    spec map's i64 pair) build on it.
+    spec map's i64 pair) build on it. Seed and collect are NOT plan
+    state: `_resolve_seed` / `_resolve_collect` gate them per run — at
+    `map()` for the one-shot, at `run()` for a prepared map — and the
+    run's `_Map` handle carries the resolved forms.
   - One fresh region per map (the core-owned `MIZU_MORSEL_MAGIC`,
     `MIZU_ABI_VERSION`-keyed).
     The protocol half — header layout, CLAIM-word claim CAS, AIMD sizing,
@@ -506,12 +511,17 @@ tools/vendor-libmizu.sh` for a local checkout).
     `_MapOutView` exporter that owns the region capsule (unlink defers
     to view teardown; the stage side drops its reference without
     `_map_close`).
-  - Prepared maps: `Pool.map_prepare` stages once; `PreparedMap.run()`
-    re-arms in O(1) (`_map_reset` bumps the generation and re-stamps the
-    CLAIM array; the runner payload carries the run's generation, so a
-    prior run's straggler fails its first-call CAS) and returns the
-    run's `_Map` handle. A view-collected run restages into a fresh
-    region.
+  - Prepared maps: `Pool.map_prepare` stages the recipe once (fn,
+    args, x, template, chunks, stream); `PreparedMap.run(x=, seed=,
+    timeout=, collect=)` supplies the execution context per run —
+    mirroring mizu's `mizu_map_run()` (the seed rides the run's runner
+    payloads, never the staged region, so reseeding a run is free;
+    `seed=None` runs unseeded whatever a previous run took). `run()`
+    re-arms in O(1) (`_map_reset` bumps the generation and re-stamps
+    the CLAIM array; the runner payload carries the run's generation,
+    so a prior run's straggler fails its first-call CAS) and returns
+    the run's `_Map` handle. A view-collected run restages into a
+    fresh region.
   - The element loop is Python (`_run_batch`, `_map_write` on the
     template path) — a C batch loop was tried and reverted 2026-08-24:
     the winsum scaling gap is memory bandwidth, not interpreter
