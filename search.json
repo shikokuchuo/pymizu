@@ -445,7 +445,7 @@
     "href": "reference/PreparedMap.html#methods",
     "title": "PreparedMap",
     "section": "Methods",
-    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\nclose()\nUnlink the staged region (idempotent; the GC backstop is the\n\n\nrun()\nRun the prepared map once; return the run’s map handle.\n\n\n\n\nclose()\n\nUnlink the staged region (idempotent; the GC backstop is the\n\n\nUsage\nSource\n\n\nclose()\n\n\ncapsule destructor).\n\n\n\nrun()\n\nRun the prepared map once; return the run’s map handle.\n\n\nUsage\nSource\n\n\nrun(\n    x=None,\n    seed=None,\n    timeout=None,\n    collect=None,\n)\n\n\nParameters\n\n\nx: _Any = None\n\nReplaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region’s x section — the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.\n\nseed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None\n\nDeterministic per-element seeding for this run, as for Pool.map(); None (the default) runs unseeded. The seed rides the run’s runner payloads, never the staged region, so reseeding a run is free — the repeated-simulation loop varies seed per run while the stage is paid once.\n\ntimeout: float | None = None\n\nSeconds before the run’s submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT Sentinel is returned (no handle). The collection deadline is the handle’s collect().\n\ncollect: str | None = None\n\n\"copy\" or \"view\" with template; \"list\" without — as for Pool.map(). The choice is per run.\n\n\n\n\n\nReturns\n\n\n The run’s map handle — collected exactly once, by\n\ncollect() (blocking) or collect_async() (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises ConcurrentUseError. A clean value collect keeps the stage for the O(1) re-arm; a view collect hands the region to the view, and an unclean run (timeout, an error, a worker death) drops it — the next run restages into a fresh one either way.",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\nclose()\nUnlink the staged region (idempotent; the GC backstop is the\n\n\nrun()\nRun the prepared map once; return the run’s map handle.\n\n\n\n\nclose()\n\nUnlink the staged region (idempotent; the GC backstop is the\n\n\nUsage\nSource\n\n\nclose()\n\n\ncapsule destructor).\n\n\n\nrun()\n\nRun the prepared map once; return the run’s map handle.\n\n\nUsage\nSource\n\n\nrun(\n    x=None,\n    *,\n    seed=None,\n    timeout=None,\n    collect=None,\n)\n\n\nParameters\n\n\nx: _Any = None\n\nReplaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region’s x section — the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.\n\nseed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None\n\nDeterministic per-element seeding for this run, as for Pool.map(); None (the default) runs unseeded. The seed rides the run’s runner payloads, never the staged region, so reseeding a run is free — the repeated-simulation loop varies seed per run while the stage is paid once.\n\ntimeout: float | None = None\n\nSeconds before the run’s submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT Sentinel is returned (no handle). The collection deadline is the handle’s collect().\n\ncollect: str | None = None\n\n\"copy\" or \"view\" with template; \"list\" without — as for Pool.map(). The choice is per run.\n\n\n\n\n\nReturns\n\n\n The run’s map handle — collected exactly once, by\n\ncollect() (blocking) or collect_async() (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises ConcurrentUseError. A clean value collect keeps the stage for the O(1) re-arm; a view collect hands the region to the view, and an unclean run (timeout, an error, a worker death) drops it — the next run restages into a fresh one either way.",
     "crumbs": [
       "Reference",
       "Task pools",
@@ -541,7 +541,7 @@
     "href": "reference/Pool.stop.html#raises",
     "title": "Pool.stop()",
     "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nA blocking collect is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring).",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nA blocking collect or a submit is in flight on this handle from a second thread: each half is confined to one thread (the class docstring).",
     "crumbs": [
       "Reference",
       "Pool Methods",
@@ -1292,7 +1292,19 @@
     "href": "reference/Channel.close.html",
     "title": "Channel.close()",
     "section": "",
-    "text": "Orderly close: signal the peer and wait up to timeout\n\n\nUsage\nSource\n\n\nChannel.close(timeout=5.0)\n\n\nseconds for it to observe the close. True on a clean handshake; False (with a warning) on timeout, in which case resources release when the handle is garbage collected.",
+    "text": "Orderly close: signal the peer and wait up to timeout",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.close"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.close.html#raises",
+    "href": "reference/Channel.close.html#raises",
+    "title": "Channel.close()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nA verb is in flight on this side from a second thread: the side is confined to one thread (the class docstring).",
     "crumbs": [
       "Reference",
       "Channel Methods",
