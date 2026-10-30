@@ -1,7 +1,7 @@
 # Great Docs configuration
 # See https://posit-dev.github.io/great-docs/user-guide/configuration.html
 
-display_name: pymizu 水
+display_name: pymizu ミズ
 
 # Docstrings are NumPy-style (Parameters / Returns / Examples sections)
 parser: numpy

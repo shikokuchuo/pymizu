@@ -1,4 +1,4 @@
-# pymizu 水
+# pymizu ミズ
 
 [![ci](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml/badge.svg)](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/shikokuchuo/pymizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/pymizu)
@@ -9,7 +9,7 @@
       ________
      /\       \
     /  \ pymizu\
-    \  /  水   /
+    \  /  ミズ  /
      \/_______/
 
 pymizu uses shared memory to make communication between Python processes fast enough to parallelize work at thread granularity.

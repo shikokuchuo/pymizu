@@ -1,5 +1,5 @@
 ---
-title: "pymizu 水"
+title: "pymizu ミズ"
 subtitle: "Zero-copy async and parallel IPC across Python and R"
 ---
 
@@ -7,7 +7,7 @@ subtitle: "Zero-copy async and parallel IPC across Python and R"
       ________
      /\       \
     /  \ pymizu\
-    \  /  水   /
+    \  / ミズ  /
      \/_______/
 ```
 
