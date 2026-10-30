@@ -1357,6 +1357,10 @@ WorkerDiedError
 
 The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker.
 
+TaskLostError
+
+The claimant's read of the task's payload region failed without a death verdict — a vanished or unreadable region, not a dead worker.
+
 DeclinedError
 
 A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes.
@@ -1500,6 +1504,12 @@ Returns
     The region names removed, or an empty list if none were. On
     platforms whose shared memory namespace cannot be enumerated
     (Windows, where orphans cannot exist), always an empty list.
+
+abi_version()
+
+abi_version() -> int
+
+Wire-format ABI version of the compiled-in libmizu core.
 
 
 ----------------------------------------------------------------------

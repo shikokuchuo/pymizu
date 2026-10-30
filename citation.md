@@ -14,7 +14,7 @@ Charlie Gao. Author.
 
 ``` bibtex
 @Manual{,
-  title = {pymizu: Zero-copy shared-memory parallelism across Python and R},
+  title = {pymizu: Zero-copy async and parallel IPC across Python and R},
   author = {Charlie Gao},
   year = {2026},
   url = {https://shikokuchuo.net/pymizu/},
@@ -23,13 +23,13 @@ Charlie Gao. Author.
 
 ### APA
 
-Gao, C. (2026). *pymizu: Zero-copy shared-memory parallelism across Python and R* (Version ) \[Computer software\]. https://shikokuchuo.net/pymizu/
+Gao, C. (2026). *pymizu: Zero-copy async and parallel IPC across Python and R* (Version ) \[Computer software\]. https://shikokuchuo.net/pymizu/
 
 ### RIS
 
 ``` ris
 TY  - COMP
-TI  - pymizu: Zero-copy shared-memory parallelism across Python and R
+TI  - pymizu: Zero-copy async and parallel IPC across Python and R
 AU  - Gao, Charlie
 PY  - 2026
 UR  - https://shikokuchuo.net/pymizu/

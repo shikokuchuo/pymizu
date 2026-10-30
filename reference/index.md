@@ -251,6 +251,9 @@ The task callable raised. Carries 'remote_type' and 'remote_traceback' attribute
 [WorkerDiedError](WorkerDiedError.md#pymizu.WorkerDiedError)  
 The executing worker died mid-task. Carries 'slot' and 'pid' attributes identifying the worker.
 
+[TaskLostError](TaskLostError.md#pymizu.TaskLostError)  
+The claimant's read of the task's payload region failed without a death verdict -- a vanished or unreadable region, not a dead worker.
+
 [DeclinedError](DeclinedError.md#pymizu.DeclinedError)  
 A send on a foreign-language channel of a value outside the portable interchange subset. Carries 'path' and 'reason' attributes.
 
@@ -278,3 +281,6 @@ The current element's own numpy Generator, inside a seeded map.
 
 [prune()](prune.md#pymizu.prune)  
 Remove orphaned shared memory regions.
+
+[abi_version()](abi_version.md#pymizu.abi_version)  
+abi_version() -\> int
