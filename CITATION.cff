@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: If you use this software, please cite it as below.
-title: "pymizu: Zero-copy shared-memory parallelism across Python and R"
+title: "pymizu: Zero-copy async and parallel IPC across Python and R"
 authors:
   - family-names: Gao
     given-names: Charlie

@@ -1,2 +1,10 @@
 recursive-include src *.h
 include src/vendor/libmizu/VENDOR
+
+# Keep the sdist to the package: agent notes, CI and pre-commit config,
+# benchmarks, and the docs render cache are checkout-only.
+exclude AGENTS.md
+exclude .pre-commit-config.yaml
+prune .github
+prune benchmarks
+prune docs/_freeze

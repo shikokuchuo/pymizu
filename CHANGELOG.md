@@ -66,322 +66,6 @@ Initial pre-release.
 - `Channel.info()` and `Pool.dump()` now report `notify_sends`, the
   count of notify signals the handle sent (armed consumers only).
 
-### Changed
-
-- asyncio efficiency pass on the event-driven surface (A/B numbers in
-  `benchmarks/notes.md`): the channel drain receives bursts through one
-  GIL-held call (`_recv_burst`) instead of a GIL-dropping `recv(0)` per
-  message; waiter futures are a `Future` subclass whose `cancel()` runs
-  the enrollment's detach directly, dropping the no-op done-callback
-  every resolution used to schedule; the pool pump's terminal scan is
-  the subset form (`_tasks_terminal_set`) instead of a bool list and a
-  dict of the whole enrolled set per pass; repeated pool arms on an
-  already-armed handle are no-ops; `PoolExecutor.submit()` re-checks
-  only the submitted task instead of draining the full outstanding set
-  per submission, and the executor batches its shutdown-waiter wake per
-  drain pass. The vendored core additionally load-gates the pool
-  publish's coalescing-word RMW (one shared load per result in a burst,
-  not a locked RMW) and skips the endpoint drain on re-arms of a
-  continuously armed word.
-- **Breaking:** `Pool.map()`, `Pool.starmap()`, and `PreparedMap.run()`
-  are handle-first, mirroring mizu's map: they stage and submit, then
-  return the run's map handle immediately instead of the results.
-  `handle.collect()` blocks for the results (the previous return value);
-  `handle.collect_async()` / `await handle` resolves them event-driven;
-  `handle.cancel()` stops the run (`CancelledError` settles a pending
-  collect). The `timeout=` argument now bounds submission only — on its
-  expiry the call itself returns the `TIMEOUT` sentinel as before — and
-  the collection deadline moved to `handle.collect(timeout=...)`.
-- **Breaking:** prepared maps take `seed` and `collect` per run, not at
-  prepare: both options moved from `Pool.map_prepare()` to
-  `PreparedMap.run()` (`run(x=None, seed=None, timeout=None,
-  collect=None)`), mirroring mizu's `mizu_map_run()`. The seed rides
-  the run's runner payloads rather than the staged region, so a
-  prepared run reseeds for free — `pm.run(seed=s)` varies the element
-  streams per run for repeated stochastic simulation, the headline
-  prepared-map use. A `None` seed runs unseeded, whatever a previous
-  run took; `collect=None` defaults as at `Pool.map()`.
-- `PoolExecutor` no longer spawns its drain thread: futures resolve
-  event-driven off the pool's notify endpoint, so the 50 ms collect
-  bound and its completion latency are gone, and `asyncio.wrap_future`
-  over one is thread-free asyncio interop. Done callbacks now run on the
-  core's listener thread (the same discipline as the stdlib executors'
-  management thread).
-
-- Faithful metadata round trips with R (the `MIZU_CAP_LABELED`
-  capability): named vectors keep their names, matrices and arrays keep
-  their `dimnames` (axis names and the `table` class included), and
-  data.frame metadata — the full class vector (tibbles, any class
-  ending in `"data.frame"`) and extra attributes — crosses opaquely.
-  The new `pymizu.DimArray` (an `ndarray` subclass) homes labeled
-  vectors and arrays with `names` / `dimnames` / `axis_names` /
-  `r_class` attached; numpy operations drop the labels rather than
-  mislabel reshaped data, so a modified array arrives in R as a plain
-  array and a pristine echo stays `identical()`. Frame metadata rides
-  the `Frame._r_attrs` stash (the class vector decoded, extra
-  attributes as undecoded wire spans), spliced verbatim on a pristine
-  echo; a frame rebuilt through pyarrow, polars, pandas, `from_arrow`,
-  or pickle arrives in R as a plain `data.frame`. Sends of these shapes
-  to a peer without the capability decline at send time, never strip;
-  and a re-attached or changed label set on a region-backed array
-  crosses by value (a by-reference send never resurrects the region's
-  labels). The `DimArray` re-export is lazy: a numpy-less
-  `import pymizu` stays clean.
-
-- `pymizu.TaskLostError`: a task whose payload region vanished without a
-  worker-death verdict (a transient open failure on the worker, not a
-  dead worker) now collects as this distinct error instead of a generic
-  `MizuError`, with `Task.state` reading `"lost"`.
-- Cross-language streaming maps: `Pool.map()` with `stream=True` and a
-  `pymizu.call` spec as `fn` now runs over workers of any language
-  (previously a `TypeError`). Each chunk in the sliding window stages a
-  small shared region of its own — the slice plus the task, one runner
-  task per chunk — removed as soon as its chunk completes, so
-  shared-memory use stays bounded by the window plus a small per-worker
-  cache. Result order, `seed=` invariance, the element-indexed error
-  taxonomy, and `template=` (gathered a chunk at a time) are exactly the
-  non-streaming spec map's. `collect="view"` stays a `TypeError`
-  (per-chunk results cannot combine into one view), as does preparing a
-  streaming spec map (`pool.map_prepare()`).
-- `Pool.collect_any()` and `Pool.collect_all()` errors now always carry
-  a `position` attribute (the 0-based list position). A task error that
-  already carries an `index` — a map error's element index, the
-  documented `Pool.map` contract — keeps it as before, so both are now
-  present.
-- NumPy scalars and 0-d arrays (`np.float64(3.5)`, `np.array(3.5)`)
-  round-trip with their exact type and shape on the same-language path,
-  staged as a new compact-codec row (wire type, scalar/0-d form, element
-  bytes) instead of the raw tier's 1-D length-1 array read. Without
-  numpy, a received row reads as the plain Python scalar. Note for
-  mixed-version deployments: the new tag errors loudly against pymizu
-  builds from before this release on same-language channels and pools.
-- `Pool.collect_all()`: a result that fails to read mid-batch now
-  raises with an `index` (0-based failing slot) and a `values`
-  attribute carrying the already-consumed prefix, instead of discarding
-  those results. The failing slot and every handle past the prefix stay
-  collectible.
-- `Pool.submit_batch()`: a mid-batch failure now raises with an
-  `accepted` attribute holding the handles already submitted, which stay
-  valid and collectible — previously they leaked their result slots.
-
-### Fixed
-
-- Every `DeclinedError` now carries the documented `path` and `reason`
-  attributes: the Arrow front-end and the label-stash gates raised
-  attribute-less instances, where the value walk's declines set them.
-- `Channel.send()` now returns `None` on a successful publish, as
-  documented (it returned `True`): a `send(...) is None` check written
-  against the documented contract treated every successful send as a
-  failure. Terminal states still return the identity-tested `FULL` /
-  `CLOSED` / `PEER_GONE` sentinels.
-- `Pool.destroy()` no longer crashes the process when another thread is
-  inside a verb on the same handle (the classic shape: a `PoolExecutor`
-  drain thread parked in `collect_any`): the core handle was unmapped
-  and freed under the in-flight call. Teardown now defers to the last
-  in-flight verb's return — the count is guarded by the GIL itself —
-  and later verbs raise `ValueError` on the closed handle. Indefinite
-  waits (`submit()`, `collect()`, `collect_any()`, `collect_all()`,
-  `ready_wait()`) slice into bounded core calls and break out on the
-  destroy (the closed-handle `ValueError`, or `False` for
-  `ready_wait()`), so the teardown runs promptly; a `stop()` wait and
-  a worker's idle `run()` still delay it until they return.
-- `Channel.destroy()` gets the same in-flight fence: a destroy racing a
-  verb on another thread (e.g. a blocking `recv()`) no longer unmaps
-  the core handle under the call — teardown defers to the last verb's
-  return, as does `Channel.close()`'s once its rendezvous completes.
-  Indefinite waits (`recv()`, `recv_batch()`, `ready_wait()`,
-  `close()`) slice into bounded core calls and break out on the
-  destroy (`CLOSED` / `False`), so the teardown runs promptly.
-- A `NaN` timeout is rejected with `ValueError` on every verb and on
-  `Pool.map()`: the wait verbs previously mapped it to an indefinite
-  wait (a park that never wakes), while the map layer raced it as a
-  non-blocking collect.
-- `Pool.spawn_workers()` gates the caller's role before launching any
-  process: an attached (submitter) handle previously spawned real
-  workers and errored only at the join wait.
-- A straggler of an unclean `PreparedMap.run()` (timeout, error, worker
-  death) can no longer write its in-flight batch into the re-armed
-  region's output area after a later run has collected: the unclean run
-  drops the staged region, so the next run restages into a fresh one
-  (the streaming run's existing discipline).
-- A region-backed `Frame` with a string column re-sends through the
-  foreign writer (a caps-less peer, nested in a container, or as a
-  `pymizu.call` argument) instead of staging a stream the peer rejects
-  as malformed.
-- `PoolExecutor`: cancelling a queued future no longer fails every other
-  outstanding future and kills the drain thread — the worker's
-  cancel-skip frees the task, so the drain's next collect claimed a
-  stale handle. The drain now drops the freed handles and re-snapshots.
-- `PoolExecutor` serializes its core verbs on one lock: the pool handle
-  is single-threaded per side, and the caller thread's `submit` and the
-  drain thread's `collect_any` could otherwise race the shared spill
-  free list with the GIL released.
-- `PoolExecutor` throughput no longer degrades as outstanding futures
-  pile up: the drain thread resolved each task against a fresh copy of
-  the outstanding set, so a burst of n completions cost O(n^2) list
-  churn (~13K tasks/s at 4,000 outstanding). The drain's snapshot is now
-  persistent — submissions merge in bulk, resolves swap-remove in O(1),
-  and bursts of at most 256 completions resolve before the pending
-  submissions merge, bounding how long a submission waits to join the
-  collect set — sustaining ~40K tasks/s at the same depth.
-- `PoolExecutor`: when the drain thread fails every outstanding future
-  on an infrastructure error, later submissions raise that error
-  instead of silently queueing onto the dead drain thread.
-- Conversion warnings (e.g. uint64 past 2^63 - 1, the missing-value
-  sentinels) now fire for `pymizu.call` spec tasks whose stream is
-  rewritten past the inline budget — previously the warning record was
-  cut short and the rewrite's record never raised, so the lossy
-  conversion was silent.
-- A foreign-channel send whose write pass declines mid-write (a buffer
-  exporter failing a later `__buffer__` call) now fails the send instead
-  of staging a partially written reservation the peer reads as a corrupt
-  or wrong value.
-- A trace hook that closes over its pool no longer leaks the pool (and
-  its workers): the `_Pool` and `_Task` handle types now participate in
-  the cyclic GC.
-- The worker's map-context cache is dropped at the worker's idle sweep:
-  a parked worker no longer keeps completed maps' regions mapped (and a
-  view `x`'s zero-copy loan held) until eight other maps evict it.
-- Attr'd values (2-D arrays, temporal values, frames) nested within a
-  few levels of the interchange depth cap are now declined at send time
-  with the depth reason, instead of shipping a stream every reader
-  rejects.
-- A `bytes` argument to a `pymizu.call` spec stays `bytes` at any size —
-  past the zero-copy gate it previously arrived as a uint8 array.
-- A task whose error text contains a lone surrogate (e.g. an `OSError`'s
-  undecodable path) now crosses with the text backslash-escaped, instead
-  of a blanked message and traceback.
-- A `DeclinedError` under a long non-ASCII dict key raises cleanly with
-  its `path`/`reason` attributes, instead of a `UnicodeDecodeError`.
-- `Frame.from_arrow()` on a producer reporting `null_count = -1` (the C
-  Data Interface's "not yet computed", with a validity bitmap present)
-  now counts the bitmap at adoption instead of raising a bare
-  `MemoryError` at the frame's Arrow export.
-- A frame with a complex column holding an NA now round-trips through
-  pickle (`Frame.__reduce__` emits `None`, the rebuild accepts it);
-  previously the rebuild rejected the state as malformed.
-- A task frame abandoned after its by-reference buffer leaf staged (a
-  later leaf's buffer export failing) no longer orphans the region: the
-  abandoned checkout rolls back (via libmizu's newly exported
-  `mizu_stage_rollback`), and the pickle fallback reuses it.
-- Hardening: over-long strings are declined at send (string-vector
-  elements and task code past 2^31 bytes, dict keys past 2^32 bytes,
-  column names past 2^31 in total); a crafted frame pickle state with an
-  undecodable timezone raises the malformed-state `ValueError` instead
-  of a `SystemError`; a factor column stamped known-NA-free whose codes
-  contain the NA sentinel now rejects as corrupt at export.
-- A channel peer calling `sys.exit()` now exits 0 without a traceback —
-  an orderly exit, not a remote error.
-- `r_launcher()` / `r_pool_launcher()`: a library path containing the
-  platform path separator now reaches the R child intact — each probed
-  `.libPaths()` element crosses as its own hex-encoded argv entry. The
-  argv layout changed with it, so spawning R processes needs the mizu
-  release carrying the matching runner. A nonexistent `rscript=` now
-  raises an error naming the interpreter instead of blaming a missing
-  mizu.
-- A non-C-contiguous array nested in a container now crosses instead of
-  raising `DeclinedError`: the nested decline predated the stride-aware
-  nested writers, which gather it F-order just as the top-level and
-  layout-tier paths already did. Every R matrix arrives in Python as an
-  F-order view, so an R `list(m = matrix(...))` now echoes from Python
-  whole (labeled leaves — dimnames and names — included).
-
-### Changed
-
-- A spec map's `seed=(seed, offset)` on R workers now rejects an offset
-  past 2^53 at `Pool.map()` call time with a local `TypeError`, matching
-  the existing 32-bit seed gate — previously every runner failed
-  remotely with R's own validation error. R derives per-element streams
-  in doubles, exact only to 2^53, so no map that could succeed is
-  affected.
-- Spec maps to R workers now convert fixed-width non-identity numpy
-  dtypes once at stage time, through the same table channel sends use:
-  int8/16, uint16/32/64, float16/32, bool, and complex64 `x` buffers
-  ride the map region's byte section as converted values (uint64
-  converts to integer64 in range; past 2^63 - 1 it warns and lands `NA`
-  on the R side) instead of pickling every
-  element through the descriptor, so each worker slices bare bytes
-  rather than unpickling all of `x`. Same-language maps keep the
-  lossless pickle semantics, and `template=` still takes the exemplar
-  dtypes (`float64`/`int32`/`int64`/`complex128`/`uint8`) — declare the
-  widened type the workers produce.
-
-- A received double view's Arrow export now honors the region's validity
-  section: `NA_real_` exports as an Arrow null and a genuine NaN stays a
-  valid value — off the carried bitmap when the region carries one, off
-  a lazy payload scan when it does not (the flat reserve's common path),
-  and never for a known-NA-free region. An R -> Python -> R relay
-  through `pa.array(view)` is now exact. `_MapOutView` shares the rule.
-  `np.asarray` keeps the NaN payload as before.
-- uint64 frame columns cross verbatim (channels and pools, Python and R
-  alike). `Frame.from_arrow()` keeps the dtype exact — the eager float64
-  conversion and its silent under-2^53 dtype loss are gone, and the
-  past-2^53 warning moves from adoption time to the foreign send. On the
-  wire the column stages as a verbatim INT64 MIZL leaf carrying a
-  `u64 = TRUE` attribute. R's value landing stays double + `NA` past
-  2^53, warned at the read; the Arrow export (`pa.table(frame)`, R's
-  `mizu_as_arrow()`) is bit-exact. Bare numpy / Arrow uint64 arrays now
-  convert exactly to `integer64` in range (previously double, lossy past
-  2^53); past 2^63 - 1 the lanes land `NA` with the range warning, whose
-  text is now "N uint64 value(s) beyond 2^63 - 1 convert to NA".
-- An Arrow int64 column with a validity bitmap and a genuine
-  `-9223372036854775808` on a valid lane now warns at send ("read as
-  NA_integer64_ in R"), mirroring the int32 warning. Both R-semantics
-  sentinel counts now fire only for an R peer — the columns are written
-  identically to every peer, so they no longer warn on Python-to-Python
-  sends; the range warning still reports to every peer.
-- Nanosecond Arrow datetime fidelity. `timestamp[ns]` and `duration[ns]`
-  columns now keep their counts and unit verbatim end to end:
-  `Frame.from_arrow()` adopts them unchanged (previously it rescaled to
-  microseconds — and erroneously declined `timestamp[s]` values past the
-  microsecond range), `to_dict()` surfaces `datetime64[ns]` /
-  `timedelta64[ns]`, and the Arrow export re-derives `timestamp[ns][,tz]`
-  / `duration[ns]`. On the wire, a nanosecond column stages as a verbatim
-  INT64 MIZL leaf carrying a `tscale = "ns"` attribute when the peer
-  advertises the new `MIZU_CAP_MIZL_TSN` capability bit, and falls back
-  to the double-second POSIXct/difftime form otherwise — an older pymizu
-  or R peer reads microsecond-rounded values, never an error. Second and
-  millisecond columns adopt verbatim too and now surface as
-  `datetime64[s]` / `datetime64[ms]` instead of coerced microseconds (a
-  unit-naive consumer reading raw counts off `to_dict()` sees counts at
-  the column's own unit). The frame pickle form carries the unit: pickles
-  written by an older pymizu restore as microseconds, and an older pymizu
-  restoring a new pickle may mislabel the unit — the pickle form is a
-  staging fallback, not a compatibility surface.
-- Frame read/export savings on the remote-leaf path. A received frame
-  whose K remote columns reference one region (the provenance re-send
-  shape) now takes one mapping and one counted loan for it, not K — the
-  column block owns a name-deduped holds vector and the per-column holds
-  borrow, easing Linux `vm.max_map_count` pressure on wide provenance
-  frames. Repeat Arrow exports of one frame no longer re-walk validity
-  bitmaps: every bitmap producer records the null count once (the region
-  read, the buffer adoption, the copy builds, the first string-block
-  check, the scan-built bitmap) and later exports serve it. And the
-  NUL-terminated column-name store an Arrow export needs is built once
-  per frame and borrowed by every export, instead of copied per export.
-  No wire or ABI change.
-- The Arrow → MIZL frame writer moved upstream to libmizu (`arrow.c`):
-  the vendored core now owns the classify/batch-vetting/dictionary
-  validation, the layout write, the fixed-width conversion kernels (now
-  `mizu_cvt_*`) and the attribute-blob emitters, and both frame paths
-  (the foreign `__arrow_c_stream__` front-end and the same-language
-  exact-`Frame` branch) stage through `mizu_arrow_open` /
-  `mizu_arrow_remote` / `mizu_arrow_root_blob` / `mizu_arrow_tz` /
-  `mizu_arrow_stage`. No wire change — the cross-language suite pins the
-  bytes with no test edits. Two visible refinements: the capability
-  conjunction and the churn check now have one home in the core stage
-  (the same-language paths pass the real peer capability word — they
-  previously carried none), and the send-time decline texts name the
-  column up front (e.g. `column 't': an Arrow type with no portable home
-  (format 'tt')`). A malformed string export now declines at staging
-  rather than degrading to NA on the inline tier only.
-- `Pool.map(..., chunks=0)` (or a negative count) on an empty input now
-  raises `ValueError` instead of returning an empty result, matching
-  `Pool.map_prepare`. The one-shot and prepared map entries now share
-  the one validation path.
-
-### Added
-
 - Reverse layout writers, Python → R: nested trees, strided arrays, and
   `datetime64` now cross zero-copy where only frames did. A `list` /
   `tuple` / `dict` (string keys) past the zero-copy floor sent on a
@@ -712,7 +396,317 @@ Initial pre-release.
   staging) and `pymizu[cloudpickle]` (lambdas, closures, and local
   functions as task callables).
 
+### Changed
+
+- asyncio efficiency pass on the event-driven surface (A/B numbers in
+  `benchmarks/notes.md`): the channel drain receives bursts through one
+  GIL-held call (`_recv_burst`) instead of a GIL-dropping `recv(0)` per
+  message; waiter futures are a `Future` subclass whose `cancel()` runs
+  the enrollment's detach directly, dropping the no-op done-callback
+  every resolution used to schedule; the pool pump's terminal scan is
+  the subset form (`_tasks_terminal_set`) instead of a bool list and a
+  dict of the whole enrolled set per pass; repeated pool arms on an
+  already-armed handle are no-ops; `PoolExecutor.submit()` re-checks
+  only the submitted task instead of draining the full outstanding set
+  per submission, and the executor batches its shutdown-waiter wake per
+  drain pass. The vendored core additionally load-gates the pool
+  publish's coalescing-word RMW (one shared load per result in a burst,
+  not a locked RMW) and skips the endpoint drain on re-arms of a
+  continuously armed word.
+- **Breaking:** `Pool.map()`, `Pool.starmap()`, and `PreparedMap.run()`
+  are handle-first, mirroring mizu's map: they stage and submit, then
+  return the run's map handle immediately instead of the results.
+  `handle.collect()` blocks for the results (the previous return value);
+  `handle.collect_async()` / `await handle` resolves them event-driven;
+  `handle.cancel()` stops the run (`CancelledError` settles a pending
+  collect). The `timeout=` argument now bounds submission only — on its
+  expiry the call itself returns the `TIMEOUT` sentinel as before — and
+  the collection deadline moved to `handle.collect(timeout=...)`.
+- **Breaking:** prepared maps take `seed` and `collect` per run, not at
+  prepare: both options moved from `Pool.map_prepare()` to
+  `PreparedMap.run()` (`run(x=None, seed=None, timeout=None,
+  collect=None)`), mirroring mizu's `mizu_map_run()`. The seed rides
+  the run's runner payloads rather than the staged region, so a
+  prepared run reseeds for free — `pm.run(seed=s)` varies the element
+  streams per run for repeated stochastic simulation, the headline
+  prepared-map use. A `None` seed runs unseeded, whatever a previous
+  run took; `collect=None` defaults as at `Pool.map()`.
+- `PoolExecutor` no longer spawns its drain thread: futures resolve
+  event-driven off the pool's notify endpoint, so the 50 ms collect
+  bound and its completion latency are gone, and `asyncio.wrap_future`
+  over one is thread-free asyncio interop. Done callbacks now run on the
+  core's listener thread (the same discipline as the stdlib executors'
+  management thread).
+
+- Faithful metadata round trips with R (the `MIZU_CAP_LABELED`
+  capability): named vectors keep their names, matrices and arrays keep
+  their `dimnames` (axis names and the `table` class included), and
+  data.frame metadata — the full class vector (tibbles, any class
+  ending in `"data.frame"`) and extra attributes — crosses opaquely.
+  The new `pymizu.DimArray` (an `ndarray` subclass) homes labeled
+  vectors and arrays with `names` / `dimnames` / `axis_names` /
+  `r_class` attached; numpy operations drop the labels rather than
+  mislabel reshaped data, so a modified array arrives in R as a plain
+  array and a pristine echo stays `identical()`. Frame metadata rides
+  the `Frame._r_attrs` stash (the class vector decoded, extra
+  attributes as undecoded wire spans), spliced verbatim on a pristine
+  echo; a frame rebuilt through pyarrow, polars, pandas, `from_arrow`,
+  or pickle arrives in R as a plain `data.frame`. Sends of these shapes
+  to a peer without the capability decline at send time, never strip;
+  and a re-attached or changed label set on a region-backed array
+  crosses by value (a by-reference send never resurrects the region's
+  labels). The `DimArray` re-export is lazy: a numpy-less
+  `import pymizu` stays clean.
+
+- `pymizu.TaskLostError`: a task whose payload region vanished without a
+  worker-death verdict (a transient open failure on the worker, not a
+  dead worker) now collects as this distinct error instead of a generic
+  `MizuError`, with `Task.state` reading `"lost"`.
+- Cross-language streaming maps: `Pool.map()` with `stream=True` and a
+  `pymizu.call` spec as `fn` now runs over workers of any language
+  (previously a `TypeError`). Each chunk in the sliding window stages a
+  small shared region of its own — the slice plus the task, one runner
+  task per chunk — removed as soon as its chunk completes, so
+  shared-memory use stays bounded by the window plus a small per-worker
+  cache. Result order, `seed=` invariance, the element-indexed error
+  taxonomy, and `template=` (gathered a chunk at a time) are exactly the
+  non-streaming spec map's. `collect="view"` stays a `TypeError`
+  (per-chunk results cannot combine into one view), as does preparing a
+  streaming spec map (`pool.map_prepare()`).
+- `Pool.collect_any()` and `Pool.collect_all()` errors now always carry
+  a `position` attribute (the 0-based list position). A task error that
+  already carries an `index` — a map error's element index, the
+  documented `Pool.map` contract — keeps it as before, so both are now
+  present.
+- NumPy scalars and 0-d arrays (`np.float64(3.5)`, `np.array(3.5)`)
+  round-trip with their exact type and shape on the same-language path,
+  staged as a new compact-codec row (wire type, scalar/0-d form, element
+  bytes) instead of the raw tier's 1-D length-1 array read. Without
+  numpy, a received row reads as the plain Python scalar. Note for
+  mixed-version deployments: the new tag errors loudly against pymizu
+  builds from before this release on same-language channels and pools.
+- `Pool.collect_all()`: a result that fails to read mid-batch now
+  raises with an `index` (0-based failing slot) and a `values`
+  attribute carrying the already-consumed prefix, instead of discarding
+  those results. The failing slot and every handle past the prefix stay
+  collectible.
+- `Pool.submit_batch()`: a mid-batch failure now raises with an
+  `accepted` attribute holding the handles already submitted, which stay
+  valid and collectible — previously they leaked their result slots.
+
+- A spec map's `seed=(seed, offset)` on R workers now rejects an offset
+  past 2^53 at `Pool.map()` call time with a local `TypeError`, matching
+  the existing 32-bit seed gate — previously every runner failed
+  remotely with R's own validation error. R derives per-element streams
+  in doubles, exact only to 2^53, so no map that could succeed is
+  affected.
+- Spec maps to R workers now convert fixed-width non-identity numpy
+  dtypes once at stage time, through the same table channel sends use:
+  int8/16, uint16/32/64, float16/32, bool, and complex64 `x` buffers
+  ride the map region's byte section as converted values (uint64
+  converts to integer64 in range; past 2^63 - 1 it warns and lands `NA`
+  on the R side) instead of pickling every
+  element through the descriptor, so each worker slices bare bytes
+  rather than unpickling all of `x`. Same-language maps keep the
+  lossless pickle semantics, and `template=` still takes the exemplar
+  dtypes (`float64`/`int32`/`int64`/`complex128`/`uint8`) — declare the
+  widened type the workers produce.
+
+- A received double view's Arrow export now honors the region's validity
+  section: `NA_real_` exports as an Arrow null and a genuine NaN stays a
+  valid value — off the carried bitmap when the region carries one, off
+  a lazy payload scan when it does not (the flat reserve's common path),
+  and never for a known-NA-free region. An R -> Python -> R relay
+  through `pa.array(view)` is now exact. `_MapOutView` shares the rule.
+  `np.asarray` keeps the NaN payload as before.
+- uint64 frame columns cross verbatim (channels and pools, Python and R
+  alike). `Frame.from_arrow()` keeps the dtype exact — the eager float64
+  conversion and its silent under-2^53 dtype loss are gone, and the
+  past-2^53 warning moves from adoption time to the foreign send. On the
+  wire the column stages as a verbatim INT64 MIZL leaf carrying a
+  `u64 = TRUE` attribute. R's value landing stays double + `NA` past
+  2^53, warned at the read; the Arrow export (`pa.table(frame)`, R's
+  `mizu_as_arrow()`) is bit-exact. Bare numpy / Arrow uint64 arrays now
+  convert exactly to `integer64` in range (previously double, lossy past
+  2^53); past 2^63 - 1 the lanes land `NA` with the range warning, whose
+  text is now "N uint64 value(s) beyond 2^63 - 1 convert to NA".
+- An Arrow int64 column with a validity bitmap and a genuine
+  `-9223372036854775808` on a valid lane now warns at send ("read as
+  NA_integer64_ in R"), mirroring the int32 warning. Both R-semantics
+  sentinel counts now fire only for an R peer — the columns are written
+  identically to every peer, so they no longer warn on Python-to-Python
+  sends; the range warning still reports to every peer.
+- Nanosecond Arrow datetime fidelity. `timestamp[ns]` and `duration[ns]`
+  columns now keep their counts and unit verbatim end to end:
+  `Frame.from_arrow()` adopts them unchanged (previously it rescaled to
+  microseconds — and erroneously declined `timestamp[s]` values past the
+  microsecond range), `to_dict()` surfaces `datetime64[ns]` /
+  `timedelta64[ns]`, and the Arrow export re-derives `timestamp[ns][,tz]`
+  / `duration[ns]`. On the wire, a nanosecond column stages as a verbatim
+  INT64 MIZL leaf carrying a `tscale = "ns"` attribute when the peer
+  advertises the new `MIZU_CAP_MIZL_TSN` capability bit, and falls back
+  to the double-second POSIXct/difftime form otherwise — an older pymizu
+  or R peer reads microsecond-rounded values, never an error. Second and
+  millisecond columns adopt verbatim too and now surface as
+  `datetime64[s]` / `datetime64[ms]` instead of coerced microseconds (a
+  unit-naive consumer reading raw counts off `to_dict()` sees counts at
+  the column's own unit). The frame pickle form carries the unit: pickles
+  written by an older pymizu restore as microseconds, and an older pymizu
+  restoring a new pickle may mislabel the unit — the pickle form is a
+  staging fallback, not a compatibility surface.
+- Frame read/export savings on the remote-leaf path. A received frame
+  whose K remote columns reference one region (the provenance re-send
+  shape) now takes one mapping and one counted loan for it, not K — the
+  column block owns a name-deduped holds vector and the per-column holds
+  borrow, easing Linux `vm.max_map_count` pressure on wide provenance
+  frames. Repeat Arrow exports of one frame no longer re-walk validity
+  bitmaps: every bitmap producer records the null count once (the region
+  read, the buffer adoption, the copy builds, the first string-block
+  check, the scan-built bitmap) and later exports serve it. And the
+  NUL-terminated column-name store an Arrow export needs is built once
+  per frame and borrowed by every export, instead of copied per export.
+  No wire or ABI change.
+- The Arrow → MIZL frame writer moved upstream to libmizu (`arrow.c`):
+  the vendored core now owns the classify/batch-vetting/dictionary
+  validation, the layout write, the fixed-width conversion kernels (now
+  `mizu_cvt_*`) and the attribute-blob emitters, and both frame paths
+  (the foreign `__arrow_c_stream__` front-end and the same-language
+  exact-`Frame` branch) stage through `mizu_arrow_open` /
+  `mizu_arrow_remote` / `mizu_arrow_root_blob` / `mizu_arrow_tz` /
+  `mizu_arrow_stage`. No wire change — the cross-language suite pins the
+  bytes with no test edits. Two visible refinements: the capability
+  conjunction and the churn check now have one home in the core stage
+  (the same-language paths pass the real peer capability word — they
+  previously carried none), and the send-time decline texts name the
+  column up front (e.g. `column 't': an Arrow type with no portable home
+  (format 'tt')`). A malformed string export now declines at staging
+  rather than degrading to NA on the inline tier only.
+- `Pool.map(..., chunks=0)` (or a negative count) on an empty input now
+  raises `ValueError` instead of returning an empty result, matching
+  `Pool.map_prepare`. The one-shot and prepared map entries now share
+  the one validation path.
+
 ### Fixed
+
+- Every `DeclinedError` now carries the documented `path` and `reason`
+  attributes: the Arrow front-end and the label-stash gates raised
+  attribute-less instances, where the value walk's declines set them.
+- `Channel.send()` now returns `None` on a successful publish, as
+  documented (it returned `True`): a `send(...) is None` check written
+  against the documented contract treated every successful send as a
+  failure. Terminal states still return the identity-tested `FULL` /
+  `CLOSED` / `PEER_GONE` sentinels.
+- `Pool.destroy()` no longer crashes the process when another thread is
+  inside a verb on the same handle (the classic shape: a `PoolExecutor`
+  drain thread parked in `collect_any`): the core handle was unmapped
+  and freed under the in-flight call. Teardown now defers to the last
+  in-flight verb's return — the count is guarded by the GIL itself —
+  and later verbs raise `ValueError` on the closed handle. Indefinite
+  waits (`submit()`, `collect()`, `collect_any()`, `collect_all()`,
+  `ready_wait()`) slice into bounded core calls and break out on the
+  destroy (the closed-handle `ValueError`, or `False` for
+  `ready_wait()`), so the teardown runs promptly; a `stop()` wait and
+  a worker's idle `run()` still delay it until they return.
+- `Channel.destroy()` gets the same in-flight fence: a destroy racing a
+  verb on another thread (e.g. a blocking `recv()`) no longer unmaps
+  the core handle under the call — teardown defers to the last verb's
+  return, as does `Channel.close()`'s once its rendezvous completes.
+  Indefinite waits (`recv()`, `recv_batch()`, `ready_wait()`,
+  `close()`) slice into bounded core calls and break out on the
+  destroy (`CLOSED` / `False`), so the teardown runs promptly.
+- A `NaN` timeout is rejected with `ValueError` on every verb and on
+  `Pool.map()`: the wait verbs previously mapped it to an indefinite
+  wait (a park that never wakes), while the map layer raced it as a
+  non-blocking collect.
+- `Pool.spawn_workers()` gates the caller's role before launching any
+  process: an attached (submitter) handle previously spawned real
+  workers and errored only at the join wait.
+- A straggler of an unclean `PreparedMap.run()` (timeout, error, worker
+  death) can no longer write its in-flight batch into the re-armed
+  region's output area after a later run has collected: the unclean run
+  drops the staged region, so the next run restages into a fresh one
+  (the streaming run's existing discipline).
+- A region-backed `Frame` with a string column re-sends through the
+  foreign writer (a caps-less peer, nested in a container, or as a
+  `pymizu.call` argument) instead of staging a stream the peer rejects
+  as malformed.
+- `PoolExecutor`: cancelling a queued future no longer fails every other
+  outstanding future and kills the drain thread — the worker's
+  cancel-skip frees the task, so the drain's next collect claimed a
+  stale handle. The drain now drops the freed handles and re-snapshots.
+- `PoolExecutor` serializes its core verbs on one lock: the pool handle
+  is single-threaded per side, and the caller thread's `submit` and the
+  drain thread's `collect_any` could otherwise race the shared spill
+  free list with the GIL released.
+- `PoolExecutor` throughput no longer degrades as outstanding futures
+  pile up: the drain thread resolved each task against a fresh copy of
+  the outstanding set, so a burst of n completions cost O(n^2) list
+  churn (~13K tasks/s at 4,000 outstanding). The drain's snapshot is now
+  persistent — submissions merge in bulk, resolves swap-remove in O(1),
+  and bursts of at most 256 completions resolve before the pending
+  submissions merge, bounding how long a submission waits to join the
+  collect set — sustaining ~40K tasks/s at the same depth.
+- `PoolExecutor`: when the drain thread fails every outstanding future
+  on an infrastructure error, later submissions raise that error
+  instead of silently queueing onto the dead drain thread.
+- Conversion warnings (e.g. uint64 past 2^63 - 1, the missing-value
+  sentinels) now fire for `pymizu.call` spec tasks whose stream is
+  rewritten past the inline budget — previously the warning record was
+  cut short and the rewrite's record never raised, so the lossy
+  conversion was silent.
+- A foreign-channel send whose write pass declines mid-write (a buffer
+  exporter failing a later `__buffer__` call) now fails the send instead
+  of staging a partially written reservation the peer reads as a corrupt
+  or wrong value.
+- A trace hook that closes over its pool no longer leaks the pool (and
+  its workers): the `_Pool` and `_Task` handle types now participate in
+  the cyclic GC.
+- The worker's map-context cache is dropped at the worker's idle sweep:
+  a parked worker no longer keeps completed maps' regions mapped (and a
+  view `x`'s zero-copy loan held) until eight other maps evict it.
+- Attr'd values (2-D arrays, temporal values, frames) nested within a
+  few levels of the interchange depth cap are now declined at send time
+  with the depth reason, instead of shipping a stream every reader
+  rejects.
+- A `bytes` argument to a `pymizu.call` spec stays `bytes` at any size —
+  past the zero-copy gate it previously arrived as a uint8 array.
+- A task whose error text contains a lone surrogate (e.g. an `OSError`'s
+  undecodable path) now crosses with the text backslash-escaped, instead
+  of a blanked message and traceback.
+- A `DeclinedError` under a long non-ASCII dict key raises cleanly with
+  its `path`/`reason` attributes, instead of a `UnicodeDecodeError`.
+- `Frame.from_arrow()` on a producer reporting `null_count = -1` (the C
+  Data Interface's "not yet computed", with a validity bitmap present)
+  now counts the bitmap at adoption instead of raising a bare
+  `MemoryError` at the frame's Arrow export.
+- A frame with a complex column holding an NA now round-trips through
+  pickle (`Frame.__reduce__` emits `None`, the rebuild accepts it);
+  previously the rebuild rejected the state as malformed.
+- A task frame abandoned after its by-reference buffer leaf staged (a
+  later leaf's buffer export failing) no longer orphans the region: the
+  abandoned checkout rolls back (via libmizu's newly exported
+  `mizu_stage_rollback`), and the pickle fallback reuses it.
+- Hardening: over-long strings are declined at send (string-vector
+  elements and task code past 2^31 bytes, dict keys past 2^32 bytes,
+  column names past 2^31 in total); a crafted frame pickle state with an
+  undecodable timezone raises the malformed-state `ValueError` instead
+  of a `SystemError`; a factor column stamped known-NA-free whose codes
+  contain the NA sentinel now rejects as corrupt at export.
+- A channel peer calling `sys.exit()` now exits 0 without a traceback —
+  an orderly exit, not a remote error.
+- `r_launcher()` / `r_pool_launcher()`: a library path containing the
+  platform path separator now reaches the R child intact — each probed
+  `.libPaths()` element crosses as its own hex-encoded argv entry. The
+  argv layout changed with it, so spawning R processes needs the mizu
+  release carrying the matching runner. A nonexistent `rscript=` now
+  raises an error naming the interpreter instead of blaming a missing
+  mizu.
+- A non-C-contiguous array nested in a container now crosses instead of
+  raising `DeclinedError`: the nested decline predated the stride-aware
+  nested writers, which gather it F-order just as the top-level and
+  layout-tier paths already did. Every R matrix arrives in Python as an
+  F-order view, so an R `list(m = matrix(...))` now echoes from Python
+  whole (labeled leaves — dimnames and names — included).
 
 - A `list[str | None]` sent to an R peer now arrives as a character
   vector at every size. Below the zero-copy floor the interchange writer
