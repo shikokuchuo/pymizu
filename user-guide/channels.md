@@ -21,7 +21,7 @@ while True:
 
 The peer is a full Python process: it imports anything importable in the spawning interpreter's environment. [Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) returns after the peer connects. It waits up to `startup_timeout` seconds and raises [StartupError](../reference/StartupError.md#pymizu.StartupError) on expiry.
 
-A `launcher` changes how pymizu spawns the peer. It is one callable that takes the channel's token and arranges for the peer process to start. [pymizu.r_launcher()](../reference/r_launcher.md#pymizu.r_launcher) is the built-in example: it spawns an R peer instead (see [R interop](interop.md)). User code spawns peers through a launcher. `Channel.attach(token)` is the low-level entry for a peer that attaches itself.
+A `launcher` changes how pymizu spawns the peer. It is one callable that takes the channel's token and arranges for the peer process to start. [pymizu.r_launcher()](../reference/r_launcher.md#pymizu.r_launcher) is the built-in example: it spawns an R peer instead (see [R interop](interop.md)). User code spawns peers through a launcher.
 
 ## Sending and receiving
 
@@ -81,7 +81,7 @@ ch.close()
 
     True
 
-A channel is also a context manager: the `with` block closes it on exit. [close_signal()](../reference/Channel.close_signal.md#pymizu.Channel.close_signal) signals without waiting. `destroy()` releases the handle immediately, without waiting for the peer. The peer sees the channel as closed (`PEER_GONE` if it died hard). A destroy is safe from any thread. A verb still running on another thread keeps the handle alive until it returns, and a waiting verb ([recv()](../reference/Channel.recv.md#pymizu.Channel.recv), [recv_batch()](../reference/Channel.recv_batch.md#pymizu.Channel.recv_batch), `ready_wait()`, `close()`) wakes up promptly so teardown can finish.
+A channel is also a context manager: the `with` block closes it on exit. `destroy()` releases the handle immediately, without waiting for the peer. The peer sees the channel as closed (`PEER_GONE` if it died hard). A destroy is safe from any thread. A verb still running on another thread keeps the handle alive until it returns, and a waiting verb ([recv()](../reference/Channel.recv.md#pymizu.Channel.recv), [recv_batch()](../reference/Channel.recv_batch.md#pymizu.Channel.recv_batch), `ready_wait()`, `close()`) wakes up promptly so teardown can finish.
 
 ## Threading
 

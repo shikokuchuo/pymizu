@@ -15,7 +15,6 @@
 > Methods for the Channel class
 
 - [Channel.create](https://shikokuchuo.net/pymizu/reference/Channel.create.html)
-- [Channel.attach](https://shikokuchuo.net/pymizu/reference/Channel.attach.html)
 - [Channel.token](https://shikokuchuo.net/pymizu/reference/Channel.token.html)
 - [Channel.send](https://shikokuchuo.net/pymizu/reference/Channel.send.html)
 - [Channel.send_batch](https://shikokuchuo.net/pymizu/reference/Channel.send_batch.html)
@@ -24,7 +23,6 @@
 - [Channel.__aiter__](https://shikokuchuo.net/pymizu/reference/Channel.__aiter__.html)
 - [Channel.recv_batch](https://shikokuchuo.net/pymizu/reference/Channel.recv_batch.html)
 - [Channel.close](https://shikokuchuo.net/pymizu/reference/Channel.close.html)
-- [Channel.close_signal](https://shikokuchuo.net/pymizu/reference/Channel.close_signal.html)
 - [Channel.destroy](https://shikokuchuo.net/pymizu/reference/Channel.destroy.html)
 - [Channel.alive](https://shikokuchuo.net/pymizu/reference/Channel.alive.html)
 - [Channel.info](https://shikokuchuo.net/pymizu/reference/Channel.info.html)
@@ -58,7 +56,6 @@
 - [Pool.retire](https://shikokuchuo.net/pymizu/reference/Pool.retire.html)
 - [Pool.spawn_workers](https://shikokuchuo.net/pymizu/reference/Pool.spawn_workers.html)
 - [Pool.stop](https://shikokuchuo.net/pymizu/reference/Pool.stop.html)
-- [Pool.shutdown](https://shikokuchuo.net/pymizu/reference/Pool.shutdown.html)
 - [Pool.destroy](https://shikokuchuo.net/pymizu/reference/Pool.destroy.html)
 - [Pool.status](https://shikokuchuo.net/pymizu/reference/Pool.status.html)
 - [Pool.dump](https://shikokuchuo.net/pymizu/reference/Pool.dump.html)
@@ -73,7 +70,6 @@
 - [Task.state](https://shikokuchuo.net/pymizu/reference/Task.state.html)
 - [Task.pool](https://shikokuchuo.net/pymizu/reference/Task.pool.html)
 - [Task.collect](https://shikokuchuo.net/pymizu/reference/Task.collect.html)
-- [Task.result](https://shikokuchuo.net/pymizu/reference/Task.result.html)
 - [Task.cancel](https://shikokuchuo.net/pymizu/reference/Task.cancel.html)
 - [Task.collect_async](https://shikokuchuo.net/pymizu/reference/Task.collect_async.html)
 - [Task.__await__](https://shikokuchuo.net/pymizu/reference/Task.__await__.html)
@@ -82,8 +78,7 @@
 > R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
 
 - [call](https://shikokuchuo.net/pymizu/reference/call.html): A task specification for a pool of another language's workers
-- [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
-- [r_pool_launcher](https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html): Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
+- [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a launcher spawning R processes running the `mizu` package
 - [Frame](https://shikokuchuo.net/pymizu/reference/Frame.html): A data.frame's Python home: named columns with a row count
 - [DimArray](https://shikokuchuo.net/pymizu/reference/DimArray.html): An `ndarray` carrying R labels (`names` / `dimnames` /
 

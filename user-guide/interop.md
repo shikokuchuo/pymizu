@@ -128,13 +128,13 @@ Frame metadata crosses unchanged: the full class vector of a data.frame (a tibbl
 
 ## Mixed-language pools
 
-A pool's workers can be R processes. [pymizu.r_pool_launcher()](../reference/r_pool_launcher.md#pymizu.r_pool_launcher) spawns the workers. [pymizu.call()](../reference/call.md#pymizu.call) builds a language-neutral task: a qualified `"pkg::fn"` name for R or `"mod.fn"` for Python, or a `source=` string, plus constant arguments:
+A pool's workers can be R processes. [pymizu.r_launcher()](../reference/r_launcher.md#pymizu.r_launcher) spawns the workers. [pymizu.call()](../reference/call.md#pymizu.call) builds a language-neutral task: a qualified `"pkg::fn"` name for R or `"mod.fn"` for Python, or a `source=` string, plus constant arguments:
 
 ``` python
 import numpy as np
 import pymizu
 
-pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
+pool = pymizu.Pool.create(4, launcher=pymizu.r_launcher())
 t = pool.submit(pymizu.call("stats::quantile", np.arange(101.0),
                             probs=np.array([0.25, 0.5, 0.75]), names=False))
 print(t.collect())                  # [ 25.  50.  75.]
@@ -152,7 +152,7 @@ On an R-worker pool, submitting a plain Python callable raises an error naming [
 To map an R function over Python data, pass a [pymizu.call()](../reference/call.md#pymizu.call) spec as the `fn` of [Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) or [Pool.map_prepare()](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare) on an R-worker pool. `mizu::mizu_map()` mirrors this in R:
 
 ``` python
-pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
+pool = pymizu.Pool.create(4, launcher=pymizu.r_launcher())
 pool.map(pymizu.call("stats::median"), x).collect()
 pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
          folds, template=0.0).collect()   # each fold a dict; the element binds as x

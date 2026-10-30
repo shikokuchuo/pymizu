@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Return a Channel.create() launcher">
+<meta name="description" content="Return a launcher spawning R processes running the mizu package.">
 
 <title>r_launcher() | pymizu 水</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "r_launcher - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/r_launcher.html"}]</script>
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="r_launcher() | pymizu 水">
-<meta property="og:description" content="Return a Channel.create() launcher">
+<meta property="og:description" content="Return a launcher spawning R processes running the mizu package.">
 <meta property="og:site_name" content="pymizu 水">
 <meta name="twitter:title" content="r_launcher() | pymizu 水">
-<meta name="twitter:description" content="Return a Channel.create() launcher">
+<meta name="twitter:description" content="Return a launcher spawning R processes running the mizu package.">
 <meta name="twitter:card" content="summary">
 </head>
 
@@ -233,12 +233,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Channel.attach.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channel.attach</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Channel.token.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channel.token</span></a>
   </div>
@@ -283,12 +277,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../reference/Channel.close.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channel.close</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../reference/Channel.close_signal.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channel.close_signal</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -465,12 +453,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.shutdown.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Pool.shutdown</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Pool.destroy.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Pool.destroy</span></a>
   </div>
@@ -542,12 +524,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Task.result.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Task.result</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Task.cancel.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Task.cancel</span></a>
   </div>
@@ -585,12 +561,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../reference/r_launcher.html" class="sidebar-item-text sidebar-link active">
  <span class="menu-text">r_launcher</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../reference/r_pool_launcher.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">r_pool_launcher</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -827,6 +797,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <li><a href="#parameters" id="toc-parameters" class="nav-link active" data-scroll-target="#parameters">Parameters</a></li>
   <li><a href="#returns" id="toc-returns" class="nav-link" data-scroll-target="#returns">Returns</a></li>
   <li><a href="#raises" id="toc-raises" class="nav-link" data-scroll-target="#raises">Raises</a></li>
+  <li><a href="#notes" id="toc-notes" class="nav-link" data-scroll-target="#notes">Notes</a></li>
+  <li><a href="#examples" id="toc-examples" class="nav-link" data-scroll-target="#examples">Examples</a></li>
   </ul>
 </nav>
     </div>
@@ -853,11 +825,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> launcher</p>
+<p>Return a launcher spawning R processes running the <code>mizu</code> package.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L134-L183" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L134-L203" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">r_launcher</span>(</span>
@@ -868,8 +840,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>spawning an R peer.</p>
-<p>The peer runs the R package <code>mizu</code>: the returned <code>callable(token)</code> spawns <code>rscript</code> on the package’s static child runner with <code>mizu:::peer_main(&lt;token&gt;)</code> as the entry expression and the detected library paths passed along in argv.</p>
+<p><a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> calls it with <code>token</code> alone to spawn the peer; <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> calls it with <code>token</code> and <code>slot</code> to spawn each worker. The process runs <code>rscript</code> on the package’s static child runner with the entry expression (<code>mizu:::peer_main(&lt;token&gt;)</code> or <code>mizu:::worker_main(&lt;token&gt;, &lt;slot&gt;)</code>) and the detected library paths passed along in argv (without them it cannot <code>library(mizu)</code> from the host’s libraries). The mirror of the R package’s <code>mizu_py_launcher()</code>.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -894,9 +865,9 @@ Forwarded to <code>subprocess.Popen</code>.
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
 <div class="doc-definition-items">
 <dl>
-<dt><code> <span class="doc-parameter-annotation">A <code>callable(token)</code> launcher for</span></code></dt>
+<dt><code> <span class="doc-parameter-annotation">A <code>callable(token, slot=None)</code> launcher for</span></code></dt>
 <dd>
-<a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a>.
+<a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> and <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a>.
 </dd>
 </dl>
 </div>
@@ -907,10 +878,22 @@ Forwarded to <code>subprocess.Popen</code>.
 <dl>
 <dt><code> <span class="doc-parameter-annotation">MizuError</span></code></dt>
 <dd>
-Raised here, before the channel is created, when Rscript is not found or no installed <code>mizu</code> with source string support is available.
+Raised here, before anything exists, when Rscript is not found or no installed <code>mizu</code> with source string support is available.
 </dd>
 </dl>
 </div>
+</section>
+<section id="notes" class="level2 doc-notes">
+<h2 class="doc-notes anchored" data-anchor-id="notes">Notes</h2>
+<p>The first worker’s join records the workers’ language in the pool, so the launcher carries no language attribute: a pool of R workers takes <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>pymizu.call()</code></a> specifications through <a href="../reference/Pool.submit.html#pymizu.Pool.submit" class="gdls-link"><code>Pool.submit()</code></a>, and a plain callable raises an error naming <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">call</a>. A launcher that spawns the wrong language fails at join, not at the first task.</p>
+</section>
+<section id="examples" class="level2 doc-examples">
+<h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_launcher()) <span class="im">as</span> pool:</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    spec <span class="op">=</span> pymizu.call(source<span class="op">=</span><span class="st">"summary(cars$speed)"</span>)</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(pool.submit(spec).collect())</span></code></pre></div>
 
 
 </section>

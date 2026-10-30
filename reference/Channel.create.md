@@ -4,7 +4,7 @@ Create a channel and spawn its peer.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L122-L201)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L131-L210)
 
 ``` python
 Channel.create(

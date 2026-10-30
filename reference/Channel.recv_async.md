@@ -4,7 +4,7 @@ The event-driven receive: an `asyncio.Future` for the next
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L294-L323)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L301-L330)
 
 ``` python
 Channel.recv_async()

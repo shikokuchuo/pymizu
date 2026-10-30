@@ -118,7 +118,7 @@ Deterministic per-element seeding for this run, as for [`Pool.map()`](../referen
 Seconds before the run's submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT [`Sentinel`](../reference/Sentinel.md#pymizu.Sentinel) is returned (no handle). The collection deadline is the handle's [collect()](../reference/Task.collect.md#pymizu.Task.collect).
 
 `collect: str | None = None`  
-`"copy"` or `"view"` with `template`; `"list"` without -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map). The choice is per run.
+`"copy"` (the default) or `"view"`, which requires `template` -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map). The choice is per run.
 
 #### Returns
 

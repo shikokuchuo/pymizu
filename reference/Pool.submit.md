@@ -4,7 +4,7 @@ Submit `fn(*args, **kwargs)` as a task; return a Task handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L765-L843)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L770-L848)
 
 ``` python
 Pool.submit(
@@ -56,7 +56,7 @@ Another submit-family verb is in flight on this handle from a second thread: a p
 
 A buffer-protocol argument (for example a numpy array) larger than 32 KB crosses as a read-only view over shared pages, not a writable copy.
 
-With a [`call`](../reference/call.md#pymizu.call) spec as `fn` (no `*args` / `**kwargs` -- the spec carries them), the task crosses in a language-neutral format: this is how you drive a pool of another language's workers (spawn them with [`r_pool_launcher()`](../reference/r_pool_launcher.md#pymizu.r_pool_launcher)). On a foreign pool a plain callable raises an error naming [call](../reference/call.md#pymizu.call).
+With a [`call`](../reference/call.md#pymizu.call) spec as `fn` (no `*args` / `**kwargs` -- the spec carries them), the task crosses in a language-neutral format: this is how you drive a pool of another language's workers (spawn them with [`r_launcher()`](../reference/r_launcher.md#pymizu.r_launcher)). On a foreign pool a plain callable raises an error naming [call](../reference/call.md#pymizu.call).
 
 ## Examples
 

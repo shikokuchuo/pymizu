@@ -233,12 +233,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Channel.attach.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channel.attach</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Channel.token.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channel.token</span></a>
   </div>
@@ -283,12 +277,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../reference/Channel.close.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channel.close</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../reference/Channel.close_signal.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channel.close_signal</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -465,12 +453,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.shutdown.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Pool.shutdown</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Pool.destroy.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Pool.destroy</span></a>
   </div>
@@ -542,12 +524,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Task.result.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Task.result</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Task.cancel.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Task.cancel</span></a>
   </div>
@@ -585,12 +561,6 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <div class="sidebar-item-container"> 
   <a href="../reference/r_launcher.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">r_launcher</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../reference/r_pool_launcher.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">r_pool_launcher</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -849,13 +819,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L85-L421" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L94-L428" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Channel</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Create the host side with <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> (which spawns the peer); the peer side attaches with <a href="../reference/Channel.attach.html#pymizu.Channel.attach" class="gdls-link"><code>Channel.attach()</code></a> — <code>python -m pymizu.child</code> does this. Handles do not survive <code>fork()</code>.</p>
+<p>Create the host side with <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> (which spawns the peer); the peer side attaches with <code>Channel._attach()</code> — <code>python -m pymizu.child</code> does this. Handles do not survive <code>fork()</code>.</p>
 <p>Threading: a side belongs to one thread at a time — call its verbs (<a href="../reference/Channel.send.html#pymizu.Channel.send" class="gdls-link"><code>send()</code></a>, <a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="gdls-link"><code>recv()</code></a>, their batch forms) from one thread only; a second verb from another thread raises <a href="../reference/ConcurrentUseError.html#pymizu.ConcurrentUseError" class="gdls-link"><code>ConcurrentUseError</code></a>. Blocking and async receives are likewise exclusive on a side: a blocking receive while a <a href="../reference/Channel.recv_async.html#pymizu.Channel.recv_async" class="gdls-link"><code>recv_async()</code></a> consumer is active raises it too — from any thread but the consumer’s event loop, whose own receives can never race it. Two-way traffic from two threads needs two channels. Teardown is the exception: <a href="../reference/Channel.destroy.html#pymizu.Channel.destroy" class="gdls-link"><code>destroy()</code></a> is safe from any thread.</p>
 </div>
 

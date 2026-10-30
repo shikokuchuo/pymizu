@@ -198,12 +198,6 @@ ul.task-list li input[type="checkbox"] {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Channel.attach.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channel.attach</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Channel.token.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channel.token</span></a>
   </div>
@@ -248,12 +242,6 @@ ul.task-list li input[type="checkbox"] {
   <div class="sidebar-item-container"> 
   <a href="../reference/Channel.close.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Channel.close</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../reference/Channel.close_signal.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Channel.close_signal</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -430,12 +418,6 @@ ul.task-list li input[type="checkbox"] {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Pool.shutdown.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Pool.shutdown</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Pool.destroy.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Pool.destroy</span></a>
   </div>
@@ -507,12 +489,6 @@ ul.task-list li input[type="checkbox"] {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../reference/Task.result.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Task.result</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
   <a href="../reference/Task.cancel.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Task.cancel</span></a>
   </div>
@@ -550,12 +526,6 @@ ul.task-list li input[type="checkbox"] {
   <div class="sidebar-item-container"> 
   <a href="../reference/r_launcher.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">r_launcher</span></a>
-  </div>
-</li>
-          <li class="sidebar-item">
-  <div class="sidebar-item-container"> 
-  <a href="../reference/r_pool_launcher.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">r_pool_launcher</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -845,10 +815,6 @@ ul.task-list li input[type="checkbox"] {
 <dd>
 <p>Create a channel and spawn its peer.</p>
 </dd>
-<dt><a href="../reference/Channel.attach.html#pymizu.Channel.attach" class="doc-function doc-label doc-label-method">Channel.attach()</a></dt>
-<dd>
-<p>Attach to the channel named by a join token (the peer side).</p>
-</dd>
 <dt><a href="../reference/Channel.token.html#pymizu.Channel.token" class="doc-attribute doc-label doc-label-property">Channel.token</a></dt>
 <dd>
 <p>The join token for the peer’s attach.</p>
@@ -880,10 +846,6 @@ ul.task-list li input[type="checkbox"] {
 <dt><a href="../reference/Channel.close.html#pymizu.Channel.close" class="doc-function doc-label doc-label-method">Channel.close()</a></dt>
 <dd>
 <p>Orderly close: tell the peer to close and wait up to</p>
-</dd>
-<dt><a href="../reference/Channel.close_signal.html#pymizu.Channel.close_signal" class="doc-function doc-label doc-label-method">Channel.close_signal()</a></dt>
-<dd>
-<p>Signal close without waiting (the peer’s recv side sees</p>
 </dd>
 <dt><a href="../reference/Channel.destroy.html#pymizu.Channel.destroy" class="doc-function doc-label doc-label-method">Channel.destroy()</a></dt>
 <dd>
@@ -1001,10 +963,6 @@ ul.task-list li input[type="checkbox"] {
 <dd>
 <p>Orderly shutdown (controller only).</p>
 </dd>
-<dt><a href="../reference/Pool.shutdown.html#pymizu.Pool.shutdown" class="doc-function doc-label doc-label-method">Pool.shutdown()</a></dt>
-<dd>
-<p>Alias for <a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="gdls-link"><code>stop()</code></a> — the</p>
-</dd>
 <dt><a href="../reference/Pool.destroy.html#pymizu.Pool.destroy" class="doc-function doc-label doc-label-method">Pool.destroy()</a></dt>
 <dd>
 <p>Tear down the pool handle immediately, without telling the</p>
@@ -1053,10 +1011,6 @@ ul.task-list li input[type="checkbox"] {
 <dd>
 <p>collect(timeout=None) -&gt; value | sentinel</p>
 </dd>
-<dt><a href="../reference/Task.result.html#pymizu.Task.result" class="doc-function doc-label doc-label-method">Task.result()</a></dt>
-<dd>
-<p>result(timeout=None) -&gt; value | sentinel</p>
-</dd>
 <dt><a href="../reference/Task.cancel.html#pymizu.Task.cancel" class="doc-function doc-label doc-label-method">Task.cancel()</a></dt>
 <dd>
 <p>cancel() -&gt; bool</p>
@@ -1083,11 +1037,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/r_launcher.html#pymizu.r_launcher" class="doc-function doc-label doc-label-function">r_launcher()</a></dt>
 <dd>
-<p>Return a <a href="../reference/Channel.create.html#pymizu.Channel.create" class="gdls-link"><code>Channel.create()</code></a> launcher</p>
-</dd>
-<dt><a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="doc-function doc-label doc-label-function">r_pool_launcher()</a></dt>
-<dd>
-<p>Return a <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link"><code>Pool.create()</code></a> launcher</p>
+<p>Return a launcher spawning R processes running the <code>mizu</code> package.</p>
 </dd>
 <dt><a href="../reference/Frame.html#pymizu.Frame" class="doc-class doc-label doc-label-class">Frame</a></dt>
 <dd>

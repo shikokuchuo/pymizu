@@ -14,9 +14,6 @@ Methods for the Channel class
 [Channel.create()](Channel.create.md#pymizu.Channel.create)  
 Create a channel and spawn its peer.
 
-[Channel.attach()](Channel.attach.md#pymizu.Channel.attach)  
-Attach to the channel named by a join token (the peer side).
-
 [Channel.token](Channel.token.md#pymizu.Channel.token)  
 The join token for the peer's attach.
 
@@ -40,9 +37,6 @@ Receive up to `n` values in one call; a list (possibly
 
 [Channel.close()](Channel.close.md#pymizu.Channel.close)  
 Orderly close: tell the peer to close and wait up to
-
-[Channel.close_signal()](Channel.close_signal.md#pymizu.Channel.close_signal)  
-Signal close without waiting (the peer's recv side sees
 
 [Channel.destroy()](Channel.destroy.md#pymizu.Channel.destroy)  
 Tear down the handle immediately, without the close
@@ -125,9 +119,6 @@ Spawn `n` additional workers and wait for them to join
 [Pool.stop()](Pool.stop.md#pymizu.Pool.stop)  
 Orderly shutdown (controller only).
 
-[Pool.shutdown()](Pool.shutdown.md#pymizu.Pool.shutdown)  
-Alias for [`stop()`](../reference/Pool.stop.md#pymizu.Pool.stop) -- the
-
 [Pool.destroy()](Pool.destroy.md#pymizu.Pool.destroy)  
 Tear down the pool handle immediately, without telling the
 
@@ -158,9 +149,6 @@ Methods for the Task class
 [Task.collect()](Task.collect.md#pymizu.Task.collect)  
 collect(timeout=None) -\> value \| sentinel
 
-[Task.result()](Task.result.md#pymizu.Task.result)  
-result(timeout=None) -\> value \| sentinel
-
 [Task.cancel()](Task.cancel.md#pymizu.Task.cancel)  
 cancel() -\> bool
 
@@ -178,10 +166,7 @@ R peers and workers (the mizu R package), neutral task specifications, and the d
 A task specification for a pool of another language's workers.
 
 [r_launcher()](r_launcher.md#pymizu.r_launcher)  
-Return a [`Channel.create()`](../reference/Channel.create.md#pymizu.Channel.create) launcher
-
-[r_pool_launcher()](r_pool_launcher.md#pymizu.r_pool_launcher)  
-Return a [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) launcher
+Return a launcher spawning R processes running the `mizu` package.
 
 [Frame](Frame.md#pymizu.Frame)  
 A data.frame's Python home: named columns with a row count.

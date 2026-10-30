@@ -29,7 +29,6 @@ A two-way message link between a Python process and a helper process that it spa
 Methods for the Channel class
 
 - `Channel.create`
-- `Channel.attach`
 - `Channel.token`
 - `Channel.send`
 - `Channel.send_batch`
@@ -38,7 +37,6 @@ Methods for the Channel class
 - `Channel.__aiter__`
 - `Channel.recv_batch`
 - `Channel.close`
-- `Channel.close_signal`
 - `Channel.destroy`
 - `Channel.alive`
 - `Channel.info`
@@ -74,7 +72,6 @@ Methods for the Pool class
 - `Pool.retire`
 - `Pool.spawn_workers`
 - `Pool.stop`
-- `Pool.shutdown`
 - `Pool.destroy`
 - `Pool.status`
 - `Pool.dump`
@@ -90,7 +87,6 @@ Methods for the Task class
 - `Task.state`
 - `Task.pool`
 - `Task.collect`
-- `Task.result`
 - `Task.cancel`
 - `Task.collect_async`
 - `Task.__await__`
@@ -100,8 +96,7 @@ Methods for the Task class
 R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
 
 - `call`: A task specification for a pool of another language's workers
-- `r_launcher`: Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
-- `r_pool_launcher`: Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
+- `r_launcher`: Return a launcher spawning R processes running the `mizu` package
 - `Frame`: A data.frame's Python home: named columns with a row count
 - `DimArray`: An `ndarray` carrying R labels (`names` / `dimnames` /
 

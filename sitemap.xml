@@ -85,19 +85,7 @@
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://shikokuchuo.net/pymizu/reference/Channel.attach.html</loc>
-    <lastmod>2026-10-30</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Channel.close.html</loc>
-    <lastmod>2026-10-30</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://shikokuchuo.net/pymizu/reference/Channel.close_signal.html</loc>
     <lastmod>2026-10-30</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
@@ -319,12 +307,6 @@
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://shikokuchuo.net/pymizu/reference/Pool.shutdown.html</loc>
-    <lastmod>2026-10-30</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Pool.spawn_workers.html</loc>
     <lastmod>2026-10-30</lastmod>
     <changefreq>monthly</changefreq>
@@ -463,12 +445,6 @@
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://shikokuchuo.net/pymizu/reference/Task.result.html</loc>
-    <lastmod>2026-10-30</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Task.state.html</loc>
     <lastmod>2026-10-30</lastmod>
     <changefreq>monthly</changefreq>
@@ -542,12 +518,6 @@
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/r_launcher.html</loc>
-    <lastmod>2026-10-30</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://shikokuchuo.net/pymizu/reference/r_pool_launcher.html</loc>
     <lastmod>2026-10-30</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>

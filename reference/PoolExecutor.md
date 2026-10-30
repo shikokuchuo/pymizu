@@ -4,7 +4,7 @@ A `concurrent.futures.Executor` over a pymizu pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L49-L336)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L49-L338)
 
 ``` python
 PoolExecutor(
@@ -19,10 +19,10 @@ PoolExecutor(
 ## Parameters
 
 `pool: pymizu.Pool`  
-The pool to wrap; its lifetime stays with its owner unless `stop_pool` is set -- then `shutdown()` stops it.
+The pool to wrap; its lifetime stays with its owner unless `stop_pool` is set -- then [shutdown()](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops it.
 
 `stop_pool: bool = False`  
-When True, `shutdown()` stops the wrapped pool.
+When True, [shutdown()](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops the wrapped pool.
 
 ## Notes
 
@@ -57,20 +57,20 @@ Spawn an owned pool --
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L128-L147)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L128-L149)
 
 ``` python
 create(
-    workers=1,
+    n_workers=1,
     **pool_kwargs,
 )
 ```
 
-[`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) with `workers` and `pool_kwargs` -- and wrap it; `shutdown()` stops it.
+[`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) with `n_workers` and `pool_kwargs` -- and wrap it; [shutdown()](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops it.
 
 #### Parameters
 
-`workers: int = 1`  
+`n_workers: int = 1`  
 Number of worker processes for the pool.
 
 `pool_kwargs: _Any = {}`  
@@ -86,7 +86,7 @@ Shut down the executor.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L203-L231)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L205-L233)
 
 ``` python
 shutdown(
@@ -110,7 +110,7 @@ Schedule `fn(*args, **kwargs)` on the pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L149-L201)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L151-L203)
 
 ``` python
 submit(

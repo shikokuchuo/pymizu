@@ -4,7 +4,7 @@ Orderly close: tell the peer to close and wait up to
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L348-L372)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L355-L379)
 
 ``` python
 Channel.close(timeout=5.0)

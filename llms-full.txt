@@ -14,7 +14,7 @@ A shared-memory channel handle (process-private).
 
 Create the host side with [`Channel.create()`](`pymizu.Channel.create`)
 (which spawns the peer); the peer side attaches with
-[`Channel.attach()`](`pymizu.Channel.attach`) —
+``Channel._attach()`` —
 ``python -m pymizu.child`` does this. Handles do not survive
 ``fork()``.
 
@@ -85,25 +85,6 @@ Examples
 ...     received = ch.recv(timeout=5)
 >>> received
 [1, 'a', None]
-
-attach(token: 'str') -> 'Channel'
-
-Attach to the channel named by a join token (the peer side).
-
-Parameters
-----------
-token
-    The join token from the host side's ``ch.token``.
-
-Returns
--------
-    The peer-side channel handle.
-
-Details
--------
-Low-level: the caller consumes ``ch.drop`` before signaling
-``ch.ready_set()``. ``python -m pymizu.child`` is the reference
-peer entry.
 
 token
 
@@ -215,11 +196,6 @@ Raises
 ConcurrentUseError
     A verb is in flight on this side from a second thread: the
     side is confined to one thread (the class docstring).
-
-close_signal(self) -> 'None'
-
-Signal close without waiting (the peer's recv side sees
-CLOSED once it has read what remains).
 
 destroy(self) -> 'None'
 
@@ -410,16 +386,16 @@ results
 Methods for the Pool class
 
 
-create(workers: 'int' = 1, *, max_workers: 'int | None' = None, max_submitters: 'int' = 8, injection_cap: 'int' = 1024, per_worker_cap: 'int' = 1024, result_slots: 'int' = 4096, slot_size: 'int' = 512, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str, int], _Any] | None' = None) -> 'Pool'
+create(n_workers: 'int' = 1, *, max_workers: 'int | None' = None, max_submitters: 'int' = 8, injection_cap: 'int' = 1024, per_worker_cap: 'int' = 1024, result_slots: 'int' = 4096, slot_size: 'int' = 512, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str, int], _Any] | None' = None) -> 'Pool'
 
 Create a pool and spawn its worker processes.
 
 Parameters
 ----------
-workers
+n_workers
     Number of worker processes to spawn.
 max_workers
-    The worker limit; defaults to ``workers``.
+    The worker limit; defaults to ``n_workers``.
 max_submitters
     Maximum number of submitter processes.
 injection_cap
@@ -525,7 +501,7 @@ With a [`call`](`pymizu.call`) spec as ``fn`` (no ``*args`` /
 ``**kwargs`` — the spec carries them), the task crosses in a
 language-neutral format: this is how you drive a pool of
 another language's workers (spawn them with
-[`r_pool_launcher()`](`pymizu.r_pool_launcher`)). On a foreign
+[`r_launcher()`](`pymizu.r_launcher`)). On a foreign
 pool a plain callable raises an error naming `call`.
 
 Examples
@@ -758,7 +734,7 @@ continuing it (the stdlib streams survive).
 
 ``fn`` may be a [`call`](`pymizu.call`) specification instead of
 a callable — the way to map over a foreign pool (one spawned
-with [`r_pool_launcher()`](`pymizu.r_pool_launcher`)). A spec
+with [`r_launcher()`](`pymizu.r_launcher`)). A spec
 always uses a shared-memory region: the description crosses in
 a language-neutral format that any worker language reads. The
 element fills the spec's first positional slot (name kind) or
@@ -914,11 +890,6 @@ ConcurrentUseError
     from a second thread: each half is confined to one thread
     (the class docstring).
 
-shutdown(self, timeout: 'float' = 5.0) -> 'bool'
-
-Alias for [`stop()`](`pymizu.Pool.stop`) — the
-`concurrent.futures.Executor` spelling.
-
 destroy(self) -> 'None'
 
 Tear down the pool handle immediately, without telling the
@@ -986,12 +957,6 @@ pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation
 as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost
 result as pymizu.TaskLostError.
 pymizu.TIMEOUT on expiry; a task is collected exactly once.
-
-result
-
-result(timeout=None) -> value | sentinel
-
-Alias for collect() — the concurrent.futures.Future spelling.
 
 cancel(self, /)
 
@@ -1078,15 +1043,19 @@ A spec task also runs on a normal (Python-worker) pool:
 >>> results
 [1.4142135623730951]
 
-r_launcher(*, rscript: 'str | None' = None, stdout: '_Any' = None, stderr: '_Any' = None) -> '_Callable[[str], _subprocess.Popen]'
+r_launcher(*, rscript: 'str | None' = None, stdout: '_Any' = None, stderr: '_Any' = None) -> '_Callable[..., _subprocess.Popen]'
 
-Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
-spawning an R peer.
+Return a launcher spawning R processes running the `mizu` package.
 
-The peer runs the R package `mizu`: the returned `callable(token)`
-spawns `rscript` on the package's static child runner with
-`mizu:::peer_main(<token>)` as the entry expression and the detected
-library paths passed along in argv.
+[`Channel.create()`](`pymizu.Channel.create`) calls it with `token`
+alone to spawn the peer; [`Pool.create()`](`pymizu.Pool.create`)
+calls it with `token` and `slot` to spawn each worker. The process
+runs `rscript` on the package's static child runner with the entry
+expression (`mizu:::peer_main(<token>)` or
+`mizu:::worker_main(<token>, <slot>)`) and the detected library
+paths passed along in argv (without them it cannot `library(mizu)`
+from the host's libraries). The mirror of the R package's
+`mizu_py_launcher()`.
 
 Parameters
 ----------
@@ -1100,47 +1069,14 @@ stderr
 
 Returns
 -------
-    A `callable(token)` launcher for
-    [`Channel.create()`](`pymizu.Channel.create`).
-
-Raises
-------
-MizuError
-    Raised here, before the channel is created, when Rscript is
-    not found or no installed `mizu` with source string support is
-    available.
-
-r_pool_launcher(*, rscript: 'str | None' = None, stdout: '_Any' = None, stderr: '_Any' = None) -> '_Callable[[str, int], _subprocess.Popen]'
-
-Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
-spawning R workers.
-
-Each worker runs the R package `mizu`: the returned
-`callable(token, slot)` spawns `rscript` on the package's static
-child runner with `mizu:::worker_main(<token>, <slot>)` as the
-entry expression and the detected library paths passed along in
-argv (without them the workers cannot `library(mizu)` from the
-host's libraries). The mirror of the R package's
-`mizu_py_pool_launcher()`.
-
-Parameters
-----------
-rscript
-    Path to Rscript; the default searches the PATH.
-stdout
-    Forwarded to `subprocess.Popen`.
-stderr
-    Forwarded to `subprocess.Popen`.
-
-Returns
--------
-    A `callable(token, slot)` launcher for
+    A `callable(token, slot=None)` launcher for
+    [`Channel.create()`](`pymizu.Channel.create`) and
     [`Pool.create()`](`pymizu.Pool.create`).
 
 Raises
 ------
 MizuError
-    Raised here, before any pool exists, when Rscript is not found
+    Raised here, before anything exists, when Rscript is not found
     or no installed `mizu` with source string support is available.
 
 Notes
@@ -1157,7 +1093,7 @@ Examples
 ```python
 import pymizu
 
-with pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:
+with pymizu.Pool.create(4, launcher=pymizu.r_launcher()) as pool:
     spec = pymizu.call(source="summary(cars$speed)")
     print(pool.submit(spec).collect())
 ```
@@ -1714,7 +1650,6 @@ A `launcher` changes how pymizu spawns the peer.
 It is one callable that takes the channel's token and arranges for the peer process to start.
 `pymizu.r_launcher()` is the built-in example: it spawns an R peer instead (see [R interop](interop.qmd)).
 User code spawns peers through a launcher.
-`Channel.attach(token)` is the low-level entry for a peer that attaches itself.
 
 ## Sending and receiving
 
@@ -1777,7 +1712,6 @@ ch.close()
 ```
 
 A channel is also a context manager: the `with` block closes it on exit.
-`close_signal()` signals without waiting.
 `destroy()` releases the handle immediately, without waiting for the peer.
 The peer sees the channel as closed (`PEER_GONE` if it died hard).
 A destroy is safe from any thread.
@@ -2506,14 +2440,14 @@ A frame rebuilt through pyarrow, polars, pandas, or `from_arrow` arrives in R as
 ## Mixed-language pools
 
 A pool's workers can be R processes.
-`pymizu.r_pool_launcher()` spawns the workers.
+`pymizu.r_launcher()` spawns the workers.
 `pymizu.call()` builds a language-neutral task: a qualified `"pkg::fn"` name for R or `"mod.fn"` for Python, or a `source=` string, plus constant arguments:
 
 ```python
 import numpy as np
 import pymizu
 
-pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
+pool = pymizu.Pool.create(4, launcher=pymizu.r_launcher())
 t = pool.submit(pymizu.call("stats::quantile", np.arange(101.0),
                             probs=np.array([0.25, 0.5, 0.75]), names=False))
 print(t.collect())                  # [ 25.  50.  75.]
@@ -2538,7 +2472,7 @@ To map an R function over Python data, pass a `pymizu.call()` spec as the `fn` o
 `mizu::mizu_map()` mirrors this in R:
 
 ```python
-pool = pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher())
+pool = pymizu.Pool.create(4, launcher=pymizu.r_launcher())
 pool.map(pymizu.call("stats::median"), x).collect()
 pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
          folds, template=0.0).collect()   # each fold a dict; the element binds as x

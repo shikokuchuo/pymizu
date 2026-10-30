@@ -4,7 +4,7 @@ Map `fn` over `x`, unpacking each element as the call's
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1200-L1252)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1205-L1257)
 
 ``` python
 Pool.starmap(

@@ -176,7 +176,7 @@ result
 
     [1, 2, 4, 8]
 
-Wrap an existing pool with `PoolExecutor(pool)`. Its lifetime then stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` spawns an owned pool that `shutdown` stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation behaves like [Task.cancel](../reference/Task.cancel.md#pymizu.Task.cancel). For bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path: the executor's [map](../reference/Pool.map.md#pymizu.Pool.map) runs one task per element.
+Wrap an existing pool with `PoolExecutor(pool)`. Its lifetime then stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` spawns an owned pool that [shutdown](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation behaves like [Task.cancel](../reference/Task.cancel.md#pymizu.Task.cancel). For bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path: the executor's [map](../reference/Pool.map.md#pymizu.Pool.map) runs one task per element.
 
 ## Sizing a pool
 

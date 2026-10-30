@@ -4,11 +4,11 @@ Create a pool and spawn its worker processes.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L655-L735)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L662-L742)
 
 ``` python
 Pool.create(
-    workers=1,
+    n_workers=1,
     *,
     max_workers=None,
     max_submitters=8,
@@ -23,11 +23,11 @@ Pool.create(
 
 ## Parameters
 
-`workers: int = 1`  
+`n_workers: int = 1`  
 Number of worker processes to spawn.
 
 `max_workers: int | None = None`  
-The worker limit; defaults to `workers`.
+The worker limit; defaults to `n_workers`.
 
 `max_submitters: int = 8`  
 Maximum number of submitter processes.
