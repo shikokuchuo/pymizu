@@ -542,7 +542,9 @@ def test_map_prepared_run_validates_seed_and_collect(pool):
     try:
         with pytest.raises(TypeError, match="seed must be an int or bytes"):
             pm.run(seed="bad")
-        with pytest.raises(ValueError, match="collect must be 'list'"):
+        with pytest.raises(
+            ValueError, match="collect='view' requires a template"
+        ):
             pm.run(collect="view")
         with pytest.raises(TypeError):  # seed/timeout/collect are keyword-only
             pm.run(None, 42)

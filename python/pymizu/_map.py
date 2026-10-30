@@ -743,14 +743,14 @@ def _resolve_seed(plan: _Plan, seed: _Any) -> tuple | None:
 def _resolve_collect(plan: _Plan, collect: str | None) -> str:
     """The per-run collect-mode gate, against the plan's template and
     streaming verdicts (`None` selects the default form)."""
-    if plan.tprobe is None:
-        if collect not in (None, "list"):
-            raise ValueError("pymizu: collect must be 'list' without template")
-        return "list"
     if collect is None:
         collect = "copy"
     if collect not in ("copy", "view"):
         raise ValueError("pymizu: collect must be 'copy' or 'view'")
+    if plan.tprobe is None:
+        if collect == "view":
+            raise ValueError("pymizu: collect='view' requires a template")
+        return "copy"
     if plan.spec and plan.stream and collect == "view":
         raise TypeError(
             "pymizu: collect='view' cannot compose a streaming spec "
@@ -1540,7 +1540,7 @@ class _Map:
         self.pool = pool
         self.plan = plan
         self.seed = None  # the run's resolved wire seed
-        self.collect_mode = "list"  # the run's resolved collect mode
+        self.collect_mode = "copy"  # the run's resolved collect mode
         self.kind = ""
         self.n = 0
         self.live = 0
@@ -2252,9 +2252,9 @@ class PreparedMap:
             [`Sentinel`](`pymizu.Sentinel`) is returned (no handle). The
             collection deadline is the handle's `collect()`.
         collect
-            ``"copy"`` or ``"view"`` with ``template``; ``"list"``
-            without — as for [`Pool.map()`](`pymizu.Pool.map`). The
-            choice is per run.
+            ``"copy"`` (the default) or ``"view"``, which requires
+            ``template`` — as for [`Pool.map()`](`pymizu.Pool.map`).
+            The choice is per run.
 
         Returns
         -------
