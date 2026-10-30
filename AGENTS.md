@@ -361,9 +361,12 @@ tools/vendor-libmizu.sh` for a local checkout).
   FRAMEREF. Module-level `pymizu.prune()` runs the vendored reaper,
   reclaiming `/mizu_` regions orphaned by dead creators (a hard-killed
   process runs no finalizers).
-- Join tokens: `<pid hex>_<counter hex>`, validated against
-  `^[0-9a-f]+_[0-9a-f]+$`; children prepend their compiled-in `/mizu_`
-  prefix.
+- Join tokens: `<pid hex>_<counter hex>` — the single documented
+  identity (the full region name's prefix is platform plumbing). The
+  facade attaches (`_token_of`) also extract the token from a pasted
+  full name; the C verbs and child/worker argv stay strict
+  (`^[0-9a-f]+_[0-9a-f]+$`); children prepend their compiled-in
+  `/mizu_` prefix.
 - GIL policy (per handle kind): submitter handles release the GIL around
   every park/wait and reacquire it in the `check` hook for
   `PyErr_CheckSignals()`; worker (exec-capable) handles hold the GIL
