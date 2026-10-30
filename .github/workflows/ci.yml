@@ -76,7 +76,7 @@ jobs:
       - name: Build and install
         # tzdata: the IANA database zoneinfo falls back to (Windows runners
         # have no system database).
-        run: pip install . pytest numpy pyarrow polars cloudpickle coverage tzdata
+        run: pip install . pytest numpy pyarrow polars pandas duckdb cloudpickle coverage tzdata
 
       # The cross-language tests need an Rscript with the installed mizu
       # package (their fixture probe-skips otherwise); Linux legs only.
@@ -153,7 +153,7 @@ jobs:
         run: |
           CC=clang CFLAGS="-fprofile-instr-generate -fcoverage-mapping" \
             LDFLAGS="-fprofile-instr-generate" \
-            pip install -e . pytest numpy pyarrow polars cloudpickle
+            pip install -e . pytest numpy pyarrow polars pandas duckdb cloudpickle
       # Same cross-language gate as the build legs (they exercise the
       # interop C paths); probe-skips without the secret.
       - name: Set up R (cross-language tests)

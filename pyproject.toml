@@ -53,6 +53,8 @@ dev = [
   "cloudpickle",
   "pyarrow",
   "polars",
+  "pandas",
+  "duckdb",
 ]
 # Docs render deps only. great-docs comes from git main in the docs workflow
 # (0.17.0 lacks repo-root config discovery; pin the release here once one has
