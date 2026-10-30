@@ -28,7 +28,7 @@ import sys
 
 import pymizu
 
-ch = pymizu.Channel.attach(sys.argv[1])
+ch = pymizu.Channel._attach(sys.argv[1])
 ch.drop
 ch._h.ready_set()
 while True:
@@ -85,7 +85,7 @@ def test_prepared_map_direct_init():
 
 def test_channel_attach_bad_token():
     with pytest.raises(ValueError, match="malformed join token"):
-        pymizu.Channel.attach("nope")
+        pymizu.Channel._attach("nope")
 
 
 def test_pool_attach_bad_token():
@@ -95,7 +95,7 @@ def test_pool_attach_bad_token():
 
 def test_channel_attach_unknown_token():
     with pytest.raises(pymizu.MizuError):
-        pymizu.Channel.attach("0_1")
+        pymizu.Channel._attach("0_1")
 
 
 def test_pool_attach_unknown_token():
@@ -133,7 +133,7 @@ def test_channel_context_manager():
 
 def test_channel_close_signal_destroy():
     ch = pymizu.Channel.create(ECHO_PEER)
-    ch.close_signal()
+    ch._close_signal()
     assert ch.recv(timeout=5) is pymizu.CLOSED
     ch.destroy()
 

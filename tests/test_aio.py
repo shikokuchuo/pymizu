@@ -287,7 +287,7 @@ def test_recv_async_terminal_skips_cancelled():
             f2 = host.recv_async()
             f2.cancel()
             f3 = host.recv_async()
-            peer.close_signal()
+            peer._close_signal()
             assert await asyncio.gather(f1, f3) == [pymizu.CLOSED] * 2
             assert f2.cancelled()
 

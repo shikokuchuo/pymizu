@@ -198,7 +198,7 @@ def test_channel_close_while_recv_in_flight_raises():
     try:
         with pytest.raises(pymizu.ConcurrentUseError):
             h.close(0.1)
-        p.close_signal()
+        p._close_signal()
         parked.join(timeout=5)
         assert not parked.is_alive()
         assert received == [pymizu.CLOSED]

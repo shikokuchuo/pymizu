@@ -268,7 +268,7 @@ def test_peer_ident_after_destroy():
 def test_attach_missing_region_names_it():
     # a well-formed token whose region is gone: the core's error surfaces
     with pytest.raises(pymizu.MizuError, match="cannot open channel region"):
-        pymizu.Channel.attach("0_0")
+        pymizu.Channel._attach("0_0")
 
 
 def test_destroy_defers_to_in_flight_recv():
@@ -583,7 +583,7 @@ def test_raising_launcher_destroys_the_channel():
     # handle with it): the destroy must already have run, not ride the
     # handle's finalizer
     with pytest.raises(pymizu.MizuError):
-        pymizu.Channel.attach(tokens[0])
+        pymizu.Channel._attach(tokens[0])
 
 
 def test_info(echo):

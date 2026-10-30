@@ -96,7 +96,7 @@ class Channel:
 
     Create the host side with [`Channel.create()`](`pymizu.Channel.create`)
     (which spawns the peer); the peer side attaches with
-    [`Channel.attach()`](`pymizu.Channel.attach`) —
+    ``Channel._attach()`` —
     ``python -m pymizu.child`` does this. Handles do not survive
     ``fork()``.
 
@@ -116,10 +116,10 @@ class Channel:
 
     _h: _pymizu._Channel
     _proc: _subprocess.Popen | None
-    drop: bytes  # set by attach()
+    drop: bytes  # set by _attach()
 
     def __init__(self):
-        raise TypeError("use Channel.create() or Channel.attach()")
+        raise TypeError("use Channel.create() or Channel._attach()")
 
     @classmethod
     def _wrap(cls, handle: _pymizu._Channel) -> Channel:
@@ -210,7 +210,7 @@ class Channel:
         return ch
 
     @classmethod
-    def attach(cls, token: str) -> Channel:
+    def _attach(cls, token: str) -> Channel:
         """Attach to the channel named by a join token (the peer side).
 
         Parameters
@@ -378,7 +378,7 @@ class Channel:
             )
         return ok
 
-    def close_signal(self) -> None:
+    def _close_signal(self) -> None:
         """Signal close without waiting (the peer's recv side sees
         CLOSED once it has read what remains)."""
         return self._h.close_signal()
