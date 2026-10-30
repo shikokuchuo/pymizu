@@ -662,7 +662,7 @@ class Pool:
     @classmethod
     def create(
         cls,
-        workers: int = 1,
+        n_workers: int = 1,
         *,
         max_workers: int | None = None,
         max_submitters: int = 8,
@@ -677,10 +677,10 @@ class Pool:
 
         Parameters
         ----------
-        workers
+        n_workers
             Number of worker processes to spawn.
         max_workers
-            The worker limit; defaults to ``workers``.
+            The worker limit; defaults to ``n_workers``.
         max_submitters
             Maximum number of submitter processes.
         injection_cap
@@ -712,12 +712,12 @@ class Pool:
         >>> results
         [65536]
         """
-        if workers < 1:
-            raise ValueError("pymizu: workers must be at least 1")
+        if n_workers < 1:
+            raise ValueError("pymizu: n_workers must be at least 1")
         if max_workers is None:
-            max_workers = workers
-        if workers > max_workers:
-            raise ValueError("pymizu: workers exceeds max_workers")
+            max_workers = n_workers
+        if n_workers > max_workers:
+            raise ValueError("pymizu: n_workers exceeds max_workers")
         h = _pool_new(
             max_workers,
             max_submitters,
@@ -726,7 +726,7 @@ class Pool:
             result_slots,
             slot_size,
         )
-        slots = list(range(workers))
+        slots = list(range(n_workers))
         try:
             _launch_workers(
                 h,

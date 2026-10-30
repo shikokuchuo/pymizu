@@ -126,14 +126,14 @@ class PoolExecutor(_Executor):
         hooks.append(self._on_pool_destroy)
 
     @classmethod
-    def create(cls, workers: int = 1, **pool_kwargs: _Any) -> PoolExecutor:
+    def create(cls, n_workers: int = 1, **pool_kwargs: _Any) -> PoolExecutor:
         """Spawn an owned pool —
-        [`Pool.create()`](`pymizu.Pool.create`) with `workers` and
+        [`Pool.create()`](`pymizu.Pool.create`) with `n_workers` and
         `pool_kwargs` — and wrap it; `shutdown()` stops it.
 
         Parameters
         ----------
-        workers
+        n_workers
             Number of worker processes for the pool.
         pool_kwargs
             Forwarded to [`Pool.create()`](`pymizu.Pool.create`).
@@ -144,7 +144,9 @@ class PoolExecutor(_Executor):
         """
         import pymizu
 
-        return cls(pymizu.Pool.create(workers, **pool_kwargs), stop_pool=True)
+        return cls(
+            pymizu.Pool.create(n_workers, **pool_kwargs), stop_pool=True
+        )
 
     def submit(
         self, fn: _Callable[..., _Any], /, *args: _Any, **kwargs: _Any
