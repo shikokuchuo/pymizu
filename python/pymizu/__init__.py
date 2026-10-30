@@ -71,6 +71,15 @@ _DROP_SOURCE = 0x53  # 'S': UTF-8 source text in the peer's language
 _TOKEN_RE = _re.compile(r"[0-9a-f]+_[0-9a-f]+\Z")
 
 
+def _token_of(token: str) -> str:
+    """The bare join token: itself, or extracted from a pasted full
+    region name (the ``/mizu_``-prefixed form R's status verbs show)."""
+    m = _TOKEN_RE.search(token)
+    if m is None:
+        raise ValueError("pymizu: malformed join token")
+    return m.group()
+
+
 def _default_launcher() -> _Callable[[str], _subprocess.Popen]:
     """Spawn the channel peer as ``python -m pymizu.child <token>``."""
 
@@ -219,9 +228,7 @@ class Channel:
         ``ch.ready_set()``. ``python -m pymizu.child`` is the reference
         peer entry.
         """
-        if not _TOKEN_RE.fullmatch(token):
-            raise ValueError("pymizu: malformed join token")
-        h, drop = _channel_attach(token)
+        h, drop = _channel_attach(_token_of(token))
         ch = cls._wrap(h)
         ch.drop = drop
         return ch
@@ -753,9 +760,7 @@ class Pool:
         submission queue: attaching one handle per thread (or per
         process) is how several submitters drive one pool at once.
         """
-        if not _TOKEN_RE.fullmatch(token):
-            raise ValueError("pymizu: malformed join token")
-        return cls._wrap(_pool_attach(token))
+        return cls._wrap(_pool_attach(_token_of(token)))
 
     @property
     def token(self) -> str:

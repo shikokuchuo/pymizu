@@ -1404,6 +1404,13 @@ def test_pool_attach_unknown_token():
         _pymizu._pool_worker_join("0_1", 0)
 
 
+def test_pool_attach_full_name(pool):
+    # a pasted full region name attaches, as R's mizu_pool_attach() does
+    pa = pymizu.Pool.attach("/mizu_" + pool.token)
+    assert pa.submit(len, [1, 2]).collect(timeout=5) == 2
+    pa.destroy()
+
+
 def test_retire_slot_out_of_range(pool):
     with pytest.raises(pymizu.MizuError, match="out of range"):
         pool.retire(3)
