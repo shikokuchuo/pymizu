@@ -1609,12 +1609,12 @@ producer on offset-0 boundaries), so construction copies nothing it\n\
 does not have to — nulls included.\n\n\
 This is the opt-in zero-copy frame path for Python-to-Python\n\
 channels: past the zero-copy floor the frame crosses as one\n\
-shared-memory region and arrives region-backed, where a plain Arrow\n\
-object pickles (container-exact, but a full copy). The frame reads\n\
-back value-exact but type-normalized: a chunked or sliced producer's\n\
-columns concatenate, uints widen, nanosecond timestamps rescale to\n\
-microseconds, and the received value is a Frame, not the producer's\n\
-type.\n\n\
+shared-memory region and is read in place, where a plain Arrow\n\
+object pickles (type-exact, but a full copy). The frame reads\n\
+back with the same values but normalized types: a chunked or sliced\n\
+producer's columns concatenate, uints widen, nanosecond timestamps\n\
+rescale to microseconds, and the received value is a Frame, not the\n\
+producer's type.\n\n\
 Parameters\n\
 ----------\n\
 obj\n\
@@ -1786,16 +1786,19 @@ PyTypeObject MizuFrameType = {
   .tp_name = "pymizu.Frame",
   .tp_basicsize = sizeof(MizuFrame),
   .tp_flags = Py_TPFLAGS_DEFAULT,
+  /* R frame metadata rides the _r_attrs stash: it attaches at read and
+     validates at send, but it rides the pristine received Frame only —
+     the Frame immutability invariant: any future mutator must clear it
+     first (a rebuild arrives in R as a plain data.frame, never a
+     mislabeled one). */
   .tp_doc = "A data.frame's Python home: named columns with a row count.\n"
             "to_dict() gives the column dict without an Arrow library;\n"
             "__arrow_c_stream__ exports to polars / pyarrow / pandas.\n"
             "from_arrow() constructs one from an Arrow producer (the\n"
             "opt-in zero-copy path for Python-to-Python channels).\n"
-            "R frame metadata rides the _r_attrs stash: it attaches at\n"
-            "read and validates at send, but it rides the pristine\n"
-            "received Frame only — the Frame immutability invariant:\n"
-            "any future mutator must clear it first (a rebuild arrives\n"
-            "in R as a plain data.frame, never a mislabeled one).",
+            "R frame metadata (classes, extra attributes) survives an\n"
+            "unmodified round trip; a rebuilt frame arrives in R as a\n"
+            "plain data.frame.",
   .tp_dealloc = (destructor) Frame_dealloc,
   .tp_repr = (reprfunc) Frame_repr,
   .tp_as_sequence = &Frame_as_sequence,

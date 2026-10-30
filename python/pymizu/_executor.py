@@ -69,18 +69,18 @@ class PoolExecutor(_Executor):
     `concurrent.futures` contract requires: an internal lock
     serializes the single-producer pool handle. This is the adapter
     to reach for when several threads must submit to one pool.
-    Deltas from stdlib semantics: a task's failure surfaces as
-    `pymizu.TaskError` (the remote error envelope);
+    Differences from the stdlib: a task's failure surfaces as
+    `pymizu.TaskError`;
     `Future.running()` is always False (futures resolve at completion);
-    cancellation is advisory, mirroring [`Task.cancel()`](`pymizu.Task`)
-    — and `shutdown(cancel_futures=True)` cancels every outstanding
-    future, since the pool exposes no queued-versus-running signal (a
-    running task completes, but its result is discarded). An
-    infrastructure failure (e.g. the wrapped pool is stopped from under
-    the executor) fails every outstanding future; later submissions
-    raise instead of queueing onto a broken executor.
-    Resolution — including any `add_done_callback` callables — runs on
-    the core's listener thread, the same discipline as the stdlib
+    cancellation works like [`Task.cancel()`](`pymizu.Task`) — it never
+    interrupts a running task — and `shutdown(cancel_futures=True)`
+    cancels every outstanding future, since the pool exposes no
+    queued-versus-running signal (a running task completes, but its
+    result is discarded). An internal failure (for example the wrapped
+    pool is stopped from under the executor) fails every outstanding
+    future; later submissions raise instead of queueing onto a broken
+    executor. Futures resolve — and `add_done_callback` callbacks run —
+    on pymizu's listener thread, the same discipline as the stdlib
     executors' management thread: keep callbacks short, and never block
     one on the pool itself.
     `map` is the stdlib base implementation over `submit` — for bulk
@@ -169,8 +169,8 @@ class PoolExecutor(_Executor):
         RuntimeError
             After shutdown.
         pymizu.MizuError
-            The infrastructure failure that broke the executor (its
-            drain failed every outstanding future on it).
+            The internal failure that broke the executor (every
+            outstanding future failed with it).
         """
         with self._cond:
             if self._shutdown:
@@ -203,7 +203,7 @@ class PoolExecutor(_Executor):
     def shutdown(
         self, wait: bool = True, *, cancel_futures: bool = False
     ) -> None:
-        """Stdlib shutdown.
+        """Shut down the executor.
 
         Parameters
         ----------

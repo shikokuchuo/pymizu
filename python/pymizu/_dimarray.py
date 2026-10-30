@@ -19,16 +19,16 @@ class DimArray(_np.ndarray):
     """An `ndarray` carrying R labels (`names` / `dimnames` /
     `axis_names` / `r_class`) for faithful R ↔ Python round trips.
 
-    A received labeled vector or array homes as a DimArray; an
+    A received labeled vector or array arrives as a DimArray; an
     unmodified echo restores every label in R (`identical()`).
     Attach labels explicitly to send a labeled value: `names` for a
     1-D array, `dimnames` (plus optional `axis_names`, R's
     `names(dimnames(x))`) for a matrix or n-D array, and
-    `r_class = "table"` for R's table class. The two label slots are
-    mutually exclusive at send; `axis_names` requires `dimnames` and
+    `r_class = "table"` for R's table class. Use either `names` or
+    `dimnames`, not both; `axis_names` requires `dimnames` and
     has one entry per axis.
 
-    Labels never propagate implicitly — any numpy operation that
+    Labels never carry over on their own — any numpy operation that
     builds a new array (a transpose, arithmetic, a slice, a copy)
     drops them, so a reshaped or permuted array never inherits labels
     its data no longer matches.

@@ -8115,11 +8115,11 @@ static PyTypeObject MizuPoolType = {
 
 PyDoc_STRVAR(task_collect_doc,
 "collect(timeout=None) -> value | sentinel\n\n\
-Wait up to `timeout` seconds (None indefinitely, 0 polls) for the task's\n\
-terminal state and return its result. A task error re-raises as\n\
+Wait up to `timeout` seconds (None indefinitely, 0 polls once) for the\n\
+task to finish and return its result. A task error re-raises as\n\
 pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation\n\
 as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost\n\
-payload region as pymizu.TaskLostError.\n\
+result as pymizu.TaskLostError.\n\
 pymizu.TIMEOUT on expiry; a task is collected exactly once.");
 
 static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
@@ -8178,9 +8178,9 @@ static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
 
 PyDoc_STRVAR(task_cancel_doc,
 "cancel() -> bool\n\n\
-Advisory and discard-only, never preemptive: a still-queued task is\n\
-skipped; an executing one runs to completion and its result is dropped.\n\
-True when this call cancelled the task; every other edge folds to False.");
+Advisory only, never interrupts: a queued task is skipped; a running one\n\
+completes and its result is dropped.\n\
+True when this call cancelled the task; False in every other case.");
 
 static PyObject *Task_cancel(MizuTask *self, PyObject *Py_UNUSED(args)) {
   MizuPool *pool = (MizuPool *) self->pool;
@@ -8263,10 +8263,10 @@ static PyObject *aio_func(const char *name) {
 PyDoc_STRVAR(task_collect_async_doc,
 "collect_async() -> asyncio.Future\n\n\
 The event-driven collect: an asyncio.Future resolving with the task's\n\
-result (or raising the flattened remote error collect() raises), driven\n\
-by the submitter's notify endpoint — never blocks, never polls. Cancelling\n\
-the Future detaches the waiter (a later blocking collect() works again);\n\
-it never cancels the task — cancel() stays the explicit verb.");
+result (or raising the error collect() raises), resolved when the result\n\
+arrives — never blocks, never polls. Cancelling the Future detaches the\n\
+waiter (a later blocking collect() works again); it never cancels the\n\
+task — cancel() stays the explicit verb.");
 
 static PyObject *Task_collect_async(MizuTask *self,
                                     PyObject *Py_UNUSED(args)) {
@@ -8343,7 +8343,7 @@ static PyTypeObject MizuTaskType = {
   .tp_basicsize = sizeof(MizuTask),
   .tp_repr = (reprfunc) Task_repr,
   .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
-  .tp_doc = "A task handle from _Pool.submit(). Collected exactly once; "
+  .tp_doc = "A task handle from Pool.submit(). Collected exactly once; "
             "an uncollected handle's finalizer releases its slot.",
   .tp_methods = Task_methods,
   .tp_getset = Task_getset,
@@ -9046,7 +9046,7 @@ static PyMethodDef pymizu_methods[] = {
 };
 
 PyDoc_STRVAR(pymizu_module_doc,
-"Lock-free shared-memory IPC: SPSC channels and work-stealing task pools\n\
+"Zero-copy async and parallel IPC across Python and R\n\
 (the libmizu core, compiled in).");
 
 static struct PyModuleDef pymizu_module = {

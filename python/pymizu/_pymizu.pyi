@@ -6,7 +6,7 @@ from typing import Any
 __core_version__: str
 
 class Sentinel:
-    """A terminal-state sentinel singleton (identity-tested)."""
+    """A terminal state returned as a value (identity-tested)."""
 
     def __repr__(self) -> str: ...
 
@@ -24,7 +24,8 @@ class MizuError(Exception):
     """Base class for pymizu errors."""
 
 class DeclinedError(TypeError):
-    """A foreign-handle send of a value outside the portable subset."""
+    """A value sent to a peer of another language, outside the portable
+    subset."""
 
     path: str
     reason: str
@@ -56,32 +57,32 @@ class SlotsExhaustedError(MizuError):
     """No free result slots for a submission."""
 
 class SubmitTimeoutError(MizuError, TimeoutError):
-    """Submission timed out waiting for injection-ring space (also a
+    """Submission timed out waiting for queue space (also a
     TimeoutError)."""
 
 class CancelledError(MizuError):
     """The task was cancelled before it ran."""
 
 class TaskError(MizuError):
-    """A task raised; carries the remote error envelope."""
+    """A task raised; carries the error's type and traceback."""
 
     remote_type: str
     remote_traceback: str
 
 class WorkerDiedError(MizuError):
-    """The executing worker died while the task was in flight."""
+    """The worker died while running the task."""
 
     slot: int
     pid: int
     lost: list  # set by Pool.map on the worker-death path
 
 class TaskLostError(MizuError):
-    """The claimant's read of the task's payload region failed without a
-    death verdict (a vanished or unreadable region, not a dead worker)."""
+    """The task's data could not be read, and the worker is not known to
+    have died (a vanished or unreadable shared region, not a dead worker)."""
 
 class ConcurrentUseError(MizuError):
-    """A verb ran concurrently with another verb in the same handle role:
-    each handle role is confined to one thread at a time."""
+    """Two verbs ran at the same time in the same handle role: each
+    handle role belongs to one thread at a time."""
 
 class _Task:
     """A submitted-task handle."""

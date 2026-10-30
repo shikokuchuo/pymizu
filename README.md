@@ -27,8 +27,8 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 
 - Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)
 - Drop-in `concurrent.futures.Executor` — real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`
-- Event-driven asyncio — `await` tasks and maps, `async for` and `recv_async()` on channels — edge-triggered wakeups, no polling threads
-- Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order
+- Event-driven asyncio — `await` tasks and maps, `async for` and `recv_async()` on channels — wake-ups as data arrives, no polling threads
+- Reproducible parallel random numbers (`seed=`) — identical results for any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
 > **Pre-release.** The API is not stable and may change at any time before a release.
@@ -103,7 +103,7 @@ with pymizu.PoolExecutor.create(4) as ex:
 
 `Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the results in order.
 The function and data cross into shared memory once.
-Workers divide the elements among themselves, claiming ranges from a shared cursor.
+Workers divide the elements among themselves.
 
 A map also nests — the mapped function can map over its own pool with `pymizu.current_pool()`, deadlock-free.
 
@@ -137,7 +137,7 @@ The mizu README shows the reverse direction: an R host that drives Python worker
 
 ## Documentation
 
-The [documentation site](https://shikokuchuo.net/pymizu/) covers the full surface: channels and their payload tiers, task pools (batch operations, nested tasks, the `concurrent.futures` executor, observing a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
+The [documentation site](https://shikokuchuo.net/pymizu/) covers the full package: channels and what crosses them, task pools (batch operations, nested tasks, the `concurrent.futures` executor, watching a running pool), the parallel map (scheduling, reproducible randomness, templates, prepared maps), R interop and the dtype matrix, deployment on Linux, and the API reference.
 
 ## Contributing
 

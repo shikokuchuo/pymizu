@@ -53,9 +53,9 @@ reference:
         - DimArray
     - title: Outcomes and errors
       desc: >-
-        Terminal transport states return as the sentinel singletons FULL /
-        TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real
-        failures raise from the exception hierarchy.
+        A full ring, a timeout, a close, or a dead peer returns as a sentinel
+        singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity,
+        never raised. Real failures raise exceptions.
       contents:
         - Sentinel
         - is_sentinel
@@ -73,8 +73,8 @@ reference:
         - ConcurrentUseError
     - title: Housekeeping
       desc: >-
-        The process-wide default pool, the evaluating worker's own pool
-        handle, and orphan reaping.
+        The process-wide default pool, the current worker's own pool handle,
+        and cleaning up shared memory left by dead processes.
       contents:
         - default_pool
         - set_default_pool
