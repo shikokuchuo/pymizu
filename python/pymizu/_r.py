@@ -136,14 +136,18 @@ def r_launcher(
     rscript: str | None = None,
     stdout: _Any = None,
     stderr: _Any = None,
-) -> _Callable[[str], _subprocess.Popen]:
-    """Return a [`Channel.create()`](`pymizu.Channel.create`) launcher
-    spawning an R peer.
+) -> _Callable[..., _subprocess.Popen]:
+    """Return a launcher spawning R processes running the `mizu` package.
 
-    The peer runs the R package `mizu`: the returned `callable(token)`
-    spawns `rscript` on the package's static child runner with
-    `mizu:::peer_main(<token>)` as the entry expression and the detected
-    library paths passed along in argv.
+    [`Channel.create()`](`pymizu.Channel.create`) calls it with `token`
+    alone to spawn the peer; [`Pool.create()`](`pymizu.Pool.create`)
+    calls it with `token` and `slot` to spawn each worker. The process
+    runs `rscript` on the package's static child runner with the entry
+    expression (`mizu:::peer_main(<token>)` or
+    `mizu:::worker_main(<token>, <slot>)`) and the detected library
+    paths passed along in argv (without them it cannot `library(mizu)`
+    from the host's libraries). The mirror of the R package's
+    `mizu_py_launcher()`.
 
     Parameters
     ----------
@@ -157,67 +161,14 @@ def r_launcher(
 
     Returns
     -------
-        A `callable(token)` launcher for
-        [`Channel.create()`](`pymizu.Channel.create`).
-
-    Raises
-    ------
-    MizuError
-        Raised here, before the channel is created, when Rscript is
-        not found or no installed `mizu` with source string support is
-        available.
-
-    """
-    rscript, script, libs = _resolve(rscript, "r_launcher")
-
-    def launch(token: str) -> _subprocess.Popen:
-        return _spawn(
-            rscript,
-            script,
-            f'mizu:::peer_main("{token}")',
-            libs,
-            stdout,
-            stderr,
-        )
-
-    return launch
-
-
-def r_pool_launcher(
-    *,
-    rscript: str | None = None,
-    stdout: _Any = None,
-    stderr: _Any = None,
-) -> _Callable[[str, int], _subprocess.Popen]:
-    """Return a [`Pool.create()`](`pymizu.Pool.create`) launcher
-    spawning R workers.
-
-    Each worker runs the R package `mizu`: the returned
-    `callable(token, slot)` spawns `rscript` on the package's static
-    child runner with `mizu:::worker_main(<token>, <slot>)` as the
-    entry expression and the detected library paths passed along in
-    argv (without them the workers cannot `library(mizu)` from the
-    host's libraries). The mirror of the R package's
-    `mizu_py_pool_launcher()`.
-
-    Parameters
-    ----------
-    rscript
-        Path to Rscript; the default searches the PATH.
-    stdout
-        Forwarded to `subprocess.Popen`.
-    stderr
-        Forwarded to `subprocess.Popen`.
-
-    Returns
-    -------
-        A `callable(token, slot)` launcher for
+        A `callable(token, slot=None)` launcher for
+        [`Channel.create()`](`pymizu.Channel.create`) and
         [`Pool.create()`](`pymizu.Pool.create`).
 
     Raises
     ------
     MizuError
-        Raised here, before any pool exists, when Rscript is not found
+        Raised here, before anything exists, when Rscript is not found
         or no installed `mizu` with source string support is available.
 
     Notes
@@ -234,21 +185,19 @@ def r_pool_launcher(
     ```python
     import pymizu
 
-    with pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:
+    with pymizu.Pool.create(4, launcher=pymizu.r_launcher()) as pool:
         spec = pymizu.call(source="summary(cars$speed)")
         print(pool.submit(spec).collect())
     ```
     """
-    rscript, script, libs = _resolve(rscript, "r_pool_launcher")
+    rscript, script, libs = _resolve(rscript, "r_launcher")
 
-    def launch(token: str, slot: int) -> _subprocess.Popen:
-        return _spawn(
-            rscript,
-            script,
-            f'mizu:::worker_main("{token}",{slot}L)',
-            libs,
-            stdout,
-            stderr,
+    def launch(token: str, slot: int | None = None) -> _subprocess.Popen:
+        expr = (
+            f'mizu:::peer_main("{token}")'
+            if slot is None
+            else f'mizu:::worker_main("{token}",{slot}L)'
         )
+        return _spawn(rscript, script, expr, libs, stdout, stderr)
 
     return launch

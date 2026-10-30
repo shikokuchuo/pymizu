@@ -63,7 +63,7 @@ def note_rate(scenario, framework, ops, f, unit="tasks/s"):
 
 def main():
     try:
-        r_launcher = pymizu.r_pool_launcher()
+        r_launcher = pymizu.r_launcher()
     except pymizu.MizuError:
         print("Rscript with the mizu package not available: skipping")
         return

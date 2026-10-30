@@ -12,7 +12,7 @@ library(mizu)
 
 p <- mizu_pool(
   2L,
-  launcher = mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
 )
 
 # result values per the interchange table

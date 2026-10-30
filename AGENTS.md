@@ -323,8 +323,8 @@ tools/vendor-libmizu.sh` for a local checkout).
   the source-drop path) runs at factory call, cached per Rscript, and
   fails fast with `MizuError` before any channel region exists
   (`_resolve`).
-  `pymizu.r_pool_launcher()` is the pool-side mirror
-  (`mizu:::worker_main(<token>, <slot>)`).
+  The same `r_launcher()` serves pools: called with a slot it spawns
+  workers (`mizu:::worker_main(<token>, <slot>)`).
 - Tier-A mixed-language pools (Phase 4): `pymizu.call()` builds a task
   spec (qualified `"mod.fn"` name or `source=`, args/kwargs) and
   `Pool.submit(spec)` stages it as the `'I'` task stream (tag 0x12)
@@ -575,7 +575,7 @@ tools/vendor-libmizu.sh` for a local checkout).
   skip, so the probe logic has exactly one home (`_r.py`);
   `test_r_launcher_missing_rscript` runs without R.
   `tests/test_crosslang_pool.py` / `tests/test_crosslang_map.py` drive
-  real R workers (`pymizu.r_pool_launcher()` fixtures) for the Phase 4 /
+  real R workers (`pymizu.r_launcher()` fixtures) for the Phase 4 /
   Phase 5 acceptance gates.
 - `tests/test_no_numpy.py` exercises the numpy-less paths in a subprocess
   whose PYTHONPATH shim makes `import numpy` raise ImportError (the

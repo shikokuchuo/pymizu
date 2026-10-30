@@ -48,7 +48,6 @@ reference:
       contents:
         - call
         - r_launcher
-        - r_pool_launcher
         - Frame
         - DimArray
     - title: Outcomes and errors

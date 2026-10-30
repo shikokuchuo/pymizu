@@ -1,7 +1,7 @@
 """Cross-language pool tests: a Python submitter driving R workers.
 
 Skipped unless Rscript with an installed mizu (source-drop support) is
-available — the fixture dogfoods r_pool_launcher() so the probe logic
+available — the fixture dogfoods r_launcher() so the probe logic
 has exactly one home.
 """
 
@@ -38,7 +38,7 @@ def _gc_r_workers(pool, pred, timeout=10.0):
 @pytest.fixture(scope="module")
 def r_pool():
     try:
-        launcher = pymizu.r_pool_launcher(
+        launcher = pymizu.r_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
     except pymizu.MizuError:
@@ -81,7 +81,7 @@ def test_r_host_task_arg_view_ref():
     src = f"""
 p <- mizu::mizu_pool(
   1L,
-  launcher = mizu::mizu_py_pool_launcher(
+  launcher = mizu::mizu_py_launcher(
     "{sys.executable}", stdout = FALSE, stderr = FALSE
   )
 )
@@ -208,7 +208,7 @@ def test_collect_any_all_cross_language(r_pool):
 def test_a_dead_r_worker_surfaces_worker_died(r_pool):
     p = pymizu.Pool.create(
         1,
-        launcher=pymizu.r_pool_launcher(
+        launcher=pymizu.r_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         ),
     )
@@ -373,7 +373,7 @@ def test_zc_selection_fold_candidate_matrix(r_pool):
     # fresh pools for the selection rows: a pool's first zc submit always
     # selects (the lent-region ledger is empty), keeping the rows
     # deterministic under the Linux churn fallback
-    launcher = pymizu.r_pool_launcher(
+    launcher = pymizu.r_launcher(
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 

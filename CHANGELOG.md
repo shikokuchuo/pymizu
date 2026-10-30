@@ -44,8 +44,8 @@ Initial release.
   validity, factor, temporal, and uint64-verbatim fidelity.
 - R interop: the neutral interchange subset carries scalars, strings,
   lists, dicts, numpy arrays, temporals, and Arrow tables between Python
-  and R; `pymizu.call()` task specs drive R workers
-  (`r_pool_launcher()`) and R peers (`r_launcher()`), including
+  and R; `pymizu.call()` task specs drive R workers and peers (both
+  spawned by `r_launcher()`), including
   cross-language maps. int64 is a native wire type on both sides.
 - Process-wide conveniences: `default_pool()` / `set_default_pool()` /
   `using_pool()`, `current_rng()` inside seeded map elements, `DimArray`

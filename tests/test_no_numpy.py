@@ -455,7 +455,7 @@ def test_task_arg_memoryview_shm_vec_without_numpy(tmp_path):
         # a memoryview arg past the zero-copy floor stages SHM_VEC: the R
         # worker receives a view (the 'I' ref leaf), not a copy
         try:
-            launcher = pymizu.r_pool_launcher(
+            launcher = pymizu.r_launcher(
                 stdout=None, stderr=None
             )
         except pymizu.MizuError:

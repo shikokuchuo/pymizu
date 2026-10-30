@@ -2,7 +2,7 @@
 workers (the Phase 5 acceptance gate's this-direction half).
 
 Skipped unless Rscript with an installed mizu is available — the fixture
-dogfoods r_pool_launcher() so the probe logic has exactly one home.
+dogfoods r_launcher() so the probe logic has exactly one home.
 """
 
 import os
@@ -18,7 +18,7 @@ import pymizu
 @pytest.fixture(scope="module")
 def r_pool():
     try:
-        launcher = pymizu.r_pool_launcher(
+        launcher = pymizu.r_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
     except pymizu.MizuError:
@@ -190,7 +190,7 @@ def test_prepared_swap_conversion_warning_escalates(r_pool):
 def test_a_dead_r_workers_lost_set_scan():
     # a killed worker mid-map reports the lost element ranges
     try:
-        launcher = pymizu.r_pool_launcher(
+        launcher = pymizu.r_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
     except pymizu.MizuError:
@@ -236,7 +236,7 @@ def test_map_queued_behind_a_dead_r_worker_fails_not_hangs():
     # so no result slot ever carries the death verdict — before the
     # registry read in the collect loop this map parked to its timeout
     try:
-        launcher = pymizu.r_pool_launcher(
+        launcher = pymizu.r_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
     except pymizu.MizuError:
@@ -399,7 +399,7 @@ def test_stream_spec_map_error_index_min():
     # sibling errors drained into the minimum selection, offset by each
     # chunk's base — the same-language min-index discipline over R workers
     try:
-        launcher = pymizu.r_pool_launcher(
+        launcher = pymizu.r_launcher(
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
     except pymizu.MizuError:

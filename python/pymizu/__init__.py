@@ -54,7 +54,7 @@ from pymizu._pymizu import (
 from pymizu._pymizu import (
     prune as _prune,
 )
-from pymizu._r import r_launcher, r_pool_launcher
+from pymizu._r import r_launcher
 
 if TYPE_CHECKING:
     import numpy as _np
@@ -824,7 +824,7 @@ class Pool:
         ``**kwargs`` — the spec carries them), the task crosses in a
         language-neutral format: this is how you drive a pool of
         another language's workers (spawn them with
-        [`r_pool_launcher()`](`pymizu.r_pool_launcher`)). On a foreign
+        [`r_launcher()`](`pymizu.r_launcher`)). On a foreign
         pool a plain callable raises an error naming `call`.
 
         Examples
@@ -1108,7 +1108,7 @@ class Pool:
 
         ``fn`` may be a [`call`](`pymizu.call`) specification instead of
         a callable — the way to map over a foreign pool (one spawned
-        with [`r_pool_launcher()`](`pymizu.r_pool_launcher`)). A spec
+        with [`r_launcher()`](`pymizu.r_launcher`)). A spec
         always uses a shared-memory region: the description crosses in
         a language-neutral format that any worker language reads. The
         element fills the spec's first positional slot (name kind) or
@@ -1664,7 +1664,6 @@ __all__ = [
     "is_sentinel",
     "prune",
     "r_launcher",
-    "r_pool_launcher",
     "set_default_pool",
     "using_pool",
 ]

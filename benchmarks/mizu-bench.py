@@ -651,7 +651,7 @@ except ImportError:
 print("\n== 7. task args by reference: 8 MB float64 arg to a pool task ==")
 
 try:
-    launcher = pymizu.r_pool_launcher()
+    launcher = pymizu.r_launcher()
 except pymizu.MizuError:
     print("  Rscript with mizu not available: skipped")
 else:

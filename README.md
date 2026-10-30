@@ -115,13 +115,13 @@ with pymizu.Pool.create(4) as pool:
 ## R interop
 
 Pool workers can be R processes that run the [mizu](https://github.com/shikokuchuo/mizu) package, the R binding of the same core.
-`pymizu.r_pool_launcher()` spawns them and `pymizu.call()` describes the task — here R's built-in `mtcars` summarized by R itself, read back into polars:
+`pymizu.r_launcher()` spawns them and `pymizu.call()` describes the task — here R's built-in `mtcars` summarized by R itself, read back into polars:
 
 ```python
 import polars as pl
 import pymizu
 
-with pymizu.Pool.create(4, launcher=pymizu.r_pool_launcher()) as pool:
+with pymizu.Pool.create(4, launcher=pymizu.r_launcher()) as pool:
     task = pool.submit(
         pymizu.call(source="aggregate(mpg ~ cyl, data = mtcars, FUN = mean)")
     )
