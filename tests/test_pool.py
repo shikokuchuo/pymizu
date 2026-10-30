@@ -1156,14 +1156,6 @@ def test_stop_idempotent_and_stopped(pool):
     pa.destroy()
 
 
-def test_shutdown_alias(pool):
-    t = pool.submit(len, [1])
-    assert t.collect(timeout=5) == 1
-    assert pool.shutdown(timeout=5) is True
-    with pytest.raises(pymizu.MizuError, match="closed"):
-        pool.submit(len, [1])
-
-
 def test_stop_timeout_warns():
     # a worker mid-task cannot observe the shutdown inside the timeout:
     # stop returns False and warns (the worker exits on its own after)

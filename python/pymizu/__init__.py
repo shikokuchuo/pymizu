@@ -1371,11 +1371,6 @@ class Pool:
             )
         return ok
 
-    def shutdown(self, timeout: float = 5.0) -> bool:
-        """Alias for [`stop()`](`pymizu.Pool.stop`) — the
-        `concurrent.futures.Executor` spelling."""
-        return self.stop(timeout)
-
     def destroy(self) -> None:
         """Tear down the pool handle immediately, without telling the
         workers or waiting. Workers exit once they see the controller
