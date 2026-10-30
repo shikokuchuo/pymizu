@@ -10,7 +10,7 @@ Frame.from_arrow(obj)
 
 Construct a frame from an Arrow producer, adopting its buffers wherever a column's frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies nothing it does not have to -- nulls included.
 
-This is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and arrives region-backed, where a plain Arrow object pickles (container-exact, but a full copy). The frame reads back value-exact but type-normalized: a chunked or sliced producer's columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer's type.
+This is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer's columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer's type.
 
 obj Any [\_\_arrow_c_stream\_\_](../reference/Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__) producer: a pyarrow `Table` or `RecordBatchReader`, a polars `DataFrame`, a duckdb relation. `Table.combine_chunks()` is the route to the adopt path for a chunked table.
 

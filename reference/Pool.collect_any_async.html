@@ -844,13 +844,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L951-L973" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L943-L965" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">collect_any_async</span>(<span class="va">tasks</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>exactly one <code>asyncio.Future</code> per collection — never one per task — driven by the enrolled tasks’ notify announces.</p>
+<p>exactly one <code>asyncio.Future</code> per collection — never one per task — resolved when a task finishes.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -867,9 +867,9 @@ The <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task</c
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
 <div class="doc-definition-items">
 <dl>
-<dt><code> <span class="doc-parameter-annotation">An <code>asyncio.Future</code> resolving with the first terminal task’s</span></code></dt>
+<dt><code> <span class="doc-parameter-annotation">An <code>asyncio.Future</code> resolving with the first finished</span></code></dt>
 <dd>
-<code>(index, value)</code> (the sync verb’s tie-breaks); a non-OK outcome rejects with the exception the sync verb raises (<code>index</code> attribute carried). There is no <code>timeout</code> argument: <code>asyncio.timeout</code> / <code>asyncio.wait_for</code> are the idiom. Cancelling the Future un-enrolls every task — each returns to blocking-collectible — and never cancels them.
+task’s <code>(index, value)</code> (the sync verb’s tie-breaks); a failure rejects with the exception the sync verb raises (<code>index</code> attribute carried). There is no <code>timeout</code> argument: use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>. Cancelling the Future detaches every task — each is blocking-collectible again — and never cancels them.
 </dd>
 </dl>
 </div>

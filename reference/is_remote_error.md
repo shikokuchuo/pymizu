@@ -4,13 +4,13 @@ Test whether a received channel value is a remote error.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1479-L1493)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1475-L1488)
 
 ``` python
 is_remote_error(x)
 ```
 
-An uncaught error in a channel peer crosses as a value, not a raised exception (transport states are values, payloads are values -- user code decides to raise). The value is a [`TaskError`](../reference/TaskError.md#pymizu.TaskError) carrying the original exception's class name as `remote_type` and its traceback text as `remote_traceback`; raise it to propagate.
+An uncaught error in a channel peer crosses as a value, not a raised exception. The value is a [`TaskError`](../reference/TaskError.md#pymizu.TaskError) carrying the original exception's class name as `remote_type` and its traceback text as `remote_traceback`; raise it to propagate the error.
 
 ## Returns
 

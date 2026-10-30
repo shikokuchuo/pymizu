@@ -4,7 +4,7 @@ Create a channel and spawn its peer.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L123-L202)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L122-L201)
 
 ``` python
 Channel.create(
@@ -28,13 +28,13 @@ A Python source string, evaluated in the peer process with `ch` bound to the pee
 Ring capacity in slots; a power of two.
 
 `slot_size: int = 256`  
-Bytes per ring slot; a power of two. The inline payload budget is `slot_size - 16`.
+Bytes per ring slot; a power of two. A payload of up to `slot_size - 16` bytes fits in a slot.
 
 `arena_size: int = 4 * 1024 * 1024`  
-Bytes of shared staging arena for out-of-line payloads.
+Bytes of shared staging area for larger payloads.
 
 `spin: bool = False`  
-Spin rather than park while waiting.
+Busy-wait rather than sleep while waiting.
 
 `startup_timeout: float = 30.0`  
 Seconds to wait for the peer to attach.

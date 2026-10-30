@@ -837,13 +837,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L381-L397" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L379-L393" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Channel</span><span class="op">.</span><span class="fu">destroy</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>handshake: the peer observes the channel closed (PEER_GONE is the hard-death outcome). Safe from any thread — the one verb that is: a verb in flight on another thread pins the handle, and teardown completes when the last one returns — an indefinite wait (recv, recv_batch, ready_wait, close) breaks out within a bounded slice, so the teardown (and the peer’s observation of it) follows promptly. Pending recv futures settle with PEER_GONE. The any-thread license covers this verb only; every other verb stays thread-confined (the class docstring).</p>
+<p>handshake: the peer sees the channel as closed (PEER_GONE if it died hard). Safe from any thread — the one verb that is. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (recv, recv_batch, ready_wait, close) wakes promptly for this to happen. Pending recv futures settle with PEER_GONE. The any-thread license covers this verb only; every other verb stays confined to one thread (the class docstring).</p>
 </div>
 
 

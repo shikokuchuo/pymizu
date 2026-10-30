@@ -4,7 +4,7 @@ Attach to the channel named by a join token (the peer side).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L204-L228)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L203-L227)
 
 ``` python
 Channel.attach(token)
@@ -21,4 +21,4 @@ The join token from the host side's `ch.token`.
 
 ## Details
 
-Low-level: the caller consumes `ch.drop` before signalling `ch.ready_set()`. `python -m pymizu.child` is the reference peer entry.
+Low-level: the caller consumes `ch.drop` before signaling `ch.ready_set()`. `python -m pymizu.child` is the reference peer entry.

@@ -4,7 +4,7 @@ Create a pool and spawn its worker processes.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L661-L742)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L655-L735)
 
 ``` python
 Pool.create(
@@ -24,25 +24,25 @@ Pool.create(
 ## Parameters
 
 `workers: int = 1`  
-Number of worker processes to spawn; they join the pool's registry (capacity `max_workers`).
+Number of worker processes to spawn.
 
 `max_workers: int | None = None`  
-Registry capacity; defaults to `workers`.
+The worker limit; defaults to `workers`.
 
 `max_submitters: int = 8`  
 Maximum number of submitter processes.
 
 `injection_cap: int = 1024`  
-Capacity of the injection ring.
+Capacity of each submitter's queue.
 
 `per_worker_cap: int = 1024`  
-Capacity of each worker's work-stealing deque.
+Capacity of each worker's queue.
 
 `result_slots: int = 4096`  
 Bounds each submitter's outstanding (uncollected) tasks.
 
 `slot_size: int = 512`  
-Bytes per queue entry and result slot -- a payload past the inline budget travels in a fresh region per payload.
+Bytes per queue entry and result slot; a larger payload travels in its own shared-memory region.
 
 `startup_timeout: float = 30.0`  
 Seconds to wait for the workers to attach.

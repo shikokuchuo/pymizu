@@ -1,6 +1,6 @@
 # Task
 
-A task handle from \_Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
+A task handle from Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
 
 Usage
 

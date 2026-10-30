@@ -4,7 +4,7 @@ Set the process-wide default pool; None clears it.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1578-L1598)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1571-L1590)
 
 ``` python
 set_default_pool(pool)
@@ -17,4 +17,4 @@ restore.
 
 ## Details
 
-The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted, until the default is cleared or replaced. See [`default_pool()`](../reference/default_pool.md#pymizu.default_pool) for the full semantics.
+Setting a default keeps the pool alive: it survives even after its variable is deleted, until the default is cleared or replaced. See [`default_pool()`](../reference/default_pool.md#pymizu.default_pool) for the full semantics.

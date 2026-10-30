@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Tear down the pool handle immediately, without the shutdown">
+<meta name="description" content="Tear down the pool handle immediately, without telling the">
 
 <title>Pool.destroy() | pymizu 水</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "Pool.destroy - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/Pool.destroy.html"}]</script>
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="Pool.destroy() | pymizu 水">
-<meta property="og:description" content="Tear down the pool handle immediately, without the shutdown">
+<meta property="og:description" content="Tear down the pool handle immediately, without telling the">
 <meta property="og:site_name" content="pymizu 水">
 <meta name="twitter:title" content="Pool.destroy() | pymizu 水">
-<meta name="twitter:description" content="Tear down the pool handle immediately, without the shutdown">
+<meta name="twitter:description" content="Tear down the pool handle immediately, without telling the">
 <meta name="twitter:card" content="summary">
 </head>
 
@@ -833,17 +833,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Tear down the pool handle immediately, without the shutdown</p>
+<p>Tear down the pool handle immediately, without telling the</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1382-L1403" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1379-L1399" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">destroy</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>broadcast or the wait. Workers exit once they observe the controller gone. Safe from any thread — the one verb that is: a verb in flight on another thread pins the handle, and teardown completes when the last one returns — an indefinite wait (submit, collect, collect_any, collect_all, ready_wait) breaks out within a bounded slice; stop() instead waits out its own deadline, and a worker’s idle run() can delay the teardown (and the shutdown observation) until it returns. Pending async consumers fail with the closed-handle error. The any-thread license covers this verb only; every other verb stays thread-confined (the class docstring).</p>
+<p>workers or waiting. Workers exit once they see the controller is gone. Safe from any thread — the one verb that is. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (submit, collect, collect_any, collect_all, ready_wait) wakes promptly, while stop() waits out its own deadline and a worker’s idle run() can delay teardown until it returns. Pending async consumers fail with the closed-handle error. The any-thread license covers this verb only; every other verb stays confined to one thread (the class docstring).</p>
 </div>
 
 

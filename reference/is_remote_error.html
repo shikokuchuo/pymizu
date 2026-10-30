@@ -843,13 +843,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1479-L1493" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1475-L1488" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">is_remote_error</span>(<span class="va">x</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>An uncaught error in a channel peer crosses as a value, not a raised exception (transport states are values, payloads are values — user code decides to raise). The value is a <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link"><code>TaskError</code></a> carrying the original exception’s class name as <code>remote_type</code> and its traceback text as <code>remote_traceback</code>; raise it to propagate.</p>
+<p>An uncaught error in a channel peer crosses as a value, not a raised exception. The value is a <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link"><code>TaskError</code></a> carrying the original exception’s class name as <code>remote_type</code> and its traceback text as <code>remote_traceback</code>; raise it to propagate the error.</p>
 </div>
 <section id="returns" class="level2 doc-returns">
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>

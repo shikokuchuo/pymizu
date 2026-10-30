@@ -17,7 +17,7 @@ r_launcher(
 
 spawning an R peer.
 
-The peer runs the R package `mizu`: the returned `callable(token)` spawns `rscript` on the package's static child runner with `mizu:::peer_main(<token>)` as the entry expression and the probed library paths propagated in argv.
+The peer runs the R package `mizu`: the returned `callable(token)` spawns `rscript` on the package's static child runner with `mizu:::peer_main(<token>)` as the entry expression and the detected library paths passed along in argv.
 
 ## Parameters
 
@@ -25,7 +25,7 @@ The peer runs the R package `mizu`: the returned `callable(token)` spawns `rscri
 Path to Rscript; the default searches the PATH.
 
 `stdout: _Any = None`  
-Forwarded to `subprocess.Popen`; the default inherits the console, where the peer's error epilogue lands.
+Forwarded to `subprocess.Popen`; the default inherits the console, where the peer's error messages land.
 
 `stderr: _Any = None`  
 Forwarded to `subprocess.Popen`.

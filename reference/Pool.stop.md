@@ -4,13 +4,13 @@ Orderly shutdown (controller only).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1350-L1375)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1347-L1372)
 
 ``` python
 Pool.stop(timeout=5.0)
 ```
 
-Broadcast shutdown, cancel pending tasks, wait up to `timeout` seconds for clean worker exits, and unlink. Idempotent.
+Tell the workers to exit, cancel pending tasks, wait up to `timeout` seconds for clean exits, and release the shared memory. Safe to call more than once.
 
 ## Returns
 

@@ -880,12 +880,12 @@ When True, <code>shutdown()</code> stops the wrapped pool.
 </section>
 <section id="notes" class="level2 doc-notes">
 <h2 class="doc-notes anchored" data-anchor-id="notes">Notes</h2>
-<p><code>submit()</code> (and the stdlib <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> over it) is thread-safe, as the <code>concurrent.futures</code> contract requires: an internal lock serializes the single-producer pool handle. This is the adapter to reach for when several threads must submit to one pool. Deltas from stdlib semantics: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a> (the remote error envelope); <code>Future.running()</code> is always False (futures resolve at completion); cancellation is advisory, mirroring <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> — and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An infrastructure failure (e.g.&nbsp;the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a broken executor. Resolution — including any <code>add_done_callback</code> callables — runs on the core’s listener thread, the same discipline as the stdlib executors’ management thread: keep callbacks short, and never block one on the pool itself. <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code> — for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map</code></a> is the faster path.</p>
+<p><code>submit()</code> (and the stdlib <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> over it) is thread-safe, as the <code>concurrent.futures</code> contract requires: an internal lock serializes the single-producer pool handle. This is the adapter to reach for when several threads must submit to one pool. Differences from the stdlib: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a>; <code>Future.running()</code> is always False (futures resolve at completion); cancellation works like <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> — it never interrupts a running task — and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An internal failure (for example the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a broken executor. Futures resolve — and <code>add_done_callback</code> callbacks run — on pymizu’s listener thread, the same discipline as the stdlib executors’ management thread: keep callbacks short, and never block one on the pool itself. <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code> — for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map</code></a> is the faster path.</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Use as a drop-in <code>concurrent.futures.Executor</code>:</p>
-<div id="315bbf9b" class="cell" data-execution_count="1">
+<div id="1484752e" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">2</span>) <span class="im">as</span> ex:</span>
@@ -913,7 +913,7 @@ When True, <code>shutdown()</code> stops the wrapped pool.
 </tr>
 <tr class="even">
 <td><a href="#shutdown" class="doc-function doc-label doc-label-method">shutdown()</a></td>
-<td>Stdlib shutdown.</td>
+<td>Shut down the executor.</td>
 </tr>
 <tr class="odd">
 <td><a href="#submit" class="doc-function doc-label doc-label-method">submit()</a></td>
@@ -969,7 +969,7 @@ Forwarded to <a href="../reference/Pool.create.html#pymizu.Pool.create" class="g
 <section id="shutdown" class="level3">
 <h3 class="anchored" data-anchor-id="shutdown"><span class="doc-object-name doc-function doc-label doc-label-method">shutdown()</span></h3>
 <div class="doc-subject">
-<p>Stdlib shutdown.</p>
+<p>Shut down the executor.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
@@ -1055,7 +1055,7 @@ Keyword arguments for <code>fn</code>.
 </dd>
 <dt><code> <span class="doc-parameter-annotation">pymizu.MizuError</span></code></dt>
 <dd>
-The infrastructure failure that broke the executor (its drain failed every outstanding future on it).
+The internal failure that broke the executor (every outstanding future failed with it).
 </dd>
 </dl>
 </div>

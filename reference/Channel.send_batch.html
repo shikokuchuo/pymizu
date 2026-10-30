@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Send several payloads in one crossing; return the number">
+<meta name="description" content="Send several values in one call; return the number accepted">
 
 <title>Channel.send_batch() | pymizu 水</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "Channel.send_batch - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/Channel.send_batch.html"}]</script>
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="Channel.send_batch() | pymizu 水">
-<meta property="og:description" content="Send several payloads in one crossing; return the number">
+<meta property="og:description" content="Send several values in one call; return the number accepted">
 <meta property="og:site_name" content="pymizu 水">
 <meta name="twitter:title" content="Channel.send_batch() | pymizu 水">
-<meta name="twitter:description" content="Send several payloads in one crossing; return the number">
+<meta name="twitter:description" content="Send several values in one call; return the number accepted">
 <meta name="twitter:card" content="summary">
 </head>
 
@@ -833,17 +833,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Send several payloads in one crossing; return the number</p>
+<p>Send several values in one call; return the number accepted</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L266-L269" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L265-L268" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Channel</span><span class="op">.</span><span class="fu">send_batch</span>(<span class="va">xs</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>accepted (short on ring-full or a terminal state).</p>
+<p>(fewer when the ring is full or a terminal state is reached).</p>
 </div>
 
 

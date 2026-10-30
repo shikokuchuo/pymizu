@@ -837,14 +837,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1552-L1575" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1546-L1568" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">default_pool</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
 <p>Set with <a href="../reference/set_default_pool.html#pymizu.set_default_pool" class="gdls-link"><code>set_default_pool()</code></a>; scoped use with <a href="../reference/using_pool.html#pymizu.using_pool" class="gdls-link"><code>using_pool()</code></a>. Package code taking an optional pool resolves it in this order: an explicit <a href="../reference/Task.pool.html#pymizu.Task.pool" class="gdls-link gdls-code">pool</a> argument, then <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link"><code>current_pool()</code></a> inside a task (the evaluating worker’s own pool, for nested submission), then <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then the caller’s own fallback — sequential execution or an error.</p>
-<p>Setting a default checks the type only: a stopped pool is accepted (liveness is transient; a probe would prove nothing about use time) and fails at use time with the usual stopped-pool errors. Handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link"><code>Pool.attach()</code></a> are valid defaults; ownership and teardown stay with the pool’s creator.</p>
+<p>Setting a default checks the type only: a stopped pool is accepted and fails at use time with the usual stopped-pool errors. Handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link"><code>Pool.attach()</code></a> are valid defaults; ownership and teardown stay with the pool’s creator.</p>
 <p>The default is process-global — every thread sees the same pool, and <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link"><code>current_pool()</code></a> remains the thread-local mechanism. After a <code>fork()</code>, a child process reads it as unset: handles are process-private.</p>
 </div>
 

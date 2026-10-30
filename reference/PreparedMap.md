@@ -1,10 +1,10 @@
 # PreparedMap
 
-A map staged once into a persistent region, run many times.
+A map set up once in shared memory, run many times.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2006-L2359)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2008-L2359)
 
 ``` python
 PreparedMap(
@@ -20,7 +20,7 @@ PreparedMap(
 )
 ```
 
-Create with [`Pool.map_prepare()`](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare); run with [run()](../reference/PreparedMap.md#pymizu.PreparedMap.run), which returns the run's map handle (the collect happens on it, as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map)). Re-arming is O(1) -- a generation bump, a cursor reset, a cancel-word clear -- and workers reuse their cached contexts, so a re-run pays neither the descriptor pickle nor the region create nor the worker-side re-attach. A view-collected run hands its region to the view; the next run restages into a fresh one (the mirror of mizu). Close with `close()` (or a with block) to unlink the region.
+Create with [`Pool.map_prepare()`](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare); run with [run()](../reference/PreparedMap.md#pymizu.PreparedMap.run), which returns the run's map handle (the collect happens on it, as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map)). Re-arming is cheap, and workers reuse their cached set-up, so a re-run skips the pickling, the region creation, and the worker-side set-up. A run collected with `collect="view"` hands its region to the view, so the next run stages a fresh one. Close with `close()` (or a with block) to release the shared memory.
 
 ## Parameters
 
@@ -40,17 +40,17 @@ Constant positional arguments appended to every call.
 Constant keyword arguments for every call.
 
 `n_chunks: int | None = None`  
-Overrides the morsel count (the scheduling granularity).
+Overrides the number of batches the elements are split into.
 
 `template: _Any = None`  
-An exemplar buffer declaring each result's dtype and length -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map).
+An example buffer declaring each result's dtype and length -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map).
 
 `stream: bool = False`  
-Stream slices of `x` instead of staging it whole -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map). The recipe is staged here; `seed` and [collect](../reference/Task.collect.md#pymizu.Task.collect) are per-run options of [`PreparedMap.run()`](../reference/PreparedMap.md#pymizu.PreparedMap.run) (mirroring mizu's `mizu_map_run()`).
+Stream slices of `x` instead of writing it to shared memory whole -- as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map). The map is set up here; `seed` and [collect](../reference/Task.collect.md#pymizu.Task.collect) are per-run options of [`PreparedMap.run()`](../reference/PreparedMap.md#pymizu.PreparedMap.run) (mirroring mizu's `mizu_map_run()`).
 
 ## Examples
 
-Stage the map once, then re-run it over replacement data at memcpy cost (same dtype and length swap in place):
+Set the map up once, then re-run it over replacement data at copy cost (same dtype and length swap in place):
 
 ``` python
 import numpy as np
@@ -94,7 +94,7 @@ Run the prepared map once; return the run's map handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2217-L2341)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2218-L2341)
 
 ``` python
 run(
@@ -109,10 +109,10 @@ run(
 #### Parameters
 
 `x: _Any = None`  
-Replaces the staged data for this and later runs. When both the staged and the replacement x are raw-buffer eligible with the same dtype and length, the swap is an in-place memcpy over the region's x section -- the iterate-over-same-shape loop (optimizer steps, simulation sweeps) runs at memcpy cost, skipping the region create and the worker-side re-attach. Any other x restages transparently on this run.
+Replaces the staged data for this and later runs. When both the staged and the replacement x are arrays of the same dtype and length, the swap is an in-place copy -- a loop that iterates over same-shaped data (optimizer steps, simulation sweeps) runs at copy cost, skipping the region creation and the worker-side set-up. Any other x is staged fresh on this run.
 
 `seed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None`  
-Deterministic per-element seeding for this run, as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map); `None` (the default) runs unseeded. The seed rides the run's runner payloads, never the staged region, so reseeding a run is free -- the repeated-simulation loop varies `seed` per run while the stage is paid once.
+Deterministic per-element seeding for this run, as for [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map); `None` (the default) runs unseeded. The seed travels with the run's tasks, not the staged data, so reseeding a run is free -- the repeated-simulation loop varies `seed` per run while the set-up is paid once.
 
 `timeout: float | None = None`  
 Seconds before the run's submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT [`Sentinel`](../reference/Sentinel.md#pymizu.Sentinel) is returned (no handle). The collection deadline is the handle's [collect()](../reference/Task.collect.md#pymizu.Task.collect).
@@ -123,4 +123,4 @@ Seconds before the run's submission gives up; on expiry the tasks already in are
 #### Returns
 
 `The run's map handle -- collected exactly once, by`  
-[collect()](../reference/Task.collect.md#pymizu.Task.collect) (blocking) or [collect_async()](../reference/Task.collect_async.md#pymizu.Task.collect_async) (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError). A clean value collect keeps the stage for the O(1) re-arm; a view collect hands the region to the view, and an unclean run (timeout, an error, a worker death) drops it -- the next run restages into a fresh one either way.
+[collect()](../reference/Task.collect.md#pymizu.Task.collect) (blocking) or [collect_async()](../reference/Task.collect_async.md#pymizu.Task.collect_async) (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError). A clean value collect keeps the set-up for the next run; a view collect hands the region to the view, and an interrupted run (timeout, an error, a worker death) drops it -- the next run stages a fresh one either way.

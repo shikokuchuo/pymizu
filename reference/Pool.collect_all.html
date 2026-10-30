@@ -845,7 +845,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L919-L949" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L911-L941" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">collect_all</span>(</span>
@@ -872,9 +872,9 @@ Seconds to wait; None waits indefinitely.
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
 <div class="doc-definition-items">
 <dl>
-<dt><code> <span class="doc-parameter-annotation">All values in input order. On the first non-OK outcome by</span></code></dt>
+<dt><code> <span class="doc-parameter-annotation">All values in input order. On the first failure by</span></code></dt>
 <dd>
-position, raises with an <code>index</code> attribute (0-based) — only the reported handle is consumed; every other, the results ahead of it included, stays collectible. A result that fails to read raises with <code>index</code> and a <code>values</code> attribute carrying the consumed prefix. The <code>TIMEOUT</code> sentinel consumes nothing.
+position, raises with an <code>index</code> attribute (0-based) — only the reported handle is consumed; every other, including the results ahead of it, stays collectible. A result that fails to read raises with <code>index</code> and a <code>values</code> attribute carrying the consumed prefix. The <code>TIMEOUT</code> sentinel consumes nothing.
 </dd>
 </dl>
 </div>

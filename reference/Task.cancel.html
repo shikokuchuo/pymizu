@@ -842,7 +842,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Task</span><span class="op">.</span><span class="fu">cancel</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Advisory and discard-only, never preemptive: a still-queued task is skipped; an executing one runs to completion and its result is dropped. True when this call cancelled the task; every other edge folds to False.</p>
+<p>Advisory only, never interrupts: a queued task is skipped; a running one completes and its result is dropped. True when this call cancelled the task; False in every other case.</p>
 </div>
 
 

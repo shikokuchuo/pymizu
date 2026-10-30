@@ -842,7 +842,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Task</span><span class="op">.</span><span class="fu">collect</span>(<span class="va">timeout</span><span class="op">=</span><span class="cn">None</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Wait up to <code>timeout</code> seconds (None indefinitely, 0 polls) for the task’s terminal state and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost payload region as pymizu.TaskLostError. pymizu.TIMEOUT on expiry; a task is collected exactly once.</p>
+<p>Wait up to <code>timeout</code> seconds (None indefinitely, 0 polls once) for the task to finish and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type / remote_traceback), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, a lost result as pymizu.TaskLostError. pymizu.TIMEOUT on expiry; a task is collected exactly once.</p>
 </div>
 
 

@@ -837,7 +837,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1203-L1255" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1200-L1252" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">starmap</span>(</span>
@@ -856,7 +856,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-text">
 <p>positional arguments: <code>fn(*element, *args, **kwargs)</code>; return the run’s map handle, as <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>map()</code></a>.</p>
-<p>The <code>multiprocessing.Pool.starmap</code> convention; for the multi-iterable shape of <code>concurrent.futures.Executor.map</code>, zip first: <code>pool.starmap(fn, zip(xs, ys))</code>. Elements must be iterables (a 2-D buffer’s rows qualify; a 1-D buffer’s scalars do not). A <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec cannot starmap: element unpacking is Python-only. Everything else — seeding, templates, streaming, the error taxonomy — is exactly <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>map()</code></a>’s.</p>
+<p>The <code>multiprocessing.Pool.starmap</code> convention; for the multi-iterable shape of <code>concurrent.futures.Executor.map</code>, zip first: <code>pool.starmap(fn, zip(xs, ys))</code>. Elements must be iterables (a 2-D buffer’s rows qualify; a 1-D buffer’s scalars do not). A <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec cannot starmap: element unpacking is Python-only. Everything else — seeding, templates, streaming, the errors — is exactly <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>map()</code></a>’s.</p>
 </div>
 
 

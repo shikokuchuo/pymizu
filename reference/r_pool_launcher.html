@@ -847,7 +847,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L186-L253" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L186-L254" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">r_pool_launcher</span>(</span>
@@ -859,7 +859,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-text">
 <p>spawning R workers.</p>
-<p>Each worker runs the R package <code>mizu</code>: the returned <code>callable(token, slot)</code> spawns <code>rscript</code> on the package’s static child runner with <code>mizu:::worker_main(&lt;token&gt;, &lt;slot&gt;)</code> as the entry expression and the probed library paths propagated in argv (without them the workers cannot <code>library(mizu)</code> from the host’s libraries). The mirror of the R package’s <code>mizu_py_pool_launcher()</code>.</p>
+<p>Each worker runs the R package <code>mizu</code>: the returned <code>callable(token, slot)</code> spawns <code>rscript</code> on the package’s static child runner with <code>mizu:::worker_main(&lt;token&gt;, &lt;slot&gt;)</code> as the entry expression and the detected library paths passed along in argv (without them the workers cannot <code>library(mizu)</code> from the host’s libraries). The mirror of the R package’s <code>mizu_py_pool_launcher()</code>.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -904,7 +904,7 @@ Raised here, before any pool exists, when Rscript is not found or no installed <
 </section>
 <section id="notes" class="level2 doc-notes">
 <h2 class="doc-notes anchored" data-anchor-id="notes">Notes</h2>
-<p>The first worker’s join records the workers’ language in the pool, so the launcher carries no language attribute: a pool of R workers takes <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>pymizu.call()</code></a> specifications through <a href="../reference/Pool.submit.html#pymizu.Pool.submit" class="gdls-link"><code>Pool.submit()</code></a>, and a plain callable errors locally naming the spec verb. A launcher that spawns the wrong language fails at join, not at the first task.</p>
+<p>The first worker’s join records the workers’ language in the pool, so the launcher carries no language attribute: a pool of R workers takes <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>pymizu.call()</code></a> specifications through <a href="../reference/Pool.submit.html#pymizu.Pool.submit" class="gdls-link"><code>Pool.submit()</code></a>, and a plain callable raises an error naming <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">call</a>. A launcher that spawns the wrong language fails at join, not at the first task.</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>

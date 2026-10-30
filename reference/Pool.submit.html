@@ -847,7 +847,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L774-L852" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L765-L843" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">submit</span>(</span>
@@ -859,7 +859,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Blocks only for injection-ring space, up to <code>timeout</code> seconds (None waits indefinitely).</p>
+<p>Blocks only for queue space, up to <code>timeout</code> seconds (None waits indefinitely).</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -875,7 +875,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </dd>
 <dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>
-<p>Seconds to wait for injection-ring space; None waits indefinitely.</p>
+<p>Seconds to wait for queue space; None waits indefinitely.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">kwargs</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">{}</span></code></dt>
 <dd>
@@ -921,8 +921,8 @@ Another submit-family verb is in flight on this handle from a second thread: a p
 <section id="details" class="level2 doc-details">
 <h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
 <p><code>timeout</code> belongs to the submission, not to <code>fn</code>: a callable taking its own <code>timeout=</code> keyword argument cannot receive it through <code>**kwargs</code> here — bind it first with <code>functools.partial</code> as <code>functools.partial(fn, timeout=...)</code>.</p>
-<p>A buffer-protocol argument (e.g.&nbsp;a numpy array) past the zero-copy floor crosses as a read-only view over shared pages, not a writable copy.</p>
-<p>With a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec as <code>fn</code> (no <code>*args</code> / <code>**kwargs</code> — the spec carries them), the task stream crosses in the neutral interchange format: this is how a pool of another language’s workers is driven (spawn them with <a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link"><code>r_pool_launcher()</code></a>). On a foreign pool a plain callable errors locally, naming the spec verb.</p>
+<p>A buffer-protocol argument (for example a numpy array) larger than 32 KB crosses as a read-only view over shared pages, not a writable copy.</p>
+<p>With a <a href="../reference/call.html#pymizu.call" class="gdls-link"><code>call</code></a> spec as <code>fn</code> (no <code>*args</code> / <code>**kwargs</code> — the spec carries them), the task crosses in a language-neutral format: this is how you drive a pool of another language’s workers (spawn them with <a href="../reference/r_pool_launcher.html#pymizu.r_pool_launcher" class="gdls-link"><code>r_pool_launcher()</code></a>). On a foreign pool a plain callable raises an error naming <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">call</a>.</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>

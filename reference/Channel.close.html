@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Orderly close: signal the peer and wait up to timeout">
+<meta name="description" content="Orderly close: tell the peer to close and wait up to">
 
 <title>Channel.close() | pymizu 水</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "Channel.close - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/Channel.close.html"}]</script>
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="Channel.close() | pymizu 水">
-<meta property="og:description" content="Orderly close: signal the peer and wait up to timeout">
+<meta property="og:description" content="Orderly close: tell the peer to close and wait up to">
 <meta property="og:site_name" content="pymizu 水">
 <meta name="twitter:title" content="Channel.close() | pymizu 水">
-<meta name="twitter:description" content="Orderly close: signal the peer and wait up to timeout">
+<meta name="twitter:description" content="Orderly close: tell the peer to close and wait up to">
 <meta name="twitter:card" content="summary">
 </head>
 
@@ -839,17 +839,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Orderly close: signal the peer and wait up to <code>timeout</code></p>
+<p>Orderly close: tell the peer to close and wait up to</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L350-L374" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L348-L372" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Channel</span><span class="op">.</span><span class="fu">close</span>(<span class="va">timeout</span><span class="op">=</span><span class="fl">5.0</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>seconds for it to observe the close. True on a clean handshake; False (with a warning) on timeout, in which case resources release when the handle is garbage collected.</p>
+<p><code>timeout</code> seconds for it to finish. True on a clean close; False (with a warning) on timeout — resources are then released when the handle is garbage collected.</p>
 </div>
 <section id="raises" class="level2 doc-raises">
 <h2 class="doc-raises anchored" data-anchor-id="raises">Raises</h2>

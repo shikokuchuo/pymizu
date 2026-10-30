@@ -1,10 +1,10 @@
 # Channel.send()
 
-Send one payload.
+Send one value.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L235-L256)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L234-L255)
 
 ``` python
 Channel.send(x)
@@ -13,7 +13,7 @@ Channel.send(x)
 ## Parameters
 
 `x: _Any`  
-The payload. `None` itself is a valid payload; bytes and numpy arrays travel raw, everything else rides pickle protocol 4.
+The value to send. `None` is a valid value; bytes and numpy arrays cross without serialization, everything else is pickled (protocol 4).
 
 ## Returns
 

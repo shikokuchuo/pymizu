@@ -5,7 +5,7 @@
 A two-way message link between a Python process and a helper process that it spawns.
 
 [Channel](Channel.md#pymizu.Channel)  
-A shared-memory SPSC channel handle (process-private).
+A shared-memory channel handle (process-private).
 
 ## Channel Methods
 
@@ -21,13 +21,13 @@ Attach to the channel named by a join token (the peer side).
 The join token for the peer's attach.
 
 [Channel.send()](Channel.send.md#pymizu.Channel.send)  
-Send one payload.
+Send one value.
 
 [Channel.send_batch()](Channel.send_batch.md#pymizu.Channel.send_batch)  
-Send several payloads in one crossing; return the number
+Send several values in one call; return the number accepted
 
 [Channel.recv()](Channel.recv.md#pymizu.Channel.recv)  
-Receive one payload.
+Receive one value.
 
 [Channel.recv_async()](Channel.recv_async.md#pymizu.Channel.recv_async)  
 The event-driven receive: an `asyncio.Future` for the next
@@ -36,10 +36,10 @@ The event-driven receive: an `asyncio.Future` for the next
 Iterate over received payloads until CLOSED or PEER_GONE --
 
 [Channel.recv_batch()](Channel.recv_batch.md#pymizu.Channel.recv_batch)  
-Receive up to `n` payloads in one crossing; a list
+Receive up to `n` values in one call; a list (possibly
 
 [Channel.close()](Channel.close.md#pymizu.Channel.close)  
-Orderly close: signal the peer and wait up to `timeout`
+Orderly close: tell the peer to close and wait up to
 
 [Channel.close_signal()](Channel.close_signal.md#pymizu.Channel.close_signal)  
 Signal close without waiting (the peer's recv side sees
@@ -51,7 +51,7 @@ Tear down the handle immediately, without the close
 True while the peer process is alive.
 
 [Channel.info()](Channel.info.md#pymizu.Channel.info)  
-A read-only wire-state snapshot of the channel (dict).
+A read-only snapshot of the channel's state (dict).
 
 [Channel.\_\_enter\_\_()](Channel.__enter__.md#pymizu.Channel.__enter__)  
 
@@ -68,10 +68,10 @@ A set of worker processes that divide submitted tasks among themselves.
 A shared-memory work-stealing task pool handle (process-private).
 
 [Task](Task.md#pymizu.Task)  
-A task handle from \_Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
+A task handle from Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot.
 
 [PreparedMap](PreparedMap.md#pymizu.PreparedMap)  
-A map staged once into a persistent region, run many times.
+A map set up once in shared memory, run many times.
 
 [PoolExecutor](PoolExecutor.md#pymizu.PoolExecutor)  
 A `concurrent.futures.Executor` over a pymizu pool.
@@ -120,7 +120,7 @@ Stage a map once for repeated runs; return a
 Ask the worker in `slot` to exit cleanly (non-blocking,
 
 [Pool.spawn_workers()](Pool.spawn_workers.md#pymizu.Pool.spawn_workers)  
-Spawn `n` additional workers into free registry slots and
+Spawn `n` additional workers and wait for them to join
 
 [Pool.stop()](Pool.stop.md#pymizu.Pool.stop)  
 Orderly shutdown (controller only).
@@ -129,10 +129,10 @@ Orderly shutdown (controller only).
 Alias for [`stop()`](../reference/Pool.stop.md#pymizu.Pool.stop) -- the
 
 [Pool.destroy()](Pool.destroy.md#pymizu.Pool.destroy)  
-Tear down the pool handle immediately, without the shutdown
+Tear down the pool handle immediately, without telling the
 
 [Pool.status()](Pool.status.md#pymizu.Pool.status)  
-A read-only wire-state snapshot of the pool (dict).
+A read-only snapshot of the pool's state (dict).
 
 [Pool.dump()](Pool.dump.md#pymizu.Pool.dump)  
 A read-only debugging snapshot of the whole pool region (dict).
@@ -213,7 +213,7 @@ Return len(self).
 
 ## Outcomes and errors
 
-Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
+A full ring, a timeout, a close, or a dead peer returns as a sentinel singleton -- FULL / TIMEOUT / CLOSED / PEER_GONE -- tested by identity, never raised. Real failures raise exceptions.
 
 [Sentinel](Sentinel.md#pymizu.Sentinel)  
 Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.
@@ -259,7 +259,7 @@ A verb ran concurrently with another verb in the same handle role: each handle r
 
 ## Housekeeping
 
-The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
+The process-wide default pool, the current worker's own pool handle, and cleaning up shared memory left by dead processes.
 
 [default_pool()](default_pool.md#pymizu.default_pool)  
 The process-wide default pool, or None when none is set.
@@ -271,10 +271,10 @@ Set the process-wide default pool; None clears it.
 Use [pool](../reference/Task.pool.md#pymizu.Task.pool) as the default for the with block, then restore.
 
 [current_pool()](current_pool.md#pymizu.current_pool)  
-The evaluating worker's own pool handle, inside a task.
+The pool handle of the worker running the task.
 
 [current_rng()](current_rng.md#pymizu.current_rng)  
-The running element's own numpy Generator, inside a seeded map.
+The current element's own numpy Generator, inside a seeded map.
 
 [prune()](prune.md#pymizu.prune)  
 Remove orphaned shared memory regions.

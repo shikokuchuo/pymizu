@@ -1,10 +1,10 @@
 # current_pool()
 
-The evaluating worker's own pool handle, inside a task.
+The pool handle of the worker running the task.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1496-L1513)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1491-L1507)
 
 ``` python
 current_pool()
@@ -16,4 +16,4 @@ current_pool()
 
 ## Details
 
-A task uses it for nested submission: a nested submit pushes onto the worker's own work-stealing deque (no ring, no wait), and a nested collect helps -- executes work -- instead of parking, so nested fan-outs run at fork/join cost and never deadlock the pool. The user-set process-wide default is [`default_pool()`](../reference/default_pool.md#pymizu.default_pool), which never overrides this runtime-owned binding.
+A task uses it for nested submission: a nested submit goes straight onto the worker's own queue (no ring, no wait), and a nested collect runs other work instead of sleeping, so nested fan-outs are cheap and never deadlock the pool. The process-wide default set with [`default_pool()`](../reference/default_pool.md#pymizu.default_pool) never overrides this binding.

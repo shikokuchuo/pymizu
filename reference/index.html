@@ -819,7 +819,7 @@ ul.task-list li input[type="checkbox"] {
 <dl>
 <dt><a href="../reference/Channel.html#pymizu.Channel" class="doc-class doc-label doc-label-class">Channel</a></dt>
 <dd>
-<p>A shared-memory SPSC channel handle (process-private).</p>
+<p>A shared-memory channel handle (process-private).</p>
 </dd>
 </dl>
 </section>
@@ -843,15 +843,15 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Channel.send.html#pymizu.Channel.send" class="doc-function doc-label doc-label-method">Channel.send()</a></dt>
 <dd>
-<p>Send one payload.</p>
+<p>Send one value.</p>
 </dd>
 <dt><a href="../reference/Channel.send_batch.html#pymizu.Channel.send_batch" class="doc-function doc-label doc-label-method">Channel.send_batch()</a></dt>
 <dd>
-<p>Send several payloads in one crossing; return the number</p>
+<p>Send several values in one call; return the number accepted</p>
 </dd>
 <dt><a href="../reference/Channel.recv.html#pymizu.Channel.recv" class="doc-function doc-label doc-label-method">Channel.recv()</a></dt>
 <dd>
-<p>Receive one payload.</p>
+<p>Receive one value.</p>
 </dd>
 <dt><a href="../reference/Channel.recv_async.html#pymizu.Channel.recv_async" class="doc-function doc-label doc-label-method">Channel.recv_async()</a></dt>
 <dd>
@@ -863,11 +863,11 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Channel.recv_batch.html#pymizu.Channel.recv_batch" class="doc-function doc-label doc-label-method">Channel.recv_batch()</a></dt>
 <dd>
-<p>Receive up to <code>n</code> payloads in one crossing; a list</p>
+<p>Receive up to <code>n</code> values in one call; a list (possibly</p>
 </dd>
 <dt><a href="../reference/Channel.close.html#pymizu.Channel.close" class="doc-function doc-label doc-label-method">Channel.close()</a></dt>
 <dd>
-<p>Orderly close: signal the peer and wait up to <code>timeout</code></p>
+<p>Orderly close: tell the peer to close and wait up to</p>
 </dd>
 <dt><a href="../reference/Channel.close_signal.html#pymizu.Channel.close_signal" class="doc-function doc-label doc-label-method">Channel.close_signal()</a></dt>
 <dd>
@@ -883,7 +883,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Channel.info.html#pymizu.Channel.info" class="doc-function doc-label doc-label-method">Channel.info()</a></dt>
 <dd>
-<p>A read-only wire-state snapshot of the channel (dict).</p>
+<p>A read-only snapshot of the channel’s state (dict).</p>
 </dd>
 <dt><a href="../reference/Channel.__enter__.html#pymizu.Channel.__enter__" class="doc-function doc-label doc-label-method">Channel.__enter__()</a></dt>
 <dd>
@@ -911,11 +911,11 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Task.html#pymizu.Task" class="doc-class doc-label doc-label-class">Task</a></dt>
 <dd>
-<p>A task handle from _Pool.submit(). Collected exactly once; an uncollected handle’s finalizer releases its slot.</p>
+<p>A task handle from Pool.submit(). Collected exactly once; an uncollected handle’s finalizer releases its slot.</p>
 </dd>
 <dt><a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="doc-class doc-label doc-label-class">PreparedMap</a></dt>
 <dd>
-<p>A map staged once into a persistent region, run many times.</p>
+<p>A map set up once in shared memory, run many times.</p>
 </dd>
 <dt><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="doc-class doc-label doc-label-class">PoolExecutor</a></dt>
 <dd>
@@ -983,7 +983,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Pool.spawn_workers.html#pymizu.Pool.spawn_workers" class="doc-function doc-label doc-label-method">Pool.spawn_workers()</a></dt>
 <dd>
-<p>Spawn <code>n</code> additional workers into free registry slots and</p>
+<p>Spawn <code>n</code> additional workers and wait for them to join</p>
 </dd>
 <dt><a href="../reference/Pool.stop.html#pymizu.Pool.stop" class="doc-function doc-label doc-label-method">Pool.stop()</a></dt>
 <dd>
@@ -995,11 +995,11 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Pool.destroy.html#pymizu.Pool.destroy" class="doc-function doc-label doc-label-method">Pool.destroy()</a></dt>
 <dd>
-<p>Tear down the pool handle immediately, without the shutdown</p>
+<p>Tear down the pool handle immediately, without telling the</p>
 </dd>
 <dt><a href="../reference/Pool.status.html#pymizu.Pool.status" class="doc-function doc-label doc-label-method">Pool.status()</a></dt>
 <dd>
-<p>A read-only wire-state snapshot of the pool (dict).</p>
+<p>A read-only snapshot of the pool’s state (dict).</p>
 </dd>
 <dt><a href="../reference/Pool.dump.html#pymizu.Pool.dump" class="doc-function doc-label doc-label-method">Pool.dump()</a></dt>
 <dd>
@@ -1126,7 +1126,7 @@ ul.task-list li input[type="checkbox"] {
 <section id="outcomes-and-errors" class="level2 doc-group">
 <h2 class="doc-group anchored" data-anchor-id="outcomes-and-errors">Outcomes and errors</h2>
 <div class="doc-description">
-<p>Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.</p>
+<p>A full ring, a timeout, a close, or a dead peer returns as a sentinel singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity, never raised. Real failures raise exceptions.</p>
 </div>
 <dl>
 <dt><a href="../reference/Sentinel.html#pymizu.Sentinel" class="doc-class doc-label doc-label-class">Sentinel</a></dt>
@@ -1190,7 +1190,7 @@ ul.task-list li input[type="checkbox"] {
 <section id="housekeeping" class="level2 doc-group">
 <h2 class="doc-group anchored" data-anchor-id="housekeeping">Housekeeping</h2>
 <div class="doc-description">
-<p>The process-wide default pool, the evaluating worker’s own pool handle, and orphan reaping.</p>
+<p>The process-wide default pool, the current worker’s own pool handle, and cleaning up shared memory left by dead processes.</p>
 </div>
 <dl>
 <dt><a href="../reference/default_pool.html#pymizu.default_pool" class="doc-function doc-label doc-label-function">default_pool()</a></dt>
@@ -1207,11 +1207,11 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/current_pool.html#pymizu.current_pool" class="doc-function doc-label doc-label-function">current_pool()</a></dt>
 <dd>
-<p>The evaluating worker’s own pool handle, inside a task.</p>
+<p>The pool handle of the worker running the task.</p>
 </dd>
 <dt><a href="../reference/current_rng.html#pymizu.current_rng" class="doc-function doc-label doc-label-function">current_rng()</a></dt>
 <dd>
-<p>The running element’s own numpy Generator, inside a seeded map.</p>
+<p>The current element’s own numpy Generator, inside a seeded map.</p>
 </dd>
 <dt><a href="../reference/prune.html#pymizu.prune" class="doc-function doc-label doc-label-function">prune()</a></dt>
 <dd>

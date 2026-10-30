@@ -1,10 +1,10 @@
 # Channel.recv()
 
-Receive one payload.
+Receive one value.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L271-L293)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L270-L292)
 
 ``` python
 Channel.recv(timeout=None)
@@ -17,8 +17,8 @@ Seconds to wait; None waits indefinitely.
 
 ## Returns
 
-`The payload, or the TIMEOUT / CLOSED / PEER_GONE`  
-sentinel on the non-payload outcomes.
+`The value, or the TIMEOUT / CLOSED / PEER_GONE`  
+sentinel.
 
 ## Raises
 

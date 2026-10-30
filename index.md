@@ -18,8 +18,8 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 
 - Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)
 - Drop-in `concurrent.futures.Executor` -- real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`
-- Event-driven asyncio -- `await` tasks and maps, `async for` and [recv_async()](./reference/Channel.recv_async.md#pymizu.Channel.recv_async) on channels -- edge-triggered wakeups, no polling threads
-- Reproducible parallel randomness (`seed=`), invariant for any worker count or steal order
+- Event-driven asyncio -- `await` tasks and maps, `async for` and [recv_async()](./reference/Channel.recv_async.md#pymizu.Channel.recv_async) on channels -- wake-ups as data arrives, no polling threads
+- Reproducible parallel random numbers (`seed=`) -- identical results for any worker count or steal order
 - Nested parallel maps -- a task can map over its own pool, deadlock-free
 
 > **Pre-release.** The API is not stable and may change at any time before a release.
@@ -86,11 +86,11 @@ result
 
     [1, 2, 4, 8]
 
-See [Task pools](user-guide/pools.md#concurrentfutures-interop) for wrapping an existing pool and the cancellation semantics.
+See [Task pools](user-guide/pools.md#concurrentfutures-interop) for wrapping an existing pool and how cancellation works.
 
 ### Parallel map
 
-`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the run's handle immediately. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor. `handle.collect()` returns the results in order -- or `await handle` in asyncio code.
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns the run's handle immediately. The function and data cross into shared memory once. Workers divide the elements among themselves. `handle.collect()` returns the results in order -- or `await handle` in asyncio code.
 
 A map also nests -- the mapped function can map over its own pool with [pymizu.current_pool()](./reference/current_pool.md#pymizu.current_pool), deadlock-free.
 

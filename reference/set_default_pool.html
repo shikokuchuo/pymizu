@@ -844,7 +844,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1578-L1598" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1571-L1590" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">set_default_pool</span>(<span class="va">pool</span>)</span></code></pre></div>
@@ -862,7 +862,7 @@ restore.
 </section>
 <section id="details" class="level2 doc-details">
 <h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
-<p>The registry anchors the handle: a pool set as the default stays alive even after its variable is deleted, until the default is cleared or replaced. See <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link"><code>default_pool()</code></a> for the full semantics.</p>
+<p>Setting a default keeps the pool alive: it survives even after its variable is deleted, until the default is cleared or replaced. See <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link"><code>default_pool()</code></a> for the full semantics.</p>
 
 
 </section>

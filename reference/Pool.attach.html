@@ -845,7 +845,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L744-L767" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L737-L758" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">attach</span>(<span class="va">token</span>)</span></code></pre></div>
@@ -856,7 +856,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <dl>
 <dt><code><span class="doc-parameter-name">token</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">str</span></code></dt>
 <dd>
-The join token; it travels out of band and is <code>pool.token</code> on the creator.
+The join token, <code>pool.token</code> on the creator.
 </dd>
 </dl>
 </div>
@@ -874,7 +874,7 @@ The join token; it travels out of band and is <code>pool.token</code> on the cre
 </section>
 <section id="details" class="level2 doc-details">
 <h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
-<p>Each attached handle is its own producer with its own injection ring: attaching one handle per thread (or per process) is how several submitters drive one pool without serializing.</p>
+<p>Each attached handle is its own producer with its own submission queue: attaching one handle per thread (or per process) is how several submitters drive one pool at once.</p>
 
 
 </section>

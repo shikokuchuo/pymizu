@@ -4,7 +4,7 @@ Return a [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) launc
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L186-L253)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_r.py#L186-L254)
 
 ``` python
 r_pool_launcher(
@@ -17,7 +17,7 @@ r_pool_launcher(
 
 spawning R workers.
 
-Each worker runs the R package `mizu`: the returned `callable(token, slot)` spawns `rscript` on the package's static child runner with `mizu:::worker_main(<token>, <slot>)` as the entry expression and the probed library paths propagated in argv (without them the workers cannot `library(mizu)` from the host's libraries). The mirror of the R package's `mizu_py_pool_launcher()`.
+Each worker runs the R package `mizu`: the returned `callable(token, slot)` spawns `rscript` on the package's static child runner with `mizu:::worker_main(<token>, <slot>)` as the entry expression and the detected library paths passed along in argv (without them the workers cannot `library(mizu)` from the host's libraries). The mirror of the R package's `mizu_py_pool_launcher()`.
 
 ## Parameters
 
@@ -42,7 +42,7 @@ Raised here, before any pool exists, when Rscript is not found or no installed `
 
 ## Notes
 
-The first worker's join records the workers' language in the pool, so the launcher carries no language attribute: a pool of R workers takes [`pymizu.call()`](../reference/call.md#pymizu.call) specifications through [`Pool.submit()`](../reference/Pool.submit.md#pymizu.Pool.submit), and a plain callable errors locally naming the spec verb. A launcher that spawns the wrong language fails at join, not at the first task.
+The first worker's join records the workers' language in the pool, so the launcher carries no language attribute: a pool of R workers takes [`pymizu.call()`](../reference/call.md#pymizu.call) specifications through [`Pool.submit()`](../reference/Pool.submit.md#pymizu.Pool.submit), and a plain callable raises an error naming [call](../reference/call.md#pymizu.call). A launcher that spawns the wrong language fails at join, not at the first task.
 
 ## Examples
 

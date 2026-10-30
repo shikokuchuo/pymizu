@@ -55,7 +55,7 @@ pip install pymizu
 
 A two-way message link between a Python process and a helper process that it spawns.
 
-- `Channel`: A shared-memory SPSC channel handle (process-private)
+- `Channel`: A shared-memory channel handle (process-private)
 
 ### Channel Methods
 
@@ -84,8 +84,8 @@ Methods for the Channel class
 A set of worker processes that divide submitted tasks among themselves.
 
 - `Pool`: A shared-memory work-stealing task pool handle (process-private)
-- `Task`: A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
-- `PreparedMap`: A map staged once into a persistent region, run many times
+- `Task`: A task handle from Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
+- `PreparedMap`: A map set up once in shared memory, run many times
 - `PoolExecutor`: A `concurrent.futures.Executor` over a pymizu pool
 
 ### Pool Methods
@@ -152,7 +152,7 @@ Methods for the Frame class
 
 ### Outcomes and errors
 
-Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
+A full ring, a timeout, a close, or a dead peer returns as a sentinel singleton -- FULL / TIMEOUT / CLOSED / PEER_GONE -- tested by identity, never raised. Real failures raise exceptions.
 
 - `Sentinel`: Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE
 - `is_sentinel`: is_sentinel(x) -> bool
@@ -171,13 +171,13 @@ Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLO
 
 ### Housekeeping
 
-The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
+The process-wide default pool, the current worker's own pool handle, and cleaning up shared memory left by dead processes.
 
 - `default_pool`: The process-wide default pool, or None when none is set
 - `set_default_pool`: Set the process-wide default pool; None clears it
 - `using_pool`: Use ``pool`` as the default for the with block, then restore
-- `current_pool`: The evaluating worker's own pool handle, inside a task
-- `current_rng`: The running element's own numpy Generator, inside a seeded map
+- `current_pool`: The pool handle of the worker running the task
+- `current_rng`: The current element's own numpy Generator, inside a seeded map
 - `prune`: Remove orphaned shared memory regions
 
 ## Resources

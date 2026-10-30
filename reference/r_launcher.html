@@ -857,7 +857,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-text">
 <p>spawning an R peer.</p>
-<p>The peer runs the R package <code>mizu</code>: the returned <code>callable(token)</code> spawns <code>rscript</code> on the package’s static child runner with <code>mizu:::peer_main(&lt;token&gt;)</code> as the entry expression and the probed library paths propagated in argv.</p>
+<p>The peer runs the R package <code>mizu</code>: the returned <code>callable(token)</code> spawns <code>rscript</code> on the package’s static child runner with <code>mizu:::peer_main(&lt;token&gt;)</code> as the entry expression and the detected library paths passed along in argv.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -869,7 +869,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </dd>
 <dt><code><span class="doc-parameter-name">stdout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>
-<p>Forwarded to <code>subprocess.Popen</code>; the default inherits the console, where the peer’s error epilogue lands.</p>
+<p>Forwarded to <code>subprocess.Popen</code>; the default inherits the console, where the peer’s error messages land.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">stderr</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>

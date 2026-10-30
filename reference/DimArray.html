@@ -844,8 +844,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-text">
 <p><code>axis_names</code> / <code>r_class</code>) for faithful R ↔︎ Python round trips.</p>
-<p>A received labeled vector or array homes as a DimArray; an unmodified echo restores every label in R (<code>identical()</code>). Attach labels explicitly to send a labeled value: <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> for a 1-D array, <code>dimnames</code> (plus optional <code>axis_names</code>, R’s <code>names(dimnames(x))</code>) for a matrix or n-D array, and <code>r_class = "table"</code> for R’s table class. The two label slots are mutually exclusive at send; <code>axis_names</code> requires <code>dimnames</code> and has one entry per axis.</p>
-<p>Labels never propagate implicitly — any numpy operation that builds a new array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped or permuted array never inherits labels its data no longer matches.</p>
+<p>A received labeled vector or array arrives as a DimArray; an unmodified echo restores every label in R (<code>identical()</code>). Attach labels explicitly to send a labeled value: <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> for a 1-D array, <code>dimnames</code> (plus optional <code>axis_names</code>, R’s <code>names(dimnames(x))</code>) for a matrix or n-D array, and <code>r_class = "table"</code> for R’s table class. Use either <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> or <code>dimnames</code>, not both; <code>axis_names</code> requires <code>dimnames</code> and has one entry per axis.</p>
+<p>Labels never carry over on their own — any numpy operation that builds a new array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped or permuted array never inherits labels its data no longer matches.</p>
 </div>
 
 

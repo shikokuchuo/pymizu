@@ -842,7 +842,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Task</span><span class="op">.</span><span class="fu">collect_async</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>The event-driven collect: an asyncio.Future resolving with the task’s result (or raising the flattened remote error collect() raises), driven by the submitter’s notify endpoint — never blocks, never polls. Cancelling the Future detaches the waiter (a later blocking collect() works again); it never cancels the task — cancel() stays the explicit verb.</p>
+<p>The event-driven collect: an asyncio.Future resolving with the task’s result (or raising the error collect() raises), resolved when the result arrives — never blocks, never polls. Cancelling the Future detaches the waiter (a later blocking collect() works again); it never cancels the task — cancel() stays the explicit verb.</p>
 </div>
 
 

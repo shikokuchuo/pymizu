@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="The running element’s own numpy Generator, inside a seeded map.">
+<meta name="description" content="The current element’s own numpy Generator, inside a seeded map.">
 
 <title>current_rng() | pymizu 水</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "current_rng - pymizu 水", "isPartOf": {"@type": "WebSite", "name": "pymizu 水"}, "url": "https://shikokuchuo.net/pymizu/reference/current_rng.html"}]</script>
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="current_rng() | pymizu 水">
-<meta property="og:description" content="The running element’s own numpy Generator, inside a seeded map.">
+<meta property="og:description" content="The current element’s own numpy Generator, inside a seeded map.">
 <meta property="og:site_name" content="pymizu 水">
 <meta name="twitter:title" content="current_rng() | pymizu 水">
-<meta name="twitter:description" content="The running element’s own numpy Generator, inside a seeded map.">
+<meta name="twitter:description" content="The current element’s own numpy Generator, inside a seeded map.">
 <meta name="twitter:card" content="summary">
 </head>
 
@@ -841,11 +841,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>The running element’s own numpy Generator, inside a seeded map.</p>
+<p>The current element’s own numpy Generator, inside a seeded map.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1516-L1549" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1510-L1543" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">current_rng</span>()</span></code></pre></div>
@@ -854,7 +854,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
 <div class="doc-definition-items">
 <dl>
-<dt><code> <span class="doc-parameter-annotation">The element’s memoized <code>numpy.random.Generator</code> inside a</span></code></dt>
+<dt><code> <span class="doc-parameter-annotation">The element’s own <code>numpy.random.Generator</code> inside a</span></code></dt>
 <dd>
 seeded map element; None outside one.
 </dd>
@@ -874,8 +874,8 @@ When numpy is not installed.
 </section>
 <section id="details" class="level2 doc-details">
 <h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
-<p><a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a> <code>seed=</code> seeds the stdlib <code>random</code> module per element; a task drawing from numpy calls this instead: the element’s memoized <code>numpy.random.Generator</code>, derived from the same seed material on first call in the element (domain-separated from the stdlib derivation, so those streams are unchanged). Two calls in one element continue one stream; distinct elements get distinct streams — results identical for any chunking, worker count, or steal order.</p>
-<p>Outside a seeded map element (an unseeded map, an ordinary task, the submitter process) the return is None. A seeded map element must not nested-submit and collect: worker helping can run another map’s batches mid-element, wiping this element’s stash — a later call rebuilds from the digest, restarting the stream instead of continuing it.</p>
+<p><a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map()</code></a> <code>seed=</code> seeds the stdlib <code>random</code> module per element; a task drawing from numpy calls this instead: the element’s own <code>numpy.random.Generator</code>, derived from the same seed material on first call in the element (kept separate from the stdlib derivation, so those streams are unchanged). Two calls in one element continue one stream; distinct elements get distinct streams — results identical for any chunking, worker count, or steal order.</p>
+<p>Outside a seeded map element (an unseeded map, an ordinary task, the submitter process) the return is None. A seeded map element must not submit and collect nested tasks: while the worker waits it runs other work, possibly another map’s batches mid-element, which wipes this element’s stash — a later call rebuilds from the seed, restarting the stream instead of continuing it.</p>
 
 
 </section>

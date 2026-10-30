@@ -302,7 +302,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="deploying-on-linux" class="level1">
 <h1>Deploying on Linux</h1>
-<p>On Linux, POSIX shared memory is <code>/dev/shm</code>, a bounded tmpfs mount. Everything pymizu creates must fit in it: pool and channel regions, plus the per-payload regions that carry anything past the in-slot budget. Container runtimes set it to 64 MB by default. Use <code>docker run --shm-size=4g</code>, or the equivalent in your orchestrator. Size it to your peak in-flight payload traffic.</p>
+<p>On Linux, POSIX shared memory is <code>/dev/shm</code>, a bounded tmpfs mount. Everything pymizu creates must fit in it: pool and channel regions, plus the regions that carry larger payloads. Container runtimes set it to 64 MB by default. Use <code>docker run --shm-size=4g</code>, or the equivalent in your orchestrator. Size it to your peak in-flight payload traffic.</p>
 </section>
 <section id="linux-memory-allocator" class="level1">
 <h1>Linux memory allocator</h1>

@@ -1,10 +1,10 @@
 # Pool.spawn_workers()
 
-Spawn `n` additional workers into free registry slots and
+Spawn `n` additional workers and wait for them to join
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1304-L1348)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1301-L1345)
 
 ``` python
 Pool.spawn_workers(
@@ -15,7 +15,7 @@ Pool.spawn_workers(
 )
 ```
 
-wait for them to join (controller only).
+(controller only).
 
 ## Parameters
 

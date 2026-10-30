@@ -4,7 +4,7 @@ Wait on several tasks.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L891-L917)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L883-L909)
 
 ``` python
 Pool.collect_any(
@@ -23,8 +23,8 @@ Seconds to wait; None waits indefinitely.
 
 ## Returns
 
-`(index, value) of the first terminal task, or the`  
-`TIMEOUT` sentinel. A non-OK outcome raises with an `index` attribute (0-based).
+`(index, value) of the first task to finish, or the`  
+`TIMEOUT` sentinel. A failure raises with an `index` attribute (0-based).
 
 ## Raises
 

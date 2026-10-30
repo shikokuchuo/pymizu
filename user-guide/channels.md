@@ -58,7 +58,7 @@ ch.recv_batch(4, timeout=5)
 
 ## asyncio
 
-`ch.recv_async()` is the event-driven receive: an `asyncio.Future` for the next value, resolved off the channel's notify endpoint -- no blocking, no polling, and no timeout argument (`asyncio.timeout` / `asyncio.wait_for` are the idiom). Terminal states stay values: the Future resolves with `CLOSED` / `PEER_GONE`. Several outstanding calls resolve in FIFO order, one message each. Cancelling the Future detaches the waiter, passing the next message to the one after.
+`ch.recv_async()` is the event-driven receive: an `asyncio.Future` for the next value, resolved when it arrives -- no blocking and no polling. There is no timeout argument; use `asyncio.timeout` or `asyncio.wait_for`. Terminal states stay values: the Future resolves with `CLOSED` / `PEER_GONE`. Several outstanding calls resolve in call order, one message each. Cancelling the Future detaches the waiter, passing the next message to the one after.
 
 ``` python
 ch.send(1)
@@ -73,7 +73,7 @@ await ch.recv_async()
 
 ## Closing
 
-`ch.close()` is the orderly shutdown: it signals the peer and waits for it to finish draining before releasing the shared resources:
+`ch.close()` is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:
 
 ``` python
 ch.close()
@@ -81,19 +81,19 @@ ch.close()
 
     True
 
-A channel is also a context manager: the `with` block closes it on exit. [close_signal()](../reference/Channel.close_signal.md#pymizu.Channel.close_signal) signals without waiting. `destroy()` tears the handle down immediately, without the close handshake. The peer observes the channel as closed (`PEER_GONE` is the hard-death outcome). A destroy is safe from any thread. A verb in flight on another thread pins the handle, and teardown completes when the last one returns. An indefinite wait ([recv()](../reference/Channel.recv.md#pymizu.Channel.recv), [recv_batch()](../reference/Channel.recv_batch.md#pymizu.Channel.recv_batch), `ready_wait()`, `close()`) breaks out within a bounded slice, so the teardown and the peer's observation of it follow promptly.
+A channel is also a context manager: the `with` block closes it on exit. [close_signal()](../reference/Channel.close_signal.md#pymizu.Channel.close_signal) signals without waiting. `destroy()` releases the handle immediately, without waiting for the peer. The peer sees the channel as closed (`PEER_GONE` if it died hard). A destroy is safe from any thread. A verb still running on another thread keeps the handle alive until it returns, and a waiting verb ([recv()](../reference/Channel.recv.md#pymizu.Channel.recv), [recv_batch()](../reference/Channel.recv_batch.md#pymizu.Channel.recv_batch), `ready_wait()`, `close()`) wakes up promptly so teardown can finish.
 
 ## Threading
 
-A channel side is confined to one thread at a time -- this is libmizu's handle-threading contract, not a pymizu limitation: the wire structs carry no mutex by design. Serialize a side's verbs -- [send()](../reference/Channel.send.md#pymizu.Channel.send), [recv()](../reference/Channel.recv.md#pymizu.Channel.recv), their batch forms, `ready_wait()` -- on one thread; a concurrent second verb raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) rather than corrupt the single-producer ring. The guard is a check, not a lock: it never waits, it reports the misuse. Blocking receives and [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async) consumers are likewise exclusive on a side: a blocking receive while async waiters are pending raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) at the call site, on any thread but the consumer's event loop -- receives on the loop thread itself can never race the drain that runs there. Full-duplex traffic driven from two threads wants two channels -- one per direction, each confined to its thread -- or one channel whose verbs are funneled through a single thread. `destroy()` is the exception: it is safe from any thread, pinning verbs in flight as described in Closing.
+A channel side belongs to one thread at a time -- this is libmizu's threading contract: the shared structures carry no locks by design. Call a side's verbs -- [send()](../reference/Channel.send.md#pymizu.Channel.send), [recv()](../reference/Channel.recv.md#pymizu.Channel.recv), their batch forms, `ready_wait()` -- from one thread only; a second verb from another thread raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async) are likewise exclusive on a side: a blocking receive while async receives are pending raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) at the call site -- except on the async consumer's own event-loop thread, whose receives can never race it. Two-way traffic from two threads needs two channels -- one per direction, each on its own thread -- or one channel whose calls all go through a single thread. `destroy()` is the exception: it is safe from any thread, as described in Closing.
 
 ## What crosses a channel
 
 pymizu moves each value the cheapest way it can:
 
 1.  `None` crosses as a marker: no data moves.
-2.  Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (`bytes` arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages: no copy, no parse. A contiguous buffer below 256 KB instead crosses as one copy into the channel's spill arena -- cheaper than region machinery at those sizes; from 256 KB the receive is a view.
-3.  A `str` within the inline budget crosses as raw UTF-8.
+2.  Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (`bytes` arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages: no copy, no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory -- cheaper than a separate region at those sizes; from 256 KB the receive is a view.
+3.  A `str` that fits in a slot crosses as raw UTF-8.
 4.  Booleans, numbers, and flat lists or dicts of them cross in a compact binary form.
 5.  Everything else crosses as a pickle (protocol 4).
 
@@ -103,7 +103,7 @@ An uncaught error in the peer crosses as a value, not a raised exception: a [pym
 
 ## Frames without pickling
 
-Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default: container-exact, but a full serialize/parse round trip. [pymizu.Frame.from_arrow()](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) opts an Arrow producer into the frame path instead: one shared-memory region on the wire, read in place at receive:
+Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default: type-exact, but a full serialize/parse round trip. [pymizu.Frame.from_arrow()](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive:
 
 ``` python
 import pyarrow as pa
@@ -150,10 +150,10 @@ Values cross exactly, but types normalize. A column also copies, never declines,
 | dictionary\<i32, utf8\> | dictionary\<i32, string\> (adopts; other index widths copy) |
 | chunked or sliced columns | concatenated or rebased (copies) |
 
-Chunked pyarrow tables adopt after `table.combine_chunks()`. Timestamps and durations keep their counts and unit verbatim: a `timestamp[ns]` round trip is exact to the nanosecond, tz included. Nanosecond fidelity needs pymizu from this version on both ends. A peer without the capability (an older pymizu, or R) receives the microsecond form instead: values rounded to the double-second wire's precision, never an error.
+Chunked pyarrow tables adopt after `table.combine_chunks()`. Timestamps and durations keep their counts and unit: a `timestamp[ns]` round trip is exact to the nanosecond, timezone included. Nanosecond precision needs pymizu from this version on both ends. A peer without it (an older pymizu, or R) receives the microsecond form instead: values rounded to the microsecond precision of the wire format, never an error.
 
-Adopted buffers stay alive for the frame's lifetime: a frame from a 4 GB table pins it, like a numpy view. [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles, container-exact. On a pool, a [Frame](../reference/Frame.md#pymizu.Frame) task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.md#frames-as-task-arguments)). [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not take a frame as its element source.
+Adopted buffers stay alive for the frame's lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a [Frame](../reference/Frame.md#pymizu.Frame) task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.md#frames-as-task-arguments)). [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not take a frame as its element source.
 
 ## Sizing
 
-[Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) takes `capacity` (ring slots, a power of two), `slot_size` (bytes per slot, so the inline payload budget is `slot_size - 16`), and `arena_size` (the channel's spill arena). A value past the inline budget spills to the arena or a fresh shared-memory region. `spin=True` selects pure-spin waiting: receivers never park to the OS. This gives the lowest latency, at full CPU use while waiting.
+[Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) takes `capacity` (ring slots, a power of two), `slot_size` (bytes per slot, so a payload of up to `slot_size - 16` bytes fits in a slot), and `arena_size` (the channel's shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. `spin=True` makes receivers busy-wait instead of sleeping. This gives the lowest latency, at full CPU use while waiting.

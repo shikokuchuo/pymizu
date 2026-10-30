@@ -842,7 +842,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Frame</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>to_dict() gives the column dict without an Arrow library; <strong>arrow_c_stream</strong> exports to polars / pyarrow / pandas. from_arrow() constructs one from an Arrow producer (the opt-in zero-copy path for Python-to-Python channels). R frame metadata rides the _r_attrs stash: it attaches at read and validates at send, but it rides the pristine received Frame only — the Frame immutability invariant: any future mutator must clear it first (a rebuild arrives in R as a plain data.frame, never a mislabeled one).</p>
+<p>to_dict() gives the column dict without an Arrow library; <strong>arrow_c_stream</strong> exports to polars / pyarrow / pandas. from_arrow() constructs one from an Arrow producer (the opt-in zero-copy path for Python-to-Python channels). R frame metadata (classes, extra attributes) survives an unmodified round trip; a rebuilt frame arrives in R as a plain data.frame.</p>
 </div>
 
 

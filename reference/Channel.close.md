@@ -1,16 +1,16 @@
 # Channel.close()
 
-Orderly close: signal the peer and wait up to `timeout`
+Orderly close: tell the peer to close and wait up to
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L350-L374)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L348-L372)
 
 ``` python
 Channel.close(timeout=5.0)
 ```
 
-seconds for it to observe the close. True on a clean handshake; False (with a warning) on timeout, in which case resources release when the handle is garbage collected.
+`timeout` seconds for it to finish. True on a clean close; False (with a warning) on timeout -- resources are then released when the handle is garbage collected.
 
 ## Raises
 

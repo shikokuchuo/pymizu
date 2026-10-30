@@ -26,7 +26,7 @@ When True, `shutdown()` stops the wrapped pool.
 
 ## Notes
 
-`submit()` (and the stdlib [map](../reference/Pool.map.md#pymizu.Pool.map) over it) is thread-safe, as the `concurrent.futures` contract requires: an internal lock serializes the single-producer pool handle. This is the adapter to reach for when several threads must submit to one pool. Deltas from stdlib semantics: a task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError) (the remote error envelope); `Future.running()` is always False (futures resolve at completion); cancellation is advisory, mirroring [`Task.cancel()`](../reference/Task.md#pymizu.Task) -- and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An infrastructure failure (e.g. the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a broken executor. Resolution -- including any `add_done_callback` callables -- runs on the core's listener thread, the same discipline as the stdlib executors' management thread: keep callbacks short, and never block one on the pool itself. [map](../reference/Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit` -- for bulk maps, [`Pool.map`](../reference/Pool.map.md#pymizu.Pool.map) is the faster path.
+`submit()` (and the stdlib [map](../reference/Pool.map.md#pymizu.Pool.map) over it) is thread-safe, as the `concurrent.futures` contract requires: an internal lock serializes the single-producer pool handle. This is the adapter to reach for when several threads must submit to one pool. Differences from the stdlib: a task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError); `Future.running()` is always False (futures resolve at completion); cancellation works like [`Task.cancel()`](../reference/Task.md#pymizu.Task) -- it never interrupts a running task -- and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An internal failure (for example the wrapped pool is stopped from under the executor) fails every outstanding future; later submissions raise instead of queueing onto a broken executor. Futures resolve -- and `add_done_callback` callbacks run -- on pymizu's listener thread, the same discipline as the stdlib executors' management thread: keep callbacks short, and never block one on the pool itself. [map](../reference/Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit` -- for bulk maps, [`Pool.map`](../reference/Pool.map.md#pymizu.Pool.map) is the faster path.
 
 ## Examples
 
@@ -48,7 +48,7 @@ results
 | Name                    | Description                                 |
 |-------------------------|---------------------------------------------|
 | [create()](#create)     | Spawn an owned pool --                       |
-| [shutdown()](#shutdown) | Stdlib shutdown.                            |
+| [shutdown()](#shutdown) | Shut down the executor.                     |
 | [submit()](#submit)     | Schedule `fn(*args, **kwargs)` on the pool. |
 
 ### create()
@@ -82,7 +82,7 @@ Forwarded to [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create).
 
 ### shutdown()
 
-Stdlib shutdown.
+Shut down the executor.
 
 Usage
 
@@ -142,4 +142,4 @@ Keyword arguments for `fn`.
 After shutdown.
 
 `pymizu.MizuError`  
-The infrastructure failure that broke the executor (its drain failed every outstanding future on it).
+The internal failure that broke the executor (every outstanding future failed with it).

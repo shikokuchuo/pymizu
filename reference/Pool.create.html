@@ -845,7 +845,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L661-L742" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L655-L735" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">create</span>(</span>
@@ -867,11 +867,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <dl>
 <dt><code><span class="doc-parameter-name">workers</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1</span></span></code></dt>
 <dd>
-<p>Number of worker processes to spawn; they join the pool’s registry (capacity <code>max_workers</code>).</p>
+<p>Number of worker processes to spawn.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">max_workers</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>
-<p>Registry capacity; defaults to <code>workers</code>.</p>
+<p>The worker limit; defaults to <code>workers</code>.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">max_submitters</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">8</span></span></code></dt>
 <dd>
@@ -879,11 +879,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </dd>
 <dt><code><span class="doc-parameter-name">injection_cap</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1024</span></span></code></dt>
 <dd>
-<p>Capacity of the injection ring.</p>
+<p>Capacity of each submitter’s queue.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">per_worker_cap</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1024</span></span></code></dt>
 <dd>
-<p>Capacity of each worker’s work-stealing deque.</p>
+<p>Capacity of each worker’s queue.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">result_slots</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">4096</span></span></code></dt>
 <dd>
@@ -891,7 +891,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </dd>
 <dt><code><span class="doc-parameter-name">slot_size</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">512</span></span></code></dt>
 <dd>
-<p>Bytes per queue entry and result slot — a payload past the inline budget travels in a fresh region per payload.</p>
+<p>Bytes per queue entry and result slot; a larger payload travels in its own shared-memory region.</p>
 </dd>
 <dt><code><span class="doc-parameter-name">startup_timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="fl">30.0</span></span></code></dt>
 <dd>

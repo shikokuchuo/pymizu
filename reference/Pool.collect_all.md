@@ -4,7 +4,7 @@ Wait until every task is terminal.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L919-L949)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L911-L941)
 
 ``` python
 Pool.collect_all(
@@ -23,8 +23,8 @@ Seconds to wait; None waits indefinitely.
 
 ## Returns
 
-`All values in input order. On the first non-OK outcome by`  
-position, raises with an `index` attribute (0-based) -- only the reported handle is consumed; every other, the results ahead of it included, stays collectible. A result that fails to read raises with `index` and a `values` attribute carrying the consumed prefix. The `TIMEOUT` sentinel consumes nothing.
+`All values in input order. On the first failure by`  
+position, raises with an `index` attribute (0-based) -- only the reported handle is consumed; every other, including the results ahead of it, stays collectible. A result that fails to read raises with `index` and a `values` attribute carrying the consumed prefix. The `TIMEOUT` sentinel consumes nothing.
 
 ## Raises
 

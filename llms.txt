@@ -9,7 +9,7 @@
 #### Channels
 > A two-way message link between a Python process and a helper process that it spawns.
 
-- [Channel](https://shikokuchuo.net/pymizu/reference/Channel.html): A shared-memory SPSC channel handle (process-private)
+- [Channel](https://shikokuchuo.net/pymizu/reference/Channel.html): A shared-memory channel handle (process-private)
 
 #### Channel Methods
 > Methods for the Channel class
@@ -36,8 +36,8 @@
 > A set of worker processes that divide submitted tasks among themselves.
 
 - [Pool](https://shikokuchuo.net/pymizu/reference/Pool.html): A shared-memory work-stealing task pool handle (process-private)
-- [Task](https://shikokuchuo.net/pymizu/reference/Task.html): A task handle from _Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
-- [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A map staged once into a persistent region, run many times
+- [Task](https://shikokuchuo.net/pymizu/reference/Task.html): A task handle from Pool.submit(). Collected exactly once; an uncollected handle's finalizer releases its slot
+- [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A map set up once in shared memory, run many times
 - [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A `concurrent.futures.Executor` over a pymizu pool
 
 #### Pool Methods
@@ -99,7 +99,7 @@
 - [Frame.__reduce__](https://shikokuchuo.net/pymizu/reference/Frame.__reduce__.html)
 
 #### Outcomes and errors
-> Terminal transport states return as the sentinel singletons FULL / TIMEOUT / CLOSED / PEER_GONE (identity-tested, never raised); real failures raise from the exception hierarchy.
+> A full ring, a timeout, a close, or a dead peer returns as a sentinel singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity, never raised. Real failures raise exceptions.
 
 - [Sentinel](https://shikokuchuo.net/pymizu/reference/Sentinel.html): Terminal-state sentinel returned by pymizu verbs. Identity-tested against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE
 - [is_sentinel](https://shikokuchuo.net/pymizu/reference/is_sentinel.html): is_sentinel(x) -> bool
@@ -117,11 +117,11 @@
 - [ConcurrentUseError](https://shikokuchuo.net/pymizu/reference/ConcurrentUseError.html): A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu 'Handle threading')
 
 #### Housekeeping
-> The process-wide default pool, the evaluating worker's own pool handle, and orphan reaping.
+> The process-wide default pool, the current worker's own pool handle, and cleaning up shared memory left by dead processes.
 
 - [default_pool](https://shikokuchuo.net/pymizu/reference/default_pool.html): The process-wide default pool, or None when none is set
 - [set_default_pool](https://shikokuchuo.net/pymizu/reference/set_default_pool.html): Set the process-wide default pool; None clears it
 - [using_pool](https://shikokuchuo.net/pymizu/reference/using_pool.html): Use ``pool`` as the default for the with block, then restore
-- [current_pool](https://shikokuchuo.net/pymizu/reference/current_pool.html): The evaluating worker's own pool handle, inside a task
-- [current_rng](https://shikokuchuo.net/pymizu/reference/current_rng.html): The running element's own numpy Generator, inside a seeded map
+- [current_pool](https://shikokuchuo.net/pymizu/reference/current_pool.html): The pool handle of the worker running the task
+- [current_rng](https://shikokuchuo.net/pymizu/reference/current_rng.html): The current element's own numpy Generator, inside a seeded map
 - [prune](https://shikokuchuo.net/pymizu/reference/prune.html): Remove orphaned shared memory regions

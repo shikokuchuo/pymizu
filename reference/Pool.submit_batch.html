@@ -845,7 +845,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L854-L889" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L845-L881" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dt">Pool</span><span class="op">.</span><span class="fu">submit_batch</span>(</span>
@@ -855,7 +855,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>crossing.</p>
+<p>call.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -867,7 +867,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </dd>
 <dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
 <dd>
-Seconds to wait for injection-ring space; None waits indefinitely.
+Seconds to wait for queue space; None waits indefinitely.
 </dd>
 </dl>
 </div>
@@ -876,9 +876,9 @@ Seconds to wait for injection-ring space; None waits indefinitely.
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
 <div class="doc-definition-items">
 <dl>
-<dt><code> <span class="doc-parameter-annotation">A list of <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task</code></a> handles. Ring-full past</span></code></dt>
+<dt><code> <span class="doc-parameter-annotation">A list of <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task</code></a> handles. If the queue</span></code></dt>
 <dd>
-<code>timeout</code> ends the batch short — the returned handles stay valid and collectible. A mid-batch failure raises with an <code>accepted</code> attribute holding the handles already submitted, which stay valid and collectible.
+stays full past <code>timeout</code> the batch ends short — the returned handles stay valid and collectible. A mid-batch failure raises with an <code>accepted</code> attribute holding the handles already submitted, which stay valid and collectible.
 </dd>
 </dl>
 </div>
