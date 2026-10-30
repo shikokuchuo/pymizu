@@ -10,7 +10,7 @@
 
 <meta name="description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers take tasks from per-submitter…">
 
-<title>Task pools | pymizu 水</title>
+<title>Task pools | pymizu ミズ</title>
 <meta property="og:type" content="website">
 <style>
 /* Default styles provided by pandoc.
@@ -131,10 +131,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link rel="alternate" type="text/markdown" href="pools.md">
 
 
-<meta property="og:title" content="Task pools | pymizu 水">
+<meta property="og:title" content="Task pools | pymizu ミズ">
 <meta property="og:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers take tasks from per-submitter…">
-<meta property="og:site_name" content="pymizu 水">
-<meta name="twitter:title" content="Task pools | pymizu 水">
+<meta property="og:site_name" content="pymizu ミズ">
+<meta name="twitter:title" content="Task pools | pymizu ミズ">
 <meta name="twitter:description" content="A pool is a set of worker processes that divide submitted tasks among themselves. Pool.create() spawns them. Workers take tasks from per-submitter…">
 <meta name="twitter:card" content="summary">
 </head>
@@ -147,7 +147,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <div class="navbar-container container-fluid">
       <div class="navbar-brand-container mx-auto">
     <a class="navbar-brand" href="../index.html">
-    <span class="navbar-title">pymizu 水</span>
+    <span class="navbar-title">pymizu ミズ</span>
     </a>
   </div>
             <div id="quarto-search" class="" title="Search"></div>
@@ -289,7 +289,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <p>A pool is a set of worker processes that divide submitted tasks among themselves. <a href="../reference/Pool.create.html#pymizu.Pool.create" class="gdls-link gdls-code">Pool.create()</a> spawns them. Workers take tasks from per-submitter queues and steal work from each other, so the load balances itself. A submission is one shared-memory write plus at most one wake-up: no dispatcher process is involved.</p>
-<div id="b12578f1" class="cell" data-execution_count="1">
+<div id="c3430455" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -349,7 +349,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="waiting-on-several-tasks" class="level1">
 <h1>Waiting on several tasks</h1>
 <p><code>pool.collect_any()</code> waits on a list of task handles and returns <code>(index, value)</code> for the first to finish. The other handles stay collectible. <code>pool.collect_all()</code> returns every value in input order once all have finished. Both take one overall <code>timeout</code> and return the <code>TIMEOUT</code> sentinel on expiry, consuming nothing:</p>
-<div id="0fe261cf" class="cell" data-execution_count="2">
+<div id="85edd645" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> time</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
@@ -361,7 +361,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>(1, 6)</code></pre>
 </div>
 </div>
-<div id="aac02140" class="cell" data-execution_count="3">
+<div id="d37e44a3" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> pool.collect_all(tasks, timeout<span class="op">=</span><span class="dv">5</span>)</span>
@@ -377,7 +377,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>asyncio</h1>
 <p><code>await task</code> — or <code>task.collect_async()</code> — is the event-driven collect: an <code>asyncio.Future</code> resolving with the task’s result (or raising the task’s error), resolved when the result arrives — no blocking, no polling. Cancelling the Future detaches the waiter — a later blocking <a href="../reference/Task.collect.html#pymizu.Task.collect" class="gdls-link gdls-code">collect()</a> works again — and never cancels the task (<code>task.cancel()</code> stays the explicit verb). A task with a pending async collect refuses blocking collects: one consumer per result.</p>
 <p><code>pool.collect_any_async(tasks)</code> and <code>pool.collect_all_async(tasks)</code> are the batch form: exactly one Future per collection, never one per task, re-checked whenever a task finishes. They behave like the sync verbs: collect-all resolves in input order and the first error by position rejects with <code>index</code>; collect-any resolves <code>(index, value)</code> for the first task to finish. There are no timeout arguments: use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>.</p>
-<div id="77de422f" class="cell" data-execution_count="4">
+<div id="b180f14f" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">2</span>) <span class="im">as</span> pool:</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    tasks <span class="op">=</span> [pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    rest <span class="op">=</span> <span class="cf">await</span> pool.collect_all_async(tasks)</span>
@@ -392,7 +392,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="nested-tasks" class="level1">
 <h1>Nested tasks</h1>
 <p>Inside a task, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a> returns the pool handle of the worker running the task. A nested submit goes straight onto that worker’s own queue — no ring, no wake-up. A worker waiting on a nested result runs other work instead of sleeping. Recursive fan-out is cheap and never deadlocks the pool:</p>
-<div id="fdbeafdc" class="cell" data-execution_count="5">
+<div id="0b4338ad" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fan_out(parts):</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pymizu.current_pool()</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    subs <span class="op">=</span> [pool.submit(<span class="bu">sum</span>, part) <span class="cf">for</span> part <span class="kw">in</span> parts]</span>
@@ -415,7 +415,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>A default pool for package code</h1>
 <p>Package code can read a process-wide default pool with <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">pymizu.default_pool()</a>. <code>pymizu.set_default_pool(pool)</code> sets it (<code>None</code> clears it) and returns the previous default, so callers can save and restore. The default keeps the pool alive: a pool set as the default survives even after its variable is deleted. <code>pymizu.using_pool(pool)</code> scopes the default to a <code>with</code> block and restores the previous default on exit, including on exception.</p>
 <p>Resolve an optional pool in this order: an explicit <a href="../reference/Task.pool.html#pymizu.Task.pool" class="gdls-link gdls-code">pool</a> argument, <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a> inside a task, <a href="../reference/default_pool.html#pymizu.default_pool" class="gdls-link gdls-code">default_pool()</a>, then your own fallback (sequential execution or an error). The default never overrides <a href="../reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">current_pool()</a>: inside a task the worker’s own handle wins, so nested submission is never shadowed. Setting a default checks the type only. A stopped pool is accepted and fails at use time. Handles from <a href="../reference/Pool.attach.html#pymizu.Pool.attach" class="gdls-link gdls-code">Pool.attach()</a> are valid defaults.</p>
-<div id="748bcd0c" class="cell" data-execution_count="6">
+<div id="d3a66b32" class="cell" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> run(x, pool<span class="op">=</span><span class="va">None</span>):</span>
 <span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    pool <span class="op">=</span> pool <span class="kw">or</span> pymizu.current_pool() <span class="kw">or</span> pymizu.default_pool()</span>
 <span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> pool <span class="kw">is</span> <span class="va">None</span>:</span>
@@ -460,7 +460,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="concurrent.futures-interop" class="level1">
 <h1>concurrent.futures interop</h1>
 <p><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">pymizu.PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface. Code written against <code>ProcessPoolExecutor</code> drops in: <code>submit</code> returns real <code>concurrent.futures.Future</code> objects. <code>wait</code>, <code>as_completed</code>, <code>asyncio.wrap_future</code>, and the base <code>Executor.map</code> all work unchanged. Futures resolve as results arrive — no background thread, no polling.</p>
-<div id="a13ac7f8" class="cell" data-execution_count="7">
+<div id="35f87f4e" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
 <span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>

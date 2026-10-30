@@ -1,9 +1,9 @@
-# pymizu 水
+# pymizu ミズ
 
           ________
          /\       \
         /  \ pymizu\
-        \  /  水   /
+        \  / ミズ  /
          \/_______/
 
 pymizu uses shared memory to make communication between Python processes fast enough to parallelize work at thread granularity.

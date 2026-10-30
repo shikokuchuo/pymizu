@@ -10,8 +10,8 @@
 
 <meta name="description" content="Zero-copy async and parallel IPC across Python and R">
 
-<title>pymizu 水</title>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu 水", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}</script>
+<title>pymizu ミズ</title>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu ミズ", "description": "Zero-copy async and parallel IPC across Python and R", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}</script>
 <meta property="og:type" content="website">
 <style>
 /* Default styles provided by pandoc.
@@ -130,10 +130,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link rel="alternate" type="text/markdown" href="index.md">
 
 
-<meta property="og:title" content="pymizu 水 | pymizu 水">
+<meta property="og:title" content="pymizu ミズ | pymizu ミズ">
 <meta property="og:description" content="Zero-copy async and parallel IPC across Python and R">
-<meta property="og:site_name" content="pymizu 水">
-<meta name="twitter:title" content="pymizu 水 | pymizu 水">
+<meta property="og:site_name" content="pymizu ミズ">
+<meta name="twitter:title" content="pymizu ミズ | pymizu ミズ">
 <meta name="twitter:description" content="Zero-copy async and parallel IPC across Python and R">
 <meta name="twitter:card" content="summary">
 </head>
@@ -146,7 +146,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
       <div class="navbar-container container-fluid">
       <div class="navbar-brand-container mx-auto">
     <a class="navbar-brand" href="./index.html">
-    <span class="navbar-title">pymizu 水</span>
+    <span class="navbar-title">pymizu ミズ</span>
     </a>
   </div>
             <div id="quarto-search" class="" title="Search"></div>
@@ -188,7 +188,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title">pymizu 水</h1>
+<h1 class="title">pymizu ミズ</h1>
 </div>
 
 
@@ -252,7 +252,7 @@ section.level2:first-of-type > h2:first-child,
 </div></div><pre><code>      ________
      /\       \
     /  \ pymizu\
-    \  /  水   /
+    \  / ミズ  /
      \/_______/</code></pre>
 <p>pymizu uses shared memory to make communication between Python processes fast enough to parallelize work at thread granularity.</p>
 <p>Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). The hot path never enters the kernel and data is never copied through a system socket.</p>
@@ -276,7 +276,7 @@ section.level2:first-of-type > h2:first-child,
 </section>
 <section id="quickstart" class="level2">
 <h2 class="anchored" data-anchor-id="quickstart">Quickstart</h2>
-<div id="8eff5952" class="cell" data-execution_count="1">
+<div id="dd459edc" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -372,7 +372,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="drop-in-concurrent.futures" class="level2">
 <h2 class="anchored" data-anchor-id="drop-in-concurrent.futures">Drop-in <code>concurrent.futures</code></h2>
 <p><a href="./reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface — code written against <code>ProcessPoolExecutor</code> drops in, and <code>submit</code> returns real <code>Future</code> objects:</p>
-<div id="0752a0f0" class="cell" data-execution_count="2">
+<div id="2faae31e" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
@@ -388,7 +388,7 @@ section.level2:first-of-type > h2:first-child,
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns the run’s handle immediately. The function and data cross into shared memory once. Workers divide the elements among themselves. <code>handle.collect()</code> returns the results in order — or <code>await handle</code> in asyncio code.</p>
 <p>A map also nests — the mapped function can map over its own pool with <a href="./reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a>, deadlock-free.</p>
-<div id="0f4d0063" class="cell" data-execution_count="3">
+<div id="3f9205e5" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>)).collect()</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>

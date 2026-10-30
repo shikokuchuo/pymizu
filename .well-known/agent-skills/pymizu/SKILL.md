@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Python >=3.10.
 ---
 
-# pymizu 水
+# pymizu ミズ
 
 Zero-copy async and parallel IPC across Python and R
 
