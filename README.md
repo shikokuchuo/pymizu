@@ -146,7 +146,7 @@ The repository layout and contributor notes live in [CONTRIBUTING.md](CONTRIBUTI
 ## License
 
 MIT.
-The vendored libmizu core carries third-party RngStreams attribution (upstream `LICENSE.note`).
+The vendored libmizu core carries third-party RngStreams attribution (see [`LICENSE.note`](LICENSE.note)).
 
 ------------------------------------------------------------------------
 
