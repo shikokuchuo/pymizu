@@ -56,11 +56,6 @@ def test_submit_collect(pool):
     assert t.collect(timeout=5) == 1024
 
 
-def test_task_result_alias(pool):
-    t = pool.submit(pow, 2, 10)
-    assert t.result(timeout=5) == 1024
-
-
 def test_submit_argument_validation(pool):
     with pytest.raises(TypeError):
         pool._h.submit()

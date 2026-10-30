@@ -8243,10 +8243,6 @@ static void Task_dealloc(MizuTask *self) {
   MizuTaskType.tp_free((PyObject *) self);
 }
 
-PyDoc_STRVAR(task_result_doc,
-"result(timeout=None) -> value | sentinel\n\n\
-Alias for collect() — the concurrent.futures.Future spelling.");
-
 // The asyncio bridge (pymizu._aio is the drain half) ----------------------
 
 /* pymizu._aio's named entry, imported lazily on the first async call so
@@ -8318,8 +8314,6 @@ static PyObject *Task_async_set(MizuTask *self, PyObject *arg) {
 static PyMethodDef Task_methods[] = {
   {"collect", (PyCFunction)(void (*)(void)) Task_collect,
    METH_VARARGS | METH_KEYWORDS, task_collect_doc},
-  {"result", (PyCFunction)(void (*)(void)) Task_collect,
-   METH_VARARGS | METH_KEYWORDS, task_result_doc},
   {"cancel", (PyCFunction) Task_cancel, METH_NOARGS, task_cancel_doc},
   {"collect_async", (PyCFunction) Task_collect_async, METH_NOARGS,
    task_collect_async_doc},
