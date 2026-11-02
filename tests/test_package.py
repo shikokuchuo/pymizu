@@ -95,3 +95,9 @@ def test_public_api_names_exist():
     # as `from pymizu import *` would resolve them
     for name in pymizu.__all__:
         assert hasattr(pymizu, name), f"{name!r} is in __all__ but undefined"
+
+
+def test_public_api_names_listed():
+    # the lazy names never enter the module dict, so this is the module
+    # __dir__ (PEP 562) at work, not the resolution above
+    assert set(pymizu.__all__) <= set(dir(pymizu))
