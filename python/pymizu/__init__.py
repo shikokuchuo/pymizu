@@ -1687,6 +1687,12 @@ def __getattr__(name: str) -> _Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __dir__() -> list[str]:
+    # the lazy re-exports never enter the module dict (PEP 562's
+    # __getattr__ returns them without binding), so dir() lists __all__
+    return sorted(set(globals()) | set(__all__))
+
+
 __all__ = [
     "CLOSED",
     "FULL",
