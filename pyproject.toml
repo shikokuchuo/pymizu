@@ -44,7 +44,7 @@ cloudpickle = ["cloudpickle"]
 # Keep the ruff pin in sync with the ruff-pre-commit rev in
 # .pre-commit-config.yaml — bump both together.
 dev = [
-  "pytest",
+  "pytest>=9",
   "coverage",
   "ruff==0.14.0",
   "pyrefly",
@@ -115,8 +115,15 @@ python-version = "3.10"
 min-severity = "warn"
 
 [tool.pytest.ini_options]
+minversion = "9.0"
 testpaths = ["tests"]
-addopts = "-ra --durations 10 --strict-markers"
+addopts = ["-ra", "--durations=10"]
+# The strictness keys written out, not `strict = true`: the umbrella also
+# enables options future pytest releases add, and CI installs pytest unpinned.
+strict_config = true
+strict_markers = true
+strict_xfail = true
+strict_parametrization_ids = true
 
 [tool.coverage.run]
 source = ["pymizu"]
