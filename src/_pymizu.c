@@ -9159,7 +9159,7 @@ static PyMethodDef pymizu_methods[] = {
 };
 
 PyDoc_STRVAR(pymizu_module_doc,
-"Async and parallel Python at thread speed over shared memory\n\
+"Thread-speed async and parallel Python over shared memory\n\
 (the libmizu core, compiled in).");
 
 static struct PyModuleDef pymizu_module = {

@@ -1,4 +1,4 @@
-"""pymizu — Async and parallel Python at thread speed over shared memory."""
+"""pymizu — Thread-speed async and parallel Python over shared memory."""
 
 from __future__ import annotations
 

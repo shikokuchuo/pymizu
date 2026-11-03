@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: If you use this software, please cite it as below.
-title: "pymizu: Async and parallel Python at thread speed over shared memory"
+title: "pymizu: Thread-speed async and parallel Python over shared memory"
 authors:
   - family-names: Gao
     given-names: Charlie

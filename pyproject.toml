@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pymizu"
 dynamic = ["version"]
-description = "Async and parallel Python at thread speed over shared memory"
+description = "Thread-speed async and parallel Python over shared memory"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
