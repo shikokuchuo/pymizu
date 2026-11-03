@@ -2,7 +2,7 @@
   "skills": [
     {
       "name": "pymizu",
-      "description": "Async and parallel Python at thread speed over shared memory. Use when writing Python code that uses the pymizu package.",
+      "description": "Write correct Python code for async and parallel computing with pymizu: task pools, parallel map, channels and asyncio over shared memory on one machine. Use when the user wants to run Python code in parallel or in the background, speed up a loop, escape the GIL with processes, use asyncio or concurrent.futures, share data with Python or R processes, or convert from multiprocessing, joblib, Ray or Dask. Single machines only: pymizu has no remote workers.",
       "files": [
         "SKILL.md"
       ]
