@@ -158,7 +158,13 @@ tools/vendor-libmizu.sh` for a local checkout). Pool submitter bindings
 set `MIZU_BINDING_SPLIT_WAITER` (libmizu 8ea7867): the executor's drain
 collects on the listener thread while user threads submit, and the flag
 makes the core hand every collect-side release to the submitting thread
-instead of sharing the free list (worker bindings leave it clear).
+instead of sharing the free list (worker bindings leave it clear). The
+stop gate (`pool_stop_gate` in `_pymizu.c`): `Pool.stop()` releases the
+mapping inside its core call, and the role guards fence only parking and
+producing verbs, so the stop raises a GIL-guarded `stopping` word, waits
+for the in-flight count to drain, and every `pool_get` parks on the word
+until the stop returns (the any-thread trio — cancel, state, the task
+finalizer — short-circuits to the released-pool answer instead).
 
 ## Conventions
 

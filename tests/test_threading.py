@@ -16,6 +16,7 @@ from tests.helpers import (
     chan_pair,
     identity,
     parked_thread,
+    sleep_then,
     slow,
     wait_guard_held,
 )
@@ -255,6 +256,53 @@ def test_pool_concurrent_ready_wait_raises():
         parked.join(timeout=5)
     assert not parked.is_alive()
     assert waiting == [False]
+
+
+def test_pool_stop_excludes_polls_and_reads():
+    # a stop releases the mapping inside its core call; the zero-timeout
+    # polls and the GIL-held reads bypass the role guards by design, so
+    # the stop gate parks them until the stop returns (before it, a poll
+    # hammering collect(0) / info() under a stop read freed memory). The
+    # worker's 2 s task keeps the stop's core call open; every poll that
+    # lands inside it must wait it out, then meet the released handle
+    pool = pymizu.Pool.create(1)
+    t = pool.submit(sleep_then, 0, 2.0)
+    first_error = []
+    polled = []
+
+    def hammer():
+        done = False
+        while True:
+            try:
+                if not done:
+                    r = t.collect(0)
+                    done = r is not pymizu.TIMEOUT
+                pool.info()
+                assert t.state in ("pending", "cancel", "ok", "collected")
+                polled.append(time.monotonic())
+            except pymizu.CancelledError:
+                done = True  # the stop's cancel sweep took the task
+            except pymizu.MizuError as e:
+                first_error.append((time.monotonic(), e))
+                return
+
+    th = threading.Thread(target=hammer)
+    th.start()
+    time.sleep(0.1)
+    assert polled  # the hammer is live before the stop
+    t0 = time.monotonic()
+    assert pool.stop(10) is True
+    th.join(timeout=10)
+    assert not th.is_alive()
+    assert first_error, "the released handle must answer the polls"
+    at, err = first_error[0]
+    assert "closed" in str(err)
+    assert at - t0 > 1.0  # held through the stop, not failed early
+    with pytest.raises(pymizu.MizuError):
+        pool.info()
+    assert t.state == "collected"
+    assert t.cancel() is False
+    pool.destroy()
 
 
 def test_pool_producer_and_waiter_on_two_threads():

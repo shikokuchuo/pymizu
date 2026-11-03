@@ -31,6 +31,11 @@ PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#  include <windows.h>   /* Sleep: the stop gate's yield */
+#else
+#  include <time.h>      /* nanosleep: the stop gate's yield */
+#endif
 
 #include "mizu.h"
 #include "mizu_ext.h"
@@ -5471,7 +5476,9 @@ typedef struct {
    ConcurrentUseError instead of racing the core's single-writer words
    (ring tails, the staging checkout, the result-slot scan), whose failure
    modes are silent. A plain acquire/release pair on the handle object:
-   correct with or without the GIL, two atomics per verb. */
+   correct with or without the GIL, two atomics per verb. The verbs the
+   roles leave unguarded (zero-timeout polls, GIL-held reads) are fenced
+   from a pool stop's release by the stop gate (pool_stop_gate). */
 static int role_enter(MIZU_ATOMIC(unsigned) *slot, const char *msg) {
   if (atomic_exchange_explicit(slot, 1u, memory_order_acquire)) {
     PyErr_SetString(MizuConcurrentUseError, msg);
@@ -6390,6 +6397,9 @@ typedef struct {
   long self_pid;
   unsigned in_flight;  /* core calls with the GIL dropped (GIL-guarded —
                           a free-threaded build needs a real lock here) */
+  unsigned stopping;   /* a stop's core call is in flight (GIL-guarded):
+                          the stop gate (pool_stop_gate) holds every other
+                          verb off the mapping it releases */
   int role;            /* MIZU_ROLE_* */
   MizuViewCache *vcache;
   PyObject *trace_fn;  /* the registered trace callable, or NULL */
@@ -6441,6 +6451,34 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->flags = worker ? 0 : MIZU_BINDING_SPLIT_WAITER;
 }
 
+/* A short GIL-released sleep, the stop gate's wait step. */
+static void pool_gate_yield(void) {
+  Py_BEGIN_ALLOW_THREADS
+#ifdef _WIN32
+  Sleep(1);
+#else
+  struct timespec ts = { 0, 1000000L };
+  nanosleep(&ts, NULL);
+#endif
+  Py_END_ALLOW_THREADS
+}
+
+/* The stop gate. A stop releases the mapping inside its core call, and
+   the role guards fence only the parking and producing verbs: the
+   zero-timeout polls (the executor's and asyncio's drains settle with
+   them beside an outside blocking collect by design) and the GIL-held
+   reads (info, dump, state scans, the notify arms) would otherwise enter
+   the core under the unmap. Every pool_get parks here while a stop is in
+   flight — the released handle then answers them safely ("pool handle is
+   closed") — and the any-thread trio (cancel, state, the finalizer's
+   release) short-circuits to its released-pool answer instead, since a
+   finalizer cannot wait. Both words are GIL-guarded like in_flight: the
+   stop raises the flag, then yields the GIL until the in-flight count
+   drains, so nothing is mid-call when the core releases. */
+static void pool_stop_gate(MizuPool *self) {
+  while (self->stopping) pool_gate_yield();
+}
+
 static mizu_pool *pool_peek(MizuPool *self) {
   mizu_pool *p = self->core;
   if (p == NULL) return NULL;
@@ -6452,6 +6490,7 @@ static mizu_pool *pool_peek(MizuPool *self) {
 }
 
 static mizu_pool *pool_get(MizuPool *self) {
+  pool_stop_gate(self);
   mizu_pool *p = pool_peek(self);
   if (p == NULL && !PyErr_Occurred())
     PyErr_SetString(PyExc_ValueError, "pymizu: pool handle is closed");
@@ -7234,12 +7273,18 @@ static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
     role_leave(&self->producer_active);
     return NULL;
   }
+  /* The stop gate (pool_stop_gate): fence the verbs the roles do not —
+     the polls and the GIL-held reads — then let the in-flight ones
+     finish before the core's release. */
+  self->stopping = 1;
+  while (self->in_flight > 0) pool_gate_yield();
   /* Not sliced like the other waits: each stop call releases the handle,
      so a re-entered stop short-circuits to OK on the released handle —
      an indefinite stop waits out its own deadline past a destroy. */
   POOL_ALLOW_THREADS(self);
   st = mizu_pool_stop(p, ms);
   POOL_RESUME();
+  self->stopping = 0;
   int err = pool_call_done(self, p, st);
   role_leave(&self->waiter_active);
   role_leave(&self->producer_active);
@@ -8272,7 +8317,9 @@ call cancelled the task, False in every other case.");
 static PyObject *Task_cancel(MizuTask *self, PyObject *Py_UNUSED(args)) {
   MizuPool *pool = (MizuPool *) self->pool;
   int cancelled = 0;
-  if (self->word != 0 && pool->core != NULL &&
+  /* a stop in flight owns every slot (its cancel sweep): the released
+     pool's answer, without touching the mapping it is releasing */
+  if (self->word != 0 && pool->core != NULL && !pool->stopping &&
       pool->self_pid == mizu_self_pid()) {
     mizu_task t = { self->word };
     cancelled = mizu_pool_cancel(pool->core, &t);
@@ -8283,8 +8330,10 @@ static PyObject *Task_cancel(MizuTask *self, PyObject *Py_UNUSED(args)) {
 static PyObject *Task_state_get(MizuTask *self, void *Py_UNUSED(closure)) {
   MizuPool *pool = (MizuPool *) self->pool;
   const char *state = "dropped";
-  if (self->word != 0 && pool->core != NULL &&
-      pool->self_pid == mizu_self_pid()) {
+  if (self->word != 0 && pool->core != NULL && pool->stopping) {
+    state = "collected";   /* the released pool's answer (FREE), as after */
+  } else if (self->word != 0 && pool->core != NULL &&
+             pool->self_pid == mizu_self_pid()) {
     mizu_task t = { self->word };
     switch (mizu_pool_task_state(pool->core, &t)) {
     case MIZU_RS_PENDING: state = "pending"; break;
@@ -8321,7 +8370,7 @@ static void Task_dealloc(MizuTask *self) {
   /* the finalizer release for a handle that was never collected: cancels a
      pending task, frees a terminal one — advisory and total, so safe for a
      stale handle, a released pool, or a forked child (guarded) alike */
-  if (self->word != 0 && pool->core != NULL &&
+  if (self->word != 0 && pool->core != NULL && !pool->stopping &&
       pool->self_pid == mizu_self_pid()) {
     mizu_task t = { self->word };
     mizu_pool_task_release(pool->core, &t);

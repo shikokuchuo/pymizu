@@ -159,8 +159,15 @@ class _ChanState:
                         fut.set_result(x)
                     n += 1
                 work += n
-                if work >= _QUANTUM_N or (
-                    (work & 63) == 0 and _time.monotonic() >= deadline
+                # the quantum check rides progress only: an empty burst
+                # falls through to the re-arm below, never to a
+                # reschedule — (work & 63) == 0 holds at work == 0, and a
+                # slow empty pass past the deadline would otherwise queue
+                # a bare call_soon drain that bypasses a disarm landing
+                # before it runs (the trampoline's skip is C-side)
+                if n and (
+                    work >= _QUANTUM_N
+                    or ((work & 63) == 0 and _time.monotonic() >= deadline)
                 ):
                     assert self.loop is not None
                     self.loop.call_soon(self._drain)
