@@ -8,10 +8,10 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Async and parallel Python at thread speed over shared memory">
+<meta name="description" content="Thread-speed async and parallel Python over shared memory">
 
 <title>pymizu</title>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Async and parallel Python at thread speed over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Thread-speed async and parallel Python over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}</script>
 <meta property="og:type" content="website">
 <style>
 /* Default styles provided by pandoc.
@@ -87,7 +87,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="site_libs/quarto-html/quarto-syntax-highlighting-63b5708e65d6cd79cd7618c58d0c21e7.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="site_libs/bootstrap/bootstrap-9957c2fee0d0d608fa13ccf548446c53.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-6a583bb0d3a86322953649c39344ad54.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -134,11 +134,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="pymizu | pymizu">
-<meta property="og:description" content="Async and parallel Python at thread speed over shared memory">
+<meta property="og:description" content="Thread-speed async and parallel Python over shared memory">
 <meta property="og:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta property="og:site_name" content="pymizu">
 <meta name="twitter:title" content="pymizu | pymizu">
-<meta name="twitter:description" content="Async and parallel Python at thread speed over shared memory">
+<meta name="twitter:description" content="Thread-speed async and parallel Python over shared memory">
 <meta name="twitter:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -256,7 +256,7 @@ section.level2:first-of-type > h2:first-child,
 <p><strong>Requires:</strong> Python <code>&gt;=3.10</code><br> <strong>Provides-Extra:</strong> <code>numpy</code>, <code>cloudpickle</code>, <code>dev</code>, <code>docs</code>, <code>all</code><br> <a href="package-info.html">Package Info</a></p>
 </section>
 </div></div><p><img src="assets/logo.svg" class="light-content" align="right" width="240" alt="pymizu logo"> <img src="assets/logo-dark.svg" class="dark-content" align="right" width="240" alt="pymizu logo"></p>
-<p>Async and parallel Python at thread speed over shared memory.</p>
+<p>Thread-speed async and parallel Python over shared memory.</p>
 <p>A task round trip drops from ~100 µs over sockets to &lt; 1 µs, so you can divide work as finely as you would with threads (see <a href="#benchmarks">Benchmarks</a>). Common data structures like lists, dicts, numpy arrays, and Arrow tables can be shared between Python and R as zero-copy views.</p>
 <p>In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes. Processes also isolate failures: a worker that crashes does not take the host down with it.</p>
 <p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting that stays out of the kernel on the hot path, and OS notification when a peer dies.</p>
@@ -278,7 +278,7 @@ section.level2:first-of-type > h2:first-child,
 </section>
 <section id="quickstart" class="level2">
 <h2 class="anchored" data-anchor-id="quickstart">Quickstart</h2>
-<div id="a40471b2" class="cell" data-execution_count="1">
+<div id="603c0823" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -374,7 +374,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="drop-in-concurrent.futures" class="level2">
 <h2 class="anchored" data-anchor-id="drop-in-concurrent.futures">Drop-in <code>concurrent.futures</code></h2>
 <p><a href="./reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface, so code written against <code>ProcessPoolExecutor</code> drops in, and <code>submit</code> returns real <code>Future</code> objects:</p>
-<div id="68d35953" class="cell" data-execution_count="2">
+<div id="33110683" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
@@ -390,7 +390,7 @@ section.level2:first-of-type > h2:first-child,
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a <a href="./reference/Map.html#pymizu.Map" class="gdls-link gdls-code">Map</a> handle immediately. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor. <code>handle.collect()</code> returns the results in order, or <code>await handle</code> in asyncio code.</p>
 <p>A map also nests: the mapped function can map over its own pool with <a href="./reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a>, deadlock-free.</p>
-<div id="386bb7ab" class="cell" data-execution_count="3">
+<div id="7d568c69" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>)).collect()</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>

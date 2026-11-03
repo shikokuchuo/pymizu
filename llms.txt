@@ -1,6 +1,6 @@
 # pymizu
 
-> Async and parallel Python at thread speed over shared memory
+> Thread-speed async and parallel Python over shared memory
 
 ## Docs
 
