@@ -4,6 +4,8 @@ A send on a foreign-language channel of a value outside the portable interchange
 
 Usage
 
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L26-L32)
+
 ``` python
 DeclinedError()
 ```
