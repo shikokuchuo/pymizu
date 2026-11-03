@@ -154,7 +154,11 @@ tier: version-pinned per libmizu minor release, may change without
 deprecation), never `internal.h` — only vendored core TUs include it.
 Vendored files are never edited by hand: changes go upstream to libmizu
 and are pulled by re-running the script (`LIBMIZU_SRC=~/r/libmizu
-tools/vendor-libmizu.sh` for a local checkout).
+tools/vendor-libmizu.sh` for a local checkout). Pool submitter bindings
+set `MIZU_BINDING_SPLIT_WAITER` (libmizu 8ea7867): the executor's drain
+collects on the listener thread while user threads submit, and the flag
+makes the core hand every collect-side release to the submitting thread
+instead of sharing the free list (worker bindings leave it clear).
 
 ## Conventions
 

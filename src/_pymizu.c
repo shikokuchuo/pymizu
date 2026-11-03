@@ -6,7 +6,10 @@
  * GIL policy, per handle kind. Submitter handles (channels, pool
  * controllers/submitters — exec is NULL) release the GIL around every verb;
  * the stage/read/check callbacks reacquire it with PyGILState_Ensure, and
- * the park hook stays NULL. Worker (exec-capable) handles hold the GIL
+ * the park hook stays NULL. Pool submitter bindings set
+ * MIZU_BINDING_SPLIT_WAITER: the collect family runs on a second thread
+ * (the executor's drain), so the core defers its releases to the
+ * submitting thread rather than sharing the free list. Worker (exec-capable) handles hold the GIL
  * through run and collect — nested-collect help reenters exec_fn from
  * inside the core's collect path — and register the around-park hook, which
  * drops the GIL for each bounded sleep so the worker process's other
@@ -6429,6 +6432,13 @@ static void pool_binding(mizu_binding *b, int worker) {
   b->sweep = worker ? py_sweep : NULL;
   b->ident = MIZU_PY_IDENT;
   b->drop = py_drop;
+  /* A submitter handle's collect family may run on a thread other than
+     its submit family's (the executor's drain polls on the listener
+     thread while user threads submit; the GIL is released around both),
+     so the core hands every collect-side release to the producing
+     thread instead of touching the free list — no lock. A worker's two
+     halves are one thread by construction. */
+  b->flags = worker ? 0 : MIZU_BINDING_SPLIT_WAITER;
 }
 
 static mizu_pool *pool_peek(MizuPool *self) {

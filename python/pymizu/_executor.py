@@ -105,7 +105,9 @@ class PoolExecutor(_Executor):
         # one lock serializing the core submits: a pool handle's
         # injection ring is single-producer, so concurrent submitters
         # serialize (the drain never touches it — the scan's atomic
-        # loads and the terminal collects need no lock)
+        # loads and the terminal collects need no lock: the binding
+        # declares the split waiter, so a collect hands its releases to
+        # the submitting thread instead of touching the free list)
         self._submits = _threading.Lock()
         # serializes overlapping drains (the listener callback and the
         # submit-time re-check): the skipped one is covered by the
