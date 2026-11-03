@@ -33,8 +33,9 @@ Or browse the [`SKILL.md`](skill.md) file.
 ```` markdown
 ---
 name: pymizu
-description: >
-  Async and parallel Python at thread speed over shared memory. Use when writing Python code that uses the pymizu package.
+description: >-
+  Async and parallel Python at thread speed over shared memory. Use when writing
+  Python code that uses the pymizu package.
 license: MIT
 compatibility: Requires Python >=3.10.
 ---
