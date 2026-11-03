@@ -13,7 +13,7 @@ Async and parallel Python at thread speed over shared memory.
 A task round trip drops from ~100 µs over sockets to < 1 µs, so you can divide work as finely as you would with threads (see [Benchmarks](#benchmarks)). Common data structures like lists, dicts, numpy arrays, and Arrow tables can be shared between Python and R as zero-copy views.
 
 In the default CPython build, the GIL runs CPU-bound threads on one core at a time, so compute parallelism in Python usually means multiple processes.
-Processes also isolate failures: a worker that crashes does not take the host down with it.
+Processes also isolate failures: a worker that crashes does not take down the host with it.
 
 Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting that stays out of the kernel on the hot path, and OS notification when a peer dies.
 
