@@ -40,6 +40,16 @@ def slow(i):
     return i
 
 
+def touch_then_sleep(marker, t):
+    """Signal to the submitter that execution started, then sleep: the
+    deterministic stand-in for a sleep before pool.stop(), whose budget a
+    worker's claim latency can exceed on a loaded runner."""
+    with open(marker, "w"):
+        pass
+    time.sleep(t)
+    return 0
+
+
 def raise_long(msg):
     raise ValueError(msg)
 
