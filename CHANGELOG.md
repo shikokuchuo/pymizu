@@ -53,3 +53,6 @@ Initial release.
   `pymizu[numpy]` / `pymizu[cloudpickle]` extras.
 - A documented threading contract: each handle role is confined to one
   thread at a time, guarded non-blockingly by `ConcurrentUseError`.
+- Agent skill: a curated agent skill for AI coding assistants ships at
+  `skills/pymizu` and on the documentation site (`skill.md` and
+  `.well-known/agent-skills/`, installable with `npx skills add`).

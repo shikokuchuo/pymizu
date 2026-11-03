@@ -25,7 +25,7 @@ package). The governing design document is the ipc plan in the libmizu repo
 - `src/_pymizu.c` — the extension module (`pymizu._pymizu`): `_Channel` /
   `_Pool` / `_Task` handles, stage/read/check callbacks, verb wrappers,
   sentinel singletons, the exception hierarchy (`TaskError` with
-  remote_type/remote_traceback, `WorkerDiedError` with slot/pid,
+  remote_type/detail, `WorkerDiedError` with slot/pid,
   `TaskLostError` for the no-death-verdict lost task), the
   `_Caught` outcome box the collect veneer unwraps and raises, and the
   `MizuNotify` notify records bridging the core's notify endpoints to
