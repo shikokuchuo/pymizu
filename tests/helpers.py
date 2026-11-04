@@ -43,9 +43,12 @@ def slow(i):
 def touch_then_sleep(marker, t):
     """Signal to the submitter that execution started, then sleep: the
     deterministic stand-in for a sleep before pool.stop(), whose budget a
-    worker's claim latency can exceed on a loaded runner."""
-    with open(marker, "w"):
-        pass
+    worker's claim latency can exceed on a loaded runner. The marker
+    carries the start on the monotonic clock (system-wide on every
+    platform), so a test can measure from the task's own start rather
+    than from the moment its GIL-contended main thread noticed it."""
+    with open(marker, "w") as f:
+        f.write(repr(time.monotonic()))
     time.sleep(t)
     return 0
 

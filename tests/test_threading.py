@@ -297,19 +297,29 @@ def test_pool_stop_excludes_polls_and_reads(tmp_path):
 
     th = threading.Thread(target=hammer)
     th.start()
+    # the task's start, off the marker: the hammer re-takes the GIL in a
+    # tight loop, so this thread can lose the hand-off for long enough
+    # that its own clock reads well into the task's 2 s
     deadline = time.monotonic() + 10
-    while not os.path.exists(marker):
+    start = None
+    while start is None:
         assert time.monotonic() < deadline, "the task never started"
+        if os.path.exists(marker):
+            with open(marker) as f:
+                text = f.read()
+            if text:  # created ahead of its write
+                start = float(text)
         time.sleep(0.005)
     assert polled  # the hammer is live before the stop
-    t0 = time.monotonic()
     assert pool.stop(10) is True
     th.join(timeout=10)
     assert not th.is_alive()
     assert first_error, "the released handle must answer the polls"
     at, err = first_error[0]
     assert "closed" in str(err)
-    assert at - t0 > 1.0  # held through the stop, not failed early
+    # held through the stop, which cannot end before the task's 2 s does:
+    # the polls failed only once the handle was released, not early
+    assert at - start > 1.0
     with pytest.raises(pymizu.MizuError):
         pool.info()
     assert t.state == "collected"
