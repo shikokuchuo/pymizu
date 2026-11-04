@@ -221,23 +221,23 @@ The exact-match rows (float64, int32, int64, complex128, uint8) are a plain memo
 
 | Python sends | R receives | Notes |
 |----|----|----|
-| `bytes` / uint8 | raw | Arrow uint8 with nulls: `TypeError` (R raw has no NA) |
-| int8 / int16 / uint16 | integer | widened, exact |
+| `bytes` / uint8 | raw | uint8 with nulls: `TypeError` |
+| int8 / int16 / uint16 | integer | widened |
 | int32 | integer | |
-| uint32 | double | widened, exact |
-| int64 | integer64 (bit64's layout) | bit-exact; `INT64_MIN` reads as `NA` |
-| uint64 | integer64 (`NA` past 2^63 - 1, warned) | the frame column and `mizu_as_arrow()` are bit-exact |
-| float16 / float32 / float64 | double | float16 and float32 widened, exact |
+| uint32 | double | widened |
+| int64 | integer64 (bit64's layout) | `INT64_MIN` reads as `NA` |
+| uint64 | integer64 (`NA` past 2^63 - 1, warned) | frame column bit-exact |
+| float16 / float32 / float64 | double | float16/32 widened |
 | bool | logical | |
-| complex64 / complex128 | complex | (buffer protocol only; Arrow has no standard complex) |
-| Arrow bool / numeric with nulls | logical / numeric with `NA` | the validity bitmap is honored, slices included |
-| Arrow strings (utf8 / large_utf8 / string_view) | character | a Series as `list[str \| None]`; a column as a frame column |
-| Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | the zone name rides a frame column's metadata |
-| Arrow `duration[u]` | `difftime` (secs) | the frame column exports back as `duration[us]` |
-| timedelta64 (any non-calendar unit) | `difftime` (secs) | `NaT` reads as `NA`; the unit converts to seconds |
-| Arrow dictionary-encoded | factor | an ordered dictionary (polars `Enum`) arrives as an ordered factor |
-| Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks are concatenated |
-| Arrow nested, decimal, time32/64, interval | — | `DeclinedError` at send time |
+| complex64 / complex128 | complex | buffer protocol only |
+| Arrow bool / numeric with nulls | logical / numeric with `NA` | validity bitmap honored |
+| Arrow strings (utf8 / large_utf8 / string_view) | character | Series as a string list |
+| Arrow `date32` / `timestamp[u]` | `Date` / `POSIXct` | zone name rides frame metadata |
+| Arrow `duration[u]` | `difftime` (secs) | exports back as `duration[us]` |
+| timedelta64 (any non-calendar unit) | `difftime` (secs) | `NaT` reads as `NA` |
+| Arrow dictionary-encoded | factor | ordered dictionary → ordered factor |
+| Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks concatenated |
+| Arrow nested, decimal, time32/64, interval | — | `DeclinedError` |
 
 Missing values:
 
@@ -270,27 +270,27 @@ A slice or a dtype view of a received view crosses by value.
 | Python sends | R sees | Back in Python | Notes |
 |----|----|----|----|
 | uint8 | raw | uint8 | exact |
-| int8 / int16 / uint16 | integer | int32 | widened, values exact |
+| int8 / int16 / uint16 | integer | int32 | widened |
 | int32 | integer | int32 | exact |
 | uint32 | double | float64 | exact |
 | int64 | integer64 | int64 | exact |
-| uint64 | integer64 (`NA` past 2^63 - 1, warned) | uint64 | the column and R's Arrow export are bit-exact |
-| float16 | double | float64 | widened, values exact |
-| float32 | double | float64 | widened, values exact |
+| uint64 | integer64 (`NA` past 2^63 - 1, warned) | uint64 | frame column bit-exact |
+| float16 | double | float64 | widened |
+| float32 | double | float64 | widened |
 | float64 | double | float64 | exact |
 | bool | logical | `bool_` (int32 with NAs) | dtype lost |
 | complex64 / complex128 | complex | complex128 | exact |
-| timedelta64 | `difftime` | timedelta64[us] | unit normalizes to us, values exact |
+| timedelta64 | `difftime` | timedelta64[us] | exact |
 
 | R sends | Python sees | Back in R | Notes |
 |----|----|----|----|
 | integer | int32 (float64 with NAs) | integer | exact |
-| integer64 (bit64) | int64 (warns on `NA`) | integer64 | exact; a genuine Python `-2^63` arrives as `NA` |
+| integer64 (bit64) | int64 (warns on `NA`) | integer64 | Python `-2^63` reads as `NA` |
 | double | float64 | double | exact |
 | raw | uint8 | raw | exact |
 | complex | complex128 | complex | exact |
-| logical | `bool_` (int32 with NAs) | **integer** | tag lost on a Python round trip (values kept); a whole view sent back stays logical |
-| difftime | timedelta64[us] | difftime (secs) | units normalize to seconds, values exact; `NA` crosses as `NaT` |
+| logical | `bool_` (int32 with NAs) | **integer** | tag lost; whole view stays logical |
+| difftime | timedelta64[us] | difftime (secs) | `NA` crosses as `NaT` |
 
 Between two Python processes, the conversions on this page never run: the exact-match dtypes cross unchanged, everything else pickles, and a non-identity dtype needs no conversion work either.
 They apply only when the other end runs R.

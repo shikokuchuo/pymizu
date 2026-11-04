@@ -131,26 +131,33 @@ Test a received value with `pymizu.is_remote_error(x)`; raise it to propagate th
 ## Frames without pickling
 
 Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip.
-`pymizu.Frame.from_arrow()` sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive:
+`pymizu.Frame.from_arrow()` sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive.
+Here the peer sums a 200,000-row column straight off the shared pages — only the small result crosses back:
 
 ```{python}
 import pyarrow as pa
 
 with pymizu.Channel.create("""
 import pymizu
+import pyarrow as pa
+import pyarrow.compute as pc
+
 while True:
-    x = ch.recv()
-    if x is pymizu.CLOSED:
+    f = ch.recv()
+    if f is pymizu.CLOSED:
         break
-    ch.send(x)
-""") as ch2:
+    t = pa.table(f)
+    ch.send(pc.sum(t.column("x")).as_py())
+""") as ch:
     f = pymizu.Frame.from_arrow(
         pa.table({"x": pa.array([1.5, None] * 100_000)})
     )
-    ch2.send(f)
-    echoed = pa.table(ch2.recv(timeout=5))
-echoed.column("x").null_count
+    ch.send(f)
+    result = ch.recv(timeout=5)
+result
 ```
+
+The peer's `pa.table(f)` borrows the region's buffers, so the sum runs where the data already lives.
 
 Construction adopts the producer's own buffers wherever the column layout is already the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values).
 It copies only what it must:
