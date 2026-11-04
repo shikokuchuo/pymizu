@@ -281,7 +281,13 @@ def test_pool_stop_excludes_polls_and_reads(tmp_path):
                     r = t.collect(0)
                     done = r is not pymizu.TIMEOUT
                 pool.info()
-                assert t.state in ("pending", "running", "cancel", "ok", "collected")
+                assert t.state in (
+                    "pending",
+                    "running",
+                    "cancel",
+                    "ok",
+                    "collected",
+                )
                 polled.append(time.monotonic())
             except pymizu.CancelledError:
                 done = True  # the stop's cancel sweep took the task
