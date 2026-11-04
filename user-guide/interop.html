@@ -87,7 +87,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-63b5708e65d6cd79cd7618c58d0c21e7.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-6a583bb0d3a86322953649c39344ad54.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-9957c2fee0d0d608fa13ccf548446c53.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -309,7 +309,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(ch.recv(timeout<span class="op">=</span><span class="dv">5</span>))            <span class="co"># [3. 5. 7.]</span></span>
 <span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <p><a href="../reference/r_launcher.html#pymizu.r_launcher" class="gdls-link gdls-code">r_launcher()</a> needs R and the <code>mizu</code> package installed; if either is missing it raises <a href="../reference/MizuError.html#pymizu.MizuError" class="gdls-link gdls-code">MizuError</a> before the channel exists. Pass <code>rscript=</code> to use a specific R installation.</p>
-<p>To spawn the peer differently, write your own launcher: one callable that takes the channel’s token and starts the peer process. The reverse direction works too — an R session spawns a Python peer with <code>mizu::mizu_py_launcher()</code>.</p>
+<p>The reverse direction works too — an R session spawns a Python peer with <code>mizu::mizu_py_launcher()</code>.</p>
 </section>
 <section id="large-data-crosses-without-copying" class="level1">
 <h1>Large data crosses without copying</h1>
@@ -359,7 +359,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>ch.send(df)        <span class="co"># arrives in R as a data.frame, the categorical column as a factor</span></span>
 <span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>back <span class="op">=</span> ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span>
 <span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>back.names         <span class="co"># ('total_bill', 'day')</span></span></code></pre></div>
-<p>R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a <code>Date</code> or <code>POSIXct</code> for a <code>datetime64</code> array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: <code>ch.send(pa.array([1, None, 3]))</code>. An ordered categorical (an R ordered factor, a polars <code>Enum</code>, an ordered pyarrow dictionary) crosses as an ordered factor in R, and the <a href="../reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">Frame</a>’s Arrow export keeps the ordered flag, so pandas and polars see an ordered categorical and a round trip is <code>identical()</code>. Labels cross with the values they name: a named R vector arrives as a <a href="../reference/DimArray.html#pymizu.DimArray" class="gdls-link"><code>DimArray</code></a> carrying its names, and labels you attach in Python cross to R as <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> or <code>dimnames</code>.</p>
+<p>R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a <code>Date</code> or <code>POSIXct</code> for a <code>datetime64</code> array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: <code>ch.send(pa.array([1, None, 3]))</code>. An ordered categorical — an R ordered factor, a polars <code>Enum</code>, an ordered pyarrow dictionary — crosses with its ordering intact. Labels cross with the values they name: a named R vector arrives as a <a href="../reference/DimArray.html#pymizu.DimArray" class="gdls-link"><code>DimArray</code></a> carrying its names, and labels you attach in Python cross to R as <a href="../reference/Frame.names.html#pymizu.Frame.names" class="gdls-link gdls-code">names</a> or <code>dimnames</code>.</p>
 </section>
 <section id="what-doesnt-cross" class="level1">
 <h1>What doesn’t cross</h1>
@@ -405,11 +405,21 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="mapping-over-a-foreign-pool" class="level1">
 <h1>Mapping over a foreign pool</h1>
 <p>To map an R function over Python data, pass a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call()</a> spec as the <code>fn</code> of <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map()</a> or <a href="../reference/Pool.map_prepare.html#pymizu.Pool.map_prepare" class="gdls-link gdls-code">Pool.map_prepare()</a> on an R-worker pool. <code>mizu::mizu_map()</code> mirrors this in R:</p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>pool <span class="op">=</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_launcher())</span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(<span class="st">"stats::median"</span>), x).collect()</span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(source<span class="op">=</span><span class="st">"summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"</span>),</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>         folds, template<span class="op">=</span><span class="fl">0.0</span>).collect()   <span class="co"># each fold a dict; the element binds as x</span></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>pool.stop()</span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>rng <span class="op">=</span> np.random.default_rng(<span class="dv">0</span>)</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>x <span class="op">=</span> np.arange(<span class="fl">50.0</span>)</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>y <span class="op">=</span> <span class="dv">1</span> <span class="op">+</span> <span class="dv">2</span> <span class="op">*</span> x <span class="op">+</span> rng.normal(scale<span class="op">=</span><span class="dv">5</span>, size<span class="op">=</span><span class="dv">50</span>)</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>folds <span class="op">=</span> [</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    {<span class="st">"x"</span>: xf, <span class="st">"y"</span>: yf}</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> xf, yf <span class="kw">in</span> <span class="bu">zip</span>(x.reshape(<span class="dv">5</span>, <span class="dv">10</span>), y.reshape(<span class="dv">5</span>, <span class="dv">10</span>))</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>]</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>pool <span class="op">=</span> pymizu.Pool.create(<span class="dv">4</span>, launcher<span class="op">=</span>pymizu.r_launcher())</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(<span class="st">"stats::median"</span>), <span class="bu">list</span>(y.reshape(<span class="dv">5</span>, <span class="dv">10</span>))).collect()</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>pool.<span class="bu">map</span>(pymizu.call(source<span class="op">=</span><span class="st">"summary(lm(y ~ x, as.data.frame(x)))$r.squared"</span>),</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>         folds, template<span class="op">=</span>np.empty(<span class="dv">1</span>)).collect()</span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>pool.stop()</span></code></pre></div>
 <p>Each element becomes the spec’s first positional argument (or binds as <code>x</code> for a <code>source=</code> spec). Put constant arguments in the spec itself; the map’s own <code>args=</code> and <code>kwargs=</code> stay empty. <code>template=</code> and <code>collect=</code> work unchanged, and a per-element error crosses with its <code>index</code>. Seeds must be integers in R’s 32-bit range. Each worker language derives its own random streams from the seed, so results are reproducible per worker language but not identical across languages.</p>
 </section>
 <section id="the-dtype-matrix" class="level1">
@@ -511,20 +521,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 </tbody>
 </table>
-<p>Missing values:</p>
-<ul>
-<li>R marks missing values with sentinels inside the data: <code>INT_MIN</code> for integer and logical, <code>INT64_MIN</code> for integer64, and a special NaN value (<code>NA_real_</code>) for double. Arrow nulls convert to these sentinels, so R sees correct <code>NA</code>s.</li>
-<li>Read from Python, the result depends on the accessor:
-<ul>
-<li>Copied reads (<code>list(...)</code>, <a href="../reference/Frame.to_dict.html#pymizu.Frame.to_dict" class="gdls-link gdls-code">Frame.to_dict()</a>) give exact dtypes: a logical arrives as <code>bool_</code> when it has no <code>NA</code>, else int32. An integer arrives as int32 when <code>NA</code>-free, else float64 with NaN (every int32 value is exact in float64).</li>
-<li>Zero-copy views keep the sentinel values in the buffer. <code>.to_numpy()</code> applies the same rule and checks the region’s validity marks for the presence of NAs before scanning any data.</li>
-<li>int64 keeps its dtype in every numpy form and warns when an <code>NA</code> is detected on a copied read or <code>.to_numpy()</code>. Use <code>.to_arrow()</code> for an NA-exact read. A genuine Python <code>-2^63</code> value round-trips without a warning.</li>
-<li>Every Arrow export of a logical is Arrow <code>bool</code> with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with <code>NA_real_</code> slots as Arrow nulls (a genuine NaN stays a valid value).</li>
-</ul></li>
-<li>A genuine int32 value of <code>-2147483648</code> collides with the <code>NA</code> sentinel and reads as <code>NA</code> in R. Likewise an int64 value of <code>-9223372036854775808</code> reads as <code>NA_integer64_</code>. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once, to an R peer. A Python peer reads the identical columns exactly and stays silent.</li>
-<li>Python compute treats <code>NA_real_</code> as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent. Do not rely on it.</li>
-</ul>
-<p>Round trips are stable after the first hop, and a pass-through echo is bit-exact. An untouched received view sent back crosses as a reference to its region, so no data moves and even the <code>NA_real_</code> value survives a relay. A slice or a dtype view of a received view crosses by value.</p>
+<p>Missing values cross as sentinels inside the data, and the read rules depend on the accessor.<a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a></p>
+<p>Round trips are stable after the first hop, and a pass-through echo is bit-exact — even the <code>NA_real_</code> value survives a relay through a received view. A slice or a dtype view of a received view crosses by value.</p>
 <table class="caption-top table">
 <thead>
 <tr class="header">
@@ -663,7 +661,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 </tbody>
 </table>
-<p>Between two Python processes, the conversions on this page never run: the exact-match dtypes cross unchanged, everything else pickles, and a non-identity dtype needs no conversion work either. They apply only when the other end runs R.</p>
+<p>Between two Python processes none of this applies: the exact-match dtypes cross unchanged and everything else pickles.</p>
 
 
 </section>
@@ -672,7 +670,15 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div id="quarto-appendix" class="default"><section id="footnotes" class="footnotes footnotes-end-of-document" role="doc-endnotes"><h2 class="anchored quarto-appendix-heading">Footnotes</h2>
 
 <ol>
-<li id="fn1"><p>Below the floor, a value crosses as one quick copy. At any size, these types cross: Python scalars (<code>bool</code>, <code>int</code>, <code>float</code>, <code>complex</code>, <code>str</code>, <code>None</code>), lists, dicts with <code>str</code> keys (a tuple arrives as a <code>list</code> in R), <code>bytes</code> (an R raw vector), and <code>datetime.date</code> / <code>datetime.datetime</code> scalars (length-1 dates and times in R). A few round trips change the container but not the values: a standalone R factor comes back as strings, a length-1 <code>NA</code> arrives as <code>None</code> and sent back is R’s <code>NULL</code>, and an R logical vector with <code>NA</code>s comes back as integer. A <code>POSIXct</code> timezone normalizes to UTC (the instant is exact), and <code>difftime</code> units normalize to seconds. The bit patterns <code>-2147483648</code> (int32) and <code>-9223372036854775808</code> (int64) collide with R’s own <code>NA</code> sentinels and read as <code>NA</code> in R. A <code>uint64</code> up to 2^63 - 1 converts exactly to <code>integer64</code>; past that it crosses as <code>NA</code> with a warning at send.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn1"><p>Below the floor, a value crosses as one quick copy. At any size, these types cross: Python scalars (<code>bool</code>, <code>int</code>, <code>float</code>, <code>complex</code>, <code>str</code>, <code>None</code>), lists, dicts with <code>str</code> keys (a tuple arrives as a <code>list</code> in R), <code>bytes</code> (an R raw vector), and <code>datetime.date</code> / <code>datetime.datetime</code> scalars (length-1 dates and times in R). A few round trips change the container but not the values: a standalone R factor comes back as strings, a length-1 <code>NA</code> arrives as <code>None</code> and sent back is R’s <code>NULL</code>, and a standalone <code>POSIXct</code> normalizes to UTC (the instant is exact).<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2"><p>R marks missing values with sentinels inside the data: <code>INT_MIN</code> for integer and logical, <code>INT64_MIN</code> for integer64, and a special NaN value (<code>NA_real_</code>) for double; Arrow nulls convert to these sentinels, so R sees correct <code>NA</code>s. Read from Python, the result depends on the accessor:</p>
+<ul>
+<li>Copied reads (<code>list(...)</code>, <a href="../reference/Frame.to_dict.html#pymizu.Frame.to_dict" class="gdls-link gdls-code">Frame.to_dict()</a>) give exact dtypes: a logical arrives as <code>bool_</code> when it has no <code>NA</code>, else int32. An integer arrives as int32 when <code>NA</code>-free, else float64 with NaN (every int32 value is exact in float64).</li>
+<li>Zero-copy views keep the sentinel values in the buffer. <code>.to_numpy()</code> applies the same rule and checks the region’s validity marks for the presence of NAs before scanning any data.</li>
+<li>int64 keeps its dtype in every numpy form and warns when an <code>NA</code> is detected on a copied read or <code>.to_numpy()</code>. Use <code>.to_arrow()</code> for an NA-exact read. A genuine Python <code>-2^63</code> value round-trips without a warning.</li>
+<li>Every Arrow export of a logical is Arrow <code>bool</code> with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with <code>NA_real_</code> slots as Arrow nulls (a genuine NaN stays a valid value).</li>
+</ul>
+<p>A genuine int32 value of <code>-2147483648</code> collides with the <code>NA</code> sentinel and reads as <code>NA</code> in R, and an int64 value of <code>-9223372036854775808</code> reads as <code>NA_integer64_</code>. numpy sends stay silent; an Arrow int32 or int64 send with a validity bitmap warns once, to an R peer, while a Python peer reads the identical columns exactly and stays silent. Python compute treats <code>NA_real_</code> as an ordinary NaN, and whether the exact NaN value survives arithmetic is platform-dependent — do not rely on it.<a href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
 </ol>
 </section></div></main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">

@@ -29,7 +29,7 @@ ch.close()
 
 [r_launcher()](../reference/r_launcher.md#pymizu.r_launcher) needs R and the `mizu` package installed; if either is missing it raises [MizuError](../reference/MizuError.md#pymizu.MizuError) before the channel exists. Pass `rscript=` to use a specific R installation.
 
-To spawn the peer differently, write your own launcher: one callable that takes the channel's token and starts the peer process. The reverse direction works too -- an R session spawns a Python peer with `mizu::mizu_py_launcher()`.
+The reverse direction works too -- an R session spawns a Python peer with `mizu::mizu_py_launcher()`.
 
 ## Large data crosses without copying
 
@@ -92,7 +92,7 @@ back = ch.recv(timeout=5)
 back.names         # ('total_bill', 'day')
 ```
 
-R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a `Date` or `POSIXct` for a `datetime64` array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. An ordered categorical (an R ordered factor, a polars `Enum`, an ordered pyarrow dictionary) crosses as an ordered factor in R, and the [Frame](../reference/Frame.md#pymizu.Frame)'s Arrow export keeps the ordered flag, so pandas and polars see an ordered categorical and a round trip is `identical()`. Labels cross with the values they name: a named R vector arrives as a [`DimArray`](../reference/DimArray.md#pymizu.DimArray) carrying its names, and labels you attach in Python cross to R as [names](../reference/Frame.names.md#pymizu.Frame.names) or `dimnames`.
+R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a `Date` or `POSIXct` for a `datetime64` array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. An ordered categorical -- an R ordered factor, a polars `Enum`, an ordered pyarrow dictionary -- crosses with its ordering intact. Labels cross with the values they name: a named R vector arrives as a [`DimArray`](../reference/DimArray.md#pymizu.DimArray) carrying its names, and labels you attach in Python cross to R as [names](../reference/Frame.names.md#pymizu.Frame.names) or `dimnames`.
 
 ## What doesn't cross
 
@@ -154,10 +154,20 @@ On an R-worker pool, submitting a plain Python callable raises an error naming [
 To map an R function over Python data, pass a [pymizu.call()](../reference/call.md#pymizu.call) spec as the `fn` of [Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) or [Pool.map_prepare()](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare) on an R-worker pool. `mizu::mizu_map()` mirrors this in R:
 
 ``` python
+import numpy as np
+
+rng = np.random.default_rng(0)
+x = np.arange(50.0)
+y = 1 + 2 * x + rng.normal(scale=5, size=50)
+folds = [
+    {"x": xf, "y": yf}
+    for xf, yf in zip(x.reshape(5, 10), y.reshape(5, 10))
+]
+
 pool = pymizu.Pool.create(4, launcher=pymizu.r_launcher())
-pool.map(pymizu.call("stats::median"), x).collect()
-pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
-         folds, template=0.0).collect()   # each fold a dict; the element binds as x
+pool.map(pymizu.call("stats::median"), list(y.reshape(5, 10))).collect()
+pool.map(pymizu.call(source="summary(lm(y ~ x, as.data.frame(x)))$r.squared"),
+         folds, template=np.empty(1)).collect()
 pool.stop()
 ```
 
@@ -187,18 +197,9 @@ The exact correspondence between Python and R dtypes. Conversion happens once, a
 | Arrow ChunkedArray / Table / Series | vector / `data.frame` | chunks concatenated |
 | Arrow nested, decimal, time32/64, interval | -- | [DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) |
 
-Missing values:
+Missing values cross as sentinels inside the data, and the read rules depend on the accessor.[^2]
 
-- R marks missing values with sentinels inside the data: `INT_MIN` for integer and logical, `INT64_MIN` for integer64, and a special NaN value (`NA_real_`) for double. Arrow nulls convert to these sentinels, so R sees correct `NA`s.
-- Read from Python, the result depends on the accessor:
-  - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)) give exact dtypes: a logical arrives as `bool_` when it has no `NA`, else int32. An integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
-  - Zero-copy views keep the sentinel values in the buffer. `.to_numpy()` applies the same rule and checks the region's validity marks for the presence of NAs before scanning any data.
-  - int64 keeps its dtype in every numpy form and warns when an `NA` is detected on a copied read or `.to_numpy()`. Use `.to_arrow()` for an NA-exact read. A genuine Python `-2^63` value round-trips without a warning.
-  - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with `NA_real_` slots as Arrow nulls (a genuine NaN stays a valid value).
-- A genuine int32 value of `-2147483648` collides with the `NA` sentinel and reads as `NA` in R. Likewise an int64 value of `-9223372036854775808` reads as `NA_integer64_`. numpy sends stay silent. An Arrow int32 or int64 send with a validity bitmap warns once, to an R peer. A Python peer reads the identical columns exactly and stays silent.
-- Python compute treats `NA_real_` as an ordinary NaN. Whether the exact NaN value survives arithmetic is platform-dependent. Do not rely on it.
-
-Round trips are stable after the first hop, and a pass-through echo is bit-exact. An untouched received view sent back crosses as a reference to its region, so no data moves and even the `NA_real_` value survives a relay. A slice or a dtype view of a received view crosses by value.
+Round trips are stable after the first hop, and a pass-through echo is bit-exact -- even the `NA_real_` value survives a relay through a received view. A slice or a dtype view of a received view crosses by value.
 
 | Python sends | R sees | Back in Python | Notes |
 |----|----|----|----|
@@ -225,6 +226,15 @@ Round trips are stable after the first hop, and a pass-through echo is bit-exact
 | logical | `bool_` (int32 with NAs) | **integer** | tag lost; whole view stays logical |
 | difftime | timedelta64\[us\] | difftime (secs) | `NA` crosses as `NaT` |
 
-Between two Python processes, the conversions on this page never run: the exact-match dtypes cross unchanged, everything else pickles, and a non-identity dtype needs no conversion work either. They apply only when the other end runs R.
+Between two Python processes none of this applies: the exact-match dtypes cross unchanged and everything else pickles.
 
-[^1]: Below the floor, a value crosses as one quick copy. At any size, these types cross: Python scalars (`bool`, `int`, `float`, `complex`, `str`, `None`), lists, dicts with `str` keys (a tuple arrives as a `list` in R), `bytes` (an R raw vector), and `datetime.date` / `datetime.datetime` scalars (length-1 dates and times in R). A few round trips change the container but not the values: a standalone R factor comes back as strings, a length-1 `NA` arrives as `None` and sent back is R's `NULL`, and an R logical vector with `NA`s comes back as integer. A `POSIXct` timezone normalizes to UTC (the instant is exact), and `difftime` units normalize to seconds. The bit patterns `-2147483648` (int32) and `-9223372036854775808` (int64) collide with R's own `NA` sentinels and read as `NA` in R. A `uint64` up to 2^63 - 1 converts exactly to `integer64`; past that it crosses as `NA` with a warning at send.
+[^1]: Below the floor, a value crosses as one quick copy. At any size, these types cross: Python scalars (`bool`, `int`, `float`, `complex`, `str`, `None`), lists, dicts with `str` keys (a tuple arrives as a `list` in R), `bytes` (an R raw vector), and `datetime.date` / `datetime.datetime` scalars (length-1 dates and times in R). A few round trips change the container but not the values: a standalone R factor comes back as strings, a length-1 `NA` arrives as `None` and sent back is R's `NULL`, and a standalone `POSIXct` normalizes to UTC (the instant is exact).
+
+[^2]: R marks missing values with sentinels inside the data: `INT_MIN` for integer and logical, `INT64_MIN` for integer64, and a special NaN value (`NA_real_`) for double; Arrow nulls convert to these sentinels, so R sees correct `NA`s. Read from Python, the result depends on the accessor:
+
+    - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)) give exact dtypes: a logical arrives as `bool_` when it has no `NA`, else int32. An integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
+    - Zero-copy views keep the sentinel values in the buffer. `.to_numpy()` applies the same rule and checks the region's validity marks for the presence of NAs before scanning any data.
+    - int64 keeps its dtype in every numpy form and warns when an `NA` is detected on a copied read or `.to_numpy()`. Use `.to_arrow()` for an NA-exact read. A genuine Python `-2^63` value round-trips without a warning.
+    - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with `NA_real_` slots as Arrow nulls (a genuine NaN stays a valid value).
+
+    A genuine int32 value of `-2147483648` collides with the `NA` sentinel and reads as `NA` in R, and an int64 value of `-9223372036854775808` reads as `NA_integer64_`. numpy sends stay silent; an Arrow int32 or int64 send with a validity bitmap warns once, to an R peer, while a Python peer reads the identical columns exactly and stays silent. Python compute treats `NA_real_` as an ordinary NaN, and whether the exact NaN value survives arithmetic is platform-dependent -- do not rely on it.
