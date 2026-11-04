@@ -6172,7 +6172,7 @@ static int dict_set(PyObject *d, const char *key, unsigned long long v) {
 static PyObject *Channel_info(MizuChannel *self, PyObject *Py_UNUSED(args)) {
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
-  mizu_channel_info info;
+  mizu_channel_info info = { .size = sizeof(mizu_channel_info) };
   if (mizu_channel_info_get(c, &info) != MIZU_OK) return raise_handle(c);
   PyObject *name = PyUnicode_FromString(info.name);
   PyObject *side = PyUnicode_FromString(info.side == MIZU_ENTITY_HOST ?
@@ -7374,7 +7374,7 @@ static const char *const wk_states[] =
   {"free", "claiming", "live", "leaving", "reaping"};
 static const char *const sub_states[] = {"free", "live", "reaping"};
 static const char *const rs_states[] =
-  {"free", "pending", "ok", "err", "cancel", "died"};
+  {"free", "pending", "running", "ok", "err", "cancel", "died", "lost"};
 
 static int dict_set_sll(PyObject *d, const char *key, long long v) {
   PyObject *o = PyLong_FromLongLong(v);
@@ -7417,7 +7417,7 @@ queued injection entries, and result-slot occupancy.");
 static PyObject *Pool_info(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
-  mizu_pool_info st;
+  mizu_pool_info st = { .size = sizeof(mizu_pool_info) };
   if (mizu_pool_info_get(p, &st) != MIZU_OK) return pool_raise(p);
   PyObject *d = PyDict_New();
   if (d == NULL) return NULL;
@@ -7438,8 +7438,8 @@ static PyObject *Pool_info(MizuPool *self, PyObject *Py_UNUSED(args)) {
     goto fail;
   {
     static const char *const tnames[] =
-      {"pending", "ok", "err", "cancel", "died"};
-    for (int s = 0; s < 5; s++)
+      {"pending", "running", "ok", "err", "cancel", "died", "lost"};
+    for (int s = 0; s < 7; s++)
       if (dict_set(tasks, tnames[s],
                    (unsigned long long) st.tasks_by_state[s + MIZU_RS_PENDING]) < 0)
         goto fail;
@@ -7542,7 +7542,7 @@ static PyObject *dump_submitter(const mizu_pool_dump *d, uint32_t j) {
 static PyObject *Pool_dump(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
-  mizu_pool_dump d;
+  mizu_pool_dump d = { .size = sizeof(mizu_pool_dump) };
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) return pool_raise(p);
   PyObject *out = PyDict_New();
   PyObject *workers = NULL, *submitters = NULL, *tasks = NULL, *local = NULL;
@@ -7586,7 +7586,7 @@ static PyObject *Pool_dump(MizuPool *self, PyObject *Py_UNUSED(args)) {
       int ok = r != NULL &&
                dict_set(r, "slot", rows[m].slot) == 0 &&
                dict_set_str(r, "status",
-                            s >= 0 && s < 6 ? rs_states[s] : "unknown") == 0 &&
+                            s >= 0 && s < 8 ? rs_states[s] : "unknown") == 0 &&
                dict_set(r, "sequence",
                         (unsigned long long) rows[m].sequence) == 0 &&
                dict_set_sll(r, "worker", (long long) rows[m].worker_slot) == 0 &&
@@ -7643,7 +7643,7 @@ joined: tasks, steals, injections, parks, helps, and deque depth\n\
 static PyObject *Pool_stats(MizuPool *self, PyObject *Py_UNUSED(args)) {
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
-  mizu_pool_dump d;
+  mizu_pool_dump d = { .size = sizeof(mizu_pool_dump) };
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) return pool_raise(p);
   PyObject *out = PyDict_New();
   PyObject *workers = NULL, *submitters = NULL;
@@ -7813,7 +7813,7 @@ static PyObject *Pool_map_caps(MizuPool *self, PyObject *Py_UNUSED(args)) {
   uint32_t free_rs, inj_cap, inline_entry;
   if (mizu_pool_map_caps(p, &free_rs, &inj_cap, &inline_entry) != 0)
     return pool_raise(p);
-  mizu_pool_info st;
+  mizu_pool_info st = { .size = sizeof(mizu_pool_info) };
   if (mizu_pool_info_get(p, &st) != MIZU_OK) return pool_raise(p);
   uint32_t live = 0;
   for (uint32_t i = 0; i < st.max_workers; i++)
@@ -8099,7 +8099,8 @@ static PyObject *Pool_tasks_terminal(MizuPool *self, PyObject *arg) {
     return NULL;
   }
   for (size_t i = 0; i < n; i++) {
-    int terminal = mizu_pool_task_state(p, &ts[i]) != MIZU_RS_PENDING;
+    int tst = mizu_pool_task_state(p, &ts[i]);
+    int terminal = tst != MIZU_RS_PENDING && tst != MIZU_RS_RUNNING;
     PyObject *b = PyBool_FromLong(terminal);
     if (b == NULL) {
       PyMem_Free(ts);
@@ -8147,14 +8148,16 @@ static PyObject *Pool_tasks_terminal_set(MizuPool *self, PyObject *arg) {
     Py_DECREF(seq);
     return NULL;
   }
-  for (size_t i = 0; i < n; i++)
-    if (mizu_pool_task_state(p, &ts[i]) != MIZU_RS_PENDING &&
+  for (size_t i = 0; i < n; i++) {
+    int tst = mizu_pool_task_state(p, &ts[i]);
+    if (tst != MIZU_RS_PENDING && tst != MIZU_RS_RUNNING &&
         PySet_Add(out, PySequence_Fast_GET_ITEM(seq, (Py_ssize_t) i)) < 0) {
       PyMem_Free(ts);
       Py_DECREF(seq);
       Py_DECREF(out);
       return NULL;
     }
+  }
   PyMem_Free(ts);
   Py_DECREF(seq);
   return out;
@@ -8337,6 +8340,7 @@ static PyObject *Task_state_get(MizuTask *self, void *Py_UNUSED(closure)) {
     mizu_task t = { self->word };
     switch (mizu_pool_task_state(pool->core, &t)) {
     case MIZU_RS_PENDING: state = "pending"; break;
+    case MIZU_RS_RUNNING: state = "running"; break;
     case MIZU_RS_OK:      state = "ok"; break;
     case MIZU_RS_ERR:     state = "err"; break;
     case MIZU_RS_CANCEL:  state = "cancel"; break;
@@ -8459,8 +8463,9 @@ static PyMethodDef Task_methods[] = {
 
 static PyGetSetDef Task_getset[] = {
   {"state", (getter) Task_state_get, NULL,
-   "The task's state (\"pending\" / \"ok\" / \"err\" / \"cancel\" / \"died\" "
-   "/ \"collected\" / \"dropped\"); informational, racy against slot reuse.",
+   "The task's state (\"pending\" / \"running\" / \"ok\" / \"err\" / "
+   "\"cancel\" / \"died\" / \"lost\" / \"collected\" / \"dropped\"); "
+   "informational, racy against slot reuse.",
    NULL},
   {"pool", (getter) Task_pool_get, NULL,
    "The pool handle this task was submitted on.", NULL},

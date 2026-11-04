@@ -994,7 +994,7 @@ def test_pool_edge_trigger():
             th.start()
             # hold the loop: every publish lands ahead of the first drain
             deadline = time.monotonic() + 5
-            while any(t.state == "pending" for t in tasks):
+            while any(t.state in ("pending", "running") for t in tasks):
                 assert time.monotonic() < deadline
                 time.sleep(0.001)
             assert wk.dump()["local"]["notify_sends"] == 1
@@ -1004,7 +1004,7 @@ def test_pool_edge_trigger():
             tasks = [pool.submit(square, i) for i in range(4)]
             fut = pool.collect_all_async(tasks)
             deadline = time.monotonic() + 5
-            while any(t.state == "pending" for t in tasks):
+            while any(t.state in ("pending", "running") for t in tasks):
                 assert time.monotonic() < deadline
                 time.sleep(0.001)
             assert wk.dump()["local"]["notify_sends"] == 2
@@ -1036,7 +1036,7 @@ def test_pool_signal_coalesces_into_one_wake():
             th = threading.Thread(target=wk.run, daemon=True)
             th.start()
             deadline = time.monotonic() + 5
-            while t1.state == "pending":
+            while t1.state in ("pending", "running"):
                 assert time.monotonic() < deadline
                 time.sleep(0.001)  # hold the loop: the wake queues
             time.sleep(0.05)  # the wake is queued behind the busy loop
@@ -1045,7 +1045,7 @@ def test_pool_signal_coalesces_into_one_wake():
             t2 = pool.submit(square, 2)
             f2 = t2.collect_async()  # its announce lands while it sleeps
             deadline = time.monotonic() + 5
-            while t2.state == "pending":
+            while t2.state in ("pending", "running"):
                 assert time.monotonic() < deadline
                 time.sleep(0.001)
             time.sleep(0.05)  # the second wake coalesces into the first
@@ -1080,7 +1080,7 @@ def test_pool_pump_quantum_split():
             th = threading.Thread(target=wk.run, daemon=True)
             th.start()
             deadline = time.monotonic() + 30
-            while any(t.state == "pending" for t in tasks):
+            while any(t.state in ("pending", "running") for t in tasks):
                 assert time.monotonic() < deadline
                 time.sleep(0.001)
             probe = []
@@ -1113,7 +1113,7 @@ def test_collection_pump_quantum_split():
             th = threading.Thread(target=wk.run, daemon=True)
             th.start()
             deadline = time.monotonic() + 30
-            while any(t.state == "pending" for t in tasks):
+            while any(t.state in ("pending", "running") for t in tasks):
                 assert time.monotonic() < deadline
                 time.sleep(0.001)
             assert await asyncio.gather(*futs) == [[i * i] for i in range(n)]
