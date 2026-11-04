@@ -58,7 +58,7 @@ probes and A/B isolations stay in the log.
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
-| frame 10col relay, unmodified REF | 6.2 us/rt | 2026-10-03 |
+| frame 10col relay, unmodified REF | 5.9 us/rt | 2026-11-04 |
 | frame 10col relay, one computed col | 422.3 us/rt | 2026-10-03 |
 | frame strcol relay, unmodified string REF | 2,410.8 us/rt | 2026-10-03 |
 | stage widen (foreign pair) | 241.5 us/send | 2026-10-03 |
@@ -1109,3 +1109,18 @@ pipelined 0.946-1.150 both directions, payload 0.992-1.160, streaming
 0.972, event-driven 0.925-1.037, executor 0.997-1.032.
 
 Status: full suite 1031 pass, 7 skip; ruff + pyrefly clean.
+
+## 2026-11-04 — frame REF rows restored by mizu's zc boundary fix
+
+The regression in `frame 10col relay, R (unmodified REF)` (6.2 -> ~190
+us/rt) and `frame strcol relay` (2.4 -> 10.2 ms) was R-side receive
+cost: mizu 53382e7's recv-verb gc boundary re-charged the 80 MB frame
+region per view wrap, firing a full minor collection per receive. mizu
+now charges each region once per pending lifetime (its bench notes carry
+the bisect evidence and the resolve-only probe). Re-read on the fixed
+build: unmodified REF 5.9 us/rt (table swap from 6.2), one computed col
+246.8 us/rt (band, no swap), strcol 2,442.6 us/rt (the 2,410.8 band, no
+swap).
+
+Status: bench-only measurement against the fixed mizu install; no
+pymizu change.
