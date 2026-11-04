@@ -289,7 +289,7 @@
     "href": "reference/WorkerDiedError.html",
     "title": "WorkerDiedError",
     "section": "",
-    "text": "The executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.\n\n\nUsage\n\n\nWorkerDiedError()",
+    "text": "The executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.\n\n\nUsage\nSource\n\n\nWorkerDiedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -301,7 +301,7 @@
     "href": "reference/TaskError.html",
     "title": "TaskError",
     "section": "",
-    "text": "The task callable raised. Carries ‘remote_type’ and ‘detail’ attributes describing the worker-side exception.\n\n\nUsage\n\n\nTaskError()",
+    "text": "The task callable raised. Carries ‘remote_type’ and ‘detail’ attributes describing the worker-side exception.\n\n\nUsage\nSource\n\n\nTaskError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -349,7 +349,7 @@
     "href": "reference/SubmitTimeoutError.html",
     "title": "SubmitTimeoutError",
     "section": "",
-    "text": "Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.\n\n\nUsage\n\n\nSubmitTimeoutError()",
+    "text": "Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.\n\n\nUsage\nSource\n\n\nSubmitTimeoutError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -361,7 +361,7 @@
     "href": "reference/StartupError.html",
     "title": "StartupError",
     "section": "",
-    "text": "A channel peer or pool worker failed to attach within the startup timeout.\n\n\nUsage\n\n\nStartupError()",
+    "text": "A channel peer or pool worker failed to attach within the startup timeout.\n\n\nUsage\nSource\n\n\nStartupError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -373,7 +373,7 @@
     "href": "reference/ShmError.html",
     "title": "ShmError",
     "section": "",
-    "text": "A shared-memory region operation failed. Also an OSError: the failure is at the OS layer. Carries a ‘bytes’ attribute: the requested size of a region that was not created, None when a region was not opened.\n\n\nUsage\n\n\nShmError()",
+    "text": "A shared-memory region operation failed. Also an OSError: the failure is at the OS layer. Carries a ‘bytes’ attribute: the requested size of a region that was not created, None when a region was not opened.\n\n\nUsage\nSource\n\n\nShmError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -769,7 +769,7 @@
     "href": "reference/Frame.__reduce__.html",
     "title": "Frame.__reduce__()",
     "section": "",
-    "text": "Usage\n\n\nFrame.__reduce__()",
+    "text": "Usage\nSource\n\n\nFrame.__reduce__()",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -781,7 +781,7 @@
     "href": "reference/Frame.__arrow_c_stream__.html",
     "title": "Frame.__arrow_c_stream__()",
     "section": "",
-    "text": "arrow_c_stream(requested_schema=None) -&gt; capsule\n\n\nUsage\n\n\nFrame.__arrow_c_stream__(requested_schema=None)\n\n\nThe Arrow C Stream Interface export: the frame as one struct batch. Consumers take it in one line: pl.from_arrow(f), pa.table(f), or pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).",
+    "text": "arrow_c_stream(requested_schema=None) -&gt; capsule\n\n\nUsage\nSource\n\n\nFrame.__arrow_c_stream__(requested_schema=None)\n\n\nThe Arrow C Stream Interface export: the frame as one struct batch. Consumers take it in one line: pl.from_arrow(f), pa.table(f), or pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -805,7 +805,7 @@
     "href": "reference/ConcurrentUseError.html",
     "title": "ConcurrentUseError",
     "section": "",
-    "text": "A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).\n\n\nUsage\n\n\nConcurrentUseError()",
+    "text": "A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).\n\n\nUsage\nSource\n\n\nConcurrentUseError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1034,7 +1034,7 @@
     "href": "index.html#installation",
     "title": "pymizu",
     "section": "Installation",
-    "text": "Installation\npip install git+https://github.com/shikokuchuo/pymizu\nRequires Python 3.10 or later on a 64-bit platform. See Installation for platform notes, optional extras, and deployment on Linux."
+    "text": "Installation\npip install pymizu\nRequires Python 3.10 or later on a 64-bit platform. See Installation for platform notes, optional extras, and deployment on Linux."
   },
   {
     "objectID": "index.html#quickstart",
@@ -1146,7 +1146,7 @@
     "href": "contributing.html",
     "title": "Contributing",
     "section": "",
-    "text": "Bug reports and pull requests are welcome. pymizu is pre-release and the API can change at any time, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump(), the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module, because pickle sends them by reference and the spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
+    "text": "Bug reports and pull requests are welcome. pymizu is pre-1.0 and the API can change between releases, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump(), the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module, because pickle sends them by reference and the spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
   },
   {
     "objectID": "license.html",
@@ -1160,7 +1160,7 @@
     "href": "reference/CancelledError.html",
     "title": "CancelledError",
     "section": "",
-    "text": "The task was cancelled before it ran.\n\n\nUsage\n\n\nCancelledError()",
+    "text": "The task was cancelled before it ran.\n\n\nUsage\nSource\n\n\nCancelledError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1340,7 +1340,7 @@
     "href": "reference/DeclinedError.html",
     "title": "DeclinedError",
     "section": "",
-    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\n\nUsage\n\n\nDeclinedError()",
+    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\n\nUsage\nSource\n\n\nDeclinedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1352,7 +1352,7 @@
     "href": "reference/ForeignPayloadError.html",
     "title": "ForeignPayloadError",
     "section": "",
-    "text": "A received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\n\nUsage\n\n\nForeignPayloadError()",
+    "text": "A received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\n\nUsage\nSource\n\n\nForeignPayloadError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1364,7 +1364,7 @@
     "href": "reference/Frame.__len__.html",
     "title": "Frame.__len__()",
     "section": "",
-    "text": "Return len(self).\n\n\nUsage\n\n\nFrame.__len__()",
+    "text": "Return len(self).\n\n\nUsage\nSource\n\n\nFrame.__len__()",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -1376,7 +1376,7 @@
     "href": "reference/Frame.from_arrow.html",
     "title": "Frame.from_arrow()",
     "section": "",
-    "text": "from_arrow(obj) -&gt; Frame\n\n\nUsage\n\n\nFrame.from_arrow(obj)\n\n\nConstruct a frame from an Arrow producer, adopting its buffers wherever a column’s frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies only what it has to, nulls included.\nThis is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer’s columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer’s type.\n\n\nobj Any __arrow_c_stream__ producer: a pyarrow Table or RecordBatchReader, a polars DataFrame, a duckdb relation. A chunked table adopts after Table.combine_chunks().\n\n\nThe frame. An adopted column keeps the producer's buffers alive\nfor the frame's lifetime (numpy-view semantics: a frame from a\n4 GB table pins it).\n\n\nMizuError The Arrow type has no portable equivalent (the error names the column), or the producer’s export failed.\n\n\n&gt;&gt;&gt; import pyarrow as pa\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     f = pymizu.Frame.from_arrow(\n...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n...     )\n...     ch.send(f)\n...     echoed = pa.table(ch.recv(timeout=5))\n&gt;&gt;&gt; echoed.column(\"x\").null_count\n100000",
+    "text": "from_arrow(obj) -&gt; Frame\n\n\nUsage\nSource\n\n\nFrame.from_arrow(obj)\n\n\nConstruct a frame from an Arrow producer, adopting its buffers wherever a column’s frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies only what it has to, nulls included.\nThis is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer’s columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer’s type.\n\n\nobj Any __arrow_c_stream__ producer: a pyarrow Table or RecordBatchReader, a polars DataFrame, a duckdb relation. A chunked table adopts after Table.combine_chunks().\n\n\nThe frame. An adopted column keeps the producer's buffers alive\nfor the frame's lifetime (numpy-view semantics: a frame from a\n4 GB table pins it).\n\n\nMizuError The Arrow type has no portable equivalent (the error names the column), or the producer’s export failed.\n\n\n&gt;&gt;&gt; import pyarrow as pa\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     f = pymizu.Frame.from_arrow(\n...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n...     )\n...     ch.send(f)\n...     echoed = pa.table(ch.recv(timeout=5))\n&gt;&gt;&gt; echoed.column(\"x\").null_count\n100000",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -1388,7 +1388,7 @@
     "href": "reference/Frame.html",
     "title": "Frame",
     "section": "",
-    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\n\n\nFrame()\n\n\nto_dict() returns the columns as a dict without an Arrow library, and arrow_c_stream exports to polars, pyarrow, or pandas. from_arrow() constructs one from an Arrow producer, the opt-in zero-copy path for Python-to-Python channels. R frame metadata (classes, extra attributes) survives an unmodified round trip, while a rebuilt frame arrives in R as a plain data.frame.",
+    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\nSource\n\n\nFrame()\n\n\nto_dict() returns the columns as a dict without an Arrow library, and arrow_c_stream exports to polars, pyarrow, or pandas. from_arrow() constructs one from an Arrow producer, the opt-in zero-copy path for Python-to-Python channels. R frame metadata (classes, extra attributes) survives an unmodified round trip, while a rebuilt frame arrives in R as a plain data.frame.",
     "crumbs": [
       "Reference",
       "Cross-language interop",
@@ -1400,7 +1400,7 @@
     "href": "reference/Frame.to_dict.html",
     "title": "Frame.to_dict()",
     "section": "",
-    "text": "to_dict() -&gt; dict\n\n\nUsage\n\n\nFrame.to_dict()\n\n\nThe frame as a dict of columns: numpy arrays for numeric columns (or memoryviews without numpy), datetime64 for Date / POSIXct, and list[str | None] for string and factor columns. Complex columns carry complex128 here (the Arrow export has no complex type).",
+    "text": "to_dict() -&gt; dict\n\n\nUsage\nSource\n\n\nFrame.to_dict()\n\n\nThe frame as a dict of columns: numpy arrays for numeric columns (or memoryviews without numpy), datetime64 for Date / POSIXct, and list[str | None] for string and factor columns. Complex columns carry complex128 here (the Arrow export has no complex type).",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -1412,7 +1412,7 @@
     "href": "reference/MizuError.html",
     "title": "MizuError",
     "section": "",
-    "text": "Base class for all pymizu errors.\n\n\nUsage\n\n\nMizuError()",
+    "text": "Base class for all pymizu errors.\n\n\nUsage\nSource\n\n\nMizuError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1880,7 +1880,7 @@
     "href": "reference/Sentinel.html#methods",
     "title": "Sentinel",
     "section": "Methods",
-    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\n__repr__()\nReturn repr(self).\n\n\n\n\n__repr__()\n\nReturn repr(self).\n\n\nUsage\n\n\n__repr__()",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\n__repr__()\nReturn repr(self).\n\n\n\n\n__repr__()\n\nReturn repr(self).\n\n\nUsage\nSource\n\n\n__repr__()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1892,7 +1892,7 @@
     "href": "reference/SlotsExhaustedError.html",
     "title": "SlotsExhaustedError",
     "section": "",
-    "text": "Pool.submit() found no free result slot: too many outstanding (uncollected) tasks.\n\n\nUsage\n\n\nSlotsExhaustedError()",
+    "text": "Pool.submit() found no free result slot: too many outstanding (uncollected) tasks.\n\n\nUsage\nSource\n\n\nSlotsExhaustedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1904,7 +1904,7 @@
     "href": "reference/StoppedError.html",
     "title": "StoppedError",
     "section": "",
-    "text": "The pool is stopped; no further submission is possible.\n\n\nUsage\n\n\nStoppedError()",
+    "text": "The pool is stopped; no further submission is possible.\n\n\nUsage\nSource\n\n\nStoppedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1964,7 +1964,7 @@
     "href": "reference/TaskLostError.html",
     "title": "TaskLostError",
     "section": "",
-    "text": "The task’s payload region vanished or could not be read before any worker ran it. No worker died.\n\n\nUsage\n\n\nTaskLostError()",
+    "text": "The task’s payload region vanished or could not be read before any worker ran it. No worker died.\n\n\nUsage\nSource\n\n\nTaskLostError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -2312,7 +2312,7 @@
     "href": "user-guide/installation.html",
     "title": "Installation",
     "section": "",
-    "text": "Requirements\n\nPython 3.10 or later, on a 64-bit platform.\nLinux: kernel 5.3 or later.\nmacOS: 10.15 or later.\nWindows: the build requires clang-cl.\n\n\n\nInstall\nInstall the development version from GitHub:\npip install git+https://github.com/shikokuchuo/pymizu\nThe extension compiles its vendored C core during install, so you need no system libraries.\nOptional extras:\n\npymizu[numpy]: zero-copy array views and raw-tier array staging.\npymizu[cloudpickle]: lambdas, closures, and local functions as pool tasks.\n\nTo add an extra to the GitHub install:\npip install \"pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu\"\n\n\nDeploying on Linux\npymizu detects a peer’s death through pidfd_open, so it needs Linux kernel 5.3 or later.\nOn Linux, POSIX shared memory lives in /dev/shm, a bounded tmpfs mount. Everything pymizu creates must fit there: pool and channel regions, plus the regions that carry larger payloads. Container runtimes default it to 64 MB; raise it with docker run --shm-size=4g or the equivalent in your orchestrator, sized to your peak in-flight payload traffic.\n\n\nLinux memory allocator\nThis section applies only to Linux with glibc.\nWhen pymizu starts a channel peer or a pool worker, that process raises the C allocator’s mmap threshold to 32 MB and its trim threshold to 128 MB. This keeps large payloads in fast memory. Without it, glibc asks the kernel to map and unmap each large payload, which is slow.\nYour own Python process is unchanged. To get the same settings there, set them before Python starts:\nexport GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728\nIf you set GLIBC_TUNABLES yourself, pymizu respects your values.",
+    "text": "Requirements\n\nPython 3.10 or later, on a 64-bit platform.\nLinux: kernel 5.3 or later.\nmacOS: 10.15 or later.\nWindows: the build requires clang-cl.\n\n\n\nInstall\nInstall from PyPI:\npip install pymizu\nOr the development version from GitHub:\npip install git+https://github.com/shikokuchuo/pymizu\nThe extension compiles its vendored C core during install, so you need no system libraries.\nOptional extras:\n\npymizu[numpy]: zero-copy array views and raw-tier array staging.\npymizu[cloudpickle]: lambdas, closures, and local functions as pool tasks.\n\nTo add an extra to the GitHub install:\npip install \"pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu\"\n\n\nDeploying on Linux\npymizu detects a peer’s death through pidfd_open, so it needs Linux kernel 5.3 or later.\nOn Linux, POSIX shared memory lives in /dev/shm, a bounded tmpfs mount. Everything pymizu creates must fit there: pool and channel regions, plus the regions that carry larger payloads. Container runtimes default it to 64 MB; raise it with docker run --shm-size=4g or the equivalent in your orchestrator, sized to your peak in-flight payload traffic.\n\n\nLinux memory allocator\nThis section applies only to Linux with glibc.\nWhen pymizu starts a channel peer or a pool worker, that process raises the C allocator’s mmap threshold to 32 MB and its trim threshold to 128 MB. This keeps large payloads in fast memory. Without it, glibc asks the kernel to map and unmap each large payload, which is slow.\nYour own Python process is unchanged. To get the same settings there, set them before Python starts:\nexport GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728\nIf you set GLIBC_TUNABLES yourself, pymizu respects your values.",
     "crumbs": [
       "User Guide",
       "Guide",

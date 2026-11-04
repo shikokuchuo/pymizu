@@ -9,7 +9,13 @@
 
 ## Install
 
-Install the development version from GitHub:
+Install from PyPI:
+
+``` sh
+pip install pymizu
+```
+
+Or the development version from GitHub:
 
 ``` sh
 pip install git+https://github.com/shikokuchuo/pymizu
