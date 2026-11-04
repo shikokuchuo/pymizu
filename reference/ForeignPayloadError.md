@@ -4,6 +4,8 @@ A received payload in a language-private or unrecognized format: the peer sent a
 
 Usage
 
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L34-L37)
+
 ``` python
 ForeignPayloadError()
 ```
