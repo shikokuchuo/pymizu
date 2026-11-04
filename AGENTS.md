@@ -10,7 +10,8 @@ package). The governing design document is the ipc plan in the libmizu repo
 
 ## Requirements
 
-- Python >= 3.10, 64-bit platform. Linux: kernel >= 5.3. Windows: the
+- Python >= 3.10, 64-bit platform. Linux: kernel >= 5.3. macOS: 10.15
+  (the parker's `UL_COMPARE_AND_WAIT_SHARED` ulock opcode). Windows: the
   build requires clang-cl (see Build).
 - Raw CPython C API only — no pybind11/Cython/cffi. No numpy at build
   time (buffer protocol only; numpy is imported at runtime when present,
@@ -642,19 +643,38 @@ PyPI through trusted publishing (the `pypi` environment, `id-token:
 write`, no stored token; the publisher must be registered on PyPI for
 this workflow and environment before the first tag). `workflow_dispatch`
 builds the same matrix and skips the upload, for validating before
-tagging. The wheel selection lives in pyproject.toml's
+tagging; its `testpypi` input uploads to TestPyPI instead (the
+`testpypi` environment, its own registered publisher), so the publish
+path is proven before the first tag. That dry run sets
+`SETUPTOOLS_SCM_OVERRIDES_FOR_PYMIZU` to drop the local version segment
+(no index accepts `+g<sha>`); cibuildwheel's `environment-pass` forwards
+it into the Linux container. The wheel selection lives in pyproject.toml's
 `[tool.cibuildwheel]`: cp310 through cp315, GIL builds only, on
-manylinux x86_64/aarch64, macOS arm64/x86_64 and Windows amd64
+manylinux x86_64/aarch64, macOS arm64/x86_64 and Windows amd64/arm64
 (musllinux, i686, win32, PyPy and free-threaded are out). Every wheel
 runs `tools/smoke_wheel.py` from a temporary directory, so the import
-and a pool round trip come from the installed wheel alone. The Windows
-clang-cl PATH entry goes through cibuildwheel's `environment`, which
-evaluates the value as double-quoted bash: the backslashes are doubled
-or they are stripped. The default Linux image is manylinux_2_28, whose
-glibc 2.28 headers predate `MADV_POPULATE_WRITE` (2.35) and
-`MADV_COLLAPSE` (2.37); the core fallback-defines both in internal.h
-(fixed kernel ABI codes, support probed at run time), so the wheels
-compile the same Linux reservation and huge-folio paths as a source
-build on a current distro.
+and a pool round trip come from the installed wheel alone. An x86_64
+override pins `MACOSX_DEPLOYMENT_TARGET` to 10.15, the parker's ulock
+opcode floor: cibuildwheel's own default is 10.13 for cp310-cp313 on
+x86_64, which would tag those wheels installable on systems where the
+park loop spins (arm64's floor is 11.0 already, and a lower value there
+only draws a bump warning). The Windows clang-cl PATH entry goes through
+cibuildwheel's `environment`, which evaluates the value as double-quoted
+bash: the backslashes are doubled or they are stripped; the arm64 runner
+image installs LLVM at the same path. The default Linux image is
+manylinux_2_28, whose glibc 2.28 headers predate `MADV_POPULATE_WRITE`
+(2.35) and `MADV_COLLAPSE` (2.37); the core fallback-defines both in
+internal.h (fixed kernel ABI codes, support probed at run time), so the
+wheels compile the same Linux reservation and huge-folio paths as a
+source build on a current distro.
+
+publish.yml's actions are pinned to commit SHAs with the version in a
+trailing comment (its publish jobs hold the PyPI OIDC token, so a moved
+tag there would be a supply-chain compromise); ci.yml and docs.yml ride
+the sliding major tags. `.github/dependabot.yml` bumps both forms in one
+grouped monthly PR. The sdist is setuptools_scm's tracked-file set
+narrowed by MANIFEST.in to the package, its tests and tools (agent notes,
+CI, pre-commit and coverage config, the Makefile, the docs sources, the
+agent skill and the benchmarks stay checkout-only).
 
 License: MIT.

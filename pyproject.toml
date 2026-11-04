@@ -90,13 +90,30 @@ pymizu = ["py.typed", "*.pyi"]
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
 skip = ["*-win32", "*-manylinux_i686", "*-musllinux*"]
+build-verbosity = 1
 test-command = "python {project}/tools/smoke_wheel.py"
+
+[tool.cibuildwheel.linux]
+# publish.yml's TestPyPI dry run drops setuptools_scm's local version
+# segment through this variable; the Linux build runs in a container,
+# which sees only the host variables listed here.
+environment-pass = ["SETUPTOOLS_SCM_OVERRIDES_FOR_PYMIZU"]
+
+# The parker's __ulock_wait opcode (UL_COMPARE_AND_WAIT_SHARED) needs
+# macOS 10.15. cibuildwheel's own default is 10.13 for cp310-cp313 on
+# x86_64, which would tag those wheels installable on systems where the
+# opcode fails and the park loop spins. Scoped to x86_64: arm64's floor
+# is 11.0 already, and a lower value there only draws a bump warning.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
 
 [tool.cibuildwheel.windows]
 # setup.py forces clang-cl (MSVC C11 atomics unsupported); LLVM is
-# preinstalled on the runners but not on PATH. cibuildwheel evaluates
-# the value as a double-quoted bash string, so the backslashes are
-# doubled (a single backslash is stripped: C:Program FilesLLVMbin).
+# preinstalled on the runners (amd64 and arm64 images alike, same path)
+# but not on PATH. cibuildwheel evaluates the value as a double-quoted
+# bash string, so the backslashes are doubled (a single backslash is
+# stripped: C:Program FilesLLVMbin).
 environment = { PATH = 'C:\\Program Files\\LLVM\\bin;$PATH' }
 
 [tool.ruff]

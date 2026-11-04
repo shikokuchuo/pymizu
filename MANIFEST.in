@@ -1,10 +1,13 @@
-recursive-include src *.h
-include src/vendor/libmizu/VENDOR
-
-# Keep the sdist to the package: agent notes, CI and pre-commit config,
-# benchmarks, and the docs render cache are checkout-only.
+# setuptools_scm's file finder supplies every tracked file; this file only
+# narrows. Keep the sdist to the package, its tests and tools: agent notes,
+# CI, pre-commit and coverage config, the Makefile, the docs sources, the
+# agent skill and the benchmarks are checkout-only.
 exclude AGENTS.md
+exclude .gitignore
 exclude .pre-commit-config.yaml
+exclude codecov.yml
+exclude Makefile
 prune .github
 prune benchmarks
-prune docs/_freeze
+prune docs
+prune skills

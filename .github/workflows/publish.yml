@@ -1,23 +1,38 @@
 name: publish
 
 # Push a v* tag to release: setuptools_scm derives the version from the
-# tag. workflow_dispatch builds everything but skips the PyPI step, for
-# validating the matrix before tagging.
+# tag. workflow_dispatch builds everything and skips the PyPI step, for
+# validating the matrix before tagging; with `testpypi` checked it
+# uploads to TestPyPI instead (the trusted publisher must be registered
+# there too, for the `testpypi` environment), so the publish path itself
+# is proven before the first tag.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      testpypi:
+        description: Upload the build to TestPyPI
+        type: boolean
+        default: false
 
-permissions: read-all
+permissions:
+  contents: read
+
+env:
+  # An untagged build carries a local version (+g<sha>), which no index
+  # accepts: the TestPyPI dry run drops it. cibuildwheel forwards the
+  # variable into the Linux container (environment-pass in pyproject).
+  SETUPTOOLS_SCM_OVERRIDES_FOR_PYMIZU: ${{ inputs.testpypi && '{ local_scheme = "no-local-version" }' || '' }}
 
 jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # setuptools_scm reads the version from tags
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Build and check sdist
@@ -25,7 +40,7 @@ jobs:
           pip install build twine
           python -m build --sdist
           twine check dist/*
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-sdist
           path: dist/*.tar.gz
@@ -40,15 +55,17 @@ jobs:
           - { os: macos-latest, name: macosx-arm64 }
           - { os: macos-15-intel, name: macosx-x86_64 }
           - { os: windows-latest, name: win-amd64 }
+          - { os: windows-11-arm, name: win-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # setuptools_scm reads the version from tags
-      # Build selection (cp310-cp315, GIL builds only) and the Windows
-      # clang-cl PATH live in pyproject.toml's [tool.cibuildwheel].
-      - uses: pypa/cibuildwheel@v4.3.5
-      - uses: actions/upload-artifact@v7
+      # Build selection (cp310-cp315, GIL builds only), the macOS
+      # deployment target and the Windows clang-cl PATH live in
+      # pyproject.toml's [tool.cibuildwheel].
+      - uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.name }}
           path: wheelhouse/*.whl
@@ -64,11 +81,34 @@ jobs:
       contents: read
       id-token: write  # trusted publishing, no stored token
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
       - name: Show artifacts
         run: ls -1 dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  publish-testpypi:
+    needs: [sdist, wheels]
+    if: github.event_name == 'workflow_dispatch' && inputs.testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/pymizu
+    permissions:
+      contents: read
+      id-token: write  # trusted publishing, no stored token
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Show artifacts
+        run: ls -1 dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true  # a re-run at the same dev version is a no-op
