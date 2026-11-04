@@ -1,9 +1,10 @@
 # pymizu — project memory
 
 Python binding for libmizu: lock-free shared-memory IPC (SPSC channels and
-work-stealing task pools) via the raw CPython C API. Pre-release
-(`CHANGELOG.md` is the release-facing feature summary, Keep a Changelog
-format). The version is tag-derived — see Build and test.
+work-stealing task pools) via the raw CPython C API. Pre-1.0 (beta; the
+API can still change). `CHANGELOG.md` is the release-facing feature
+summary, Keep a Changelog format. The version is tag-derived — see Build
+and test.
 Sibling repos: `libmizu` (the C core, upstream authority) and `mizu` (the R
 package). The governing design document is the ipc plan in the libmizu repo
 (Phase 2 covers pymizu).
