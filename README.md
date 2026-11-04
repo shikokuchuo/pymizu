@@ -2,6 +2,7 @@
 
 <a href="https://shikokuchuo.net/pymizu/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/shikokuchuo/pymizu/main/docs/assets/logo-dark.svg"><img src="https://raw.githubusercontent.com/shikokuchuo/pymizu/main/docs/assets/logo.svg" align="right" width="240" alt="pymizu logo"/></picture></a>
 
+[![PyPI](https://img.shields.io/pypi/v/pymizu)](https://pypi.org/project/pymizu/)
 [![ci](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml/badge.svg)](https://github.com/shikokuchuo/pymizu/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/shikokuchuo/pymizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/pymizu)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
