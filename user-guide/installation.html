@@ -294,27 +294,27 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h1>Install</h1>
 <p>Install the development version from GitHub:</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install git+https://github.com/shikokuchuo/pymizu</span></code></pre></div>
-<p>The extension compiles the vendored C core, so no system library is necessary.</p>
+<p>The extension compiles its vendored C core during install, so you need no system libraries.</p>
 <p>Optional extras:</p>
 <ul>
 <li><code>pymizu[numpy]</code>: zero-copy array views and raw-tier array staging.</li>
 <li><code>pymizu[cloudpickle]</code>: lambdas, closures, and local functions as pool tasks.</li>
 </ul>
-<p>To request an extra with the GitHub install:</p>
+<p>To add an extra to the GitHub install:</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install <span class="st">"pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"</span></span></code></pre></div>
 </section>
 <section id="deploying-on-linux" class="level1">
 <h1>Deploying on Linux</h1>
-<p>pymizu requires Linux kernel 5.3 or later. The death of a peer is detected through <code>pidfd_open</code>, with no fallback for older kernels.</p>
-<p>On Linux, POSIX shared memory is <code>/dev/shm</code>, a bounded tmpfs mount. Everything pymizu creates must fit in it: pool and channel regions, plus the regions that carry larger payloads. Container runtimes set it to 64 MB by default. Use <code>docker run --shm-size=4g</code>, or the equivalent in your orchestrator. Size it to your peak in-flight payload traffic.</p>
+<p>pymizu detects a peer’s death through <code>pidfd_open</code>, so it needs Linux kernel 5.3 or later.</p>
+<p>On Linux, POSIX shared memory lives in <code>/dev/shm</code>, a bounded tmpfs mount. Everything pymizu creates must fit there: pool and channel regions, plus the regions that carry larger payloads. Container runtimes default it to 64 MB; raise it with <code>docker run --shm-size=4g</code> or the equivalent in your orchestrator, sized to your peak in-flight payload traffic.</p>
 </section>
 <section id="linux-memory-allocator" class="level1">
 <h1>Linux memory allocator</h1>
 <p>This section applies only to Linux with glibc.</p>
-<p>When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator. It raises the mmap threshold to 32 MB and the trim threshold to 128 MB. This keeps large payloads in fast memory. Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.</p>
-<p>Your own Python process does not change. If you want the same settings there, set them before Python starts:</p>
+<p>When pymizu starts a channel peer or a pool worker, that process raises the C allocator’s mmap threshold to 32 MB and its trim threshold to 128 MB. This keeps large payloads in fast memory. Without it, glibc asks the kernel to map and unmap each large payload, which is slow.</p>
+<p>Your own Python process is unchanged. To get the same settings there, set them before Python starts:</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">GLIBC_TUNABLES</span><span class="op">=</span>glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728</span></code></pre></div>
-<p>If you have set <code>GLIBC_TUNABLES</code>, pymizu respects your values.</p>
+<p>If you set <code>GLIBC_TUNABLES</code> yourself, pymizu respects your values.</p>
 
 
 </section>

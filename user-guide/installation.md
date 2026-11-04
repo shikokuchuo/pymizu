@@ -14,14 +14,14 @@ Install the development version from GitHub:
 pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
-The extension compiles the vendored C core, so no system library is necessary.
+The extension compiles its vendored C core during install, so you need no system libraries.
 
 Optional extras:
 
 - `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
 - `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
-To request an extra with the GitHub install:
+To add an extra to the GitHub install:
 
 ``` sh
 pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
@@ -29,20 +29,20 @@ pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
 
 ## Deploying on Linux
 
-pymizu requires Linux kernel 5.3 or later. The death of a peer is detected through `pidfd_open`, with no fallback for older kernels.
+pymizu detects a peer's death through `pidfd_open`, so it needs Linux kernel 5.3 or later.
 
-On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount. Everything pymizu creates must fit in it: pool and channel regions, plus the regions that carry larger payloads. Container runtimes set it to 64 MB by default. Use `docker run --shm-size=4g`, or the equivalent in your orchestrator. Size it to your peak in-flight payload traffic.
+On Linux, POSIX shared memory lives in `/dev/shm`, a bounded tmpfs mount. Everything pymizu creates must fit there: pool and channel regions, plus the regions that carry larger payloads. Container runtimes default it to 64 MB; raise it with `docker run --shm-size=4g` or the equivalent in your orchestrator, sized to your peak in-flight payload traffic.
 
 ## Linux memory allocator
 
 This section applies only to Linux with glibc.
 
-When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator. It raises the mmap threshold to 32 MB and the trim threshold to 128 MB. This keeps large payloads in fast memory. Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
+When pymizu starts a channel peer or a pool worker, that process raises the C allocator's mmap threshold to 32 MB and its trim threshold to 128 MB. This keeps large payloads in fast memory. Without it, glibc asks the kernel to map and unmap each large payload, which is slow.
 
-Your own Python process does not change. If you want the same settings there, set them before Python starts:
+Your own Python process is unchanged. To get the same settings there, set them before Python starts:
 
 ``` sh
 export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
 ```
 
-If you have set `GLIBC_TUNABLES`, pymizu respects your values.
+If you set `GLIBC_TUNABLES` yourself, pymizu respects your values.

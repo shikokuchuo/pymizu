@@ -1516,14 +1516,14 @@ Install the development version from GitHub:
 pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
-The extension compiles the vendored C core, so no system library is necessary.
+The extension compiles its vendored C core during install, so you need no system libraries.
 
 Optional extras:
 
 - `pymizu[numpy]`: zero-copy array views and raw-tier array staging.
 - `pymizu[cloudpickle]`: lambdas, closures, and local functions as pool tasks.
 
-To request an extra with the GitHub install:
+To add an extra to the GitHub install:
 
 ```sh
 pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
@@ -1531,39 +1531,35 @@ pip install "pymizu[numpy] @ git+https://github.com/shikokuchuo/pymizu"
 
 ## Deploying on Linux
 
-pymizu requires Linux kernel 5.3 or later.
-The death of a peer is detected through `pidfd_open`, with no fallback for older kernels.
+pymizu detects a peer's death through `pidfd_open`, so it needs Linux kernel 5.3 or later.
 
-On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount.
-Everything pymizu creates must fit in it: pool and channel regions, plus the regions that carry larger payloads.
-Container runtimes set it to 64 MB by default.
-Use `docker run --shm-size=4g`, or the equivalent in your orchestrator.
-Size it to your peak in-flight payload traffic.
+On Linux, POSIX shared memory lives in `/dev/shm`, a bounded tmpfs mount.
+Everything pymizu creates must fit there: pool and channel regions, plus the regions that carry larger payloads.
+Container runtimes default it to 64 MB; raise it with `docker run --shm-size=4g` or the equivalent in your orchestrator, sized to your peak in-flight payload traffic.
 
 ## Linux memory allocator
 
 This section applies only to Linux with glibc.
 
-When pymizu starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
-It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
+When pymizu starts a channel peer or a pool worker, that process raises the C allocator's mmap threshold to 32 MB and its trim threshold to 128 MB.
 This keeps large payloads in fast memory.
-Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
+Without it, glibc asks the kernel to map and unmap each large payload, which is slow.
 
-Your own Python process does not change.
-If you want the same settings there, set them before Python starts:
+Your own Python process is unchanged.
+To get the same settings there, set them before Python starts:
 
 ```sh
 export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
 ```
 
-If you have set `GLIBC_TUNABLES`, pymizu respects your values.
+If you set `GLIBC_TUNABLES` yourself, pymizu respects your values.
 
 
 ### Benchmarks
 
-Communication overhead against the stdlib `concurrent.futures` pools (Apple M4 Pro, from `benchmarks/mizu-stdlib-bench.py`).
+These tables measure task-communication overhead against the stdlib `concurrent.futures` pools, on an Apple M4 Pro (`benchmarks/mizu-stdlib-bench.py`).
 
-Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled payloads):
+First, `ProcessPoolExecutor`: tasks run in separate processes, and every payload crosses as a pickle.
 
 | Benchmark | pymizu | ProcessPoolExecutor | Speedup |
 |----|----|----|----|
@@ -1572,7 +1568,7 @@ Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled pay
 | Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 70.3 µs/elt | 176x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
 
-Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
+Next, `ThreadPoolExecutor`: tasks share one process, so the GIL caps CPU-bound work at one core.
 
 | Benchmark | pymizu | ThreadPoolExecutor | Speedup |
 |----|----|----|----|
@@ -1581,103 +1577,83 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 | Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
 
-Against `InterpreterPoolExecutor` (Python 3.14+, subinterpreters with per-interpreter GILs), the trivial-task rows land between the thread and process pools: 21.3 µs per round trip and 59,600 tasks/s pipelined on this machine (measured 2026-10-07).
-It cannot run the map rows at all.
-Task payloads must be shareable: builtin scalars, plain containers, or buffer-protocol objects.
-numpy arrays and numpy scalars raise `NotShareableError`.
-
 \* elt = element, in microseconds of wall time per map element.
 
 ## How pymizu compares
 
-pymizu targets parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies.
-The tools in this table overlap at the edges.
-They differ in what has to run, how data moves, and what survives a crash.
+pymizu runs processes in parallel on one machine and moves data through shared memory instead of pickled copies.
+The tools below overlap at the edges; they differ in what has to run, how data moves, and what survives a crash.
 
 | Tool | What runs | How data moves | Best for |
 |----|----|----|----|
-| `multiprocessing`<br>`concurrent.futures` | Nothing beyond the stdlib | Pickle copies per task | Coarse tasks, maximum portability |
-| `joblib` | A reusable worker pool (loky) | Pickle; large arrays memmapped to disk | Coarse parallel loops, anywhere Python runs |
-| `ipyparallel` | A controller process plus engines | Pickle over ZeroMQ sockets | Interactive parallelism from Jupyter |
-| Ray | Scheduler, object store, dashboard | Object store (zero-copy on one node) | Cluster scaling, actors, GPU placement |
-| Dask | A scheduler (+ `distributed` workers) | Process copies; threads share a heap | Out-of-core dataframes and arrays |
-| Free-threaded CPython | Threads | Nothing; threads share one heap | CPU work needing no isolation |
-| `concurrent.interpreters` | Nothing beyond the stdlib | Builtins copy, buffers share; no numpy | Process-free isolation (3.14+) |
+| `multiprocessing`<br>`concurrent.futures` | Stdlib only | Pickle copies per task | Coarse tasks, maximum portability |
+| `joblib` | Reusable worker pool (loky) | Pickle; large arrays memmapped to disk | Coarse parallel loops anywhere |
+| `ipyparallel` | Controller + engines | Pickle over ZeroMQ | Interactive use from Jupyter |
+| Ray | Scheduler, object store, dashboard | Zero-copy object store (one node) | Cluster scaling, actors, GPU placement |
+| Dask | Scheduler (+ `distributed` workers) | Process copies; threads share heap | Out-of-core dataframes and arrays |
+| Free-threaded CPython | Threads | Zero copies — shared heap | CPU work, no isolation needed |
+| `concurrent.interpreters` | Stdlib only (3.14+) | Builtins copy, buffers share; no numpy | Process-free isolation |
 | pymizu | A library | Shared-memory views, µs handoff | Fine-grained tasks, large arrays, R interop |
 
 ### Process pools: `multiprocessing`, `concurrent.futures`, joblib, ipyparallel
 
-The stdlib pools are the baseline that the benchmark tables measure.
+The stdlib pools are the baseline in the tables above.
 
-joblib's `Parallel`/`delayed` is the long-standing answer for an embarrassingly parallel loop over numpy data.
-Its `loky` backend is the closest in spirit to pymizu: a reusable process pool that memmaps arrays past a size threshold to a temp folder instead of pickling them.
-That removes the pickle copy.
-The array still round-trips through the filesystem, and a task round trip stays in the millisecond range.
+joblib's `Parallel`/`delayed` is the standard tool for embarrassingly parallel loops over numpy data.
+Its `loky` backend is the most similar to pymizu: a reusable process pool that memmaps large arrays to a temp folder instead of pickling them.
+That avoids the pickle copy, but the array still round-trips through the filesystem, and a task round trip stays in the millisecond range.
 
-ipyparallel answers the same question for Jupyter.
-A controller process brokers pickled messages over ZeroMQ sockets to engine processes.
-The price of that generality is a controller in the loop and a socket copy per message.
+ipyparallel brings process pools to Jupyter: a controller process brokers pickled messages over ZeroMQ sockets to engine processes.
+That generality costs a controller in the loop and a socket copy per message.
 
-`multiprocessing.shared_memory` exposes raw shared buffers and leaves synchronization, lifetime tracking, and crash cleanup to you.
-pymizu builds on the same idea: the same pages, with the waiting, framing, and peer-death detection built in.
+`multiprocessing.shared_memory` gives you raw shared buffers and leaves synchronization, lifetime tracking, and crash cleanup to you.
+pymizu builds on the same idea — the same pages — and adds the waiting, framing, and peer-death detection.
 
 ### Distributed frameworks: Ray and Dask
 
-Ray and Dask are designed to spread work across machines.
-On one machine you pay for that design.
-A local Ray instance still starts a scheduler, an object store, and a dashboard.
-A task round trip costs on the order of a millisecond.
+Ray and Dask spread work across machines.
+On one machine, that design has a cost: a local Ray instance still starts a scheduler, an object store, and a dashboard, and a task round trip costs on the order of a millisecond.
 
-Dask's `distributed` scheduler is similar.
-Its process-free threaded scheduler shares memory, but the GIL caps it for Python-level work.
-Ray's object store does read numpy arrays without copying on the same node.
-The difference is overhead and footprint.
-If the work fits one machine and the tasks are measured in microseconds, the framework overhead dominates the work.
+Dask's `distributed` scheduler is similar; its threaded scheduler shares memory, but the GIL caps it for Python-level work.
+Ray's object store does read numpy arrays without copying on one node.
+The difference on one machine is overhead and footprint.
 
 ### Modern CPython: free-threading and subinterpreters
 
-Python 3.14 officially supports a build with the GIL removed, in which threads share one heap and exchange data with no copies at all.
-This is the right answer for single-language CPU parallelism when isolation is not needed.
-A crashing thread takes the process down, C extensions must be built and validated for it, and it does nothing for crossing into R.
-pymizu targets the standard GIL build and does not yet support the free-threaded one.
-The two approaches solve different problems: threads trade isolation for sharing, and pymizu keeps the isolation and makes the sharing cheap.
+Python 3.14 officially supports a free-threaded build with the GIL removed: threads share one heap and exchange data with no copies at all.
+If you do not need isolation, it is the best tool for single-language CPU parallelism.
+The tradeoffs: a crashing thread takes the process down, C extensions must be built and validated for it, and it does not cross into R.
+pymizu targets the standard GIL build and does not yet support free-threading.
+The two approaches solve different problems: threads trade isolation for sharing; pymizu keeps the isolation and makes the sharing cheap.
 
-Python 3.14 also added `concurrent.interpreters` to the stdlib ([PEP 734](https://peps.python.org/pep-0734/)).
-It runs multiple interpreters in one process, each with its own GIL.
-CPU work parallelizes without new processes on the standard build.
-Objects that pass between interpreters must be shareable.
-Builtin scalars and plain containers of them cross as copies.
-Buffer-protocol objects can share their underlying memory, with synchronization left to you.
-Anything else, numpy arrays included, is rejected.
-The isolation is real but not OS-level: a fatal error in one interpreter ends the process.
-The surrounding machinery (queues, lifetimes, crash handling) is yours to build.
-`concurrent.interpreters` is also Python 3.14 and later only.
-pymizu runs on Python 3.10 and later.
+Python 3.14 also added `concurrent.interpreters` to the stdlib ([PEP 734](https://peps.python.org/pep-0734/)): multiple interpreters in one process, each with its own GIL, so CPU work parallelizes without new processes on the standard build.
+Objects that cross between interpreters must be shareable: builtin scalars and plain containers copy across, buffer-protocol objects share their memory (synchronization is on you), and everything else — numpy arrays included — is rejected.
+The isolation is real but not OS-level: a fatal error in one interpreter ends the process, and you build the surrounding machinery (queues, lifetimes, crash handling) yourself.
+`concurrent.interpreters` requires Python 3.14+; pymizu runs on 3.10+.
 
 ### R workers
 
-Only pymizu runs a pool whose workers are R processes, exchanging numpy arrays and data frames as shared-memory views (see [R interop](interop.qmd)).
-None of the other tools in this guide cross the language boundary.
+Only pymizu can run a pool of R workers, exchanging numpy arrays, polars DataFrames, and Arrow tables as shared-memory views (see [R interop](interop.qmd)).
+No other tool here crosses the language boundary.
 
-Choose pymizu when the work fits on one machine, when tasks are fine-grained or the data is large, or when R needs to be in the loop.
-Choose Ray or Dask when you outgrow one machine.
-Choose `concurrent.interpreters` when you want stdlib-only isolation and can require Python 3.14.
-Choose free-threading when one language and shared-everything is acceptable.
+- Choose pymizu when the work fits one machine and tasks are fine-grained, data is large, or you need R.
+- Choose Ray or Dask when you outgrow one machine.
+- Choose `concurrent.interpreters` for stdlib-only isolation when you can require Python 3.14.
+- Choose free-threading when one language and shared-everything is acceptable.
 
-`benchmarks/mizu-bench.py` runs the pymizu rows standalone, `benchmarks/mizu-stdlib-bench.py` the comparison, and `benchmarks/crosslang-map-bench.py` the cross-language map comparison.
-The scripts are report-only and assert nothing about the numbers: CI runner timing is too variable.
-Dated records are in `benchmarks/notes.md`.
+To reproduce these numbers, run `benchmarks/mizu-bench.py` (pymizu standalone), `benchmarks/mizu-stdlib-bench.py` (the comparison above), or `benchmarks/crosslang-map-bench.py` (the cross-language map comparison).
+The scripts report timings but assert nothing about them — CI runner timing is too variable — and dated records live in `benchmarks/notes.md`.
 
 
 ### Channels
 
-A channel is a two-way message link between a Python process and a helper process that it spawns: one lock-free ring per direction, over shared memory.
-One process writes data into shared memory, and the other reads it in place, with no copy through a socket, pipe, or file.
+A channel is a two-way message link between your Python process and a helper process it spawns: one lock-free ring per direction, over shared memory.
+One side writes into shared memory and the other reads it in place — no copies through sockets, pipes, or files.
 
 ## Creating a channel
 
 `Channel.create()` spawns the peer process and connects both ends.
-The peer program is a Python source string, evaluated in the peer with `ch` bound to its side of the channel:
+Pass the peer program as a Python source string; the peer evaluates it with `ch` bound to its side of the channel:
 
 ```{python}
 import pymizu
@@ -1692,14 +1668,11 @@ while True:
 """)
 ```
 
-The peer is a full Python process: it imports anything importable in the spawning interpreter's environment.
-`Channel.create()` returns after the peer connects.
-It waits up to `startup_timeout` seconds and raises `StartupError` on expiry.
+The peer is a full Python process: it can import anything your interpreter can.
+`Channel.create()` waits up to `startup_timeout` seconds for the peer to connect and raises `StartupError` on expiry.
 
-A `launcher` changes how pymizu spawns the peer.
-It is one callable that takes the channel's token and arranges for the peer process to start.
-`pymizu.r_launcher()` is the built-in example: it spawns an R peer instead (see [R interop](interop.qmd)).
-User code spawns peers through a launcher.
+A `launcher` changes how the peer spawns: one callable that takes the channel's token and starts the peer process.
+The built-in `pymizu.r_launcher()` spawns an R peer (see [R interop](interop.qmd)); write your own to spawn peers any other way.
 
 ## Sending and receiving
 
@@ -1712,7 +1685,7 @@ ch.send([1, "a", None])
 ch.recv(timeout=5)
 ```
 
-The outcomes that end a conversation are returned as sentinel singletons, not raised:
+Outcomes that end a conversation come back as sentinel singletons, not exceptions:
 
 | Sentinel | Returned when |
 |---|---|
@@ -1721,12 +1694,10 @@ The outcomes that end a conversation are returned as sentinel singletons, not ra
 | `pymizu.CLOSED` | the peer has closed and the ring is drained |
 | `pymizu.PEER_GONE` | the peer process has died and the ring is drained |
 
-Test them by identity (`x is pymizu.TIMEOUT`) or with `pymizu.is_sentinel(x)`.
-No call needs an error handler.
-If the peer dies, receives first drain what it already sent, then report `PEER_GONE`.
+Test for them by identity (`x is pymizu.TIMEOUT`) or with `pymizu.is_sentinel(x)` — no call needs an error handler.
+If the peer dies, receives drain what it already sent, then report `PEER_GONE`.
 
-`send_batch()` and `recv_batch()` move several values in one call.
-Use them at rates where the per-call overhead starts to matter:
+When per-call overhead starts to matter, `send_batch()` and `recv_batch()` move several values in one call:
 
 ```{python}
 ch.send_batch(range(4))
@@ -1738,12 +1709,11 @@ ch.recv_batch(4, timeout=5)
 
 ## asyncio
 
-`ch.recv_async()` is the event-driven receive.
-It returns an `asyncio.Future` for the next value, resolved when the value arrives, with no blocking and no polling.
-There is no timeout argument; use `asyncio.timeout` or `asyncio.wait_for`.
-Terminal states stay values: the Future resolves with `CLOSED` / `PEER_GONE`.
-Several outstanding calls resolve in call order, one message each.
-Cancelling the Future detaches the waiter, passing the next message to the one after.
+For event-driven receives, `ch.recv_async()` returns an `asyncio.Future` that resolves with the next value when it arrives — no blocking, no polling.
+It takes no timeout; use `asyncio.timeout` or `asyncio.wait_for`.
+Terminal states stay values: the Future resolves with `CLOSED` or `PEER_GONE`.
+Outstanding calls resolve in call order, one message each.
+Cancelling a Future detaches its waiter and passes the next message to the one behind it.
 
 ```{python}
 ch.send(1)
@@ -1754,11 +1724,9 @@ await ch.recv_async()
 
 `async for x in ch` is the stream form: it awaits each value through `recv_async()` and ends on `CLOSED` or `PEER_GONE`, as the sync iterator does.
 
-A message the peer sent outside the portable interchange subset (a language-private stream) is declined at read time with `ForeignPayloadError`.
-The message is consumed and the channel keeps flowing.
-`recv_async()` rejects only the waiter that receives it, and the other outstanding calls are unaffected.
-The rejection also ends an `async for` statement, and a try/except inside the loop body cannot catch it.
-To skip the message, wrap the whole loop and re-enter on the same channel.
+A message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with `ForeignPayloadError`; the message is consumed and the channel keeps flowing.
+Under `recv_async()`, only that message's waiter rejects.
+The rejection also ends an `async for` loop, and a try/except inside the loop body cannot catch it — wrap the whole loop and re-enter on the same channel to skip the message.
 
 ## Closing
 
@@ -1769,26 +1737,21 @@ ch.close()
 ```
 
 A channel is also a context manager: the `with` block closes it on exit.
-`destroy()` releases the handle immediately, without waiting for the peer.
-The peer sees the channel as closed (`PEER_GONE` if it died hard).
-A destroy is safe from any thread.
-A verb still running on another thread keeps the handle alive until it returns, and a waiting verb (`recv()`, `recv_batch()`, `ready_wait()`, `close()`) wakes up promptly so teardown can finish.
+`destroy()` skips the wait and releases the handle immediately; the peer sees the channel as closed (`PEER_GONE` if it died hard).
+Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb (`recv()`, `recv_batch()`, `ready_wait()`, `close()`) wakes promptly so teardown can finish.
 
 ## Threading
 
-A channel side belongs to one thread at a time.
-This is libmizu's threading contract: the shared structures carry no locks by design.
-Call a side's verbs (`send()`, `recv()`, their batch forms, `ready_wait()`) from one thread only.
-A second verb from another thread raises `ConcurrentUseError` instead of corrupting the ring.
-The guard is a check, not a lock: it never waits, and it reports the mistake.
-Blocking receives and `recv_async()` are likewise exclusive on a side.
-A blocking receive while async receives are pending raises `ConcurrentUseError` at the call site, except on the async consumer's own event-loop thread, whose receives can never race it.
-Two-way traffic from two threads needs two channels (one per direction, each on its own thread) or one channel whose calls all go through a single thread.
-`destroy()` is the exception, and is safe from any thread, as described in Closing.
+Each channel side belongs to one thread at a time — libmizu's threading contract, since the shared structures carry no locks by design.
+Call a side's verbs (`send()`, `recv()`, their batch forms, `ready_wait()`) from one thread only; a second verb from another thread raises `ConcurrentUseError` instead of corrupting the ring.
+The guard is a check, not a lock: it never waits, it reports the mistake.
+Blocking receives and `recv_async()` are likewise exclusive on a side: a blocking receive while async receives are pending raises `ConcurrentUseError` at the call site, except on the async consumer's own event-loop thread, whose receives can never race it.
+For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread.
+`destroy()` is the exception: it is safe from any thread, as described in Closing.
 
 ## What crosses a channel
 
-pymizu moves each value the cheapest way it can:
+pymizu chooses the cheapest transport for each value:
 
 1. `None` crosses as a marker: no data moves.
 2. Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross without serialization.
@@ -1802,20 +1765,16 @@ pymizu moves each value the cheapest way it can:
 5. Everything else crosses as a pickle (protocol 4).
 
 Each end of a channel knows the peer's language.
-Between two Python processes that is the whole story: arrays of the dtypes in this list cross unchanged, and everything else pickles.
-With an R peer, values must fit a portable subset that both languages share.
-A value outside it raises `pymizu.DeclinedError` at send time, naming the value and the reason.
-The channel stays usable.
+Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles.
+An R peer restricts values to a portable subset both languages share; a value outside it raises `pymizu.DeclinedError` at send time, naming the value and the reason, and the channel stays usable.
 See [R interop](interop.qmd).
 
-An uncaught error in the peer crosses as a value, not a raised exception: a `pymizu.TaskError` carrying the original exception's class name and traceback text.
-`pymizu.is_remote_error(x)` tests a received value.
-Raise it to propagate the error.
+An uncaught error in the peer crosses as a value, not a raised exception: a `pymizu.TaskError` carrying the original class name and traceback text.
+Test a received value with `pymizu.is_remote_error(x)`; raise it to propagate the error.
 
 ## Frames without pickling
 
-Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default.
-That is type-exact, but a full serialize and parse round trip.
+Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip.
 `pymizu.Frame.from_arrow()` sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive:
 
 ```{python}
@@ -1837,8 +1796,8 @@ while True:
 echoed.column("x").null_count
 ```
 
-Construction adopts the producer's own buffers wherever the frame's column layout is the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values).
-It copies only what it has to:
+Construction adopts the producer's own buffers wherever the column layout is already the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values).
+It copies only what it must:
 
 | Stage | Copies |
 |---|---|
@@ -1865,29 +1824,27 @@ A column whose type forces a copy is copied rather than declined:
 
 Chunked pyarrow tables adopt after `table.combine_chunks()`.
 Timestamps and durations keep their counts and unit: a `timestamp[ns]` round trip is exact to the nanosecond, timezone included.
-Nanosecond precision needs pymizu from this version on both ends.
-A peer without it (an older pymizu, or R) receives the microsecond form instead, with values rounded to the microsecond precision of the wire format, and no error.
+Nanosecond precision needs this pymizu version on both ends; an older peer (or R) receives the microsecond form instead, values rounded to the wire format's microsecond precision, with no error.
 
 Adopted buffers stay alive for the frame's lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view.
 `to_dict()`'s masked reads copy where the Arrow export does not.
 When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact.
 On a pool, a `Frame` task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.qmd#frames-as-task-arguments)).
-`Pool.map` does not take a frame as its element source.
+`Pool.map` does not accept a frame as its element source.
 
 ## Sizing
 
 `Channel.create()` takes `capacity` (ring slots, a power of two), `slot_size` (bytes per slot, so a payload of up to `slot_size - 16` bytes fits in a slot), and `arena_size` (the channel's shared staging area).
 A value too large for a slot goes to the staging area or a fresh shared-memory region.
-`spin=True` makes receivers busy-wait instead of sleeping.
-This gives the lowest latency, at full CPU use while waiting.
+`spin=True` makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.
 
 
 ### Task pools
 
-A pool is a set of worker processes that divide submitted tasks among themselves.
+A pool is a set of worker processes that share out submitted tasks.
 `Pool.create()` spawns them.
-Workers take tasks from per-submitter queues and steal work from each other, so the load balances itself.
-A submission is one shared-memory write plus at most one wake-up: no dispatcher process is involved.
+Workers pull tasks from per-submitter queues and steal work from each other, so the load balances itself.
+A submission costs one shared-memory write plus at most one wake-up — there is no dispatcher process.
 
 ```{python}
 import pymizu
@@ -1899,29 +1856,22 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-`pool.submit()` returns a `Task` handle immediately.
-`task.collect()` waits for the result.
+`pool.submit()` returns a `Task` handle immediately, and `task.collect()` waits for the result.
 The pool is a context manager: leaving the block stops it.
 `pool.stop()` cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared memory.
-The pool exists only as long as the process that created it, and dropping the handle shuts the pool down without waiting for the workers.
+The pool lives only as long as its creating process; dropping the handle shuts it down without waiting for the workers.
 
 ## Task callables
 
-A task callable travels by pickle.
-With the standard pickle it must be an importable reference, as with `multiprocessing`.
-Installing cloudpickle lifts that restriction.
-Task arguments follow the same rules as [channel values](channels.qmd#what-crosses-a-channel).
-A buffer-protocol argument larger than 32 KB arrives as a read-only view over the shared pages, not a writable copy.
+A task callable travels by pickle, so under the standard pickle it must be an importable reference, as with `multiprocessing`; installing cloudpickle lifts that restriction.
+Task arguments follow the same rules as [channel values](channels.qmd#what-crosses-a-channel): a buffer-protocol argument larger than 32 KB arrives as a read-only view over the shared pages, not a writable copy.
 
 ## Frames as task arguments
 
-A [`Frame`](`pymizu.Frame`) argument follows the same rule.
-Past the size floor it crosses as one shared-memory region, and the worker's callable reads it in place, as on a channel.
-Below the floor the argument pickles (the worker gets a copy), as it does with a complex column (which has no Arrow type).
-One region crosses per task.
-A second region-sized argument (another frame or a large buffer) moves the whole task to pickle, with values exact.
-Raw pyarrow and polars frames stay on the pickle path (they round-trip with their exact types).
-Construct the `Frame` first to opt in.
+A [`Frame`](`pymizu.Frame`) argument follows the same rule: past the size floor it crosses as one shared-memory region, and the worker's callable reads it in place, as on a channel.
+Below the floor it pickles (the worker gets a copy), as it does with a complex column, which has no Arrow type.
+Only one region crosses per task: a second region-sized argument (another frame or a large buffer) moves the whole task to pickle, values exact.
+Raw pyarrow and polars frames stay on the pickle path and round-trip with their exact types — construct the `Frame` first to use the shared region instead.
 
 ## Outcomes
 
@@ -1933,22 +1883,18 @@ Construct the `Frame` first to opt in.
 | The task's payload region vanished before any worker ran it | `pymizu.TaskLostError` |
 | The collect timeout expired | the `pymizu.TIMEOUT` sentinel |
 
-A task error crosses as a plain description of type, message, and traceback, not a pickled exception object.
-The OS reports a worker's death immediately, with no heartbeats and no polling.
-Only the tasks the dead worker had claimed fail.
-The surviving workers take over the rest of its queue.
+A task error crosses as a plain description (type, message, traceback), not a pickled exception object.
+The OS reports a worker's death immediately — no heartbeats, no polling.
+Only the tasks the dead worker had claimed fail; the surviving workers take over the rest of its queue.
 
-`task.cancel()` withdraws a task.
-A task still queued is skipped.
-A task already running completes, and its result is discarded.
+`task.cancel()` withdraws a task: a queued task is skipped, a running one completes and its result is discarded.
 Cancellation never interrupts executing code.
 
 Submission itself can fail: `SubmitTimeoutError` when the submit queue stays full past `timeout`, `SlotsExhaustedError` when too many tasks are outstanding and uncollected, `StoppedError` on a stopped pool.
 
 ## Waiting on several tasks
 
-`pool.collect_any()` waits on a list of task handles and returns `(index, value)` for the first to finish.
-The other handles stay collectible.
+`pool.collect_any()` waits on a list of task handles and returns `(index, value)` for the first to finish; the other handles stay collectible.
 `pool.collect_all()` returns every value in input order once all have finished.
 Both take one overall `timeout` and return the `TIMEOUT` sentinel on expiry, consuming nothing:
 
@@ -1975,16 +1921,13 @@ Bind arguments with `functools.partial`.
 
 ## asyncio
 
-`await task`, or `task.collect_async()`, is the event-driven collect.
-It returns an `asyncio.Future` that resolves with the task's result (or raises the task's error) when the result arrives, with no blocking and no polling.
-Cancelling the Future detaches the waiter, so a later blocking `collect()` works again, and never cancels the task (only `task.cancel()` does).
-A task with a pending async collect refuses blocking collects: each result has one consumer.
+For event-driven collects, `await task` (or `task.collect_async()`) returns an `asyncio.Future` that resolves with the result — or raises the task's error — when it arrives, with no blocking and no polling.
+Cancelling the Future only detaches the waiter: a later blocking `collect()` works again, and the task itself is never cancelled (only `task.cancel()` does that).
+Each result has one consumer: a task with a pending async collect refuses blocking collects.
 
-`pool.collect_any_async(tasks)` and `pool.collect_all_async(tasks)` are the batch forms, with one Future per collection rather than one per task, re-checked whenever a task finishes.
-They behave like the sync verbs.
-Collect-all resolves in input order, and the first error by position rejects with `index`.
-Collect-any resolves `(index, value)` for the first task to finish.
-There are no timeout arguments: use `asyncio.timeout` or `asyncio.wait_for`.
+`pool.collect_any_async(tasks)` and `pool.collect_all_async(tasks)` are the batch forms: one Future per collection, re-checked whenever a task finishes, otherwise behaving like the sync verbs.
+Collect-all resolves in input order and rejects the first error by position with its `index`; collect-any resolves `(index, value)` for the first task to finish.
+Neither takes a timeout — use `asyncio.timeout` or `asyncio.wait_for`.
 
 ```{python}
 with pymizu.Pool.create(2) as pool:
@@ -1998,9 +1941,8 @@ rest
 
 ## Nested tasks
 
-Inside a task, `pymizu.current_pool()` returns the pool handle of the worker running the task.
-A nested submit goes onto that worker's own queue, so there is no ring and no wake-up.
-A worker waiting on a nested result runs other work instead of sleeping.
+Inside a task, `pymizu.current_pool()` returns the pool handle of the worker running it.
+A nested submit lands on that worker's own queue — no ring, no wake-up — and a worker waiting on a nested result runs other work instead of sleeping.
 Recursive fan-out is cheap and cannot deadlock the pool:
 
 ```{python}
@@ -2025,9 +1967,9 @@ See [Nested maps](map.qmd#nested-maps).
 ## A default pool for package code
 
 Package code can read a process-wide default pool with `pymizu.default_pool()`.
-`pymizu.set_default_pool(pool)` sets it (`None` clears it) and returns the previous default, so callers can save and restore.
-A pool set as the default stays alive even after its variable is deleted.
-`pymizu.using_pool(pool)` scopes the default to a `with` block and restores the previous default on exit, including on exception.
+`pymizu.set_default_pool(pool)` sets it (`None` clears it) and returns the previous default, so you can save and restore.
+A pool set as the default stays alive after its variable is deleted.
+`pymizu.using_pool(pool)` scopes the default to a `with` block, restoring the previous default on exit, exception included.
 
 Resolve an optional pool in this order: an explicit `pool` argument, `current_pool()` inside a task, `default_pool()`, then your own fallback (sequential execution or an error).
 Inside a task, `current_pool()` takes precedence over the default, so nested submission always goes to the worker's own pool.
@@ -2054,11 +1996,9 @@ squared
 A pool can grow and shrink while it runs.
 `pool.spawn_workers(n)` adds workers, up to the `max_workers` limit set at create.
 `pool.retire(slot)` asks a worker to exit cleanly: it finishes its current task, and the remaining workers take over anything still queued to it.
-Only the pool's creator resizes it.
-An attached submitter gets `MizuError`.
+Only the creator resizes a pool; an attached submitter gets `MizuError`.
 
-Other processes join a running pool as submitters with `Pool.attach(token)`.
-The token is `pool.token` on the creator.
+Other processes join a running pool as submitters with `Pool.attach(token)`, where the token is the creator's `pool.token`.
 Attached submitters submit and collect exactly as the creator does.
 
 ## Observing a pool
@@ -2076,8 +2016,8 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 
 A pool handle is single-producer: call its submit family (`submit()`, `submit_batch()`, `map()`) from one thread only.
 A second concurrent producer raises `ConcurrentUseError` instead of corrupting the submission queue.
-The guard is a check, not a lock: it never waits, and it reports the mistake.
-The waiting half (the blocking collects, `ready_wait()`, `stop()`) likewise belongs to one thread, which may be a different thread from the producer's, and a concurrent second wait raises the same error.
+The guard is a check, not a lock: it never waits, it reports the mistake.
+The waiting half (the blocking collects, `ready_wait()`, `stop()`) likewise belongs to one thread — which may differ from the producer's — and a concurrent second wait raises the same error.
 This is libmizu's threading contract: the shared structures carry no locks by design.
 
 Three ways to produce from several threads, in rough order of preference:
@@ -2091,9 +2031,7 @@ Avoid `asyncio.to_thread(pool.submit, ...)` from concurrent coroutines: the defa
 
 ## concurrent.futures interop
 
-`pymizu.PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface.
-Code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects.
-`wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged.
+`pymizu.PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects, and `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged.
 Futures resolve as results arrive, with no background thread and no polling.
 
 ```{python}
@@ -2104,9 +2042,8 @@ with pymizu.PoolExecutor.create(4) as ex:
 result
 ```
 
-Wrap an existing pool with `PoolExecutor(pool)`.
-Its lifetime then stays with its owner.
-`PoolExecutor.create(workers, **pool_kwargs)` spawns an owned pool that `shutdown` stops.
+Wrap an existing pool with `PoolExecutor(pool)`; its lifetime stays with its owner.
+`PoolExecutor.create(workers, **pool_kwargs)` instead spawns an owned pool that `shutdown` stops.
 A task's failure surfaces as `pymizu.TaskError`, and cancellation behaves like `Task.cancel`.
 For bulk maps, `Pool.map` remains the faster path: the executor's `map` runs one task per element.
 
@@ -2117,10 +2054,8 @@ For bulk maps, `Pool.map` remains the faster path: the executor's `map` runs one
 
 ### Parallel map
 
-`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a `Map` handle immediately.
-The work is set up and submitted at the call, and you collect the results from the handle.
-A map is not a loop over `pool.submit()`.
-The function, its constant `args=`/`kwargs=`, and the data are written to shared memory once, and one *runner* task per worker divides up the elements:
+`Pool.map(fn, x)` maps `fn` over `x` on the pool and returns a `Map` handle immediately: setup and submission happen at the call, and you collect results from the handle.
+A map is not a loop over `pool.submit()`: the function, its constant `args=`/`kwargs=`, and the data are written to shared memory once, and one *runner* task per worker divides up the elements:
 
 ```{python}
 import pymizu
@@ -2135,18 +2070,16 @@ result
 
 A map collects exactly once, through the handle:
 
-- `handle.collect(timeout=None)` blocks for the results: a list in input order, or with `template=` the gathered output area (a view with `collect="view"`). On `timeout` expiry the outstanding work is cancelled and the `TIMEOUT` sentinel is returned, not raised.
-- `handle.collect_async()`, or `await handle`, resolves one `asyncio.Future` with the same results when they arrive, with no blocking or polling. Cancelling the Future only detaches the waiter, so the handle can be collected blocking again, and never cancels the map. A streaming map (`stream=True`) can only be collected blocking, because its sliding task window advances in the blocking collect loop.
+- `handle.collect(timeout=None)` blocks for the results: a list in input order, or with `template=` the gathered output area (a view with `collect="view"`). On `timeout` expiry the outstanding work is cancelled and you get the `TIMEOUT` sentinel, not an exception.
+- `handle.collect_async()`, or `await handle`, resolves one `asyncio.Future` with the same results when they arrive, with no blocking or polling. Cancelling the Future only detaches the waiter: the handle can be collected blocking again, and the map is never cancelled. A streaming map (`stream=True`) can only be collected blocking, because its sliding task window advances in the blocking collect loop.
 - `handle.cancel()` stops the run: workers halt within about one batch, and a pending collect, blocking or async, ends with `CancelledError`.
 
 `Pool.map()`'s own `timeout=` bounds submission only: on its expiry the tasks already in are cancelled and `Pool.map()` itself returns the `TIMEOUT` sentinel (no handle).
-A dropped uncollected handle cancels at garbage collection, so no run of `fn` is wasted.
+A dropped uncollected handle cancels at garbage collection, so no work is wasted.
 
 ## Scheduling
 
-Each runner claims batches of elements from a shared counter, and the batch size adapts.
-A cheap `fn` runs in large batches at near-zero scheduling cost.
-An expensive or uneven one takes smaller batches to keep the workers balanced.
+Each runner claims batches of elements from a shared counter, and the batch size adapts: a cheap `fn` runs in large batches at near-zero scheduling cost, while an expensive or uneven one takes smaller batches to keep workers balanced.
 `n_chunks=` sets the batch size directly.
 
 A 1-D C-contiguous numpy array of float64, int32, int64, complex128, or uint8 crosses as raw bytes.
@@ -2198,8 +2131,7 @@ with pymizu.Pool.create(4) as pool:
 Pass `seed=(seed, offset)` to shift every element's stream by `offset` positions, for maps split across runs or processes.
 
 `seed=` covers the stdlib `random` module only.
-A task that draws from numpy calls `pymizu.current_rng()` inside the task.
-This is the element's own `numpy.random.Generator`, derived from the same seed and created once per element:
+To draw from numpy, call `pymizu.current_rng()` inside the task: the element's own `numpy.random.Generator`, derived from the same seed and created once per element:
 
 ```{python}
 def draw_np(i):
@@ -2211,19 +2143,15 @@ with pymizu.Pool.create(4) as pool:
     print(a == b)
 ```
 
-The legacy `np.random.*` module functions draw from the worker's shared global `RandomState`.
-A seeded map does not make them deterministic: results depend on claim and steal order.
-Other RNG libraries (torch, jax) are out of scope.
-A seeded map element must not submit and collect nested tasks.
-While a worker waits for nested results it runs other work, possibly another map's batches mid-element, which can wipe the element's `current_rng()` stash.
+The legacy `np.random.*` functions draw from the worker's shared global `RandomState`; a seeded map does not make them deterministic, and other RNG libraries (torch, jax) are out of scope.
+Also, a seeded map element must not submit and collect nested tasks: while a worker waits for nested results it runs other work — possibly another map's batches mid-element — which can wipe the element's `current_rng()` stash.
 The stdlib streams survive.
 
 ## Templates
 
 A `template=` example buffer (for example `np.empty(m, dtype=...)`) declares that every `fn` result is `m` values of that dtype.
-Workers write their results directly into a shared `n x m` output area, so each result crosses the process boundary once, without serialization.
-Each result must be a matching buffer.
-If `m == 1`, a plain Python scalar also works:
+Workers write results directly into a shared `n x m` output area, so each result crosses the process boundary once, with no serialization.
+Each result must be a matching buffer; when `m == 1`, a plain Python scalar also works:
 
 ```{python}
 import math
@@ -2234,23 +2162,16 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-With a template, `collect="copy"` (the default) returns the output as one numpy array of shape `(n, m)`.
-If `m == 1`, the shape is `(n,)`.
-If numpy is not installed, the output is a memoryview.
-`collect="view"` returns the shared output area itself as a read-only zero-copy view.
-The shared memory is released when the view is garbage-collected.
+With a template, `collect="copy"` (the default) returns the output as one numpy array of shape `(n, m)` — `(n,)` when `m == 1` — or a memoryview when numpy is not installed.
+`collect="view"` returns the shared output area itself as a read-only zero-copy view, released when the view is garbage-collected.
 The view exports `__arrow_c_array__`, so an Arrow consumer such as pyarrow or polars wraps it without numpy.
-With numpy, reach the view through the result's `.base` (`arr.base` when `m == 1`, one link deeper when `m > 1`).
-Without numpy, it is `mv.obj` on the memoryview.
+With numpy, reach the view through the result's `.base` (`arr.base` when `m == 1`, one link deeper when `m > 1`); without numpy, it is `mv.obj` on the memoryview.
 
 ## Streaming maps
 
-With `stream=True`, the map does not write the whole of `x` to shared memory.
-It streams slices of `x` to workers as they take work, and the return value is unchanged.
-Slices travel as ordinary chunk tasks under a sliding submit/collect window.
-At most `min(n_chunks, 2 * live workers, free result slots)` tasks stay outstanding.
-Shared-memory use is bounded by `window x slice` instead of `sizeof(x)`.
-The chunk count defaults to `min(len(x), 32 * live workers)`, and `n_chunks=` overrides it.
+With `stream=True`, the map does not write the whole of `x` to shared memory; it streams slices to workers as they take work.
+Slices travel as ordinary chunk tasks under a sliding submit/collect window: at most `min(n_chunks, 2 * live workers, free result slots)` tasks stay outstanding, so shared-memory use is bounded by `window x slice` instead of `sizeof(x)`.
+The chunk count defaults to `min(len(x), 32 * live workers)`; `n_chunks=` overrides it.
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
@@ -2259,22 +2180,17 @@ with pymizu.Pool.create(4) as pool:
 result
 ```
 
-Everything else (ordering, `template=` and `collect=`, `seed=` reproducibility, the errors) is the same as for the non-streaming map.
-Fixed chunks have two costs.
-The adaptive batch sizing is lost: raise `n_chunks=` to reduce skew.
-Slices are serialized like ordinary task payloads, so each chunk pays a submit's serialization cost instead of the zero-copy path a raw array gets.
+Everything else (ordering, `template=` and `collect=`, `seed=` reproducibility, the errors) works as in the non-streaming map.
+Fixed chunks have two costs: the adaptive batch sizing is lost (raise `n_chunks=` to reduce skew), and slices are serialized like ordinary task payloads, so each chunk pays a submit's serialization cost instead of the zero-copy path a raw array gets.
 A streaming map with Python workers shares one description of the map with every worker, each read at most once.
 A `pymizu.call` spec as `fn` streams too, over workers of any language.
-Each chunk in the window writes a small shared-memory region of its own: the slice plus the task that runs on it, one runner task per chunk.
-The region is removed as soon as the chunk completes.
-Shared-memory use stays bounded by the window plus a small per-worker cache rather than by `sizeof(x)`.
-Each chunk also writes its results separately, so they cannot combine into one view.
-`collect="view"` raises `TypeError` on a streaming spec map, as does preparing one with `pool.map_prepare()`.
+Each chunk in the window writes its own small shared-memory region — the slice plus the task that runs it, one runner per chunk — removed as soon as the chunk completes, so shared-memory use stays bounded by the window plus a small per-worker cache rather than `sizeof(x)`.
+Each chunk also writes its results separately, so they cannot combine into one view: `collect="view"` raises `TypeError` on a streaming spec map, as does preparing one with `pool.map_prepare()`.
 
 ## Prepared maps
 
-`pool.map_prepare()` prepares a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once.
-Each `m.run()` then returns the run's handle, costing only the task submissions and the collection, and reuses each worker's cached set-up:
+`pool.map_prepare()` stages a map once for repeated runs: the data is written to shared memory once, and each worker sets up the map once.
+Each `m.run()` then costs only the task submissions and the collection, reuses each worker's cached setup, and returns the run's handle:
 
 ```{python}
 with pymizu.Pool.create(4) as pool:
@@ -2283,19 +2199,15 @@ with pymizu.Pool.create(4) as pool:
         print(m.run().collect())
 ```
 
-`m.run(x=...)` replaces the data for that and later runs.
-A raw-array replacement of the same dtype and length is copied over the old data in place.
-Any other replacement is written out fresh.
+`m.run(x=...)` replaces the data for that and later runs: a raw-array replacement of the same dtype and length copies over the old data in place; anything else is written out fresh.
 A streaming prepared map keeps `x` on the submitter, so a replacement of any shape re-slices.
-Only a length change under `template=` uses fresh shared memory.
-After a run collected with `collect="view"`, the next run uses fresh shared memory, because the previous output area belongs to the returned view.
-`m.run(seed=...)` reseeds the run's element streams, and `m.run(collect=...)` chooses the result form.
-Both are per-run options, because the seed travels with the run's tasks rather than the staged data.
+Only a length change under `template=` uses fresh shared memory, as does the run after one collected with `collect="view"` (the previous output area belongs to the returned view).
+`m.run(seed=...)` reseeds the run's element streams and `m.run(collect=...)` chooses the result form — both per-run options, because the seed travels with the run's tasks rather than the staged data.
 
 ## Nested maps
 
-Maps nest: a task can start a map on the pool handle of the worker running it, via `pymizu.current_pool()`.
-The runner submissions go onto the worker's own queue, and while the worker waits it runs its own runners as idle workers steal the rest, so a nested map cannot deadlock the pool.
+Maps nest: a task can start a map on its worker's own pool handle, via `pymizu.current_pool()`.
+The runner submissions land on the worker's own queue, and while the worker waits it runs its own runners while idle workers steal the rest — a nested map cannot deadlock the pool.
 
 ```{python}
 def nested_total(parts):
@@ -2311,11 +2223,9 @@ total
 
 (This example needs cloudpickle: `nested_total` is not an importable reference.)
 
-The first nested map of a worker claims a submitter slot.
-With the default `max_submitters = 8`, one slot is held by the creating process, so at most 7 workers can nest concurrently.
-Raise `max_submitters` for wider nested fan-outs.
-Do not nest inside the element of a seeded map.
-While a worker waits for nested results it runs other work, possibly another map's batches mid-element, which can wipe the element's `current_rng()` stash.
+A worker's first nested map claims a submitter slot.
+The default `max_submitters = 8` holds one slot for the creating process, so at most 7 workers can nest concurrently; raise `max_submitters` for wider fan-outs.
+Do not nest inside the element of a seeded map — while a worker waits for nested results it runs other work, possibly another map's batches mid-element, which can wipe the element's `current_rng()` stash.
 See [Reproducible randomness](#reproducible-randomness).
 
 ## Outcomes
@@ -2326,21 +2236,17 @@ See [Reproducible randomness](#reproducible-randomness).
 - On `timeout=` expiry the outstanding work is cancelled and the `pymizu.TIMEOUT` sentinel is returned, not raised.
 - Ctrl-C during a map cancels its outstanding tasks.
 
-A map started inside a task runs on the worker's own pool handle, via `pymizu.current_pool()`.
-A `pymizu.call` spec as `fn` is the cross-language map.
-See [R interop](interop.qmd#mapping-over-a-foreign-pool).
+A map started inside a task runs on the worker's own pool handle via `pymizu.current_pool()`; a `pymizu.call` spec as `fn` is the cross-language map (see [R interop](interop.qmd#mapping-over-a-foreign-pool)).
 
 
 ### R interop
 
 The process at the other end of a channel does not have to be Python.
-[mizu](https://github.com/shikokuchuo/mizu) is the R counterpart of pymizu, built on the same shared-memory core.
-A channel or pool connects the two languages as directly as two Python processes.
+[mizu](https://github.com/shikokuchuo/mizu) is pymizu's R counterpart, built on the same shared-memory core, and a channel or pool connects the two languages as directly as two Python processes.
 
 ## R channel peers
 
-A channel peer can be an R process with the `mizu` package installed.
-Pass the peer program as R source, and set the launcher to `pymizu.r_launcher()`.
+A channel peer can be an R process with the `mizu` package installed: pass the peer program as R source and set the launcher to `pymizu.r_launcher()`.
 Here, an R process doubles the array you send:
 
 ```python
@@ -2364,21 +2270,17 @@ print(ch.recv(timeout=5))            # [3. 5. 7.]
 ch.close()
 ```
 
-`r_launcher()` needs R and the `mizu` R package installed.
-If either is missing, it raises `MizuError` before the channel is created.
+`r_launcher()` needs R and the `mizu` package installed; if either is missing it raises `MizuError` before the channel exists.
 Pass `rscript=` to use a specific R installation.
 
 To spawn the peer differently, write your own launcher: one callable that takes the channel's token and starts the peer process.
-The reverse direction works too: an R session spawns a Python peer with `mizu::mizu_py_launcher()`.
+The reverse direction works too — an R session spawns a Python peer with `mizu::mizu_py_launcher()`.
 
 ## Large data crosses without copying
 
-Above a size threshold, pymizu writes the data to shared memory once and both sides read it in place.
-Nothing is serialized, parsed, or copied again.
-A large value you send is read by R directly over the shared pages.
-A large value you receive arrives as a view over those pages, usually wrapped as a numpy array.
-The peer below echoes back whatever it receives.
-This channel stays open for the next few examples:
+Above a size threshold, pymizu writes the data to shared memory once and both sides read it in place — nothing is serialized, parsed, or copied again.
+R reads a large value you send directly over the shared pages; a large value you receive arrives as a view over those pages, usually wrapped as a numpy array.
+The peer below echoes back whatever it receives; this channel stays open for the next few examples:
 
 ```python
 ch = pymizu.Channel.create(
@@ -2399,24 +2301,20 @@ back = ch.recv(timeout=5)
 np.array_equal(back, big)                              # True
 ```
 
-Apart from the one write into the shared region, no data moved.
-R's echo came back as a reference, with no payload bytes.
-If you send a received view onward, it crosses the same way, as the region's name alone.
-Zero-copy covers every large layout: a flat array of an exact-match dtype (`float64`, `int32`, `int64`, `complex128`, `uint8`), an array of any shape and memory order, or a nested tree of lists, dicts, arrays, and strings.
-A `datetime64` array crosses the same way, with `NaT` as `NA`, and a `list[str | None]` with `None` as `NA`.
+Apart from the one write into the shared region, no data moved: R's echo came back as a reference, with no payload bytes.
+Send a received view onward and it crosses the same way, as the region's name alone.
+Zero-copy covers every large layout: a flat array of an exact-match dtype (`float64`, `int32`, `int64`, `complex128`, `uint8`), an array of any shape and memory order, a nested tree of lists, dicts, arrays, and strings, a `datetime64` array (`NaT` crosses as `NA`), or a `list[str | None]` (`None` crosses as `NA`).
 A large data frame crosses as one shared region in both directions.
-The floor is 256 KB for a flat contiguous array on a channel, and 32 KB everywhere else.[^byvalue]
+The floor is 256 KB for a flat contiguous array on a channel, 32 KB everywhere else.[^byvalue]
 
-Arrays of other numeric dtypes (booleans, the narrow ints, `uint64`, `float32`, ...) cross as a converted copy at any size.
-The [dtype matrix](#the-dtype-matrix) has the per-dtype rule.
+Arrays of other numeric dtypes (booleans, the narrow ints, `uint64`, `float32`, ...) cross as a converted copy at any size; the [dtype matrix](#the-dtype-matrix) has the per-dtype rule.
 Without numpy, a received view is a plain buffer: `memoryview(view)` works, and `pa.array(view)` or `pl.from_arrow(view)` wrap the same pages without copying.
-One exception: R's ALTREP vectors (such as `1:1e9`, stored as a recipe rather than data) cross by value, with values exact.
+One exception: R's ALTREP vectors (such as `1:1e9`, stored as a recipe rather than data) cross by value, values exact.
 A polars or pyarrow object that wraps a received frame keeps the frame's region alive until garbage collection, so delete these wrappers when you no longer need them.
 
 [^byvalue]: Below the floor, a value crosses as one quick copy.
     At any size, these types cross: Python scalars (`bool`, `int`, `float`, `complex`, `str`, `None`), lists, dicts with `str` keys (a tuple arrives as a `list` in R), `bytes` (an R raw vector), and `datetime.date` / `datetime.datetime` scalars (length-1 dates and times in R).
-    A few round trips change the container but not the values.
-    A standalone R factor comes back as strings, a length-1 `NA` arrives as `None` and sent back is R's `NULL`, and an R logical vector with `NA`s comes back as integer.
+    A few round trips change the container but not the values: a standalone R factor comes back as strings, a length-1 `NA` arrives as `None` and sent back is R's `NULL`, and an R logical vector with `NA`s comes back as integer.
     A `POSIXct` timezone normalizes to UTC (the instant is exact), and `difftime` units normalize to seconds.
     The bit patterns `-2147483648` (int32) and `-9223372036854775808` (int64) collide with R's own `NA` sentinels and read as `NA` in R.
     A `uint64` up to 2^63 - 1 converts exactly to `integer64`; past that it crosses as `NA` with a warning at send.
@@ -2489,9 +2387,8 @@ From R: a `POSIXlt` time, a character matrix, and S4 objects stay on R's side.
 So does a named vector with a class or of character type (a named character vector, factor, `Date`, or `POSIXct`), since names travel only on the plain atomic vectors.
 Among data frames: a data.table, a groupedData-style frame (a formula attribute), and a column that is itself a labeled matrix.
 
-The counterpart of the send-time decline is a value that arrives in a language-private format that no send gate caught (an attach race, or a misbehaving or version-skewed peer).
-The read raises [`ForeignPayloadError`](`pymizu.ForeignPayloadError`) and the message is consumed, so one bad payload never blocks the channel.
-Under `recv_async()` only that message's waiter rejects, and the async consumer keeps flowing.
+The counterpart of the send-time decline is a value that arrives in a language-private format no send gate caught (an attach race, or a misbehaving or version-skewed peer).
+The read raises [`ForeignPayloadError`](`pymizu.ForeignPayloadError`) and the message is consumed, so one bad payload never blocks the channel; under `recv_async()`, only that message's waiter rejects.
 
 ## pymizu.Frame
 
@@ -2506,15 +2403,12 @@ Factors become dictionary columns, logicals Arrow `bool`, `Date` `date32`, and `
 A `Frame` pickles, so it crosses Python-to-Python channels.
 Sent to R, it becomes a `data.frame` again.
 
-Frame metadata crosses unchanged: the full class vector of a data.frame (a tibble's `c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`) and extra attributes travel as-is, stored on the `Frame` without being interpreted.
-An unmodified echo restores them in R.
-A frame rebuilt through pyarrow, polars, pandas, or `from_arrow` arrives in R as a plain `data.frame`.
+Frame metadata crosses unchanged: a data.frame's full class vector (a tibble's `c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`) and extra attributes travel as-is, stored on the `Frame` uninterpreted.
+An unmodified echo restores them in R; a frame rebuilt through pyarrow, polars, pandas, or `from_arrow` arrives in R as a plain `data.frame`.
 
 ## Mixed-language pools
 
-A pool's workers can be R processes.
-`pymizu.r_launcher()` spawns the workers.
-`pymizu.call()` builds a language-neutral task: a qualified `"pkg::fn"` name for R or `"mod.fn"` for Python, or a `source=` string, plus constant arguments:
+A pool's workers can be R processes: `pymizu.r_launcher()` spawns them, and `pymizu.call()` builds a language-neutral task — a qualified `"pkg::fn"` name for R or `"mod.fn"` for Python, or a `source=` string, plus constant arguments:
 
 ```python
 import numpy as np
@@ -2529,14 +2423,13 @@ print(t2.collect())                 # 41
 pool.stop()
 ```
 
-Unnamed arguments become positional arguments, and keyword arguments become named ones, matching R's calling convention.
-A `source=` task runs in a fresh environment with the keyword arguments bound as names and the positional arguments bound as `_1`, `_2`, ...
-The result is the value of the last expression.
+Unnamed arguments become positional, keyword arguments named, matching R's calling convention.
+A `source=` task runs in a fresh environment with keyword arguments bound as names and positional arguments as `_1`, `_2`, ...; the result is the value of the last expression.
 
 On an R-worker pool, submitting a plain Python callable raises an error naming `pymizu.call()`.
 Task errors cross as `TaskError` with the R error type preserved in `remote_type`.
 Arguments follow the same rules as channel payloads, zero-copy included: a large array crosses as one shared view, and an array that is already a received view crosses as its name alone.
-A pool's workers all run one language: mixing R and Python workers in one pool is not supported.
+A pool's workers all run one language — mixing R and Python workers in one pool is not supported.
 The reverse direction works the same way: `mizu::mizu_pool()` with `mizu::mizu_py_launcher()`, and `mizu::mizu_submit_call()` with `mizu::mizu_call()` specs.
 
 ## Mapping over a foreign pool
@@ -2552,11 +2445,11 @@ pool.map(pymizu.call(source="summary(mgcv::gam(x$y ~ s(x$x)))$r.sq"),
 pool.stop()
 ```
 
-Each element becomes the spec's first positional argument, or binds as `x` for a `source=` spec.
-Put constant arguments in the spec itself: the map's own `args=` and `kwargs=` stay empty.
+Each element becomes the spec's first positional argument (or binds as `x` for a `source=` spec).
+Put constant arguments in the spec itself; the map's own `args=` and `kwargs=` stay empty.
 `template=` and `collect=` work unchanged, and a per-element error crosses with its `index`.
-Seeds must be integers within R's 32-bit range.
-Each worker language derives its own random streams from the seed, so results are reproducible for a given worker language but not identical across languages.
+Seeds must be integers in R's 32-bit range.
+Each worker language derives its own random streams from the seed, so results are reproducible per worker language but not identical across languages.
 
 ## The dtype matrix
 
@@ -2637,8 +2530,6 @@ A slice or a dtype view of a received view crosses by value.
 | logical | `bool_` (int32 with NAs) | **integer** | tag lost on a Python round trip (values kept); a whole view sent back stays logical |
 | difftime | timedelta64[us] | difftime (secs) | units normalize to seconds, values exact; `NA` crosses as `NaT` |
 
-Between two Python processes, on a channel or a pool, the conversions on this page never run.
-The exact-match dtypes cross unchanged, and everything else pickles.
-An exact Python-to-Python send of a non-identity dtype needs no work.
+Between two Python processes, the conversions on this page never run: the exact-match dtypes cross unchanged, everything else pickles, and a non-identity dtype needs no conversion work either.
 They apply only when the other end runs R.
 
