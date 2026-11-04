@@ -957,7 +957,7 @@ Methods for the Task class
 
 state
 
-The task's state ("pending" / "ok" / "err" / "cancel" / "died" / "collected" / "dropped"); informational, racy against slot reuse.
+The task's state ("pending" / "running" / "ok" / "err" / "cancel" / "died" / "lost" / "collected" / "dropped"); informational, racy against slot reuse.
 
 pool
 
