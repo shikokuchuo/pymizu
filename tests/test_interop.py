@@ -902,22 +902,24 @@ def test_a_declined_write_pass_fails_the_send():
 
 def test_attr_shapes_decline_at_the_depth_cap():
     # the attr shapes count their cursor frames: a value the reader would
-    # reject declines at the send instead (P-10)
-    x = np.zeros((2, 2))
-    for _ in range(61):
-        x = [x]
-    got = _read(_write(x))
-    for _ in range(61):
-        assert isinstance(got, list) and len(got) == 1
-        got = got[0]
-    assert isinstance(got, np.ndarray)
-    assert np.array_equal(got, np.zeros((2, 2)))
-    for depth in (62, 63):
-        y = np.zeros((2, 2))
+    # reject declines at the send instead (P-10). The dim shape is attr +
+    # dict, two frames (its intv is a leaf), so 62 enclosing lists land
+    # exactly on the cap and 63 cross it.
+    for depth in (61, 62):
+        x = np.zeros((2, 2))
         for _ in range(depth):
-            y = [y]
-        with pytest.raises(pymizu.DeclinedError, match="depth cap"):
-            _pymizu._write_stream(y)
+            x = [x]
+        got = _read(_write(x))
+        for _ in range(depth):
+            assert isinstance(got, list) and len(got) == 1
+            got = got[0]
+        assert isinstance(got, np.ndarray)
+        assert np.array_equal(got, np.zeros((2, 2)))
+    y = np.zeros((2, 2))
+    for _ in range(63):
+        y = [y]
+    with pytest.raises(pymizu.DeclinedError, match="depth cap"):
+        _pymizu._write_stream(y)
 
 
 def test_declined_path_decodes_past_truncated_utf8():

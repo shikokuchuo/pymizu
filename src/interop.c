@@ -483,11 +483,11 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
 }
 
 /* The attr shapes emit frames the value walk's depth accounting never
-   counted: the cursor pushes the attr frame, the value container, the
-   attrs dict, and a vector value inside the dict. k is the worst-case
-   extra pushes past w->depth (ix_push fails at 64); decline at the send —
-   the depth discipline — rather than ship a stream every reader
-   rejects. */
+   counted: the cursor pushes the attr frame and the attrs dict (and a
+   list value inside it); a string vector is a leaf for the cap, as every
+   vector is, so it never counts. k is the worst-case extra container
+   pushes past w->depth (ix_push fails at 64); decline at the send — the
+   depth discipline — rather than ship a stream every reader rejects. */
 static int ixw_attr_depth(ixw *w, int k) {
   if (w->depth + k <= MIZU_IX_DEPTH_MAX) return 1;
   ixw_decline(w, "the value nests past the depth cap (64)");
@@ -512,7 +512,7 @@ static void ixe_date(ixw *w, const int64_t *days, uint64_t n, double scale) {
 static void ixe_posixct(ixw *w, const int64_t *counts, const uint8_t *valid,
                         uint64_t n, const char *tz, double scale) {
   static const char *cls[2] = { MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT };
-  if (!ixw_attr_depth(w, 3)) return;   /* attr + vec + dict's class strv */
+  if (!ixw_attr_depth(w, 2)) return;   /* attr + dict (the class strv is a leaf) */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_realv_counts(w, counts, valid, n, scale);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
@@ -4313,9 +4313,9 @@ static void ixe_span(ixw *w, const void *src, size_t n) {
 
 static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names,
                       PyObject *r_attrs) {
-  /* attr + the column list + a column's own attr shape (3 at worst:
-     factor/Date/TS/TD) */
-  if (!ixw_attr_depth(w, 5)) return;
+  /* attr + the column list + a column's own attr shape (2 at worst:
+     factor/Date/TS/TD — attr + dict, their strv leaves uncounted) */
+  if (!ixw_attr_depth(w, 4)) return;
   /* the extended frame's stash (MIZU_CAP_LABELED): the class vector
      verbatim and the extras spliced raw in stored order — never
      decoded; the peer's mask must carry the bit (never a strip) */
@@ -4597,7 +4597,7 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
 static void ixe_dim(ixw *w, const uint8_t *src, int nd,
                     const int64_t *shape, const int64_t *strides,
                     const cvt_row *row) {
-  if (!ixw_attr_depth(w, 3)) return;   /* attr + vec + dict's dim intv */
+  if (!ixw_attr_depth(w, 2)) return;   /* attr + dict (the dim intv is a leaf) */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_nd_body(w, src, nd, shape, strides, row);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
@@ -4713,7 +4713,7 @@ static void ixe_named_vec(ixw *w, const uint8_t *src, uint64_t n,
                           const cvt_row *row, int64_t stride,
                           PyObject *names) {
   if (!ixw_labeled_gate(w)) return;
-  if (!ixw_attr_depth(w, 3)) return;   /* attr + vec + dict's names strv */
+  if (!ixw_attr_depth(w, 2)) return;   /* attr + dict (the names strv is a leaf) */
   IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
   ixe_cvt_body(w, src, n, row, stride);
   if (w->decline) return;
