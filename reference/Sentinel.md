@@ -4,8 +4,6 @@ A terminal-state sentinel returned by pymizu verbs. Test by identity against pym
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L8-L11)
-
 ``` python
 Sentinel()
 ```
@@ -21,8 +19,6 @@ Sentinel()
 Return repr(self).
 
 Usage
-
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L11)
 
 ``` python
 __repr__()

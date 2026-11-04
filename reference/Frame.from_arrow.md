@@ -4,8 +4,6 @@ from_arrow(obj) -\> Frame
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L47-L48)
-
 ``` python
 Frame.from_arrow(obj)
 ```
