@@ -87,7 +87,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <link href="../site_libs/quarto-html/quarto-syntax-highlighting-63b5708e65d6cd79cd7618c58d0c21e7.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="../site_libs/bootstrap/bootstrap.min.js"></script>
 <link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="../site_libs/bootstrap/bootstrap-9957c2fee0d0d608fa13ccf548446c53.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="../site_libs/bootstrap/bootstrap-6a583bb0d3a86322953649c39344ad54.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <script id="quarto-search-options" type="application/json">{
   "location": "navbar",
   "copy-button": false,
@@ -427,12 +427,12 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td><code>bytes</code> / uint8</td>
 <td>raw</td>
-<td>Arrow uint8 with nulls: <code>TypeError</code> (R raw has no NA)</td>
+<td>uint8 with nulls: <code>TypeError</code></td>
 </tr>
 <tr class="even">
 <td>int8 / int16 / uint16</td>
 <td>integer</td>
-<td>widened, exact</td>
+<td>widened</td>
 </tr>
 <tr class="odd">
 <td>int32</td>
@@ -442,22 +442,22 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="even">
 <td>uint32</td>
 <td>double</td>
-<td>widened, exact</td>
+<td>widened</td>
 </tr>
 <tr class="odd">
 <td>int64</td>
 <td>integer64 (bit64’s layout)</td>
-<td>bit-exact; <code>INT64_MIN</code> reads as <code>NA</code></td>
+<td><code>INT64_MIN</code> reads as <code>NA</code></td>
 </tr>
 <tr class="even">
 <td>uint64</td>
 <td>integer64 (<code>NA</code> past 2^63 - 1, warned)</td>
-<td>the frame column and <code>mizu_as_arrow()</code> are bit-exact</td>
+<td>frame column bit-exact</td>
 </tr>
 <tr class="odd">
 <td>float16 / float32 / float64</td>
 <td>double</td>
-<td>float16 and float32 widened, exact</td>
+<td>float16/32 widened</td>
 </tr>
 <tr class="even">
 <td>bool</td>
@@ -467,47 +467,47 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tr class="odd">
 <td>complex64 / complex128</td>
 <td>complex</td>
-<td>(buffer protocol only; Arrow has no standard complex)</td>
+<td>buffer protocol only</td>
 </tr>
 <tr class="even">
 <td>Arrow bool / numeric with nulls</td>
 <td>logical / numeric with <code>NA</code></td>
-<td>the validity bitmap is honored, slices included</td>
+<td>validity bitmap honored</td>
 </tr>
 <tr class="odd">
 <td>Arrow strings (utf8 / large_utf8 / string_view)</td>
 <td>character</td>
-<td>a Series as <code>list[str \| None]</code>; a column as a frame column</td>
+<td>Series as a string list</td>
 </tr>
 <tr class="even">
 <td>Arrow <code>date32</code> / <code>timestamp[u]</code></td>
 <td><code>Date</code> / <code>POSIXct</code></td>
-<td>the zone name rides a frame column’s metadata</td>
+<td>zone name rides frame metadata</td>
 </tr>
 <tr class="odd">
 <td>Arrow <code>duration[u]</code></td>
 <td><code>difftime</code> (secs)</td>
-<td>the frame column exports back as <code>duration[us]</code></td>
+<td>exports back as <code>duration[us]</code></td>
 </tr>
 <tr class="even">
 <td>timedelta64 (any non-calendar unit)</td>
 <td><code>difftime</code> (secs)</td>
-<td><code>NaT</code> reads as <code>NA</code>; the unit converts to seconds</td>
+<td><code>NaT</code> reads as <code>NA</code></td>
 </tr>
 <tr class="odd">
 <td>Arrow dictionary-encoded</td>
 <td>factor</td>
-<td>an ordered dictionary (polars <code>Enum</code>) arrives as an ordered factor</td>
+<td>ordered dictionary → ordered factor</td>
 </tr>
 <tr class="even">
 <td>Arrow ChunkedArray / Table / Series</td>
 <td>vector / <code>data.frame</code></td>
-<td>chunks are concatenated</td>
+<td>chunks concatenated</td>
 </tr>
 <tr class="odd">
 <td>Arrow nested, decimal, time32/64, interval</td>
 <td>—</td>
-<td><a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a> at send time</td>
+<td><a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">DeclinedError</a></td>
 </tr>
 </tbody>
 </table>
@@ -545,7 +545,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>int8 / int16 / uint16</td>
 <td>integer</td>
 <td>int32</td>
-<td>widened, values exact</td>
+<td>widened</td>
 </tr>
 <tr class="odd">
 <td>int32</td>
@@ -569,19 +569,19 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>uint64</td>
 <td>integer64 (<code>NA</code> past 2^63 - 1, warned)</td>
 <td>uint64</td>
-<td>the column and R’s Arrow export are bit-exact</td>
+<td>frame column bit-exact</td>
 </tr>
 <tr class="odd">
 <td>float16</td>
 <td>double</td>
 <td>float64</td>
-<td>widened, values exact</td>
+<td>widened</td>
 </tr>
 <tr class="even">
 <td>float32</td>
 <td>double</td>
 <td>float64</td>
-<td>widened, values exact</td>
+<td>widened</td>
 </tr>
 <tr class="odd">
 <td>float64</td>
@@ -605,7 +605,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>timedelta64</td>
 <td><code>difftime</code></td>
 <td>timedelta64[us]</td>
-<td>unit normalizes to us, values exact</td>
+<td>exact</td>
 </tr>
 </tbody>
 </table>
@@ -629,7 +629,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>integer64 (bit64)</td>
 <td>int64 (warns on <code>NA</code>)</td>
 <td>integer64</td>
-<td>exact; a genuine Python <code>-2^63</code> arrives as <code>NA</code></td>
+<td>Python <code>-2^63</code> reads as <code>NA</code></td>
 </tr>
 <tr class="odd">
 <td>double</td>
@@ -653,13 +653,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>logical</td>
 <td><code>bool_</code> (int32 with NAs)</td>
 <td><strong>integer</strong></td>
-<td>tag lost on a Python round trip (values kept); a whole view sent back stays logical</td>
+<td>tag lost; whole view stays logical</td>
 </tr>
 <tr class="odd">
 <td>difftime</td>
 <td>timedelta64[us]</td>
 <td>difftime (secs)</td>
-<td>units normalize to seconds, values exact; <code>NA</code> crosses as <code>NaT</code></td>
+<td><code>NA</code> crosses as <code>NaT</code></td>
 </tr>
 </tbody>
 </table>

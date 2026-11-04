@@ -40,7 +40,7 @@
     "href": "user-guide/channels.html",
     "title": "Channels",
     "section": "",
-    "text": "A channel is a two-way message link between your Python process and a helper process it spawns: one lock-free ring per direction, over shared memory. One side writes into shared memory and the other reads it in place — no copies through sockets, pipes, or files.\n\nCreating a channel\nChannel.create() spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with ch bound to its side of the channel:\n\nimport pymizu\n\nch = pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\")\n\nThe peer is a full Python process: it can import anything your interpreter can. Channel.create() waits up to startup_timeout seconds for the peer to connect and raises StartupError on expiry.\nA launcher changes how the peer spawns: one callable that takes the channel’s token and starts the peer process. The built-in pymizu.r_launcher() spawns an R peer (see R interop); write your own to spawn peers any other way.\n\n\nSending and receiving\nch.send() publishes a value, and the peer can see it as soon as the call returns. Sends never block for ring space. ch.recv() returns the next value, waiting up to timeout seconds (indefinitely when omitted):\n\nch.send([1, \"a\", None])\nch.recv(timeout=5)\n\n[1, 'a', None]\n\n\nOutcomes that end a conversation come back as sentinel singletons, not exceptions:\n\n\n\nSentinel\nReturned when\n\n\n\n\npymizu.FULL\na send finds the ring full\n\n\npymizu.TIMEOUT\na receive’s timeout expires\n\n\npymizu.CLOSED\nthe peer has closed and the ring is drained\n\n\npymizu.PEER_GONE\nthe peer process has died and the ring is drained\n\n\n\nTest for them by identity (x is pymizu.TIMEOUT) or with pymizu.is_sentinel(x) — no call needs an error handler. If the peer dies, receives drain what it already sent, then report PEER_GONE.\nWhen per-call overhead starts to matter, send_batch() and recv_batch() move several values in one call:\n\nch.send_batch(range(4))\nch.recv_batch(4, timeout=5)\n\n[0, 1, 2, 3]\n\n\nch.alive() reports whether the peer still runs, without touching the rings. ch.info() returns a read-only snapshot of the channel’s state.\n\n\nasyncio\nFor event-driven receives, ch.recv_async() returns an asyncio.Future that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use asyncio.timeout or asyncio.wait_for. Terminal states stay values: the Future resolves with CLOSED or PEER_GONE. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it.\n\nch.send(1)\nassert await ch.recv_async() == 1\nch.send(2)\nawait ch.recv_async()\n\n2\n\n\nasync for x in ch is the stream form: it awaits each value through recv_async() and ends on CLOSED or PEER_GONE, as the sync iterator does.\nA message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with ForeignPayloadError; the message is consumed and the channel keeps flowing. Under recv_async(), only that message’s waiter rejects. The rejection also ends an async for loop, and a try/except inside the loop body cannot catch it — wrap the whole loop and re-enter on the same channel to skip the message.\n\n\nClosing\nch.close() is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:\n\nch.close()\n\nTrue\n\n\nA channel is also a context manager: the with block closes it on exit. destroy() skips the wait and releases the handle immediately; the peer sees the channel as closed (PEER_GONE if it died hard). Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb (recv(), recv_batch(), ready_wait(), close()) wakes promptly so teardown can finish.\n\n\nThreading\nEach channel side belongs to one thread at a time — libmizu’s threading contract, since the shared structures carry no locks by design. Call a side’s verbs (send(), recv(), their batch forms, ready_wait()) from one thread only; a second verb from another thread raises ConcurrentUseError instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and recv_async() are likewise exclusive on a side: a blocking receive while async receives are pending raises ConcurrentUseError at the call site, except on the async consumer’s own event-loop thread, whose receives can never race it. For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread. destroy() is the exception: it is safe from any thread, as described in Closing.\n\n\nWhat crosses a channel\npymizu chooses the cheapest transport for each value:\n\nNone crosses as a marker: no data moves.\nBuffer-protocol objects (bytes, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (bytes arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages, with no copy and no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes. From 256 KB the receive is a view.\nA str that fits in a slot crosses as raw UTF-8.\nBooleans, numbers, and flat lists or dicts of them cross in a compact binary form.\nEverything else crosses as a pickle (protocol 4).\n\nEach end of a channel knows the peer’s language. Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles. An R peer restricts values to a portable subset both languages share; a value outside it raises pymizu.DeclinedError at send time, naming the value and the reason, and the channel stays usable. See R interop.\nAn uncaught error in the peer crosses as a value, not a raised exception: a pymizu.TaskError carrying the original class name and traceback text. Test a received value with pymizu.is_remote_error(x); raise it to propagate the error.\n\n\nFrames without pickling\nBetween two Python processes, a pyarrow Table, polars DataFrame, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip. pymizu.Frame.from_arrow() sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive:\n\nimport pyarrow as pa\n\nwith pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\") as ch2:\n    f = pymizu.Frame.from_arrow(\n        pa.table({\"x\": pa.array([1.5, None] * 100_000)})\n    )\n    ch2.send(f)\n    echoed = pa.table(ch2.recv(timeout=5))\nechoed.column(\"x\").null_count\n\n100000\n\n\nConstruction adopts the producer’s own buffers wherever the column layout is already the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values). It copies only what it must:\n\n\n\nStage\nCopies\n\n\n\n\nproducer → Frame.from_arrow()\n0 per adopted column; a per-column copy only where its type forces it\n\n\nch.send(f)\n1 — the layout write into the shared region (the region is the wire)\n\n\nch.recv()\n0 — the frame reads the region in place\n\n\npa.table(f)\n0 — the frame’s __arrow_c_stream__ exports borrowed buffers\n\n\n\nValues cross exactly, but types normalize. A column whose type forces a copy is copied rather than declined:\n\n\n\nIn\nOut (the received frame’s Arrow export)\n\n\n\n\nstring\nlarge_string\n\n\nstring_view\nlarge_string (copies)\n\n\nbool\nbool (copies: bit-packed)\n\n\nint8 / int16 / uint16\nint32 (copies)\n\n\nuint32 / half_float / float32\nfloat64 (copies)\n\n\nuint64\nuint64 (adopts)\n\n\ntimestamp[s / ms / us / ns]\ntimestamp[s / ms / us / ns] (adopts)\n\n\nduration[s / ms / us / ns]\nduration[s / ms / us / ns] (adopts)\n\n\ndictionary&lt;i32, utf8&gt;\ndictionary&lt;i32, string&gt; (adopts; other index widths copy)\n\n\nchunked or sliced columns\nconcatenated or rebased (copies)\n\n\n\nChunked pyarrow tables adopt after table.combine_chunks(). Timestamps and durations keep their counts and unit: a timestamp[ns] round trip is exact to the nanosecond, timezone included. Nanosecond precision needs this pymizu version on both ends; an older peer (or R) receives the microsecond form instead, values rounded to the wire format’s microsecond precision, with no error.\nAdopted buffers stay alive for the frame’s lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. to_dict()’s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a Frame task argument and a frame returned from a task both ride the shared-memory region as on a channel (see the pools guide). Pool.map does not accept a frame as its element source.\n\n\nSizing\nChannel.create() takes capacity (ring slots, a power of two), slot_size (bytes per slot, so a payload of up to slot_size - 16 bytes fits in a slot), and arena_size (the channel’s shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. spin=True makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.",
+    "text": "A channel is a two-way message link between your Python process and a helper process it spawns: one lock-free ring per direction, over shared memory. One side writes into shared memory and the other reads it in place — no copies through sockets, pipes, or files.\n\nCreating a channel\nChannel.create() spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with ch bound to its side of the channel:\n\nimport pymizu\n\nch = pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\")\n\nThe peer is a full Python process: it can import anything your interpreter can. Channel.create() waits up to startup_timeout seconds for the peer to connect and raises StartupError on expiry.\nA launcher changes how the peer spawns: one callable that takes the channel’s token and starts the peer process. The built-in pymizu.r_launcher() spawns an R peer (see R interop); write your own to spawn peers any other way.\n\n\nSending and receiving\nch.send() publishes a value, and the peer can see it as soon as the call returns. Sends never block for ring space. ch.recv() returns the next value, waiting up to timeout seconds (indefinitely when omitted):\n\nch.send([1, \"a\", None])\nch.recv(timeout=5)\n\n[1, 'a', None]\n\n\nOutcomes that end a conversation come back as sentinel singletons, not exceptions:\n\n\n\nSentinel\nReturned when\n\n\n\n\npymizu.FULL\na send finds the ring full\n\n\npymizu.TIMEOUT\na receive’s timeout expires\n\n\npymizu.CLOSED\nthe peer has closed and the ring is drained\n\n\npymizu.PEER_GONE\nthe peer process has died and the ring is drained\n\n\n\nTest for them by identity (x is pymizu.TIMEOUT) or with pymizu.is_sentinel(x) — no call needs an error handler. If the peer dies, receives drain what it already sent, then report PEER_GONE.\nWhen per-call overhead starts to matter, send_batch() and recv_batch() move several values in one call:\n\nch.send_batch(range(4))\nch.recv_batch(4, timeout=5)\n\n[0, 1, 2, 3]\n\n\nch.alive() reports whether the peer still runs, without touching the rings. ch.info() returns a read-only snapshot of the channel’s state.\n\n\nasyncio\nFor event-driven receives, ch.recv_async() returns an asyncio.Future that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use asyncio.timeout or asyncio.wait_for. Terminal states stay values: the Future resolves with CLOSED or PEER_GONE. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it.\n\nch.send(1)\nassert await ch.recv_async() == 1\nch.send(2)\nawait ch.recv_async()\n\n2\n\n\nasync for x in ch is the stream form: it awaits each value through recv_async() and ends on CLOSED or PEER_GONE, as the sync iterator does.\nA message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with ForeignPayloadError; the message is consumed and the channel keeps flowing. Under recv_async(), only that message’s waiter rejects. The rejection also ends an async for loop, and a try/except inside the loop body cannot catch it — wrap the whole loop and re-enter on the same channel to skip the message.\n\n\nClosing\nch.close() is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:\n\nch.close()\n\nTrue\n\n\nA channel is also a context manager: the with block closes it on exit. destroy() skips the wait and releases the handle immediately; the peer sees the channel as closed (PEER_GONE if it died hard). Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb (recv(), recv_batch(), ready_wait(), close()) wakes promptly so teardown can finish.\n\n\nThreading\nEach channel side belongs to one thread at a time — libmizu’s threading contract, since the shared structures carry no locks by design. Call a side’s verbs (send(), recv(), their batch forms, ready_wait()) from one thread only; a second verb from another thread raises ConcurrentUseError instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and recv_async() are likewise exclusive on a side: a blocking receive while async receives are pending raises ConcurrentUseError at the call site, except on the async consumer’s own event-loop thread, whose receives can never race it. For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread. destroy() is the exception: it is safe from any thread, as described in Closing.\n\n\nWhat crosses a channel\npymizu chooses the cheapest transport for each value:\n\nNone crosses as a marker: no data moves.\nBuffer-protocol objects (bytes, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (bytes arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages, with no copy and no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes. From 256 KB the receive is a view.\nA str that fits in a slot crosses as raw UTF-8.\nBooleans, numbers, and flat lists or dicts of them cross in a compact binary form.\nEverything else crosses as a pickle (protocol 4).\n\nEach end of a channel knows the peer’s language. Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles. An R peer restricts values to a portable subset both languages share; a value outside it raises pymizu.DeclinedError at send time, naming the value and the reason, and the channel stays usable. See R interop.\nAn uncaught error in the peer crosses as a value, not a raised exception: a pymizu.TaskError carrying the original class name and traceback text. Test a received value with pymizu.is_remote_error(x); raise it to propagate the error.\n\n\nFrames without pickling\nBetween two Python processes, a pyarrow Table, polars DataFrame, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip. pymizu.Frame.from_arrow() sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages — only the small result crosses back:\n\nimport pyarrow as pa\n\nwith pymizu.Channel.create(\"\"\"\nimport pymizu\nimport pyarrow as pa\nimport pyarrow.compute as pc\n\nwhile True:\n    f = ch.recv()\n    if f is pymizu.CLOSED:\n        break\n    t = pa.table(f)\n    ch.send(pc.sum(t.column(\"x\")).as_py())\n\"\"\") as ch:\n    f = pymizu.Frame.from_arrow(\n        pa.table({\"x\": pa.array([1.5, None] * 100_000)})\n    )\n    ch.send(f)\n    result = ch.recv(timeout=5)\nresult\n\n150000.0\n\n\nThe peer’s pa.table(f) borrows the region’s buffers, so the sum runs where the data already lives.\nConstruction adopts the producer’s own buffers wherever the column layout is already the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values). It copies only what it must:\n\n\n\nStage\nCopies\n\n\n\n\nproducer → Frame.from_arrow()\n0 per adopted column; a per-column copy only where its type forces it\n\n\nch.send(f)\n1 — the layout write into the shared region (the region is the wire)\n\n\nch.recv()\n0 — the frame reads the region in place\n\n\npa.table(f)\n0 — the frame’s __arrow_c_stream__ exports borrowed buffers\n\n\n\nValues cross exactly, but types normalize. A column whose type forces a copy is copied rather than declined:\n\n\n\nIn\nOut (the received frame’s Arrow export)\n\n\n\n\nstring\nlarge_string\n\n\nstring_view\nlarge_string (copies)\n\n\nbool\nbool (copies: bit-packed)\n\n\nint8 / int16 / uint16\nint32 (copies)\n\n\nuint32 / half_float / float32\nfloat64 (copies)\n\n\nuint64\nuint64 (adopts)\n\n\ntimestamp[s / ms / us / ns]\ntimestamp[s / ms / us / ns] (adopts)\n\n\nduration[s / ms / us / ns]\nduration[s / ms / us / ns] (adopts)\n\n\ndictionary&lt;i32, utf8&gt;\ndictionary&lt;i32, string&gt; (adopts; other index widths copy)\n\n\nchunked or sliced columns\nconcatenated or rebased (copies)\n\n\n\nChunked pyarrow tables adopt after table.combine_chunks(). Timestamps and durations keep their counts and unit: a timestamp[ns] round trip is exact to the nanosecond, timezone included. Nanosecond precision needs this pymizu version on both ends; an older peer (or R) receives the microsecond form instead, values rounded to the wire format’s microsecond precision, with no error.\nAdopted buffers stay alive for the frame’s lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. to_dict()’s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a Frame task argument and a frame returned from a task both ride the shared-memory region as on a channel (see the pools guide). Pool.map does not accept a frame as its element source.\n\n\nSizing\nChannel.create() takes capacity (ring slots, a power of two), slot_size (bytes per slot, so a payload of up to slot_size - 16 bytes fits in a slot), and arena_size (the channel’s shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. spin=True makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.",
     "crumbs": [
       "User Guide",
       "Guide",
@@ -289,7 +289,7 @@
     "href": "reference/WorkerDiedError.html",
     "title": "WorkerDiedError",
     "section": "",
-    "text": "The executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.\n\n\nUsage\nSource\n\n\nWorkerDiedError()",
+    "text": "The executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.\n\n\nUsage\n\n\nWorkerDiedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -301,7 +301,7 @@
     "href": "reference/TaskError.html",
     "title": "TaskError",
     "section": "",
-    "text": "The task callable raised. Carries ‘remote_type’ and ‘detail’ attributes describing the worker-side exception.\n\n\nUsage\nSource\n\n\nTaskError()",
+    "text": "The task callable raised. Carries ‘remote_type’ and ‘detail’ attributes describing the worker-side exception.\n\n\nUsage\n\n\nTaskError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -349,7 +349,7 @@
     "href": "reference/SubmitTimeoutError.html",
     "title": "SubmitTimeoutError",
     "section": "",
-    "text": "Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.\n\n\nUsage\nSource\n\n\nSubmitTimeoutError()",
+    "text": "Pool.submit() timed out waiting for injection-ring space. Also a TimeoutError.\n\n\nUsage\n\n\nSubmitTimeoutError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -361,7 +361,7 @@
     "href": "reference/StartupError.html",
     "title": "StartupError",
     "section": "",
-    "text": "A channel peer or pool worker failed to attach within the startup timeout.\n\n\nUsage\nSource\n\n\nStartupError()",
+    "text": "A channel peer or pool worker failed to attach within the startup timeout.\n\n\nUsage\n\n\nStartupError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -373,7 +373,7 @@
     "href": "reference/ShmError.html",
     "title": "ShmError",
     "section": "",
-    "text": "A shared-memory region operation failed. Also an OSError: the failure is at the OS layer. Carries a ‘bytes’ attribute: the requested size of a region that was not created, None when a region was not opened.\n\n\nUsage\nSource\n\n\nShmError()",
+    "text": "A shared-memory region operation failed. Also an OSError: the failure is at the OS layer. Carries a ‘bytes’ attribute: the requested size of a region that was not created, None when a region was not opened.\n\n\nUsage\n\n\nShmError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -769,7 +769,7 @@
     "href": "reference/Frame.__reduce__.html",
     "title": "Frame.__reduce__()",
     "section": "",
-    "text": "Usage\nSource\n\n\nFrame.__reduce__()",
+    "text": "Usage\n\n\nFrame.__reduce__()",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -781,7 +781,7 @@
     "href": "reference/Frame.__arrow_c_stream__.html",
     "title": "Frame.__arrow_c_stream__()",
     "section": "",
-    "text": "arrow_c_stream(requested_schema=None) -&gt; capsule\n\n\nUsage\nSource\n\n\nFrame.__arrow_c_stream__(requested_schema=None)\n\n\nThe Arrow C Stream Interface export: the frame as one struct batch. Consumers take it in one line: pl.from_arrow(f), pa.table(f), or pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).",
+    "text": "arrow_c_stream(requested_schema=None) -&gt; capsule\n\n\nUsage\n\n\nFrame.__arrow_c_stream__(requested_schema=None)\n\n\nThe Arrow C Stream Interface export: the frame as one struct batch. Consumers take it in one line: pl.from_arrow(f), pa.table(f), or pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -805,7 +805,7 @@
     "href": "reference/ConcurrentUseError.html",
     "title": "ConcurrentUseError",
     "section": "",
-    "text": "A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).\n\n\nUsage\nSource\n\n\nConcurrentUseError()",
+    "text": "A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).\n\n\nUsage\n\n\nConcurrentUseError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -985,7 +985,7 @@
     "href": "package-info.html",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-27\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-27\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
   },
   {
     "objectID": "package-info.html#all",
@@ -1006,7 +1006,7 @@
     "href": "package-info.html#dev",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-27\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-27\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
   },
   {
     "objectID": "package-info.html#docs",
@@ -1160,7 +1160,7 @@
     "href": "reference/CancelledError.html",
     "title": "CancelledError",
     "section": "",
-    "text": "The task was cancelled before it ran.\n\n\nUsage\nSource\n\n\nCancelledError()",
+    "text": "The task was cancelled before it ran.\n\n\nUsage\n\n\nCancelledError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1340,7 +1340,7 @@
     "href": "reference/DeclinedError.html",
     "title": "DeclinedError",
     "section": "",
-    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\n\nUsage\nSource\n\n\nDeclinedError()",
+    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\n\nUsage\n\n\nDeclinedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1352,7 +1352,7 @@
     "href": "reference/ForeignPayloadError.html",
     "title": "ForeignPayloadError",
     "section": "",
-    "text": "A received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\n\nUsage\nSource\n\n\nForeignPayloadError()",
+    "text": "A received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\n\nUsage\n\n\nForeignPayloadError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1364,7 +1364,7 @@
     "href": "reference/Frame.__len__.html",
     "title": "Frame.__len__()",
     "section": "",
-    "text": "Return len(self).\n\n\nUsage\nSource\n\n\nFrame.__len__()",
+    "text": "Return len(self).\n\n\nUsage\n\n\nFrame.__len__()",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -1376,7 +1376,7 @@
     "href": "reference/Frame.from_arrow.html",
     "title": "Frame.from_arrow()",
     "section": "",
-    "text": "from_arrow(obj) -&gt; Frame\n\n\nUsage\nSource\n\n\nFrame.from_arrow(obj)\n\n\nConstruct a frame from an Arrow producer, adopting its buffers wherever a column’s frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies only what it has to, nulls included.\nThis is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer’s columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer’s type.\n\n\nobj Any __arrow_c_stream__ producer: a pyarrow Table or RecordBatchReader, a polars DataFrame, a duckdb relation. A chunked table adopts after Table.combine_chunks().\n\n\nThe frame. An adopted column keeps the producer's buffers alive\nfor the frame's lifetime (numpy-view semantics: a frame from a\n4 GB table pins it).\n\n\nMizuError The Arrow type has no portable equivalent (the error names the column), or the producer’s export failed.\n\n\n&gt;&gt;&gt; import pyarrow as pa\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     f = pymizu.Frame.from_arrow(\n...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n...     )\n...     ch.send(f)\n...     echoed = pa.table(ch.recv(timeout=5))\n&gt;&gt;&gt; echoed.column(\"x\").null_count\n100000",
+    "text": "from_arrow(obj) -&gt; Frame\n\n\nUsage\n\n\nFrame.from_arrow(obj)\n\n\nConstruct a frame from an Arrow producer, adopting its buffers wherever a column’s frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies only what it has to, nulls included.\nThis is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer’s columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer’s type.\n\n\nobj Any __arrow_c_stream__ producer: a pyarrow Table or RecordBatchReader, a polars DataFrame, a duckdb relation. A chunked table adopts after Table.combine_chunks().\n\n\nThe frame. An adopted column keeps the producer's buffers alive\nfor the frame's lifetime (numpy-view semantics: a frame from a\n4 GB table pins it).\n\n\nMizuError The Arrow type has no portable equivalent (the error names the column), or the producer’s export failed.\n\n\n&gt;&gt;&gt; import pyarrow as pa\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     f = pymizu.Frame.from_arrow(\n...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n...     )\n...     ch.send(f)\n...     echoed = pa.table(ch.recv(timeout=5))\n&gt;&gt;&gt; echoed.column(\"x\").null_count\n100000",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -1388,7 +1388,7 @@
     "href": "reference/Frame.html",
     "title": "Frame",
     "section": "",
-    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\nSource\n\n\nFrame()\n\n\nto_dict() returns the columns as a dict without an Arrow library, and arrow_c_stream exports to polars, pyarrow, or pandas. from_arrow() constructs one from an Arrow producer, the opt-in zero-copy path for Python-to-Python channels. R frame metadata (classes, extra attributes) survives an unmodified round trip, while a rebuilt frame arrives in R as a plain data.frame.",
+    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\n\n\nFrame()\n\n\nto_dict() returns the columns as a dict without an Arrow library, and arrow_c_stream exports to polars, pyarrow, or pandas. from_arrow() constructs one from an Arrow producer, the opt-in zero-copy path for Python-to-Python channels. R frame metadata (classes, extra attributes) survives an unmodified round trip, while a rebuilt frame arrives in R as a plain data.frame.",
     "crumbs": [
       "Reference",
       "Cross-language interop",
@@ -1400,7 +1400,7 @@
     "href": "reference/Frame.to_dict.html",
     "title": "Frame.to_dict()",
     "section": "",
-    "text": "to_dict() -&gt; dict\n\n\nUsage\nSource\n\n\nFrame.to_dict()\n\n\nThe frame as a dict of columns: numpy arrays for numeric columns (or memoryviews without numpy), datetime64 for Date / POSIXct, and list[str | None] for string and factor columns. Complex columns carry complex128 here (the Arrow export has no complex type).",
+    "text": "to_dict() -&gt; dict\n\n\nUsage\n\n\nFrame.to_dict()\n\n\nThe frame as a dict of columns: numpy arrays for numeric columns (or memoryviews without numpy), datetime64 for Date / POSIXct, and list[str | None] for string and factor columns. Complex columns carry complex128 here (the Arrow export has no complex type).",
     "crumbs": [
       "Reference",
       "Frame Methods",
@@ -1412,7 +1412,7 @@
     "href": "reference/MizuError.html",
     "title": "MizuError",
     "section": "",
-    "text": "Base class for all pymizu errors.\n\n\nUsage\nSource\n\n\nMizuError()",
+    "text": "Base class for all pymizu errors.\n\n\nUsage\n\n\nMizuError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1880,7 +1880,7 @@
     "href": "reference/Sentinel.html#methods",
     "title": "Sentinel",
     "section": "Methods",
-    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\n__repr__()\nReturn repr(self).\n\n\n\n\n__repr__()\n\nReturn repr(self).\n\n\nUsage\nSource\n\n\n__repr__()",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\n__repr__()\nReturn repr(self).\n\n\n\n\n__repr__()\n\nReturn repr(self).\n\n\nUsage\n\n\n__repr__()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1892,7 +1892,7 @@
     "href": "reference/SlotsExhaustedError.html",
     "title": "SlotsExhaustedError",
     "section": "",
-    "text": "Pool.submit() found no free result slot: too many outstanding (uncollected) tasks.\n\n\nUsage\nSource\n\n\nSlotsExhaustedError()",
+    "text": "Pool.submit() found no free result slot: too many outstanding (uncollected) tasks.\n\n\nUsage\n\n\nSlotsExhaustedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1904,7 +1904,7 @@
     "href": "reference/StoppedError.html",
     "title": "StoppedError",
     "section": "",
-    "text": "The pool is stopped; no further submission is possible.\n\n\nUsage\nSource\n\n\nStoppedError()",
+    "text": "The pool is stopped; no further submission is possible.\n\n\nUsage\n\n\nStoppedError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
@@ -1964,7 +1964,7 @@
     "href": "reference/TaskLostError.html",
     "title": "TaskLostError",
     "section": "",
-    "text": "The task’s payload region vanished or could not be read before any worker ran it. No worker died.\n\n\nUsage\nSource\n\n\nTaskLostError()",
+    "text": "The task’s payload region vanished or could not be read before any worker ran it. No worker died.\n\n\nUsage\n\n\nTaskLostError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
