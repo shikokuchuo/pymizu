@@ -20,6 +20,11 @@ site_url: "https://shikokuchuo.net/pymizu/"
 repo: https://github.com/shikokuchuo/pymizu
 github_style: icon
 
+# The site deploys only from main; without this a render from another branch
+# bakes that branch's name into the API source links
+source:
+  branch: main
+
 # Canonical URLs and sitemap (the site is served from a custom domain)
 seo:
   canonical:

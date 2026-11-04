@@ -1,7 +1,7 @@
 # Contributing
 
 Bug reports and pull requests are welcome.
-pymizu is pre-release and the API can change at any time, so open an issue to discuss larger changes before doing the work.
+pymizu is pre-1.0 and the API can change between releases, so open an issue to discuss larger changes before doing the work.
 
 ## Reporting bugs
 
