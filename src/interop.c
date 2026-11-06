@@ -356,6 +356,25 @@ static size_t ixe_vec_begin(uint8_t *dst, int tag, uint64_t n) {
 /* The wire-type -> vector-tag table is the core's mizu_ix_tag_of (the
    byte-shape helper registry), used via ixe_vec_begin below. */
 
+/* The vector-body bracket shared by the emit arms: reserve runs the
+   capacity check and the overflow latch (IXW_PUT's discipline — past the
+   limit the count runs on but the writes stop), returning the fill
+   destination, NULL on the size pass or the latch; done advances the
+   count whether or not the fill ran. */
+static uint8_t *ixe_body_reserve(ixw *w, size_t bytes) {
+  if (w->dst == NULL) return NULL;
+  if (w->total + bytes > w->limit) {
+    w->overflow = 1;
+    w->dst = NULL;
+    return NULL;
+  }
+  return w->dst + w->total;
+}
+
+static void ixe_body_done(ixw *w, size_t bytes) {
+  w->total += bytes;
+}
+
 /* A strv value, or the 0x04 scalar at length 1 (the corpus's scalar-form
    pin — attr dicts included). A len of -1 is NA (strs[i] then unused). */
 static void ixe_strv(ixw *w, Py_ssize_t n, const char **strs,
@@ -445,17 +464,14 @@ static void ixe_intv(ixw *w, Py_ssize_t n, const int64_t *vals,
                      const int *na) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * 4);
+  if (dst != NULL) {
     for (Py_ssize_t i = 0; i < n; i++) {
       int32_t v = na != NULL && na[i] ? MIZU_NA_INT32 : (int32_t) vals[i];
       memcpy(dst + 4 * i, &v, 4);
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * 4;
+  ixe_body_done(w, (size_t) n * 4);
 }
 
 /* An intv from an i32 span (row.names reads). */
@@ -467,13 +483,9 @@ static void ixe_intv_i32(ixw *w, const int32_t *vals, Py_ssize_t n) {
   }
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
-    memcpy(w->dst + w->total, vals, (size_t) n * 4);
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
-  }
-  w->total += (size_t) n * 4;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * 4);
+  if (dst != NULL) memcpy(dst, vals, (size_t) n * 4);
+  ixe_body_done(w, (size_t) n * 4);
 }
 
 static void ixe_key(ixw *w, const char *key) {
@@ -501,8 +513,8 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
                              double scale) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * 8 <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * 8);
+  if (dst != NULL) {
     for (uint64_t i = 0; i < n; i++) {
       if ((valid != NULL && !bitmap_at(valid, i)) ||
           counts[i] == INT64_MIN) {
@@ -512,11 +524,8 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
         memcpy(dst + 8 * i, &v, 8);
       }
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * 8;
+  ixe_body_done(w, (size_t) n * 8);
 }
 
 /* The attr shapes emit frames the value walk's depth accounting never
@@ -1439,6 +1448,39 @@ static int tscale_ns(const attr_ent *e) {
     memcmp(e->val.ptr, "ns", 2) == 0;
 }
 
+/* The attr-shape gates, single-sourced across the read paths (the stream
+   attr dispatcher, the frame column fills, the atomic home): these
+   define the wire shapes the R package mirrors, so a second copy is a
+   conformance bug waiting. type is the value's wire type. */
+static int shape_factor(const attr_ent *cls, const attr_ent *lv, int nent,
+                        int type) {
+  return cls != NULL && lv != NULL && nent == 2 &&
+    (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
+     class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
+    type == MIZU_TYPE_INT &&
+    (lv->kind == AV_STR || lv->kind == AV_STRLIST);
+}
+
+static int shape_date(const attr_ent *cls, int nent, int type) {
+  return cls != NULL && nent == 1 &&
+    class_is(cls, MIZU_IX_CLASS_DATE, NULL) && type == MIZU_TYPE_REAL;
+}
+
+static int shape_posixct(const attr_ent *cls, const attr_ent *tz, int nent,
+                         int type) {
+  return cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
+    class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
+    type == MIZU_TYPE_REAL;
+}
+
+/* The difftime class form; the units' own verdict is the branch's
+   (difftime_secs_of), a malformed units declining with the branch's
+   no-home, never the gate's. */
+static int shape_difftime(const attr_ent *cls, int nent, int type) {
+  return cls != NULL && nent == 2 &&
+    class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) && type == MIZU_TYPE_REAL;
+}
+
 // The labeled shapes (MIZU_CAP_LABELED) --------------------------------------------
 
 /* The DimArray type from sys.modules only (the fast gates' probe:
@@ -2201,6 +2243,15 @@ static double difftime_unit_secs(const char *u, size_t n) {
   return 0.0;
 }
 
+/* The difftime shape's units half: the seconds multiplier for a known
+   units string, 0 for a missing or malformed one. */
+static double difftime_secs_of(const attr_ent *ents, int nent) {
+  const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+  return un != NULL && un->kind == AV_STR ?
+    difftime_unit_secs((const char *) un->val.ptr, (size_t) un->val.count) :
+    0.0;
+}
+
 /* A dim attribute's (dims, nd) pair: AV_INT the length-1 form (stored to
    *one), AV_INTSPAN the span. 1 extracted, 0 a different form (the caller
    raises its path's message). */
@@ -2374,13 +2425,8 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
   const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
-  const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
   const attr_ent *dnm = NULL, *dn = NULL;
-  if (cls != NULL && lv != NULL && nent == 2 &&
-      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-      vtype == MIZU_TYPE_INT &&
-      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+  if (shape_factor(cls, lv, nent, vtype)) {
     /* a standalone ordered factor surfaces like a plain one */
     int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
       (one_i > -2147483648LL && one_i <= 2147483647LL ? (int32_t) one_i : 0);
@@ -2484,22 +2530,17 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
     Py_XDECREF(entries);
     Py_XDECREF(axis);
     Py_DECREF(arr);
-  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-             vtype == MIZU_TYPE_REAL) {
+  } else if (shape_date(cls, nent, vtype)) {
     out = realv_to_datetime(vptr, vn, 1);
-  } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-             vtype == MIZU_TYPE_REAL) {
+  } else if (shape_posixct(cls, tz, nent, vtype)) {
     out = realv_to_datetime(vptr, vn, 0);   /* tzone: display metadata,
                                                dropped standalone */
-  } else if (cls != NULL && nent == 2 && un != NULL &&
-             un->kind == AV_STR && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
-             vtype == MIZU_TYPE_REAL &&
-             difftime_unit_secs((const char *) un->val.ptr,
-                                (size_t) un->val.count) != 0.0) {
-    out = realv_to_timedelta(vptr, vn,
-                             difftime_unit_secs((const char *) un->val.ptr,
-                                                (size_t) un->val.count));
+  } else if (shape_difftime(cls, nent, vtype)) {
+    const double us = difftime_secs_of(ents, nent);
+    if (us != 0.0)
+      out = realv_to_timedelta(vptr, vn, us);
+    else
+      ixr_no_home(ents, nent, "an attributed value");
   } else {
     ixr_no_home(ents, nent, "an attributed value");
   }
@@ -2696,11 +2737,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
     const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
     const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
-    if (cls != NULL && lv != NULL && nent == 2 &&
-        (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-         class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-        vtype == MIZU_TYPE_INT &&
-        (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+    if (shape_factor(cls, lv, nent, vtype)) {
       int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
         (one_i > -2147483648LL && one_i <= 2147483647LL ?
          (int32_t) one_i : 0);
@@ -2717,24 +2754,16 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
                               MIZU_IX_CLASS_FACTOR);
         rc = 0;
       }
-    } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-               vtype == MIZU_TYPE_REAL) {
+    } else if (shape_date(cls, nent, vtype)) {
       rc = fcol_date_fill((const double *) vptr, vn, c);
-    } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-               class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-               vtype == MIZU_TYPE_REAL) {
+    } else if (shape_posixct(cls, tz, nent, vtype)) {
       rc = fcol_ts_fill((const double *) vptr, vn,
                         tz != NULL && tz->kind == AV_STR ?
                           (const char *) tz->val.ptr : "",
                         tz != NULL && tz->kind == AV_STR ?
                           (size_t) tz->val.count : 0, c);
-    } else if (cls != NULL && nent == 2 &&
-               class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
-               vtype == MIZU_TYPE_REAL) {
-      const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
-      const double us = un != NULL && un->kind == AV_STR ?
-        difftime_unit_secs((const char *) un->val.ptr,
-                           (size_t) un->val.count) : 0.0;
+    } else if (shape_difftime(cls, nent, vtype)) {
+      const double us = difftime_secs_of(ents, nent);
       if (us != 0.0)
         rc = fcol_difftime_fill((const double *) vptr, vn, us, c);
       else
@@ -3393,11 +3422,7 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   const attr_ent *ts = attr_find(ents, nent, MIZU_IX_ATTR_TSCALE);
-  if (cls != NULL && lv != NULL && nent == 2 &&
-      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-      tag == MIZU_TYPE_INT &&
-      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+  if (shape_factor(cls, lv, nent, tag)) {
     if (levels_read(lv, &c->lev_off, &c->bytes, &c->nlev,
                     &c->bytes_len) == 0) {
       c->kind = FCOL_DICT;
@@ -3410,12 +3435,9 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
       tree_valid(c, base, e->valid);
       rc = 0;
     }
-  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-             tag == MIZU_TYPE_REAL) {
+  } else if (shape_date(cls, nent, tag)) {
     rc = fcol_date_fill((const double *) data, (uint64_t) e->length, c);
-  } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-             tag == MIZU_TYPE_REAL) {
+  } else if (shape_posixct(cls, tz, nent, tag)) {
     rc = fcol_ts_fill((const double *) data, (uint64_t) e->length,
                       tz != NULL && tz->kind == AV_STR ?
                         (const char *) tz->val.ptr : "",
@@ -3437,12 +3459,8 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
     c->borrowed = 1;
     tree_valid(c, base, e->valid);
     rc = 0;
-  } else if (cls != NULL && nent == 2 && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
-             tag == MIZU_TYPE_REAL) {
-    const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
-    const double us = un != NULL && un->kind == AV_STR ?
-      difftime_unit_secs((const char *) un->val.ptr,
-                         (size_t) un->val.count) : 0.0;
+  } else if (shape_difftime(cls, nent, tag)) {
+    const double us = difftime_secs_of(ents, nent);
     if (us != 0.0)
       rc = fcol_difftime_fill((const double *) data, (uint64_t) e->length,
                               us, c);
@@ -3590,12 +3608,9 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
+  const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   const attr_ent *nm2 = NULL, *dn = NULL;
-  if (cls != NULL && lv != NULL && nent == 2 &&
-      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-      type == MIZU_TYPE_INT &&
-      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+  if (shape_factor(cls, lv, nent, type)) {
     /* a standalone ordered factor surfaces like a plain one */
     int32_t *lev_off = NULL, *codes = NULL;
     uint8_t *lev_bytes = NULL;
@@ -3688,22 +3703,13 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
     Py_XDECREF(entries);
     Py_XDECREF(axis);
     Py_DECREF(view);
-  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-             type == MIZU_TYPE_REAL) {
+  } else if (shape_date(cls, nent, type)) {
     out = realv_to_datetime(data, (uint64_t) n, 1);
-  } else if (cls != NULL &&
-             (nent == 1 ||
-              (nent == 2 && attr_find(ents, nent, MIZU_IX_ATTR_TZONE) != NULL)) &&
-             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-             type == MIZU_TYPE_REAL) {
+  } else if (shape_posixct(cls, tz, nent, type)) {
     out = realv_to_datetime(data, (uint64_t) n, 0);   /* tzone: display
                                                          metadata, dropped */
-  } else if (cls != NULL && nent == 2 &&
-             class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) && type == MIZU_TYPE_REAL) {
-    const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
-    const double us = un != NULL && un->kind == AV_STR ?
-      difftime_unit_secs((const char *) un->val.ptr,
-                         (size_t) un->val.count) : 0.0;
+  } else if (shape_difftime(cls, nent, type)) {
+    const double us = difftime_secs_of(ents, nent);
     if (us != 0.0)
       out = realv_to_timedelta(data, (uint64_t) n, us);
     else
@@ -4035,8 +4041,8 @@ static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
   const size_t elt = wire == MIZU_TYPE_INT || wire == MIZU_TYPE_LGL ? 4 : 8;
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(wire), n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * elt <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * elt);
+  if (dst != NULL) {
     for (uint64_t i = 0; i < n; i++) {
       uint8_t *d = dst + (size_t) i * elt;
       if (bitmap_at(valid, i)) {
@@ -4051,11 +4057,8 @@ static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
         memcpy(d, &na, 4);
       }
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * elt;
+  ixe_body_done(w, (size_t) n * elt);
 }
 
 /* The mask gate for the memcpy arms: the recorded null count serves —
@@ -4107,8 +4110,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     const uint64_t *us = (const uint64_t *) c->values;
     IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_I64V, (uint64_t) c->n));
     if (w->decline) return;
-    if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
-      uint8_t *dst = w->dst + w->total;
+    uint8_t *dst = ixe_body_reserve(w, (size_t) c->n * 8);
+    if (dst != NULL) {
       for (int64_t i = 0; i < c->n; i++) {
         const int na = c->valid != NULL && !bitmap_at(c->valid, i);
         int64_t v;
@@ -4120,11 +4123,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
         }
         memcpy(dst + 8 * i, &v, 8);
       }
-    } else if (w->dst != NULL) {
-      w->overflow = 1;
-      w->dst = NULL;
     }
-    w->total += (size_t) c->n * 8;
+    ixe_body_done(w, (size_t) c->n * 8);
     break;
   }
   case FCOL_U8:
@@ -4226,19 +4226,16 @@ static void ixe_fcol(ixw *w, const fcol *c) {
       IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV,
                                (uint64_t) c->n));
       if (w->decline) return;
-      if (w->dst != NULL && w->total + (size_t) c->n * 4 <= w->limit) {
-        uint8_t *dst = w->dst + w->total;
+      uint8_t *dst = ixe_body_reserve(w, (size_t) c->n * 4);
+      if (dst != NULL) {
         for (int64_t i = 0; i < c->n; i++) {
           int32_t v = (c->valid != NULL && !bitmap_at(c->valid, i)) ||
                       codes[i] == MIZU_NA_INT32 ? MIZU_NA_INT32 :
                       c->codes1 ? codes[i] : codes[i] + 1;
           memcpy(dst + 4 * i, &v, 4);
         }
-      } else if (w->dst != NULL) {
-        w->overflow = 1;
-        w->dst = NULL;
       }
-      w->total += (size_t) c->n * 4;
+      ixe_body_done(w, (size_t) c->n * 4);
     }
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
     ixe_key(w, MIZU_IX_ATTR_LEVELS);
@@ -4262,8 +4259,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
     IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, (uint64_t) c->n));
     if (w->decline) return;
-    if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
-      uint8_t *dst = w->dst + w->total;
+    uint8_t *dst = ixe_body_reserve(w, (size_t) c->n * 8);
+    if (dst != NULL) {
       for (int64_t i = 0; i < c->n; i++) {
         if ((c->valid != NULL && !bitmap_at(c->valid, i)) ||
             days[i] == MIZU_NA_INT32) {
@@ -4273,11 +4270,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
           memcpy(dst + 8 * i, &v, 8);
         }
       }
-    } else if (w->dst != NULL) {
-      w->overflow = 1;
-      w->dst = NULL;
     }
-    w->total += (size_t) c->n * 8;
+    ixe_body_done(w, (size_t) c->n * 8);
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
     ixe_key(w, MIZU_IX_ATTR_CLASS);
     ixe_class(w, cls, 1);
@@ -4331,15 +4325,9 @@ static void ixe_class_tuple(ixw *w, PyObject *kt) {
    complete encoding, re-emitted verbatim. */
 static void ixe_span(ixw *w, const void *src, size_t n) {
   if (w->decline) return;
-  if (w->dst != NULL) {
-    if (w->total + n > w->limit) {
-      w->overflow = 1;
-      w->dst = NULL;
-    } else {
-      memcpy(w->dst + w->total, src, n);
-    }
-  }
-  w->total += n;
+  uint8_t *dst = ixe_body_reserve(w, n);
+  if (dst != NULL) memcpy(dst, src, n);
+  ixe_body_done(w, n);
 }
 
 static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names,
@@ -4505,8 +4493,8 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                          const cvt_row *row, int64_t stride) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(row->wire), n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * row->w_out <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * row->w_out);
+  if (dst != NULL) {
     if (stride == 0) {
       mizu_cvt_convert(dst, src, NULL, 0, (size_t) n, row, &w->warn);
     } else {
@@ -4515,11 +4503,8 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                             src + (uint64_t) i * (uint64_t) stride, NULL,
                             0, 1, row, &w->warn);
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * row->w_out;
+  ixe_body_done(w, (size_t) n * row->w_out);
 }
 
 /* A 2-D transpose gather in 32x32 element tiles: the inner loop walks a
@@ -4613,15 +4598,10 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
   for (int i = 0; i < nd; i++) total *= (uint64_t) shape[i];
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(row->wire), total));
   if (w->decline) return;
-  if (w->dst != NULL &&
-      w->total + (size_t) total * row->w_out <= w->limit) {
-    mizu_py_nd_gather(w->dst + w->total, src, nd, shape, strides, row,
-                      &w->warn);
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
-  }
-  w->total += (size_t) total * row->w_out;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) total * row->w_out);
+  if (dst != NULL)
+    mizu_py_nd_gather(dst, src, nd, shape, strides, row, &w->warn);
+  ixe_body_done(w, (size_t) total * row->w_out);
 }
 
 /* The dim shape: attr(vec, {dim: intv}). */
