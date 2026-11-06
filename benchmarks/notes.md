@@ -1124,3 +1124,16 @@ swap).
 
 Status: bench-only measurement against the fixed mizu install; no
 pymizu change.
+
+## 2026-11-06 — Phase 1 C dedup A/B (refactor/phase1-c-dedup, 4eea29e + 2b7f688)
+
+A/B (canonical suite, back-to-back against the da561fc build on the
+same host) for the mechanical consolidation: no wire, API, or staging
+change, so parity is the expectation. Latency rows geomean 0.975,
+throughput rows 1.006; every row inside 0.83-1.08 with the in-process
+control rows swinging 1.009-1.052 (host noise band). Rows the change
+touches most (sequential rt 0.889-1.000, pipelined 0.984-1.048,
+executor outstanding 0.953-0.988, event-driven 0.980-1.034) sit inside
+that band. No table swap — an A/B isolation run, logged per convention.
+
+Status: full suite 1044 pass, 1 skip.
