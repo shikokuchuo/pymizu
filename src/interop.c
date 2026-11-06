@@ -356,6 +356,25 @@ static size_t ixe_vec_begin(uint8_t *dst, int tag, uint64_t n) {
 /* The wire-type -> vector-tag table is the core's mizu_ix_tag_of (the
    byte-shape helper registry), used via ixe_vec_begin below. */
 
+/* The vector-body bracket shared by the emit arms: reserve runs the
+   capacity check and the overflow latch (IXW_PUT's discipline — past the
+   limit the count runs on but the writes stop), returning the fill
+   destination, NULL on the size pass or the latch; done advances the
+   count whether or not the fill ran. */
+static uint8_t *ixe_body_reserve(ixw *w, size_t bytes) {
+  if (w->dst == NULL) return NULL;
+  if (w->total + bytes > w->limit) {
+    w->overflow = 1;
+    w->dst = NULL;
+    return NULL;
+  }
+  return w->dst + w->total;
+}
+
+static void ixe_body_done(ixw *w, size_t bytes) {
+  w->total += bytes;
+}
+
 /* A strv value, or the 0x04 scalar at length 1 (the corpus's scalar-form
    pin — attr dicts included). A len of -1 is NA (strs[i] then unused). */
 static void ixe_strv(ixw *w, Py_ssize_t n, const char **strs,
@@ -445,17 +464,14 @@ static void ixe_intv(ixw *w, Py_ssize_t n, const int64_t *vals,
                      const int *na) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * 4);
+  if (dst != NULL) {
     for (Py_ssize_t i = 0; i < n; i++) {
       int32_t v = na != NULL && na[i] ? MIZU_NA_INT32 : (int32_t) vals[i];
       memcpy(dst + 4 * i, &v, 4);
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * 4;
+  ixe_body_done(w, (size_t) n * 4);
 }
 
 /* An intv from an i32 span (row.names reads). */
@@ -467,13 +483,9 @@ static void ixe_intv_i32(ixw *w, const int32_t *vals, Py_ssize_t n) {
   }
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV, (uint64_t) n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * 4 <= w->limit) {
-    memcpy(w->dst + w->total, vals, (size_t) n * 4);
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
-  }
-  w->total += (size_t) n * 4;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * 4);
+  if (dst != NULL) memcpy(dst, vals, (size_t) n * 4);
+  ixe_body_done(w, (size_t) n * 4);
 }
 
 static void ixe_key(ixw *w, const char *key) {
@@ -501,8 +513,8 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
                              double scale) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * 8 <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * 8);
+  if (dst != NULL) {
     for (uint64_t i = 0; i < n; i++) {
       if ((valid != NULL && !bitmap_at(valid, i)) ||
           counts[i] == INT64_MIN) {
@@ -512,11 +524,8 @@ static void ixe_realv_counts(ixw *w, const int64_t *counts,
         memcpy(dst + 8 * i, &v, 8);
       }
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * 8;
+  ixe_body_done(w, (size_t) n * 8);
 }
 
 /* The attr shapes emit frames the value walk's depth accounting never
@@ -4035,8 +4044,8 @@ static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
   const size_t elt = wire == MIZU_TYPE_INT || wire == MIZU_TYPE_LGL ? 4 : 8;
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(wire), n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * elt <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * elt);
+  if (dst != NULL) {
     for (uint64_t i = 0; i < n; i++) {
       uint8_t *d = dst + (size_t) i * elt;
       if (bitmap_at(valid, i)) {
@@ -4051,11 +4060,8 @@ static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
         memcpy(d, &na, 4);
       }
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * elt;
+  ixe_body_done(w, (size_t) n * elt);
 }
 
 /* The mask gate for the memcpy arms: the recorded null count serves —
@@ -4107,8 +4113,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     const uint64_t *us = (const uint64_t *) c->values;
     IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_I64V, (uint64_t) c->n));
     if (w->decline) return;
-    if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
-      uint8_t *dst = w->dst + w->total;
+    uint8_t *dst = ixe_body_reserve(w, (size_t) c->n * 8);
+    if (dst != NULL) {
       for (int64_t i = 0; i < c->n; i++) {
         const int na = c->valid != NULL && !bitmap_at(c->valid, i);
         int64_t v;
@@ -4120,11 +4126,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
         }
         memcpy(dst + 8 * i, &v, 8);
       }
-    } else if (w->dst != NULL) {
-      w->overflow = 1;
-      w->dst = NULL;
     }
-    w->total += (size_t) c->n * 8;
+    ixe_body_done(w, (size_t) c->n * 8);
     break;
   }
   case FCOL_U8:
@@ -4226,19 +4229,16 @@ static void ixe_fcol(ixw *w, const fcol *c) {
       IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_INTV,
                                (uint64_t) c->n));
       if (w->decline) return;
-      if (w->dst != NULL && w->total + (size_t) c->n * 4 <= w->limit) {
-        uint8_t *dst = w->dst + w->total;
+      uint8_t *dst = ixe_body_reserve(w, (size_t) c->n * 4);
+      if (dst != NULL) {
         for (int64_t i = 0; i < c->n; i++) {
           int32_t v = (c->valid != NULL && !bitmap_at(c->valid, i)) ||
                       codes[i] == MIZU_NA_INT32 ? MIZU_NA_INT32 :
                       c->codes1 ? codes[i] : codes[i] + 1;
           memcpy(dst + 4 * i, &v, 4);
         }
-      } else if (w->dst != NULL) {
-        w->overflow = 1;
-        w->dst = NULL;
       }
-      w->total += (size_t) c->n * 4;
+      ixe_body_done(w, (size_t) c->n * 4);
     }
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 2));
     ixe_key(w, MIZU_IX_ATTR_LEVELS);
@@ -4262,8 +4262,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
     IXW_PUT(w, mizu_ix_put_attr(IXW_DST(w)));
     IXW_PUT(w, ixe_vec_begin(IXW_DST(w), MIZU_IX_TAG_REALV, (uint64_t) c->n));
     if (w->decline) return;
-    if (w->dst != NULL && w->total + (size_t) c->n * 8 <= w->limit) {
-      uint8_t *dst = w->dst + w->total;
+    uint8_t *dst = ixe_body_reserve(w, (size_t) c->n * 8);
+    if (dst != NULL) {
       for (int64_t i = 0; i < c->n; i++) {
         if ((c->valid != NULL && !bitmap_at(c->valid, i)) ||
             days[i] == MIZU_NA_INT32) {
@@ -4273,11 +4273,8 @@ static void ixe_fcol(ixw *w, const fcol *c) {
           memcpy(dst + 8 * i, &v, 8);
         }
       }
-    } else if (w->dst != NULL) {
-      w->overflow = 1;
-      w->dst = NULL;
     }
-    w->total += (size_t) c->n * 8;
+    ixe_body_done(w, (size_t) c->n * 8);
     IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), 1));
     ixe_key(w, MIZU_IX_ATTR_CLASS);
     ixe_class(w, cls, 1);
@@ -4331,15 +4328,9 @@ static void ixe_class_tuple(ixw *w, PyObject *kt) {
    complete encoding, re-emitted verbatim. */
 static void ixe_span(ixw *w, const void *src, size_t n) {
   if (w->decline) return;
-  if (w->dst != NULL) {
-    if (w->total + n > w->limit) {
-      w->overflow = 1;
-      w->dst = NULL;
-    } else {
-      memcpy(w->dst + w->total, src, n);
-    }
-  }
-  w->total += n;
+  uint8_t *dst = ixe_body_reserve(w, n);
+  if (dst != NULL) memcpy(dst, src, n);
+  ixe_body_done(w, n);
 }
 
 static void ixe_frame(ixw *w, const frame_cols *fc, PyObject *row_names,
@@ -4505,8 +4496,8 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                          const cvt_row *row, int64_t stride) {
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(row->wire), n));
   if (w->decline) return;
-  if (w->dst != NULL && w->total + (size_t) n * row->w_out <= w->limit) {
-    uint8_t *dst = w->dst + w->total;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) n * row->w_out);
+  if (dst != NULL) {
     if (stride == 0) {
       mizu_cvt_convert(dst, src, NULL, 0, (size_t) n, row, &w->warn);
     } else {
@@ -4515,11 +4506,8 @@ static void ixe_cvt_body(ixw *w, const uint8_t *src, uint64_t n,
                             src + (uint64_t) i * (uint64_t) stride, NULL,
                             0, 1, row, &w->warn);
     }
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
   }
-  w->total += (size_t) n * row->w_out;
+  ixe_body_done(w, (size_t) n * row->w_out);
 }
 
 /* A 2-D transpose gather in 32x32 element tiles: the inner loop walks a
@@ -4613,15 +4601,10 @@ static void ixe_nd_body(ixw *w, const uint8_t *src, int nd,
   for (int i = 0; i < nd; i++) total *= (uint64_t) shape[i];
   IXW_PUT(w, ixe_vec_begin(IXW_DST(w), mizu_ix_tag_of(row->wire), total));
   if (w->decline) return;
-  if (w->dst != NULL &&
-      w->total + (size_t) total * row->w_out <= w->limit) {
-    mizu_py_nd_gather(w->dst + w->total, src, nd, shape, strides, row,
-                      &w->warn);
-  } else if (w->dst != NULL) {
-    w->overflow = 1;
-    w->dst = NULL;
-  }
-  w->total += (size_t) total * row->w_out;
+  uint8_t *dst = ixe_body_reserve(w, (size_t) total * row->w_out);
+  if (dst != NULL)
+    mizu_py_nd_gather(dst, src, nd, shape, strides, row, &w->warn);
+  ixe_body_done(w, (size_t) total * row->w_out);
 }
 
 /* The dim shape: attr(vec, {dim: intv}). */
