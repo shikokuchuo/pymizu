@@ -1544,8 +1544,10 @@ fc_malformed:
   frame_cols_decref(fc);
   goto malformed2;
 fc_nomem:
+  /* past the fc->cols = cols transfer: the decref frees cols — the
+     nomem tail would free it a second time */
   frame_cols_decref(fc);
-  goto nomem;
+  return PyErr_NoMemory();
 fc_fail:
   frame_cols_decref(fc);
   return NULL;
