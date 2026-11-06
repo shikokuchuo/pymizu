@@ -258,24 +258,21 @@ fail:
 
 // The attribute blobs (complete 'I' streams, the corpus-pinned shapes) -----------
 
-/* The class value's strv form: the 0x04 scalar at length 1
-   (ixe_class's shape). */
-static size_t blob_class_size(const char *const *names, int n) {
-  if (n == 1)
-    return mizu_ix_put_str(NULL, names[0], (int32_t) strlen(names[0]));
-  size_t sz = mizu_ix_put_strv_begin(NULL, (uint64_t) n);
-  for (int i = 0; i < n; i++)
-    sz += mizu_ix_put_strelt(NULL, names[i], (int32_t) strlen(names[i]));
-  return sz;
+/* The dual-form march: a NULL dst sizes (the put helpers count, never
+   touching the data), a real one writes behind the running size — the
+   mizu_py_blob_frame discipline, one function serving both passes. */
+static uint8_t *blob_at(uint8_t *dst, size_t sz) {
+  return dst != NULL ? dst + sz : NULL;
 }
 
-static size_t blob_class_write(uint8_t *dst, const char *const *names,
-                               int n) {
+/* The class value's strv form: the 0x04 scalar at length 1
+   (ixe_class's shape). */
+static size_t blob_class(uint8_t *dst, const char *const *names, int n) {
   if (n == 1)
     return mizu_ix_put_str(dst, names[0], (int32_t) strlen(names[0]));
   size_t sz = mizu_ix_put_strv_begin(dst, (uint64_t) n);
   for (int i = 0; i < n; i++)
-    sz += mizu_ix_put_strelt(dst + sz, names[i],
+    sz += mizu_ix_put_strelt(blob_at(dst, sz), names[i],
                              (int32_t) strlen(names[i]));
   return sz;
 }
@@ -283,81 +280,51 @@ static size_t blob_class_write(uint8_t *dst, const char *const *names,
 /* The {dim} blob of an attributed MIZH root (§3.5): byte-identical to
    the 'I' writer's dict portion (the corpus's mat-2x3 form) by
    construction — sized and written through the same put helpers. */
-static size_t blob_dim_size(int nd) {
-  return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 1) +
-    mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM)) +
-    mizu_ix_put_vec(NULL, MIZU_TYPE_INT, NULL, (uint64_t) nd);
+static size_t blob_dim(uint8_t *dst, const int32_t *dims, int nd) {
+  size_t sz = mizu_ix_put_header(dst);
+  sz += mizu_ix_put_dict_begin(blob_at(dst, sz), 1);
+  sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_DIM,
+                        IX_KEYLEN(MIZU_IX_ATTR_DIM));
+  sz += mizu_ix_put_vec(blob_at(dst, sz), MIZU_TYPE_INT, dims,
+                        (uint64_t) nd);
+  return sz;
 }
 
-static void blob_dim_write(uint8_t *dst, const int32_t *dims, int nd) {
-  dst += mizu_ix_put_header(dst);
-  dst += mizu_ix_put_dict_begin(dst, 1);
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
-  mizu_ix_put_vec(dst, MIZU_TYPE_INT, dims, (uint64_t) nd);
-}
-
-/* The temporal blobs: {class} for Date, {class, tzone = "UTC"} for
+/* The temporal blob: {class} for Date, {class, tzone = "UTC"} for
    POSIXct, {class, units = "secs"} for difftime — the ixe_date /
    ixe_posixct / ixe_difftime dicts. */
-static size_t blob_temporal_size(const pymizu_leaf *lf) {
+static size_t blob_temporal(uint8_t *dst, const pymizu_leaf *lf) {
   static const char *date[1] = { MIZU_IX_CLASS_DATE };
   static const char *posix[2] = { MIZU_IX_CLASS_POSIXCT,
                                   MIZU_IX_CLASS_POSIXT };
   static const char *diff[1] = { MIZU_IX_CLASS_DIFFTIME };
-  if (lf->temporal == 2)
-    return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 2) +
-      mizu_ix_put_key(NULL, MIZU_IX_ATTR_CLASS,
-                      IX_KEYLEN(MIZU_IX_ATTR_CLASS)) +
-      blob_class_size(diff, 1) +
-      mizu_ix_put_key(NULL, MIZU_IX_ATTR_UNITS,
-                      IX_KEYLEN(MIZU_IX_ATTR_UNITS)) +
-      mizu_ix_put_str(NULL, MIZU_IX_UNIT_SECS,
-                      (int32_t) IX_KEYLEN(MIZU_IX_UNIT_SECS));
-  if (lf->unit == TU_DAY || lf->unit == TU_WEEK)
-    return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 1) +
-      mizu_ix_put_key(NULL, MIZU_IX_ATTR_CLASS,
-                      IX_KEYLEN(MIZU_IX_ATTR_CLASS)) +
-      blob_class_size(date, 1);
-  return mizu_ix_put_header(NULL) + mizu_ix_put_dict_begin(NULL, 2) +
-    mizu_ix_put_key(NULL, MIZU_IX_ATTR_CLASS,
-                    IX_KEYLEN(MIZU_IX_ATTR_CLASS)) +
-    blob_class_size(posix, 2) +
-    mizu_ix_put_key(NULL, MIZU_IX_ATTR_TZONE,
-                    IX_KEYLEN(MIZU_IX_ATTR_TZONE)) +
-    mizu_ix_put_str(NULL, "UTC", 3);
-}
-
-static void blob_temporal_write(uint8_t *dst, const pymizu_leaf *lf) {
-  static const char *date[1] = { MIZU_IX_CLASS_DATE };
-  static const char *posix[2] = { MIZU_IX_CLASS_POSIXCT,
-                                  MIZU_IX_CLASS_POSIXT };
-  static const char *diff[1] = { MIZU_IX_CLASS_DIFFTIME };
-  dst += mizu_ix_put_header(dst);
+  size_t sz = mizu_ix_put_header(dst);
   if (lf->temporal == 2) {
-    dst += mizu_ix_put_dict_begin(dst, 2);
-    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_CLASS,
-                           IX_KEYLEN(MIZU_IX_ATTR_CLASS));
-    dst += blob_class_write(dst, diff, 1);
-    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_UNITS,
-                           IX_KEYLEN(MIZU_IX_ATTR_UNITS));
-    mizu_ix_put_str(dst, MIZU_IX_UNIT_SECS,
-                    (int32_t) IX_KEYLEN(MIZU_IX_UNIT_SECS));
-    return;
+    sz += mizu_ix_put_dict_begin(blob_at(dst, sz), 2);
+    sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_CLASS,
+                          IX_KEYLEN(MIZU_IX_ATTR_CLASS));
+    sz += blob_class(blob_at(dst, sz), diff, 1);
+    sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_UNITS,
+                          IX_KEYLEN(MIZU_IX_ATTR_UNITS));
+    sz += mizu_ix_put_str(blob_at(dst, sz), MIZU_IX_UNIT_SECS,
+                          (int32_t) IX_KEYLEN(MIZU_IX_UNIT_SECS));
+    return sz;
   }
   if (lf->unit == TU_DAY || lf->unit == TU_WEEK) {
-    dst += mizu_ix_put_dict_begin(dst, 1);
-    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_CLASS,
-                           IX_KEYLEN(MIZU_IX_ATTR_CLASS));
-    blob_class_write(dst, date, 1);
-    return;
+    sz += mizu_ix_put_dict_begin(blob_at(dst, sz), 1);
+    sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_CLASS,
+                          IX_KEYLEN(MIZU_IX_ATTR_CLASS));
+    sz += blob_class(blob_at(dst, sz), date, 1);
+    return sz;
   }
-  dst += mizu_ix_put_dict_begin(dst, 2);
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_CLASS,
-                         IX_KEYLEN(MIZU_IX_ATTR_CLASS));
-  dst += blob_class_write(dst, posix, 2);
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_TZONE,
-                         IX_KEYLEN(MIZU_IX_ATTR_TZONE));
-  mizu_ix_put_str(dst, "UTC", 3);
+  sz += mizu_ix_put_dict_begin(blob_at(dst, sz), 2);
+  sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_CLASS,
+                        IX_KEYLEN(MIZU_IX_ATTR_CLASS));
+  sz += blob_class(blob_at(dst, sz), posix, 2);
+  sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_TZONE,
+                        IX_KEYLEN(MIZU_IX_ATTR_TZONE));
+  sz += mizu_ix_put_str(blob_at(dst, sz), "UTC", 3);
+  return sz;
 }
 
 /* The leaf sizes: body the MIZH element bytes, blob the attrs stream
@@ -367,72 +334,47 @@ static uint64_t mizh_leaf_body_size(const pymizu_leaf *lf) {
     lf->total * (uint64_t) mizu_type_elt_size(lf->type);
 }
 
-/* The labeled blobs (MIZU_CAP_LABELED): {names} for a 1-D array, or
+/* The labeled blob (MIZU_CAP_LABELED): {names} for a 1-D array, or
    {dim, dimnames[, class = "table"]} — the corpus-pinned wire forms,
    sized and written through the shared put helpers (the 'I' writer's
    ixe_named_vec / ixe_dim_labeled dicts byte-for-byte). */
-static uint64_t blob_labeled_size(const pymizu_leaf *lf) {
-  uint64_t sz = mizu_ix_put_header(NULL);
+static size_t blob_labeled(uint8_t *dst, const pymizu_leaf *lf) {
+  size_t sz = mizu_ix_put_header(dst);
   if (lf->lb.names != NULL) {
     const Py_ssize_t n = PySequence_Size(lf->lb.names);
-    return sz + mizu_ix_put_dict_begin(NULL, 1) +
-      mizu_ix_put_key(NULL, MIZU_IX_ATTR_NAMES,
-                      IX_KEYLEN(MIZU_IX_ATTR_NAMES)) +
-      mizu_py_ix_labels_strv(NULL, lf->lb.names, n);
+    sz += mizu_ix_put_dict_begin(blob_at(dst, sz), 1);
+    sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_NAMES,
+                          IX_KEYLEN(MIZU_IX_ATTR_NAMES));
+    sz += mizu_py_ix_labels_strv(blob_at(dst, sz), lf->lb.names, n);
+    return sz;
   }
-  sz += mizu_ix_put_dict_begin(NULL, (uint64_t) (lf->lb.table ? 3 : 2));
-  sz += mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
+  sz += mizu_ix_put_dict_begin(blob_at(dst, sz),
+                               (uint64_t) (lf->lb.table ? 3 : 2));
+  sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_DIM,
+                        IX_KEYLEN(MIZU_IX_ATTR_DIM));
   if (lf->nd == 1) {
-    sz += mizu_ix_put_int(NULL, lf->dims[0]);
+    sz += mizu_ix_put_int(blob_at(dst, sz), lf->dims[0]);
   } else {
-    sz += mizu_ix_put_vec(NULL, MIZU_TYPE_INT, NULL, (uint64_t) lf->nd);
+    sz += mizu_ix_put_vec(blob_at(dst, sz), MIZU_TYPE_INT, lf->dims,
+                          (uint64_t) lf->nd);
   }
-  sz += mizu_ix_put_key(NULL, MIZU_IX_ATTR_DIMNAMES,
+  sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_DIMNAMES,
                         IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES));
-  sz += mizu_py_ix_dimnames(NULL, lf->lb.dimnames, lf->lb.axis_names,
-                            lf->nd);
+  sz += mizu_py_ix_dimnames(blob_at(dst, sz), lf->lb.dimnames,
+                            lf->lb.axis_names, lf->nd);
   if (lf->lb.table) {
-    sz += mizu_ix_put_key(NULL, MIZU_IX_ATTR_CLASS,
+    sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_CLASS,
                           IX_KEYLEN(MIZU_IX_ATTR_CLASS));
-    sz += mizu_ix_put_str(NULL, MIZU_IX_CLASS_TABLE,
+    sz += mizu_ix_put_str(blob_at(dst, sz), MIZU_IX_CLASS_TABLE,
                           (int32_t) IX_KEYLEN(MIZU_IX_CLASS_TABLE));
   }
   return sz;
 }
 
-static void blob_labeled_write(uint8_t *dst, const pymizu_leaf *lf) {
-  dst += mizu_ix_put_header(dst);
-  if (lf->lb.names != NULL) {
-    const Py_ssize_t n = PySequence_Size(lf->lb.names);
-    dst += mizu_ix_put_dict_begin(dst, 1);
-    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_NAMES,
-                           IX_KEYLEN(MIZU_IX_ATTR_NAMES));
-    mizu_py_ix_labels_strv(dst, lf->lb.names, n);
-    return;
-  }
-  dst += mizu_ix_put_dict_begin(dst, (uint64_t) (lf->lb.table ? 3 : 2));
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
-  if (lf->nd == 1) {
-    dst += mizu_ix_put_int(dst, lf->dims[0]);
-  } else {
-    dst += mizu_ix_put_vec(dst, MIZU_TYPE_INT, lf->dims, (uint64_t) lf->nd);
-  }
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_DIMNAMES,
-                         IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES));
-  dst += mizu_py_ix_dimnames(dst, lf->lb.dimnames, lf->lb.axis_names,
-                             lf->nd);
-  if (lf->lb.table) {
-    dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_CLASS,
-                           IX_KEYLEN(MIZU_IX_ATTR_CLASS));
-    mizu_ix_put_str(dst, MIZU_IX_CLASS_TABLE,
-                    (int32_t) IX_KEYLEN(MIZU_IX_CLASS_TABLE));
-  }
-}
-
 static uint64_t mizh_leaf_blob_size(const pymizu_leaf *lf) {
-  if (lf->temporal) return blob_temporal_size(lf);
-  if (lf->labeled) return blob_labeled_size(lf);
-  return lf->nd >= 2 ? blob_dim_size(lf->nd) : 0;
+  if (lf->temporal) return blob_temporal(NULL, lf);
+  if (lf->labeled) return blob_labeled(NULL, lf);
+  return lf->nd >= 2 ? blob_dim(NULL, lf->dims, lf->nd) : 0;
 }
 
 /* The body: the identity buffer's F-order flat (the contiguous memcpy
@@ -475,14 +417,14 @@ static void mizh_leaf_body_write(uint8_t *dst, pymizu_leaf *lf) {
 
 static void mizh_leaf_blob_write(uint8_t *dst, const pymizu_leaf *lf) {
   if (lf->temporal) {
-    blob_temporal_write(dst, lf);
+    (void) blob_temporal(dst, lf);
     return;
   }
   if (lf->labeled) {
-    blob_labeled_write(dst, lf);
+    (void) blob_labeled(dst, lf);
     return;
   }
-  if (lf->nd >= 2) blob_dim_write(dst, lf->dims, lf->nd);
+  if (lf->nd >= 2) (void) blob_dim(dst, lf->dims, lf->nd);
 }
 
 /* A top-level buffer or temporal array staged as SHM_VEC: one MIZH
@@ -544,51 +486,28 @@ _Static_assert(offsetof(pymizu_mizl_ent, sexptype) == 16, "MIZL tag offset");
 /* A dict node's names blob: a complete 'I' stream whose value is the
    one-key dict, the strv form scalar at length 1 (ixe_names' shape).
    The keys were UTF-8-validated by the size pass. */
-static uint64_t names_blob_size(PyObject *obj) {
+static size_t names_blob(uint8_t *dst, PyObject *obj) {
   const Py_ssize_t n = PyDict_Size(obj);
-  uint64_t sz = mizu_ix_put_header(NULL) +
-    mizu_ix_put_dict_begin(NULL, 1) +
-    mizu_ix_put_key(NULL, MIZU_IX_ATTR_NAMES,
-                    IX_KEYLEN(MIZU_IX_ATTR_NAMES));
+  size_t sz = mizu_ix_put_header(dst);
+  sz += mizu_ix_put_dict_begin(blob_at(dst, sz), 1);
+  sz += mizu_ix_put_key(blob_at(dst, sz), MIZU_IX_ATTR_NAMES,
+                        IX_KEYLEN(MIZU_IX_ATTR_NAMES));
   PyObject *k, *v;
   Py_ssize_t pos = 0;
   if (n == 1) {
     PyDict_Next(obj, &pos, &k, &v);
     Py_ssize_t len;
-    PyUnicode_AsUTF8AndSize(k, &len);
-    sz += mizu_ix_put_str(NULL, NULL, (int32_t) len);
+    const char *s = PyUnicode_AsUTF8AndSize(k, &len);
+    sz += mizu_ix_put_str(blob_at(dst, sz), s, (int32_t) len);
     return sz;
   }
-  sz += mizu_ix_put_strv_begin(NULL, (uint64_t) n);
+  sz += mizu_ix_put_strv_begin(blob_at(dst, sz), (uint64_t) n);
   while (PyDict_Next(obj, &pos, &k, &v)) {
     Py_ssize_t len;
-    PyUnicode_AsUTF8AndSize(k, &len);
-    sz += mizu_ix_put_strelt(NULL, NULL, (int32_t) len);
+    const char *s = PyUnicode_AsUTF8AndSize(k, &len);
+    sz += mizu_ix_put_strelt(blob_at(dst, sz), s, (int32_t) len);
   }
   return sz;
-}
-
-static void names_blob_write(uint8_t *dst, PyObject *obj) {
-  const Py_ssize_t n = PyDict_Size(obj);
-  dst += mizu_ix_put_header(dst);
-  dst += mizu_ix_put_dict_begin(dst, 1);
-  dst += mizu_ix_put_key(dst, MIZU_IX_ATTR_NAMES,
-                         IX_KEYLEN(MIZU_IX_ATTR_NAMES));
-  PyObject *k, *v;
-  Py_ssize_t pos = 0;
-  if (n == 1) {
-    PyDict_Next(obj, &pos, &k, &v);
-    Py_ssize_t len;
-    const char *s = PyUnicode_AsUTF8AndSize(k, &len);
-    mizu_ix_put_str(dst, s, (int32_t) len);
-    return;
-  }
-  dst += mizu_ix_put_strv_begin(dst, (uint64_t) n);
-  while (PyDict_Next(obj, &pos, &k, &v)) {
-    Py_ssize_t len;
-    const char *s = PyUnicode_AsUTF8AndSize(k, &len);
-    dst += mizu_ix_put_strelt(dst, s, (int32_t) len);
-  }
 }
 
 /* A dict's keys are tree material: every key an exact str, UTF-8
@@ -717,7 +636,7 @@ static int tree_node_size(PyObject *obj, unsigned depth, uint64_t *size,
       any_remote |= elt_remote;
       total += MIZU_ALIGN64(elt_size);
     }
-    total += MIZU_ALIGN64(names_blob_size(obj));
+    total += MIZU_ALIGN64(names_blob(NULL, obj));
     my_caps |= MIZU_CAP_ATTRS;
   } else {
     for (Py_ssize_t i = 0; i < n; i++) {
@@ -973,8 +892,8 @@ static uint64_t tree_node_write(uint8_t *base, PyObject *obj) {
   const int64_t attrs_off = (int64_t) cur;
   int64_t attrs_size = 0;
   if (dict) {
-    attrs_size = (int64_t) names_blob_size(obj);
-    names_blob_write(base + cur, obj);
+    attrs_size = (int64_t) names_blob(NULL, obj);
+    (void) names_blob(base + cur, obj);
     cur += MIZU_ALIGN64((uint64_t) attrs_size);
   }
   if (wrote_remote) {
