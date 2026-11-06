@@ -903,6 +903,24 @@ static uint64_t masked_nulls(const uint8_t *valid, uint64_t n) {
   return nulls;
 }
 
+/* The masked-int -> float64 fill shared by the i32/u64 masked reads: a
+   valid lane widens (every int32 exact there; uint64 per the fused read
+   rule), a masked lane R's NA_real_ payload. */
+static void masked_fill_f64(uint8_t *dst, const uint8_t *values,
+                            const uint8_t *valid, uint64_t n, size_t elt,
+                            int is_signed) {
+  for (uint64_t i = 0; i < n; i++) {
+    if (bitmap_at(valid, i)) {
+      double x = elt == 4 ? (double) ((const int32_t *) values)[i] :
+        is_signed ? (double) ((const int64_t *) values)[i] :
+                    (double) ((const uint64_t *) values)[i];
+      memcpy(dst + 8 * i, &x, 8);
+    } else {
+      store_na_r(dst + 8 * i);
+    }
+  }
+}
+
 PyObject *ixr_masked_f64(const uint8_t *values, const uint8_t *valid,
                          uint64_t n) {
   if (valid == NULL || masked_nulls(valid, n) == 0)
@@ -936,15 +954,7 @@ PyObject *ixr_masked_i32(const uint8_t *values, const uint8_t *valid,
   Py_buffer v;
   /* a fresh 1-D array always exports PyBUF_ND | PyBUF_WRITABLE */
   (void) PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE);
-  const int32_t *p = (const int32_t *) values;
-  for (uint64_t i = 0; i < n; i++) {
-    if (bitmap_at(valid, i)) {
-      double x = (double) p[i];
-      memcpy((uint8_t *) v.buf + 8 * i, &x, 8);
-    } else {
-      store_na_r((uint8_t *) v.buf + 8 * i);
-    }
-  }
+  masked_fill_f64((uint8_t *) v.buf, values, valid, n, 4, 1);
   PyBuffer_Release(&v);
   return arr;
 }
@@ -996,15 +1006,7 @@ PyObject *ixr_masked_u64(const uint8_t *values, const uint8_t *valid,
   Py_buffer v;
   /* a fresh 1-D array always exports PyBUF_ND | PyBUF_WRITABLE */
   (void) PyObject_GetBuffer(arr, &v, PyBUF_ND | PyBUF_WRITABLE);
-  const uint64_t *p = (const uint64_t *) values;
-  for (uint64_t i = 0; i < n; i++) {
-    if (bitmap_at(valid, i)) {
-      double x = (double) p[i];
-      memcpy((uint8_t *) v.buf + 8 * i, &x, 8);
-    } else {
-      store_na_r((uint8_t *) v.buf + 8 * i);
-    }
-  }
+  masked_fill_f64((uint8_t *) v.buf, values, valid, n, 8, 0);
   PyBuffer_Release(&v);
   return arr;
 }
@@ -2162,6 +2164,44 @@ static double difftime_unit_secs(const char *u, size_t n) {
   return 0.0;
 }
 
+/* A dim attribute's (dims, nd) pair: AV_INT the length-1 form (stored to
+   *one), AV_INTSPAN the span. 1 extracted, 0 a different form (the caller
+   raises its path's message). */
+static int attr_dim(const attr_ent *dm, int32_t *one, const int32_t **dims,
+                    uint64_t *nd) {
+  if (dm->kind == AV_INT) {
+    *one = (int32_t) dm->val.v;
+    *dims = one;
+    *nd = 1;
+    return 1;
+  }
+  if (dm->kind == AV_INTSPAN) {
+    *dims = (const int32_t *) dm->val.ptr;
+    *nd = dm->val.count;
+    return 1;
+  }
+  return 0;
+}
+
+/* The dim product validation: the axis count bounded, per-axis
+   non-negative, the product bounded and equal to count. shape (when
+   non-NULL) takes the per-axis extents. Returns a DIM_* verdict; the
+   caller raises its path's message. */
+enum { DIM_OK, DIM_AXES, DIM_NEGATIVE, DIM_OVERFLOW, DIM_PRODUCT };
+static int dim_validate(const int32_t *dims, uint64_t nd, uint64_t count,
+                        Py_ssize_t *shape) {
+  if (nd == 0 || nd > 32) return DIM_AXES;
+  uint64_t prod = 1;
+  for (uint64_t i = 0; i < nd; i++) {
+    if (dims[i] < 0) return DIM_NEGATIVE;
+    if (dims[i] != 0 && prod > UINT64_MAX / (uint64_t) dims[i])
+      return DIM_OVERFLOW;
+    prod *= (uint64_t) dims[i];
+    if (shape != NULL) shape[i] = (Py_ssize_t) dims[i];
+  }
+  return prod == count ? DIM_OK : DIM_PRODUCT;
+}
+
 /* The dim shape: the vector read per its tag's rule, reshaped F-order. */
 static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
                                 uint64_t count, const int32_t *dims,
@@ -2179,26 +2219,25 @@ static PyObject *dim_to_ndarray(int wire_type, const uint8_t *ptr,
                     "numpy (install it)");
     return NULL;
   }
-  uint64_t prod = 1;
   Py_ssize_t shape[32];
-  for (uint64_t i = 0; i < nd; i++) {
-    if (dims[i] < 0) {
-      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                      "a negative dim");
-      return NULL;
-    }
-    shape[i] = (Py_ssize_t) dims[i];
-    if (dims[i] != 0 && prod > UINT64_MAX / (uint64_t) dims[i]) {
-      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                      "a dim product overflow");
-      return NULL;
-    }
-    prod *= (uint64_t) dims[i];
-  }
-  if (prod != count) {
+  switch (dim_validate(dims, nd, count, shape)) {
+  case DIM_AXES:
+    Py_UNREACHABLE();   /* the bounds check above */
+    return NULL;
+  case DIM_NEGATIVE:
+    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                    "a negative dim");
+    return NULL;
+  case DIM_OVERFLOW:
+    PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                    "a dim product overflow");
+    return NULL;
+  case DIM_PRODUCT:
     PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
                     "the dim product is not the value's element count");
     return NULL;
+  default:
+    break;
   }
   const char *dt;
   void (*conv)(uint8_t *, const void *) = NULL;
@@ -2321,10 +2360,10 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
     free(codes);
   } else if (dm != NULL && nent == 1 && vit.kind == MIZU_IX_VEC &&
              (dm->kind == AV_INTSPAN || dm->kind == AV_INT)) {
-    int32_t one = (int32_t) dm->val.v;
-    const int32_t *dims = dm->kind == AV_INT ? &one :
-      (const int32_t *) dm->val.ptr;
-    uint64_t nd = dm->kind == AV_INT ? 1 : dm->val.count;
+    int32_t one;
+    const int32_t *dims;
+    uint64_t nd;
+    (void) attr_dim(dm, &one, &dims, &nd);   /* the branch gated the form */
     if (nd == 0) {
       PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
                       "an empty dim");
@@ -2363,10 +2402,10 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
       ixr_no_home(ents, nent, "an attributed value");
       goto attr_fail;
     }
-    int32_t one = (int32_t) dm->val.v;
-    const int32_t *dims = dm->kind == AV_INT ? &one :
-      (const int32_t *) dm->val.ptr;
-    uint64_t nd = dm->kind == AV_INT ? 1 : dm->val.count;
+    int32_t one;
+    const int32_t *dims;
+    uint64_t nd;
+    (void) attr_dim(dm, &one, &dims, &nd);   /* the branch gated the form */
     if (nd == 0) {
       PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
                       "an empty dim");
@@ -2520,17 +2559,8 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
   memset(c, 0, sizeof(*c));
   switch (it.kind) {
   case MIZU_IX_VEC: {
-    int kind;
-    switch (it.type) {
-    case MIZU_TYPE_REAL: kind = FCOL_F64; break;
-    case MIZU_TYPE_INT: kind = FCOL_I32; break;
-    case MIZU_TYPE_INT64: kind = FCOL_I64; break;
-    case MIZU_TYPE_RAW: kind = FCOL_U8; break;
-    case MIZU_TYPE_CPLX: kind = FCOL_C128; break;
-    case MIZU_TYPE_LGL: kind = FCOL_LGL; break;
-    default:
-      Py_UNREACHABLE();   /* the cursor's closed type set */
-    }
+    const int kind = fcol_of_type((int) it.type);
+    if (kind < 0) Py_UNREACHABLE();   /* the cursor's closed type set */
     size_t sz = (size_t) it.count * (size_t) fcol_fixed_size(kind);
     c->values = malloc(sz != 0 ? sz : 1);
     if (c->values == NULL) {
@@ -2561,11 +2591,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
       }
       if (sit.na) {
         nulls++;
-        if (valid == NULL) {
-          valid = mizu_py_bitmap_calloc(n);
-          if (valid == NULL) goto strv_fail;
-          for (uint64_t j = 0; j < i; j++) valid[j >> 3] |= 1 << (j & 7);
-        }
+        if (bitmap_mark_null(&valid, n, (int64_t) i) != 0) goto strv_fail;
       }
       if (!sit.na) {
         if (valid != NULL) valid[i >> 3] |= 1 << (i & 7);
@@ -2809,29 +2835,18 @@ static int frame_names_build(frame_cols *fc, const attr_ent *nm) {
       s = PyUnicode_AsUTF8AndSize(o, &len);
       if (s == NULL) return -1;
     }
-    /* stamp name_off[i] ahead of the scan: the span of name i-1 ends at it */
-    fc->name_off[i] = (int32_t) name_len;
-    for (int j = 0; j < i; j++)
-      if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) ==
-            (size_t) len &&
-          memcmp(fc->names + fc->name_off[j], s, (size_t) len) == 0) {
-        PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
-                        "duplicate column names");
-        return -1;
-      }
-    char *nb = realloc(fc->names, name_len + (size_t) len + 1);
-    if (nb == NULL) {
-      PyErr_NoMemory();
+    const int prc = frame_name_pack(fc, i, &name_len, s, (size_t) len, 1);
+    if (prc == FRAME_PACK_DUP) {
+      PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
+                      "duplicate column names");
       return -1;
     }
-    if ((size_t) len > (size_t) INT32_MAX - name_len) {
+    if (prc == FRAME_PACK_OVERFLOW) {
       PyErr_SetString(MizuError, "pymizu: malformed interop stream: "
                       "column names past 2^31 bytes");
       return -1;
     }
-    fc->names = nb;
-    memcpy(fc->names + name_len, s, (size_t) len);
-    name_len += (size_t) len;
+    if (prc != FRAME_PACK_OK) return -1;   /* NOMEM: raised */
   }
   fc->name_off[ncols] = (int32_t) name_len;
   return 0;
@@ -3069,6 +3084,27 @@ static int tree_column(const uint8_t *base, size_t size, int64_t i,
 static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
                             fcol *c, frame_cols *fc, unsigned depth);
 
+/* One "[i"-form path step: parses the 1-based index (INT64_MAX-bounded)
+   and advances *p past the digits, the delimiter (']' or ',') left at
+   *p. 0 ok, -1 malformed. */
+static int ref_path_step(const char **p, int64_t *idx) {
+  const char *s = *p;
+  if (*s < '1' || *s > '9') return -1;
+  uint64_t v = (uint64_t) (*s++ - '0');
+  while (*s >= '0' && *s <= '9') {
+    const uint64_t d = (uint64_t) (*s - '0');
+    if (v > (uint64_t) INT64_MAX / 10 ||
+        (v == (uint64_t) INT64_MAX / 10 &&
+         d > (uint64_t) INT64_MAX % 10))
+      return -1;
+    v = v * 10 + d;
+    s++;
+  }
+  *p = s;
+  *idx = (int64_t) v - 1;
+  return 0;
+}
+
 /* The path half of a remote leaf's resolve: each intermediate a bare VEC
    leaf, the terminal entry handed out with its tree — pymizu_tree_walk_
    path's discipline, describing rather than wrapping. 0 ok, -1 corrupt. */
@@ -3080,18 +3116,8 @@ static int tree_ref_path(const uint8_t *base, size_t size, const char *path,
   const uint8_t *cur = base;
   size_t cursz = size;
   for (;;) {
-    if (*p < '1' || *p > '9') return -1;
-    uint64_t v = (uint64_t) (*p++ - '0');
-    while (*p >= '0' && *p <= '9') {
-      const uint64_t d = (uint64_t) (*p - '0');
-      if (v > (uint64_t) INT64_MAX / 10 ||
-          (v == (uint64_t) INT64_MAX / 10 &&
-           d > (uint64_t) INT64_MAX % 10))
-        return -1;
-      v = v * 10 + d;
-      p++;
-    }
-    const int64_t idx = (int64_t) v - 1;
+    int64_t idx;
+    if (ref_path_step(&p, &idx) != 0) return -1;
     if (mizu_mizl_elem(cur, cursz, idx, ent) != 0) return -1;
     if (*p == ']') {
       if (p[1] != '\0') return -1;
@@ -3313,15 +3339,8 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
     return -1;
   }
   if (e->attrs_size == 0) {
-    int kind;
-    switch (tag) {
-    case MIZU_TYPE_REAL: kind = FCOL_F64; break;
-    case MIZU_TYPE_INT: kind = FCOL_I32; break;
-    case MIZU_TYPE_INT64: kind = FCOL_I64; break;
-    case MIZU_TYPE_RAW: kind = FCOL_U8; break;
-    case MIZU_TYPE_CPLX: kind = FCOL_C128; break;
-    default: kind = FCOL_LGL; break;   /* MIZU_TYPE_LGL (tags pre-checked) */
-    }
+    /* the elt gate above closed the tag's fixed-width set */
+    const int kind = fcol_of_type(tag);
     c->kind = kind;
     c->n = e->length;
     c->values = (uint8_t *) data;
@@ -3449,41 +3468,30 @@ static PyObject *tree_dim_view(PyObject *owner, PyObject *loan, int type,
   int32_t one;
   const int32_t *dims;
   uint64_t nd;
-  if (dm->kind == AV_INT) {
-    one = (int32_t) dm->val.v;
-    dims = &one;
-    nd = 1;
-  } else if (dm->kind == AV_INTSPAN) {
-    dims = (const int32_t *) dm->val.ptr;
-    nd = dm->val.count;
-  } else {
+  if (!attr_dim(dm, &one, &dims, &nd)) {
     PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                     "(a dim of an unexpected form)");
     return NULL;
   }
-  if (nd == 0 || nd > 32) {
+  switch (dim_validate(dims, nd, (uint64_t) n, NULL)) {
+  case DIM_AXES:
     PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                     "(a dim past 32 axes)");
     return NULL;
-  }
-  uint64_t prod = 1;
-  for (uint64_t i = 0; i < nd; i++) {
-    if (dims[i] < 0) {
-      PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
-                      "(a negative dim)");
-      return NULL;
-    }
-    if (dims[i] != 0 && prod > UINT64_MAX / (uint64_t) dims[i]) {
-      PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
-                      "(a dim product overflow)");
-      return NULL;
-    }
-    prod *= (uint64_t) dims[i];
-  }
-  if (prod != (uint64_t) n) {
+  case DIM_NEGATIVE:
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a negative dim)");
+    return NULL;
+  case DIM_OVERFLOW:
+    PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
+                    "(a dim product overflow)");
+    return NULL;
+  case DIM_PRODUCT:
     PyErr_SetString(MizuError, "pymizu: corrupt or newer region (the dim "
                     "product is not the element count)");
     return NULL;
+  default:
+    break;
   }
   PyObject *view = mizu_py_view_borrow(
     owner, loan, data,
@@ -3604,14 +3612,7 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
     int32_t one;
     const int32_t *dims;
     uint64_t nd;
-    if (dm->kind == AV_INT) {
-      one = (int32_t) dm->val.v;
-      dims = &one;
-      nd = 1;
-    } else if (dm->kind == AV_INTSPAN) {
-      dims = (const int32_t *) dm->val.ptr;
-      nd = dm->val.count;
-    } else {
+    if (!attr_dim(dm, &one, &dims, &nd)) {
       PyErr_SetString(MizuError, "pymizu: corrupt or newer region "
                       "(a dim of an unexpected form)");
       goto home_fail;
@@ -3959,18 +3960,8 @@ PyObject *pymizu_tree_walk_path_depth(PyObject *owner, PyObject *loan,
   const uint8_t *cur = base;
   size_t cursz = size;
   for (;;) {
-    if (*p < '1' || *p > '9') goto corrupt;
-    uint64_t v = (uint64_t) (*p++ - '0');
-    while (*p >= '0' && *p <= '9') {
-      const uint64_t d = (uint64_t) (*p - '0');
-      if (v > (uint64_t) INT64_MAX / 10 ||
-          (v == (uint64_t) INT64_MAX / 10 &&
-           d > (uint64_t) INT64_MAX % 10))
-        goto corrupt;
-      v = v * 10 + d;
-      p++;
-    }
-    const int64_t idx = (int64_t) v - 1;
+    int64_t idx;
+    if (ref_path_step(&p, &idx) != 0) goto corrupt;
     if (*p == ']') {
       if (p[1] != '\0') goto corrupt;
       return tree_element(owner, loan, cur, cursz, idx, depth);
@@ -4819,27 +4810,17 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
                   "has no portable home");
       return;
     }
-    /* int64 counts to seconds: a day/week unit first, then the sub-day
-       scales; a double second carries ns resolution to ~104 days */
-    const double scale = unit == TU_DAY ? 86400.0 :
-      unit == TU_WEEK ? 604800.0 : mizu_py_temporal_scale(unit);
-    /* .view("int64") and the ND|FORMAT export cannot fail for a
-       classified object (an exact ndarray or a numpy scalar views
-       same-itemsize, and numpy scalars export the buffer protocol) — a
-       failure would be a numpy change, not user input; decline as
-       today */
-    PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
+    /* int64 counts to seconds: a double second carries ns resolution to
+       ~104 days */
+    const double scale = mizu_py_difftime_scale(unit);
+    PyObject *view;
     Py_buffer bv;
-    if (view == NULL ||
-        PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) != 0) {
-      PyErr_Clear();
-      Py_XDECREF(view);
+    const int trc = mizu_py_temporal_counts(obj, &view, &bv);
+    if (trc == 1) {
       ixw_decline_type(w, obj, "a timedelta64 value that cannot cross");
       return;
     }
-    if (bv.ndim > 1) {
-      PyBuffer_Release(&bv);
-      Py_DECREF(view);
+    if (trc == 2) {
       ixw_decline(w, "a timedelta64 array past 1-D has no portable home");
       return;
     }
@@ -4860,18 +4841,14 @@ static void ixw_numpy_temporal(ixw *w, PyObject *obj, int unit, int delta) {
     return;
   }
   /* the int64 counts: the timedelta arm's view-and-export */
-  PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
+  PyObject *view;
   Py_buffer bv;
-  if (view == NULL ||
-      PyObject_GetBuffer(view, &bv, PyBUF_ND | PyBUF_FORMAT) != 0) {
-    PyErr_Clear();
-    Py_XDECREF(view);
+  const int trc = mizu_py_temporal_counts(obj, &view, &bv);
+  if (trc == 1) {
     ixw_decline_type(w, obj, "a datetime64 value that cannot cross");
     return;
   }
-  if (bv.ndim > 1) {
-    PyBuffer_Release(&bv);
-    Py_DECREF(view);
+  if (trc == 2) {
     ixw_decline(w, "a datetime64 array past 1-D has no portable home");
     return;
   }
@@ -6115,13 +6092,9 @@ static int fcol_build_u64(ixs *x, int col, fcol *c) {
         if (valid != NULL) valid[i >> 3] |= 1 << (i & 7);
       } else {
         nulls++;
-        if (valid == NULL) {
-          valid = mizu_py_bitmap_calloc((uint64_t) n);
-          if (valid == NULL) {
-            free(buf);
-            return -1;
-          }
-          for (int64_t q = 0; q < i; q++) valid[q >> 3] |= 1 << (q & 7);
+        if (bitmap_mark_null(&valid, (uint64_t) n, i) != 0) {
+          free(buf);
+          return -1;
         }
       }
     }
@@ -6170,11 +6143,7 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
           blen += (size_t) len;
         } else {
           nulls++;
-          if (valid == NULL) {
-            valid = mizu_py_bitmap_calloc((uint64_t) n);
-            if (valid == NULL) goto nomem;
-            for (int64_t q = 0; q < i; q++) valid[q >> 3] |= 1 << (q & 7);
-          }
+          if (bitmap_mark_null(&valid, (uint64_t) n, i) != 0) goto nomem;
         }
         offs[i + 1] = (int32_t) blen;
       }
@@ -6347,10 +6316,7 @@ static void fcol_adopt(ixs *x, int col, fcol *c, mizu_py_arrow_hold *hold) {
   switch (pc->kind) {
   case PC_CVT:
     c->kind = u64_arrow_format(x->schema.children[col]->format) ?
-      FCOL_U64 :
-      pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
-      pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
-      pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 : FCOL_U8;
+      FCOL_U64 : fcol_of_type(pc->row->wire);
     c->values = (uint8_t *) a->buffers[1];
     break;
   case PC_STR: {
@@ -6557,12 +6523,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         case PC_CVT:
           rc = u64_arrow_format(x.schema.children[i]->format) ?
             fcol_build_u64(&x, i, c) :
-            fcol_build_cvt(&x, i, c, pc->row,
-                           pc->row->wire == MIZU_TYPE_REAL ? FCOL_F64 :
-                           pc->row->wire == MIZU_TYPE_INT ? FCOL_I32 :
-                           pc->row->wire == MIZU_TYPE_INT64 ? FCOL_I64 :
-                           pc->row->wire == MIZU_TYPE_RAW ? FCOL_U8 :
-                           FCOL_LGL, &warn);
+            fcol_build_cvt(&x, i, c, pc->row, fcol_of_type(pc->row->wire),
+                           &warn);
           break;
         case PC_STR: rc = fcol_build_str(&x, i, c, names); break;
         case PC_DICT: rc = fcol_build_dict(&x, i, c, names); break;
@@ -6588,24 +6550,19 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
     {
       size_t name_len = 0;
       for (int i = 0; i < x.ncols; i++) {
-        size_t len = strlen(names[i]);
-        char *nb = realloc(fc->names, name_len + len + 1);
-        if (nb == NULL) {
-          PyErr_NoMemory();
-          frame_cols_decref(fc);
-          fc = NULL;
-          goto done;
-        }
-        if (len > (size_t) INT32_MAX - name_len) {
+        const int prc = frame_name_pack(fc, i, &name_len, names[i],
+                                        strlen(names[i]), 0);
+        if (prc == FRAME_PACK_OVERFLOW) {
           PyErr_SetString(MizuError, "pymizu: column names past 2^31 bytes");
           frame_cols_decref(fc);
           fc = NULL;
           goto done;
         }
-        fc->names = nb;
-        memcpy(fc->names + name_len, names[i], len);
-        fc->name_off[i] = (int32_t) name_len;
-        name_len += len;
+        if (prc != FRAME_PACK_OK) {   /* NOMEM: raised */
+          frame_cols_decref(fc);
+          fc = NULL;
+          goto done;
+        }
       }
       fc->name_off[x.ncols] = (int32_t) name_len;
     }

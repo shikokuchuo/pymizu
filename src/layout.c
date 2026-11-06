@@ -158,23 +158,13 @@ static void leaf_release(pymizu_leaf *lf) {
   lf->temporal = 0;
 }
 
-/* The int64 counts behind a temporal array or scalar: .view("int64")
-   and the ND|FORMAT export cannot fail for a classified object (an exact
-   ndarray or a numpy scalar — the np_kind gate — views same-itemsize,
-   and numpy scalars export the buffer protocol) — a failure would be a
-   numpy change, not user input; decline as today. 0 ok, -1 a value that
-   cannot cross (nd > 1 included — the 'I' writer's decline set). */
+/* The int64 counts behind a temporal array or scalar (the shared probe;
+   a failure declines as today). 0 ok (the view and buffer held;
+   leaf_release), -1 a value that cannot cross (nd > 1 included — the
+   'I' writer's decline set). */
 static int temporal_counts(PyObject *obj, pymizu_leaf *lf) {
-  PyObject *view = PyObject_CallMethod(obj, "view", "s", "int64");
-  if (view == NULL ||
-      PyObject_GetBuffer(view, &lf->tbv, PyBUF_ND | PyBUF_FORMAT) != 0) {
-    PyErr_Clear();
-    Py_XDECREF(view);
-    return -1;
-  }
-  lf->tview = view;
+  if (mizu_py_temporal_counts(obj, &lf->tview, &lf->tbv) != 0) return -1;
   lf->tgot = 1;
-  if (lf->tbv.ndim > 1) return -1;
   lf->counts = (const int64_t *) lf->tbv.buf;
   lf->total = (uint64_t) (lf->tbv.len / 8);
   return 0;
@@ -454,8 +444,7 @@ static void mizh_leaf_body_write(uint8_t *dst, pymizu_leaf *lf) {
   if (lf->temporal) {
     double scale;
     if (lf->temporal == 2)   /* a difftime's counts to seconds */
-      scale = lf->unit == TU_DAY ? 86400.0 :
-        lf->unit == TU_WEEK ? 604800.0 : mizu_py_temporal_scale(lf->unit);
+      scale = mizu_py_difftime_scale(lf->unit);
     else if (lf->unit == TU_DAY || lf->unit == TU_WEEK)
       scale = lf->unit == TU_WEEK ? 7.0 : 1.0;   /* Date days */
     else
