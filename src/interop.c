@@ -4058,10 +4058,13 @@ static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
   w->total += (size_t) n * elt;
 }
 
-/* The mask gate for the memcpy arms: a borrowed validity bitmap holding
-   nulls (the owned invariant's sentinels make the memcpy exact as-is). */
+/* The mask gate for the memcpy arms: the recorded null count serves —
+   pyframe.h's invariant has every valid producer count at the build or
+   the read (a foreign region's claim validated non-negative by the
+   vendored entry read), so no bitmap scan runs per walk. The owned
+   invariant's sentinels make the unmasked memcpy exact as-is. */
 static int fcol_masked(const fcol *c) {
-  return c->valid != NULL && masked_nulls(c->valid, (uint64_t) c->n) != 0;
+  return c->vnulls != 0;
 }
 
 /* The temporal column's unit in seconds (the 'I' REAL form's scale). */
