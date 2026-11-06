@@ -985,14 +985,14 @@
     "href": "package-info.html",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-27\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
   },
   {
     "objectID": "package-info.html#all",
     "href": "package-info.html#all",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-09-30"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-04"
   },
   {
     "objectID": "package-info.html#cloudpickle",
@@ -1006,7 +1006,7 @@
     "href": "package-info.html#dev",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-10-27\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-10-15\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
   },
   {
     "objectID": "package-info.html#docs",
@@ -1112,6 +1112,27 @@
     "title": "Code of Conduct",
     "section": "4. Permanent Ban",
     "text": "4. Permanent Ban\nCommunity Impact: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.\nConsequence: A permanent ban from any sort of public interaction within the community."
+  },
+  {
+    "objectID": "changelog.html",
+    "href": "changelog.html",
+    "title": "Changelog",
+    "section": "",
+    "text": "This changelog is generated automatically from GitHub Releases."
+  },
+  {
+    "objectID": "changelog.html#whats-changed",
+    "href": "changelog.html#whats-changed",
+    "title": "Changelog",
+    "section": "What’s Changed",
+    "text": "What’s Changed\n\nBuild the docs site with Great Docs by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/2\nAdd a process-wide default pool by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/4\nSilence the test suite’s expected warnings by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/5\nAdd streaming Pool.map with stream = TRUE by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/7\nAdapt the frame-export tests to polars 2.0’s stream ingest by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/8\nIntegration into asyncio event loop by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/10\nci: add package-level tests for __all__ and __version__ by @rich-iannone in https://github.com/shikokuchuo/pymizu/pull/11\nMake the pytest config a bit more strict by @rich-iannone in https://github.com/shikokuchuo/pymizu/pull/12\npymizu 0.1.0 by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/14"
+  },
+  {
+    "objectID": "changelog.html#new-contributors",
+    "href": "changelog.html#new-contributors",
+    "title": "Changelog",
+    "section": "New Contributors",
+    "text": "New Contributors\n\n@shikokuchuo made their first contribution in https://github.com/shikokuchuo/pymizu/pull/2\n@rich-iannone made their first contribution in https://github.com/shikokuchuo/pymizu/pull/11\n\nFull Changelog: https://github.com/shikokuchuo/pymizu/commits/v0.1.0"
   },
   {
     "objectID": "citation.html",
