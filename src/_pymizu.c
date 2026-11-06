@@ -4002,45 +4002,43 @@ static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
   }
 }
 
-static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
-                                 mizu_read_ctx *ctx) {
-  if (*p >= end) return NULL;
-  int tag = **p;
-  if (tag == PYMIZU_TAG_LIST || tag == PYMIZU_TAG_TUPLE) {
-    (*p)++;
-    if ((size_t) (end - *p) < 4) return NULL;
-    uint32_t count = codec_get32(p);
-    if (count > PYMIZU_CODEC_CAP) return NULL;
-    PyObject *out = tag == PYMIZU_TAG_LIST ? PyList_New((Py_ssize_t) count) :
-      PyTuple_New((Py_ssize_t) count);
-    if (out == NULL) return NULL;
-    for (uint32_t i = 0; i < count; i++) {
-      PyObject *it = frame_read_flat(p, end, ctx);
-      if (it == NULL) {
-        Py_DECREF(out);
-        return NULL;
-      }
-      if (tag == PYMIZU_TAG_LIST)
-        PyList_SET_ITEM(out, (Py_ssize_t) i, it);
-      else
-        PyTuple_SET_ITEM(out, (Py_ssize_t) i, it);
-    }
-    return out;
-  }
+/* The codec's one-level container read, shared by the three readers: a
+   LIST / TUPLE / DICT body behind its tag (want != 0 pins the tag).
+   read_elt reads an element (a dict's value; keys are always scalars,
+   str_keys the unicode enforcement the frame readers keep and codec_read
+   drops). NULL with nothing set is a malformed body — the caller's error
+   discipline (silent for the frame readers, codec_read's corrupt); a
+   reader's own error propagates. */
+typedef PyObject *(*codec_leaf_fn)(const uint8_t **, const uint8_t *,
+                                   mizu_read_ctx *);
+
+static PyObject *codec_read_scalar_leaf(const uint8_t **p,
+                                        const uint8_t *end,
+                                        mizu_read_ctx *Py_UNUSED(ctx)) {
+  return codec_read_scalar(p, end);
+}
+
+static PyObject *codec_read_seq(const uint8_t **p, const uint8_t *end,
+                                mizu_read_ctx *ctx, int want,
+                                codec_leaf_fn read_elt, int str_keys) {
+  if ((size_t) (end - *p) < 5) return NULL;
+  const int tag = *(*p)++;
+  if ((want != 0 && tag != want) ||
+      (tag != PYMIZU_TAG_LIST && tag != PYMIZU_TAG_TUPLE &&
+       tag != PYMIZU_TAG_DICT))
+    return NULL;
+  uint32_t count = codec_get32(p);
+  if (count > PYMIZU_CODEC_CAP) return NULL;
   if (tag == PYMIZU_TAG_DICT) {
-    (*p)++;
-    if ((size_t) (end - *p) < 4) return NULL;
-    uint32_t count = codec_get32(p);
-    if (count > PYMIZU_CODEC_CAP) return NULL;
     PyObject *out = PyDict_New();
     if (out == NULL) return NULL;
     for (uint32_t i = 0; i < count; i++) {
       PyObject *k = codec_read_scalar(p, end);
-      if (k != NULL && !PyUnicode_Check(k)) {
+      if (str_keys && k != NULL && !PyUnicode_Check(k)) {
         Py_DECREF(k);
         k = NULL;
       }
-      PyObject *v = k != NULL ? frame_read_flat(p, end, ctx) : NULL;
+      PyObject *v = k != NULL ? read_elt(p, end, ctx) : NULL;
       if (k == NULL || v == NULL) {
         Py_XDECREF(k);
         Py_XDECREF(v);
@@ -4057,6 +4055,30 @@ static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
     }
     return out;
   }
+  PyObject *out = tag == PYMIZU_TAG_LIST ? PyList_New((Py_ssize_t) count) :
+    PyTuple_New((Py_ssize_t) count);
+  if (out == NULL) return NULL;
+  for (uint32_t i = 0; i < count; i++) {
+    PyObject *it = read_elt(p, end, ctx);
+    if (it == NULL) {
+      Py_DECREF(out);
+      return NULL;
+    }
+    if (tag == PYMIZU_TAG_LIST)
+      PyList_SET_ITEM(out, (Py_ssize_t) i, it);
+    else
+      PyTuple_SET_ITEM(out, (Py_ssize_t) i, it);
+  }
+  return out;
+}
+
+static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
+                                 mizu_read_ctx *ctx) {
+  if (*p >= end) return NULL;
+  int tag = **p;
+  if (tag == PYMIZU_TAG_LIST || tag == PYMIZU_TAG_TUPLE ||
+      tag == PYMIZU_TAG_DICT)
+    return codec_read_seq(p, end, ctx, 0, frame_read_flat, 1);
   return frame_read_flat(p, end, ctx);
 }
 
@@ -4128,42 +4150,18 @@ static PyObject *frame_read_task(const uint8_t **p, const uint8_t *end,
   if (fn == NULL) return NULL;
   /* args: a tuple of leaves (elements may be one container level);
      kwargs: a dict of str keys to leaves */
-  PyObject *args = NULL, *kwargs = NULL;
-  if ((size_t) (end - *p) < 5 || *(*p)++ != PYMIZU_TAG_TUPLE) goto fail;
-  {
-    uint32_t na = codec_get32(p);
-    if (na > PYMIZU_CODEC_CAP) goto fail;
-    args = PyTuple_New((Py_ssize_t) na);
-    if (args == NULL) goto fail;
-    for (uint32_t i = 0; i < na; i++) {
-      PyObject *it = frame_read_leaf(p, end, ctx);
-      if (it == NULL) goto fail;
-      PyTuple_SET_ITEM(args, (Py_ssize_t) i, it);
-    }
+  PyObject *args = codec_read_seq(p, end, ctx, PYMIZU_TAG_TUPLE,
+                                  frame_read_leaf, 0);
+  if (args == NULL) {
+    Py_DECREF(fn);
+    return NULL;
   }
-  if ((size_t) (end - *p) < 5 || *(*p)++ != PYMIZU_TAG_DICT) goto fail;
-  {
-    uint32_t nk = codec_get32(p);
-    if (nk > PYMIZU_CODEC_CAP) goto fail;
-    kwargs = PyDict_New();
-    if (kwargs == NULL) goto fail;
-    for (uint32_t i = 0; i < nk; i++) {
-      PyObject *k = codec_read_scalar(p, end);
-      if (k != NULL && !PyUnicode_Check(k)) {
-        Py_DECREF(k);
-        k = NULL;
-      }
-      PyObject *v = k != NULL ? frame_read_leaf(p, end, ctx) : NULL;
-      if (k == NULL || v == NULL) {
-        Py_XDECREF(k);
-        Py_XDECREF(v);
-        goto fail;
-      }
-      int rc = PyDict_SetItem(kwargs, k, v);
-      Py_DECREF(k);
-      Py_DECREF(v);
-      if (rc < 0) goto fail;
-    }
+  PyObject *kwargs = codec_read_seq(p, end, ctx, PYMIZU_TAG_DICT,
+                                    frame_read_leaf, 1);
+  if (kwargs == NULL) {
+    Py_DECREF(fn);
+    Py_DECREF(args);
+    return NULL;
   }
   PyObject *out = PyTuple_New(3);
   if (out == NULL) {
@@ -4176,11 +4174,6 @@ static PyObject *frame_read_task(const uint8_t **p, const uint8_t *end,
   PyTuple_SET_ITEM(out, 1, args);
   PyTuple_SET_ITEM(out, 2, kwargs);
   return out;
-fail:
-  Py_DECREF(fn);
-  Py_XDECREF(args);
-  Py_XDECREF(kwargs);
-  return NULL;
 }
 
 static PyObject *codec_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
@@ -4198,53 +4191,15 @@ static PyObject *codec_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
     }
     break;
   case PYMIZU_TAG_LIST:
-  case PYMIZU_TAG_TUPLE: {
-    if ((size_t) (end - p) < 4) goto corrupt;
-    uint32_t count = codec_get32(&p);
-    if (count > PYMIZU_CODEC_CAP) goto corrupt;
-    out = tag == PYMIZU_TAG_LIST ? PyList_New((Py_ssize_t) count) :
-      PyTuple_New((Py_ssize_t) count);
-    if (out == NULL) return NULL;
-    for (uint32_t i = 0; i < count; i++) {
-      PyObject *it = codec_read_scalar(&p, end);
-      if (it == NULL) {
-        if (!PyErr_Occurred()) goto corrupt_obj;
-        Py_DECREF(out);
-        return NULL;
-      }
-      if (tag == PYMIZU_TAG_LIST)
-        PyList_SET_ITEM(out, (Py_ssize_t) i, it);
-      else
-        PyTuple_SET_ITEM(out, (Py_ssize_t) i, it);
+  case PYMIZU_TAG_TUPLE:
+  case PYMIZU_TAG_DICT:
+    p--;   /* the shared reader consumes its own tag */
+    out = codec_read_seq(&p, end, ctx, 0, codec_read_scalar_leaf, 0);
+    if (out == NULL) {
+      if (!PyErr_Occurred()) goto corrupt;
+      return NULL;
     }
     break;
-  }
-  case PYMIZU_TAG_DICT: {
-    if ((size_t) (end - p) < 4) goto corrupt;
-    uint32_t count = codec_get32(&p);
-    if (count > PYMIZU_CODEC_CAP) goto corrupt;
-    out = PyDict_New();
-    if (out == NULL) return NULL;
-    for (uint32_t i = 0; i < count; i++) {
-      PyObject *k = codec_read_scalar(&p, end);
-      PyObject *v = k != NULL ? codec_read_scalar(&p, end) : NULL;
-      if (k == NULL || v == NULL) {
-        Py_XDECREF(k);
-        Py_XDECREF(v);
-        if (!PyErr_Occurred()) goto corrupt_obj;
-        Py_DECREF(out);
-        return NULL;
-      }
-      int rc = PyDict_SetItem(out, k, v);
-      Py_DECREF(k);
-      Py_DECREF(v);
-      if (rc < 0) {
-        Py_DECREF(out);
-        return NULL;
-      }
-    }
-    break;
-  }
   case PYMIZU_TAG_BOOL:
   case PYMIZU_TAG_INT:
   case PYMIZU_TAG_FLOAT:
