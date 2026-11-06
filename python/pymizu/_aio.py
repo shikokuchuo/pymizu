@@ -540,17 +540,15 @@ def _detach_single(st: _PoolState, task: _Any) -> None:
     st._maybe_disarm()
 
 
-def _check_tasks(pool: pymizu.Pool, tasks: _Any) -> list:
+def _task_list(tasks: _Any) -> list:
+    """The collect_*_async gate: a materialized non-empty list. The C
+    enroll validates the handles themselves (types, pool ownership, a
+    pending consumer)."""
     tasks = list(tasks)
     if not tasks:
         raise ValueError(
             "pymizu: tasks must be a non-empty sequence of task handles"
         )
-    for t in tasks:
-        if t.pool is not pool._h:
-            raise ValueError(
-                "pymizu: task handles must belong to this pool handle"
-            )
     return tasks
 
 
@@ -560,7 +558,7 @@ def collect_any_async(pool: pymizu.Pool, tasks: _Any) -> _asyncio.Future:
     terminal."""
     loop = _asyncio.get_running_loop()
     st = _pool_state(pool._h)
-    return _enroll_collection(st, "any", _check_tasks(pool, tasks), loop)
+    return _enroll_collection(st, "any", _task_list(tasks), loop)
 
 
 def collect_all_async(pool: pymizu.Pool, tasks: _Any) -> _asyncio.Future:
@@ -568,7 +566,7 @@ def collect_all_async(pool: pymizu.Pool, tasks: _Any) -> _asyncio.Future:
     engine: one Future, settled when every enrolled task is terminal."""
     loop = _asyncio.get_running_loop()
     st = _pool_state(pool._h)
-    return _enroll_collection(st, "all", _check_tasks(pool, tasks), loop)
+    return _enroll_collection(st, "all", _task_list(tasks), loop)
 
 
 def map_collect_async(m: _Any) -> _asyncio.Future:

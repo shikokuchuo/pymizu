@@ -688,7 +688,12 @@ def test_raw_read_f64_sink_partial_numpy(tmp_path):
         def empty(n, dtype):
             if dtype == "int32":
                 return bytearray(n * 4)
-            raise RuntimeError("boom")
+            if empty.fail == "raise":
+                raise RuntimeError("boom")
+            return object()
+
+
+        empty.fail = "raise"
         """,
         """
         import numpy  # the stub
@@ -711,9 +716,9 @@ def test_raw_read_f64_sink_partial_numpy(tmp_path):
                 raise SystemExit("expected RuntimeError")
             except RuntimeError:
                 pass
-            numpy.empty = lambda n, dtype: (
-                bytearray(n * 4) if dtype == "int32" else object()
-            )
+            # pymizu caches np.empty on first use: flip the stub's mode,
+            # don't rebind the attribute
+            numpy.empty.fail = "buffer"
             try:
                 ch.recv(timeout=30)  # the float64 sink's buffer request
                 raise SystemExit("expected TypeError")

@@ -7710,7 +7710,6 @@ int mizu_py_interop_register(PyObject *m, PyObject *mizu_error,
                              PyObject *declined_error) {
   MizuError = mizu_error;
   MizuDeclinedError = declined_error;
-  mizu_py_shmframe_register(mizu_error, declined_error);
   if (mizu_py_frame_register(m, mizu_error) < 0) return -1;
   if (PyType_Ready(&MizuIxRefType) < 0) return -1;
   Py_INCREF(&MizuIxRefType);

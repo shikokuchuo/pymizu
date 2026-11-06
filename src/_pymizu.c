@@ -1470,19 +1470,12 @@ static int arrow_probe_skip(PyObject *obj) {
 }
 
 /* The numpy row's form byte: 1 a 0-d ndarray, 0 a scalar (numpy scalars
-   and exotic 0-d exporters alike). The probe caches np.ndarray. */
+   and exotic 0-d exporters alike). The buffer probe's cached ndarray
+   type serves the check — one pointer compare, no import. */
 static int np0_form(PyObject *obj) {
-  static PyObject *ndarray_type;
-  if (ndarray_type == NULL) {
-    PyObject *np = numpy_module();
-    if (np == NULL) return 0;
-    ndarray_type = PyObject_GetAttrString(np, "ndarray");
-    if (ndarray_type == NULL) {
-      PyErr_Clear();
-      return 0;
-    }
-  }
-  return PyObject_TypeCheck(obj, (PyTypeObject *) ndarray_type) != 0;
+  buffer_types_probe();
+  return mizu_np_ndarray != NULL &&
+         PyObject_TypeCheck(obj, mizu_np_ndarray) != 0;
 }
 
 /* A 0-d buffer of an identity dtype (a numpy scalar or 0-d array): the
@@ -1808,9 +1801,14 @@ static int py_stage(void *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 // Reading ------------------------------------------------------------------------
 
 static PyObject *numpy_empty(void) {
-  PyObject *np = numpy_module();
-  if (np == NULL) return NULL;
-  return PyObject_GetAttrString(np, "empty");   /* new ref */
+  static PyObject *empty_fn;   /* np.empty, resolved on first read */
+  if (empty_fn == NULL) {
+    PyObject *np = numpy_module();
+    if (np == NULL) return NULL;
+    empty_fn = PyObject_GetAttrString(np, "empty");
+    if (empty_fn == NULL) return NULL;
+  }
+  return Py_NewRef(empty_fn);
 }
 
 /* RAWVEC/RAWSPILL materialize into a fresh numpy array (or a memoryview
@@ -3351,6 +3349,7 @@ static PyObject *numpy_module(void) {
    (memoryview() and np.frombuffer() accept it) that also carries the
    __arrow_c_array__ dunder. Steals the view reference. */
 static PyObject *view_to_object(PyObject *view, int type) {
+  static PyObject *frombuffer_fn;   /* np.frombuffer, resolved on first wrap */
   PyObject *np = numpy_module();
   if (np != NULL) {
     const char *dt;
@@ -3366,22 +3365,22 @@ static PyObject *view_to_object(PyObject *view, int type) {
       Py_DECREF(view);
       return NULL;
     }
-    PyObject *fb = PyObject_GetAttrString(np, "frombuffer");
-    if (fb != NULL) {
+    if (frombuffer_fn == NULL) {
+      frombuffer_fn = PyObject_GetAttrString(np, "frombuffer");
+      if (frombuffer_fn == NULL) PyErr_Clear();   /* fall back to the view */
+    }
+    if (frombuffer_fn != NULL) {
       PyObject *args = PyTuple_Pack(1, view);
       PyObject *kw = Py_BuildValue("{s:s}", "dtype", dt);
       PyObject *arr = (args != NULL && kw != NULL) ?
-        PyObject_Call(fb, args, kw) : NULL;
+        PyObject_Call(frombuffer_fn, args, kw) : NULL;
       Py_XDECREF(args);
       Py_XDECREF(kw);
-      Py_DECREF(fb);
       if (arr != NULL) {
         Py_DECREF(view);
         return arr;
       }
       PyErr_Clear();   /* fall back to the view itself */
-    } else {
-      PyErr_Clear();
     }
   }
   return view;
@@ -3598,16 +3597,13 @@ int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
     }
     return 0;
   }
+  if (!PyObject_CheckBuffer(obj)) return 0;
   Py_buffer v;
-  int got = PyObject_CheckBuffer(obj) ?
-    PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) : -1;
-  if (got < 0) {
+  if (PyObject_GetBuffer(obj, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
     PyErr_Clear();
     /* a non-C-contiguous candidate (an F-order echo) rides the strided
        export; the readonly check below still gates */
-    got = PyObject_CheckBuffer(obj) ?
-      PyObject_GetBuffer(obj, &v, PyBUF_FULL_RO) : -1;
-    if (got < 0) {
+    if (PyObject_GetBuffer(obj, &v, PyBUF_FULL_RO) < 0) {
       PyErr_Clear();
       return 0;
     }
@@ -3859,37 +3855,58 @@ static uint64_t codec_get64(const uint8_t **p) {
   return v;
 }
 
+/* The numpy row's dtype classes and np.array, resolved once and cached
+   (the module probe holds numpy for the process lifetime). */
+static struct { int type; const char *name; PyObject *cls; }
+  np_scalar_types[] = {
+    {MIZU_TYPE_RAW, "uint8", NULL},
+    {MIZU_TYPE_INT, "int32", NULL},
+    {MIZU_TYPE_INT64, "int64", NULL},
+    {MIZU_TYPE_REAL, "float64", NULL},
+    {MIZU_TYPE_CPLX, "complex128", NULL},
+  };
+
+static PyObject *np_scalar_cls(PyObject *np, int type) {
+  for (size_t i = 0; i < sizeof(np_scalar_types) / sizeof(np_scalar_types[0]);
+       i++) {
+    if (np_scalar_types[i].type != type) continue;
+    if (np_scalar_types[i].cls == NULL) {
+      np_scalar_types[i].cls =
+        PyObject_GetAttrString(np, np_scalar_types[i].name);
+      if (np_scalar_types[i].cls == NULL) return NULL;
+    }
+    return Py_NewRef(np_scalar_types[i].cls);
+  }
+  return NULL;   /* unreachable: the caller's switch gates the type */
+}
+
 /* The numpy row's value: the exact-dtype scalar off the payload bytes,
    form 1 the 0-d array of it. Without numpy the Python scalar stands in
    (the documented degradation). NULL with no error is a corrupt type
    byte; NULL with one propagates (the codec reader's discipline). */
 static PyObject *numpy_scalar_read(int type, int form, const uint8_t *data) {
+  static PyObject *array_fn;   /* np.array, resolved on first 0-d read */
   PyObject *v;
-  const char *name;
   switch (type) {
   case MIZU_TYPE_RAW:
     v = PyLong_FromLong(data[0]);
-    name = "uint8";
     break;
   case MIZU_TYPE_INT: {
     int32_t x;
     memcpy(&x, data, 4);
     v = PyLong_FromLong(x);
-    name = "int32";
     break;
   }
   case MIZU_TYPE_INT64: {
     int64_t x;
     memcpy(&x, data, 8);
     v = PyLong_FromLongLong(x);
-    name = "int64";
     break;
   }
   case MIZU_TYPE_REAL: {
     double x;
     memcpy(&x, data, 8);
     v = PyFloat_FromDouble(x);
-    name = "float64";
     break;
   }
   case MIZU_TYPE_CPLX: {
@@ -3897,7 +3914,6 @@ static PyObject *numpy_scalar_read(int type, int form, const uint8_t *data) {
     memcpy(&re, data, 8);
     memcpy(&im, data + 8, 8);
     v = PyComplex_FromDoubles(re, im);
-    name = "complex128";
     break;
   }
   default:
@@ -3906,7 +3922,7 @@ static PyObject *numpy_scalar_read(int type, int form, const uint8_t *data) {
   if (v == NULL) return NULL;
   PyObject *np = numpy_module();
   if (np == NULL) return v;   /* the Python scalar stands in */
-  PyObject *cls = PyObject_GetAttrString(np, name);
+  PyObject *cls = np_scalar_cls(np, type);
   if (cls == NULL) {
     Py_DECREF(v);
     return NULL;
@@ -3915,13 +3931,14 @@ static PyObject *numpy_scalar_read(int type, int form, const uint8_t *data) {
   Py_DECREF(cls);
   Py_DECREF(v);
   if (s == NULL || form == 0) return s;
-  PyObject *mk = PyObject_GetAttrString(np, "array");
-  if (mk == NULL) {
-    Py_DECREF(s);
-    return NULL;
+  if (array_fn == NULL) {
+    array_fn = PyObject_GetAttrString(np, "array");
+    if (array_fn == NULL) {
+      Py_DECREF(s);
+      return NULL;
+    }
   }
-  PyObject *arr = PyObject_CallFunctionObjArgs(mk, s, NULL);
-  Py_DECREF(mk);
+  PyObject *arr = PyObject_CallFunctionObjArgs(array_fn, s, NULL);
   Py_DECREF(s);
   return arr;
 }
@@ -5729,25 +5746,16 @@ static PyObject *Channel_send_error(MizuChannel *self, PyObject *arg) {
 
 /* A tuple snapshot for the batch verbs: the GIL drops for the batch, so
    the borrowed items of a caller-shared list could be freed mid-call by
-   another thread. *seq_out the owned tuple, *n_out the count; NULL with
-   an exception set. */
+   another thread. The owned tuple pins the items, so its item array
+   serves directly — *seq_out the tuple, *n_out the count; NULL with an
+   exception set. */
 static void **batch_snapshot(PyObject *arg, PyObject **seq_out,
                              Py_ssize_t *n_out) {
   PyObject *seq = PySequence_Tuple(arg);
   if (seq == NULL) return NULL;
-  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
-  void **objs = PyMem_Malloc((size_t) (n != 0 ? n : 1) * sizeof(void *));
-  if (objs == NULL) {
-    Py_DECREF(seq);
-    PyErr_NoMemory();
-    return NULL;
-  }
-  PyObject **items = PySequence_Fast_ITEMS(seq);
-  for (Py_ssize_t i = 0; i < n; i++)
-    objs[i] = (void *) items[i];
   *seq_out = seq;
-  *n_out = n;
-  return objs;
+  *n_out = PySequence_Fast_GET_SIZE(seq);
+  return (void **) PySequence_Fast_ITEMS(seq);
 }
 
 PyDoc_STRVAR(send_batch_doc,
@@ -5772,7 +5780,6 @@ static PyObject *Channel_send_batch(MizuChannel *self, PyObject *arg) {
   CHAN_ALLOW_THREADS(self);
   st = mizu_channel_send_batch(c, objs, (size_t) n, &accepted);
   CHAN_RESUME();
-  PyMem_Free(objs);
   Py_DECREF(seq);
   int err = chan_call_done(self, c, st);
   role_leave(&self->verb_active);
