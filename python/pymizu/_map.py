@@ -419,8 +419,26 @@ def _run_batch(
             raise
 
     if seed_spec is None:
-        for i in range(lo, hi):
-            call_one(i)
+        # the unseeded hot path runs without call_one: one try around the
+        # loop (i is the in-flight element on raise, as there) and no
+        # per-element closure call or *args/**kwargs unpack — the common
+        # no-args map calls fn(get(i)) directly
+        append = out.append
+        i = lo
+        if not args and not kwargs:
+            try:
+                for i in range(lo, hi):
+                    append(fn(get(i)))
+            except Exception as e:
+                e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
+                raise
+            return out
+        try:
+            for i in range(lo, hi):
+                append(fn(get(i), *args, **kwargs))
+        except Exception as e:
+            e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
+            raise
         return out
     seed_bytes, offset = seed_spec
     state = _random.getstate()

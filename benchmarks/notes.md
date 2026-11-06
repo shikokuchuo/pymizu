@@ -48,12 +48,12 @@ probes and A/B isolations stay in the log.
 | payload 8,000,000 B | 107.2 us/task | 2026-10-03 |
 | fan-out x 2000, 4 workers | 295.3k tasks/s | 2026-10-03 |
 | streaming, channel batch | 21.6M msg/s | 2026-10-03 |
-| map trivial f | 0.07 us/elt | 2026-11-06 |
+| map trivial f | 0.06 us/elt | 2026-11-06 |
 | map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
 | map trivial f, seed | 1.7 us/elt | 2026-11-06 |
-| map trivial f, prepared | 0.07 us/elt | 2026-11-06 |
-| map winsum x 2000 | 689.3k tasks/s | 2026-11-06 |
-| map winsum x 20000 | 738.4k tasks/s | 2026-11-06 |
+| map trivial f, prepared | 0.05 us/elt | 2026-11-06 |
+| map winsum x 2000 | 706.7k tasks/s | 2026-11-06 |
+| map winsum x 20000 | 759.3k tasks/s | 2026-11-06 |
 | map skewed f x 4000 | 5.6 ms wall | 2026-11-06 |
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
@@ -1205,3 +1205,44 @@ rows, winsum x 2000 and x 20000, skewed.
 
 Status: full suite 1061 pass, 1 skip (the known platform skip); ruff +
 pyrefly clean.
+
+## 2026-11-06 — C batch loop re-evaluation; _run_batch fast path instead (perf/run-batch-fastpath)
+
+Post-codec profile of the trivial-f row (0.069 us/elt): the worker-side
+element loop is the residual (~31 of 69 ns/elt wall at 4 workers, 122.5
+ns/elt per worker). Its decomposition: ndarray.__getitem__ ~39 ns and
+fn call + np arithmetic ~34 ns — both irreducible without numpy's C
+headers (an np.float64 from C costs 43 ns via the class constructor) —
+plus ~53 ns of interpreter overhead: the call_one closure hop and the
+per-element *args/**kwargs unpack. A C batch loop could remove only the
+last slice, and _run_batch can lose it in Python instead: one try
+around the loop (the index annotation keeps call_one's semantics) and a
+direct fn(get(i)) call on the common no-args path. In-process: 122.5 ->
+71.8 ns/elt (empty args), 152.4 -> 134.0 (with args). Post-restructure
+the C loop's ceiling is ~10 ns/elt per worker (~3 ns wall) — the
+2026-08-24 revert decision stands, now for the overhead regime too:
+the residual loop is numpy scalar creation plus the user's fn call.
+
+A/B (same host, back to back, section-6 rows) against the codec build
+d3d370a:
+
+| row | before | after |
+|---|---|---|
+| map trivial f, numpy x | 0.070 us/elt | 0.056 us/elt |
+| map trivial f, list-x (Python floats) | 0.070-0.184 us/elt | 0.056 us/elt |
+| map trivial f, template | 0.054 us/elt | 0.034 us/elt |
+| map trivial f, prepared | 0.064 us/elt | 0.049 us/elt |
+| map winsum x 2000 | 593.6k tasks/s | 706.7k tasks/s |
+| map winsum x 20000 | 734.2k tasks/s | 759.3k tasks/s |
+| map template 20k, copy / view | 735.8k / 734.1k tasks/s | 738.8k / 739.2k tasks/s |
+| map trivial f, seed | 1.68 us/elt | 1.65 us/elt |
+| map skewed f x 4000 | 5.4 ms wall | 5.3 ms wall |
+
+(The before run drifted low mid-session — its list-x and winsum-2k
+rows repeat below the day's band; the after rows still clear the band
+tops on every row the change touches. Seed and skew are flat, as
+designed: the seeded path keeps call_one and skew returns np scalars.)
+Best-known swaps: map trivial f (0.06) and its prepared row (0.05),
+winsum x 2000 (706.7k) and x 20000 (759.3k).
+
+Status: map + stream suites 175 pass, 1 skip; ruff + pyrefly clean.
