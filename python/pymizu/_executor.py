@@ -100,6 +100,9 @@ class PoolExecutor(_Executor):
     def __init__(self, pool: pymizu.Pool, *, stop_pool: bool = False) -> None:
         super().__init__()
         self._pool = pool
+        # the raw handle, stashed: the submit/drain verbs skip the
+        # facade's attribute walk
+        self._pool_h = pool._h
         self._stop_pool = stop_pool
         self._cond = _threading.Condition()
         # one lock serializing the core submits: a pool handle's
@@ -188,12 +191,12 @@ class PoolExecutor(_Executor):
             if not self._armed:
                 # a NULL loop: the drain runs directly on the listener
                 # thread (set_result is thread-safe by design)
-                self._pool._h._notify_arm(None, self._drain)
+                self._pool_h._notify_arm(None, self._drain)
                 self._armed = True
             # the per-slot NOTIFY announce, then the re-check: a slot
             # already terminal at this point resolves from the scan
             # (announce before arming is the parker transplant)
-            self._pool._h._task_notify([task], True)
+            self._pool_h._task_notify([task], True)
         # the re-check covers a publish that beat the announce: scan the
         # new task only (a full-drain per submit costs O(outstanding) per
         # submission); a publish past the announce rides the armed word's
@@ -241,18 +244,18 @@ class PoolExecutor(_Executor):
             self._cond.notify_all()
         if task is not None:
             try:
-                self._pool._h._task_notify([task], False)
+                self._pool_h._task_notify([task], False)
             except Exception:
                 pass  # a destroyed pool: the announce dies with it
 
     def _disarm(self) -> None:
         if self._armed:
             self._armed = False
-            self._pool._h._notify_disarm()
+            self._pool_h._notify_disarm()
 
     def _scan(self, tasks: list) -> list:
         """The drain's terminal scan (one method for tests to seam)."""
-        return self._pool._h._tasks_terminal(tasks)
+        return self._pool_h._tasks_terminal(tasks)
 
     def _drain(self) -> None:
         """One drain pass (the listener callback and the submit-time
@@ -265,7 +268,7 @@ class PoolExecutor(_Executor):
         try:
             while True:
                 try:
-                    self._pool._h._notify_rearm()
+                    self._pool_h._notify_rearm()
                 except Exception:
                     # the pool was destroyed mid-drain (a done callback
                     # tearing it down): the facade's hook already failed

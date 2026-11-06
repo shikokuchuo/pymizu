@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Faster sends of nested list, tuple, or dict payloads to R peers.
+
 ### Fixed
 
 - Fixed a rare crash when unpickling a `Frame` under memory pressure.

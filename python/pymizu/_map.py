@@ -46,7 +46,7 @@ from typing import Any as _Any
 from typing import Literal as _Literal
 from typing import NoReturn as _NoReturn
 
-from pymizu import _LANG_PYTHON, _LANG_R, _pymizu, _split_source
+from pymizu import _LANG_PYTHON, _LANG_R, _get_aio, _pymizu, _split_source
 
 if TYPE_CHECKING:
     import pymizu
@@ -1929,11 +1929,9 @@ class Map:
                 "its sliding task window advances in the blocking "
                 "collect loop"
             )
-        from pymizu import _aio
-
         self._promised = True
         try:
-            return _aio.map_collect_async(self)
+            return _get_aio().map_collect_async(self)
         except BaseException:
             self._promised = False
             raise

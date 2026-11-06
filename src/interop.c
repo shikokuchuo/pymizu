@@ -131,7 +131,19 @@ typedef struct {
    the plan's zc_node stages the stream's one SHM_VEC checkout on its
    first encounter — a mid-write checkout failure sets abandon and
    unwinds (the caller re-runs with no_zc = 1). ref_emitted reports a
-   ref went out: the frame pins the spec and never claims keeperless. */
+   ref went out: the frame pins the spec and never claims keeperless.
+
+   The path is deferred: each descent records one segment (an index or a
+   borrowed dict key — the containers outlive the walk, and ixw_raise
+   always runs inside it) and the string is rendered only at decline
+   time, so the happy path pays a pair of stores per element instead of
+   an snprintf (or a key repr). */
+#define IXW_PATH_MAX 72   /* the depth cap (64) plus headroom */
+typedef struct {
+  PyObject *key;          /* borrowed; NULL marks an index segment */
+  Py_ssize_t index;
+} ixw_seg;
+
 typedef struct {
   uint8_t *dst;
   size_t total;
@@ -139,8 +151,9 @@ typedef struct {
   int overflow;          /* the write exceeded limit; the count runs on */
   int depth;
   int decline;
-  char path[128];
-  size_t path_len;
+  char root[8];          /* the path label: "x" or "args" */
+  ixw_seg pstack[IXW_PATH_MAX];
+  int pdepth;
   char reason[192];
   cvt_warn warn;
   mizu_handle *h;
@@ -282,26 +295,50 @@ static void declined_raise_plain(const char *path, const char *reason) {
 }
 
 static void ixw_path_index(ixw *w, Py_ssize_t i) {
-  size_t save = w->path_len;
-  int n = snprintf(w->path + w->path_len, sizeof(w->path) - w->path_len,
-                   "[%zd]", i);
-  w->path_len += (n > 0 && (size_t) n < sizeof(w->path) - save) ?
-    (size_t) n : 0;
+  if (w->pdepth < IXW_PATH_MAX) {
+    w->pstack[w->pdepth].key = NULL;
+    w->pstack[w->pdepth].index = i;
+  }
+  w->pdepth++;
 }
 
-static void ixw_path_pop(ixw *w, size_t save) {
-  w->path[save] = '\0';
-  w->path_len = save;
+static void ixw_path_pop(ixw *w) {
+  w->pdepth--;
 }
 
 static void ixw_path_key(ixw *w, PyObject *key) {
-  PyObject *r = PyObject_Repr(key);
-  if (r != NULL) {
-    snprintf(w->path + w->path_len, sizeof(w->path) - w->path_len, "[%s]",
-             PyUnicode_AsUTF8(r));
-    Py_DECREF(r);
+  if (w->pdepth < IXW_PATH_MAX) {
+    w->pstack[w->pdepth].key = key;   /* borrowed: the dict outlives the walk */
+    w->pstack[w->pdepth].index = 0;
   }
-  w->path_len = strnlen(w->path, sizeof(w->path));
+  w->pdepth++;
+}
+
+/* The deferred path, rendered at decline time: the root label then the
+   recorded segments ([i] / [repr(key)]), with the eager walker's
+   truncation discipline — an index segment lands whole or not at all, a
+   key segment truncates mid-text at the buffer's end. */
+static size_t ixw_path_render(const ixw *w, char *buf, size_t cap) {
+  size_t len = strlen(w->root);
+  if (len >= cap) len = cap - 1;
+  memcpy(buf, w->root, len);
+  buf[len] = '\0';
+  const int nseg = w->pdepth < IXW_PATH_MAX ? w->pdepth : IXW_PATH_MAX;
+  for (int d = 0; d < nseg; d++) {
+    if (w->pstack[d].key != NULL) {
+      PyObject *r = PyObject_Repr(w->pstack[d].key);
+      if (r != NULL) {
+        snprintf(buf + len, cap - len, "[%s]", PyUnicode_AsUTF8(r));
+        Py_DECREF(r);
+      }
+      len = strnlen(buf, cap);
+    } else {
+      int n = snprintf(buf + len, cap - len, "[%zd]",
+                       w->pstack[d].index);
+      len += (n > 0 && (size_t) n < cap - len) ? (size_t) n : 0;
+    }
+  }
+  return len;
 }
 
 static void ixw_node(ixw *w, PyObject *obj);
@@ -4021,10 +4058,13 @@ static void ixe_vec_masked(ixw *w, int wire, const uint8_t *src,
   w->total += (size_t) n * elt;
 }
 
-/* The mask gate for the memcpy arms: a borrowed validity bitmap holding
-   nulls (the owned invariant's sentinels make the memcpy exact as-is). */
+/* The mask gate for the memcpy arms: the recorded null count serves —
+   pyframe.h's invariant has every valid producer count at the build or
+   the read (a foreign region's claim validated non-negative by the
+   vendored entry read), so no bitmap scan runs per walk. The owned
+   invariant's sentinels make the unmasked memcpy exact as-is. */
 static int fcol_masked(const fcol *c) {
-  return c->valid != NULL && masked_nulls(c->valid, (uint64_t) c->n) != 0;
+  return c->vnulls != 0;
 }
 
 /* The temporal column's unit in seconds (the 'I' REAL form's scale). */
@@ -5281,11 +5321,10 @@ static void ixw_value(ixw *w, PyObject *obj) {
     IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) n));
     w->depth++;
     for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
-      size_t save = w->path_len;
       ixw_path_index(w, i);
       ixw_node(w, is_list ? PyList_GET_ITEM(obj, i) :
                 PyTuple_GET_ITEM(obj, i));
-      if (!w->decline) ixw_path_pop(w, save);
+      if (!w->decline) ixw_path_pop(w);
     }
     w->depth--;
     return;
@@ -5313,11 +5352,10 @@ static void ixw_value(ixw *w, PyObject *obj) {
         ixw_decline(w, "a dict key past 2^32 bytes has no portable home");
         break;
       }
-      size_t save = w->path_len;
       ixw_path_key(w, k);
       IXW_PUT(w, mizu_ix_put_key(IXW_DST(w), ks, (uint32_t) kn));
       ixw_node(w, v);
-      if (!w->decline) ixw_path_pop(w, save);
+      if (!w->decline) ixw_path_pop(w);
     }
     w->depth--;
     return;
@@ -6622,10 +6660,9 @@ static void ixw_task_fields(ixw *w, const char *code, Py_ssize_t code_n,
   Py_ssize_t na = PyTuple_GET_SIZE(args);
   IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) na));
   for (Py_ssize_t i = 0; i < na && !w->decline; i++) {
-    size_t save = w->path_len;
     ixw_path_index(w, i);
     ixw_node(w, PyTuple_GET_ITEM(args, i));
-    if (!w->decline) ixw_path_pop(w, save);
+    if (!w->decline) ixw_path_pop(w);
   }
   Py_ssize_t nk = PyDict_Size(kwargs);
   IXW_PUT(w, mizu_ix_put_dict_begin(IXW_DST(w), (uint64_t) nk));
@@ -6648,11 +6685,10 @@ static void ixw_task_fields(ixw *w, const char *code, Py_ssize_t code_n,
       ixw_decline(w, "a dict key past 2^32 bytes has no portable home");
       break;
     }
-    size_t save = w->path_len;
     ixw_path_key(w, k);
     IXW_PUT(w, mizu_ix_put_key(IXW_DST(w), ks, (uint32_t) kn));
     ixw_node(w, v);
-    if (!w->decline) ixw_path_pop(w, save);
+    if (!w->decline) ixw_path_pop(w);
   }
   w->depth--;
 }
@@ -6708,8 +6744,7 @@ int pymizu_ix_stage_task(PyObject *spec, mizu_slot_hdr *hdr,
     plan.ncand = 0;
     ixw w;
     memset(&w, 0, sizeof(w));
-    memcpy(w.path, "args", 5);
-    w.path_len = 4;
+    memcpy(w.root, "args", 5);
     w.h = h;
     w.caps = MIZU_PY_IDENT_CAPS(word);
     w.inline_max = inline_max;
@@ -6854,8 +6889,7 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   if (code_s == NULL) return NULL;
   ixw w;
   memset(&w, 0, sizeof(w));
-  memcpy(w.path, "args", 5);
-  w.path_len = 4;
+  memcpy(w.root, "args", 5);
   w.refs = 1;              /* the hook mode: markers and REF leaves emit */
   w.caps = MIZU_PY_CAPS;   /* this build's word, as the corpus hook's */
   ixw_task(&w, code_s, code_n, (int) kind, args, kwargs, target, ident);
@@ -7190,8 +7224,7 @@ static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
     IXW_PUT(w, mizu_ix_put_nil(IXW_DST(w)));
     return;
   }
-  memcpy(w->path, "x", 2);
-  w->path_len = 1;
+  memcpy(w->root, "x", 2);
   if (!PyList_CheckExact(x)) {
     /* a view x: one ref leaf — the worker's batch loop reads the
        resolved view off the shared pages */
@@ -7202,10 +7235,9 @@ static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
   IXW_PUT(w, mizu_ix_put_list_begin(IXW_DST(w), (uint64_t) n));
   w->depth++;
   for (Py_ssize_t i = 0; i < n && !w->decline; i++) {
-    size_t save = w->path_len;
     ixw_path_index(w, i);
     ixw_node(w, PyList_GET_ITEM(x, i));
-    if (!w->decline) ixw_path_pop(w, save);
+    if (!w->decline) ixw_path_pop(w);
   }
   w->depth--;
 }
@@ -7237,8 +7269,7 @@ PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
   if (code_s == NULL) return NULL;
   ixw w;
   memset(&w, 0, sizeof(w));
-  memcpy(w.path, "args", 5);
-  w.path_len = 4;
+  memcpy(w.root, "args", 5);
   w.caps = MIZU_PY_CAPS;   /* this build's word, as the corpus hook's */
   ixw_map_desc(&w, code_s, code_n, (int) kind, args, kwargs, x, target,
                MIZU_PY_IDENT);
@@ -7531,7 +7562,9 @@ out:
 }
 
 static void ixw_raise(ixw *w) {
-  PyObject *p = PyUnicode_DecodeUTF8(w->path, (Py_ssize_t) w->path_len,
+  char path[128];
+  const size_t path_len = ixw_path_render(w, path, sizeof(path));
+  PyObject *p = PyUnicode_DecodeUTF8(path, (Py_ssize_t) path_len,
                                      "replace");
   PyObject *r = PyUnicode_FromString(w->reason);
   PyObject *msg = NULL;
@@ -7539,7 +7572,7 @@ static void ixw_raise(ixw *w) {
   msg = PyUnicode_FromFormat(
     "pymizu: value is not portable to the peer (%U at %U)", r, p);
   if (msg == NULL) goto out;
-  declined_raise(msg, w->path, w->reason);
+  declined_raise(msg, path, w->reason);
 out:
   Py_XDECREF(p);
   Py_XDECREF(r);
@@ -7558,8 +7591,7 @@ int pymizu_ix_stage(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                     uint32_t inline_max, mizu_handle *h, uint32_t caps) {
   ixw w;
   memset(&w, 0, sizeof(w));
-  memcpy(w.path, "x", 2);
-  w.path_len = 1;
+  memcpy(w.root, "x", 2);
   w.dst = payload;
   w.limit = inline_max;
   w.caps = caps;
@@ -7627,8 +7659,7 @@ PyObject *pymizu_ix_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
 PyObject *pymizu_ix_write_stream(PyObject *obj) {
   ixw w;
   memset(&w, 0, sizeof(w));
-  memcpy(w.path, "x", 2);
-  w.path_len = 1;
+  memcpy(w.root, "x", 2);
   w.caps = MIZU_PY_CAPS;   /* the corpus hook: this build's full word */
   ixw_stream(&w, obj);
   if (w.decline) {

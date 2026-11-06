@@ -87,12 +87,14 @@ def _settle(fut: _asyncio.Future, value: _Any, exc: bool = False) -> None:
 class _ChanState:
     """A channel's async consumer state: the pending recv FIFO, resolved
     in arrival order. Lives on the C handle's ``_aio`` slot; the notify
-    record's drain is ``_drain``."""
+    record's drain is ``_drain``. The raw handle is stashed (the drain's
+    per-pass verbs skip the facade's attribute walk; _PoolState's pool_h
+    is the mirror)."""
 
-    __slots__ = ("ch", "loop", "fifo", "armed")
+    __slots__ = ("ch_h", "loop", "fifo", "armed")
 
     def __init__(self, ch: pymizu.Channel) -> None:
-        self.ch = ch
+        self.ch_h = ch._h
         self.loop: _asyncio.AbstractEventLoop | None = None
         self.fifo: _deque[_asyncio.Future] = _deque()
         self.armed = False
@@ -100,7 +102,7 @@ class _ChanState:
     def _disarm(self) -> None:
         if self.armed:
             self.armed = False
-            self.ch._h._notify_disarm()
+            self.ch_h._notify_disarm()
 
     def _fail(self, exc: BaseException) -> None:
         for f in self.fifo:
@@ -133,7 +135,7 @@ class _ChanState:
                     self.loop.call_soon(self._drain)
                     return
                 try:
-                    burst = self.ch._h._recv_burst(want)
+                    burst = self.ch_h._recv_burst(want)
                 except _ForeignPayloadError as e:
                     # a declined foreign payload: the burst consumed the
                     # slot as its first message, so reject the head
@@ -175,7 +177,7 @@ class _ChanState:
                 if len(burst) < want:
                     # the ring drained: re-arm, then the availability
                     # report decides — False stays armed, waiting
-                    if not self.ch._h._notify_rearm():
+                    if not self.ch_h._notify_rearm():
                         return
         except Exception as e:
             self._fail(e)
