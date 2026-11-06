@@ -391,6 +391,60 @@ def np_scalar_double(v):
     return float(v) * 2
 
 
+def np_f64(v):
+    """An np.float64 scalar result (a typed map-result leaf, np 1)."""
+    return np.float64(v) * 2
+
+
+def np_i64(v):
+    return np.int64(v) * 2
+
+
+def np_i32(v):
+    return np.int32(v) * 2
+
+
+def np_u8(v):
+    return np.uint8(v) * 2
+
+
+def np_c128(v):
+    return np.complex128(v) * 2
+
+
+def np_pair(v):
+    """The winsum shape: a tuple of two np.float64 scalars (shape 1)."""
+    s = np.float64(v)
+    return (s, s * 2)
+
+
+def np_list_pair(v):
+    """A list of two np.float64 scalars (shape 2)."""
+    s = np.float64(v)
+    return [s, s * 2]
+
+
+def py_pair(v):
+    """A tuple of two Python floats (np 0, shape 1)."""
+    s = float(v)
+    return (s, s * 2)
+
+
+def mixed_type(v):
+    """A type that changes mid-batch: the pickled map-result leaf."""
+    return float(v) if v % 2 == 0 else str(v)
+
+
+def none_result(v):
+    """A None result (the pickled leaf: None has no typed class)."""
+    return None
+
+
+def is_even(v):
+    """A bool result (the pickled leaf: bool is not in the wire subset)."""
+    return v % 2 == 0
+
+
 def fanout_with_thread(n, interval=0.005):
     """Fan out while a background thread runs in the worker: its beats must
     keep advancing through the nested-collect waits (the park hook drops

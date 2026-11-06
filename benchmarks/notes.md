@@ -48,13 +48,13 @@ probes and A/B isolations stay in the log.
 | payload 8,000,000 B | 107.2 us/task | 2026-10-03 |
 | fan-out x 2000, 4 workers | 295.3k tasks/s | 2026-10-03 |
 | streaming, channel batch | 21.6M msg/s | 2026-10-03 |
-| map trivial f | 0.4 us/elt | 2026-09-13 |
+| map trivial f | 0.07 us/elt | 2026-11-06 |
 | map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
-| map trivial f, seed | 1.9 us/elt | 2026-10-01 |
-| map trivial f, prepared | 0.4 us/elt | 2026-10-01 |
-| map winsum x 2000 | 480.7k tasks/s | 2026-09-11 |
-| map winsum x 20000 | 506.6k tasks/s | 2026-10-03 |
-| map skewed f x 4000 | 6.8 ms wall | 2026-10-01 |
+| map trivial f, seed | 1.7 us/elt | 2026-11-06 |
+| map trivial f, prepared | 0.07 us/elt | 2026-11-06 |
+| map winsum x 2000 | 689.3k tasks/s | 2026-11-06 |
+| map winsum x 20000 | 738.4k tasks/s | 2026-11-06 |
+| map skewed f x 4000 | 5.6 ms wall | 2026-11-06 |
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
@@ -1169,3 +1169,39 @@ libmizu 6dfe375 fuses it into the copy; re-vendored here. Same-host
 A/B: masked int64 185.6 -> ~140 us/send, the int64:int32 gap ~1.5x ->
 ~1.1x. No best-known swap — 140 does not beat the 97.6 quiet-machine
 record.
+
+## 2026-11-06 — typed map results: the runner-result codec (perf/map-result-codec)
+
+Pool.map() results no longer pass through pickle: the runner and chunk
+publishes ride a new private 'P' tag ('m') — each batch one typed leaf
+(the wire type's raw bytes, exact Python or numpy scalar classes on
+read) or, on any classification decline (a mid-batch type change, an
+int past int64, bool/str/None, an unmappable numpy dtype), a per-batch
+protocol-4 pickle. A foreign submitter (an R host driving Python
+workers through a spec map) gets today's plain (hist, vals) through the
+'I' writer — the stage hook unwraps the marker ahead of the foreign
+branch. A/B (same host, back to back, the section-6 rows of
+mizu-bench.py) against the pre-change build:
+
+| row | before | after |
+|---|---|---|
+| map trivial f, numpy x | 0.375 us/elt | 0.069 us/elt |
+| map trivial f, list-x (Python floats) | 0.073 us/elt | 0.070 us/elt |
+| map trivial f, template | 0.049 us/elt | 0.049 us/elt |
+| map trivial f, seed | 1.93 us/elt | 1.66 us/elt |
+| map trivial f, prepared | 0.375 us/elt | 0.065 us/elt |
+| map winsum x 2000 | 497.3k tasks/s | 689.3k tasks/s |
+| map winsum x 20000 | 497.7k tasks/s | 738.4k tasks/s |
+| map template 20k, copy / view | 741.7k / 740.3k tasks/s | 738.4k / 739.6k tasks/s |
+| map skewed f x 4000 | 6.8 ms wall | 5.6 ms wall |
+
+The numpy-scalar rows land at the template regime — the result encoding
+is no longer the cost, matching the plan's targets (trivial f at or
+under 0.1 us/elt, winsum at 700-770k tasks/s). The list-x Python-float
+row is flat: the classifier costs less than pickle's ~7 ns/elt.
+Template and skew rows hold (the skew gain is its np.float64 results
+leaving pickle). Best-known swaps: map trivial f, its seed and prepared
+rows, winsum x 2000 and x 20000, skewed.
+
+Status: full suite 1061 pass, 1 skip (the known platform skip); ruff +
+pyrefly clean.

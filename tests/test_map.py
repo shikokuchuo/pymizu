@@ -19,15 +19,27 @@ from tests.helpers import (
     fail_or_sleep,
     huge_int,
     identity,
+    is_even,
     kill_at,
+    mixed_type,
     mul_add,
     nested_map,
+    none_result,
+    np_c128,
+    np_f64,
+    np_i32,
+    np_i64,
+    np_list_pair,
+    np_pair,
     np_rand_elt,
     np_rand_pair,
     np_scalar_double,
+    np_u8,
     pair_up,
     pair_up_i64,
+    py_pair,
     rand_elt,
+    scalar_cplx,
     scalar_double,
     scale_add,
     sleep_ident,
@@ -474,6 +486,105 @@ def test_map_numpy_chunking_invariance(pool):
     want = pool.map(identity, a).collect()
     for chunks in (1, 5, 300):
         assert pool.map(identity, a, n_chunks=chunks).collect() == want
+
+
+# -- runner results (the typed map-result codec) ------------------------------
+
+
+def test_map_result_numpy_scalar_exact(pool):
+    # the typed leaf: numpy scalar results keep their exact class
+    for dt, fn in (
+        (np.float64, np_f64),
+        (np.int64, np_i64),
+        (np.int32, np_i32),
+        (np.uint8, np_u8),
+        (np.complex128, np_c128),
+    ):
+        a = np.arange(1000, dtype=np.float64)
+        if dt is np.uint8:
+            a = a % 100  # keep v * 2 inside uint8
+        out = pool.map(fn, a).collect()
+        assert all(type(v) is dt for v in out)
+        assert [complex(v) for v in out] == [complex(v * 2) for v in a]
+
+
+def test_map_result_python_scalar_exact(pool):
+    a = np.arange(1000, dtype=np.float64)
+    out = pool.map(scalar_double, a).collect()
+    assert all(type(v) is float for v in out)
+    assert out == [float(v) * 2 for v in a]
+    out = pool.map(square, list(range(1000))).collect()
+    assert all(type(v) is int for v in out)
+    assert out == [i * i for i in range(1000)]
+    out = pool.map(scalar_cplx, a).collect()
+    assert all(type(v) is complex for v in out)
+    assert out == [complex(v, v) for v in a]
+
+
+def test_map_result_tuple_and_list_shapes(pool):
+    # the winsum shape: tuples of two np.float64 scalars
+    a = np.arange(1000, dtype=np.float64)
+    out = pool.map(np_pair, a).collect()
+    assert all(type(e) is tuple and len(e) == 2 for e in out)
+    assert all(type(v) is np.float64 for e in out for v in e)
+    assert out[500] == (500.0, 1000.0)
+    # lists of two np.float64 scalars
+    out = pool.map(np_list_pair, a).collect()
+    assert all(type(e) is list and len(e) == 2 for e in out)
+    assert all(type(v) is np.float64 for e in out for v in e)
+    assert out[500] == [500.0, 1000.0]
+    # tuples of two Python floats
+    out = pool.map(py_pair, a).collect()
+    assert all(type(e) is tuple for e in out)
+    assert all(type(v) is float for e in out for v in e)
+    assert out[500] == (500.0, 1000.0)
+
+
+def test_map_result_pickled_leaf(pool):
+    # the decline set rides the pickled leaf, exactly as before
+    a = np.arange(200, dtype=np.float64)
+    out = pool.map(mixed_type, a).collect()
+    assert out == [float(v) if v % 2 == 0 else str(v) for v in a]
+    out = pool.map(huge_int, a).collect()  # an int past int64
+    assert out == [1 << 63] * 200
+    out = pool.map(is_even, list(range(10))).collect()  # bool
+    assert out == [v % 2 == 0 for v in range(10)]
+    out = pool.map(str, list(range(10))).collect()  # str
+    assert out == [str(v) for v in range(10)]
+    out = pool.map(none_result, list(range(10))).collect()  # None
+    assert out == [None] * 10
+
+
+def test_map_result_one_element(pool):
+    out = pool.map(np_f64, [3.0]).collect()
+    assert out == [6.0]
+    assert type(out[0]) is np.float64
+
+
+def test_map_result_blob_path_exact(pool):
+    # the blob path's _chunk publishes through _batch_result
+    out = pool.map(np_f64, [1.0, 2.0, 3.0]).collect()
+    assert all(type(v) is np.float64 for v in out)
+    assert out == [2.0, 4.0, 6.0]
+
+
+def test_map_result_prepared_and_seeded(pool):
+    pm = pool.map_prepare(np_f64, np.arange(100, dtype=np.float64))
+    try:
+        out = pm.run().collect()
+        assert all(type(v) is np.float64 for v in out)
+        assert out == [v * 2 for v in range(100)]
+    finally:
+        pm.close()
+    out = pool.map(np_rand_elt, list(range(20)), seed=1).collect()
+    assert all(type(v) is float for v in out)
+
+
+def test_map_result_spec_on_python_workers(pool):
+    # a spec map's runner (_runner_ix) publishes through the same marker
+    out = pool.map(pymizu.call("numpy.sqrt"), [1.0, 4.0, 9.0]).collect()
+    assert all(type(v) is np.float64 for v in out)
+    assert out == [1.0, 2.0, 3.0]
 
 
 # -- seeded numpy streams (pymizu.current_rng) --------------------------------

@@ -259,7 +259,7 @@ def _source_fn(code: str, positional: list, named: dict) -> _Callable:
 
 def _runner_ix(
     region_name: str, gen_field: int, seed_pair: tuple[int, int] | None
-) -> tuple[list, list | None]:
+) -> tuple:
     """Worker-side kind-2 runner entry (the cross-language map): the exec
     hook hands the decoded runner stream's fields here — the ordinal and
     generation packed in one i64 (the ordinal the high 32 bits), the
@@ -456,12 +456,15 @@ class _Star:
 
 def _chunk(
     blob: bytes, lo: int, hi: int, seed_spec: tuple[bytes, int] | None
-) -> list:
+) -> tuple:
     """Worker-side blob-path chunk task: the inline descriptor blob (the
     sizes this path admits make a per-chunk unpickle negligible, so there
-    is no cache), the 0-based half-open element range, and the seed."""
+    is no cache), the 0-based half-open element range, and the seed. The
+    batch rides back as the typed result codec's marker."""
     fn, args, kwargs, x = _pickle.loads(blob)
-    return _run_batch(fn, args, kwargs, x.__getitem__, lo, hi, seed_spec)
+    return _pymizu._batch_result(
+        _run_batch(fn, args, kwargs, x.__getitem__, lo, hi, seed_spec)
+    )
 
 
 def _stream_chunk(
@@ -470,7 +473,7 @@ def _stream_chunk(
     hi: int,
     sl: _Any,
     seed_spec: tuple[bytes, int] | None,
-) -> list | None:
+) -> tuple | None:
     """Worker-side streaming chunk task, riding an importable reference:
     the map context comes from the worker's name-keyed cache (one attach
     per worker per map), then the existing `_run_batch` runs over the
@@ -491,7 +494,7 @@ def _stream_chunk(
     if ctx.tmpl:
         _pymizu._map_write(ctx.capsule, lo, batch)
         return None
-    return batch
+    return _pymizu._batch_result(batch)
 
 
 def _runner(
@@ -499,7 +502,7 @@ def _runner(
     ordinal: int,
     gen: int,
     seed_spec: tuple[bytes, int] | None,
-) -> tuple[list, list | None]:
+) -> tuple:
     """Worker-side morsel runner, riding each runner task. Opens (or
     reuses) the map context, obtains the pool signals worker-locally —
     never from the submitter — and loops batch transitions: claim the next
@@ -507,9 +510,11 @@ def _runner(
     the boundary when flagged, evaluate, and record the batch in the local
     history only after it completes (a batch interrupted by an error is
     never recorded — correctly lost). The history and per-batch value
-    lists ride the runner's single ordinary result publish; on the
-    template path values land in the region's output area instead and the
-    publish carries the history alone."""
+    lists ride the runner's single ordinary result publish, tagged for
+    the typed result codec (a foreign submitter receives the plain pair
+    through the 'I' writer); on the template path values land in the
+    region's output area instead and the publish carries the history
+    alone."""
     pool = pymizu.current_pool()
     assert pool is not None  # a runner always executes inside a task
     ctx = _map_ctx(region_name)
@@ -540,7 +545,7 @@ def _runner(
         # within ~a batch instead of draining the cursor first
         _pymizu._map_cancel_set(ctx.capsule)
         raise
-    return (hist, None if ctx.tmpl else vals)
+    return _pymizu._map_result(hist, None if ctx.tmpl else vals)
 
 
 def _seed_spec(

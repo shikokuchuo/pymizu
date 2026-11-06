@@ -262,6 +262,30 @@ static PyObject *runner_frame_new(PyObject *name, PyObject *gen_field,
   return frame_tuple_new(&MizuRunnerFrameType, items, 3);
 }
 
+/* The map runner result's payload marker: items 0/1/2 = form (True form
+   1, False form 0) / hist-or-batch / vals (None form 0). _map_result
+   (form 1, the morsel runner's publish) carries the (hist, vals) pair;
+   _batch_result (form 0, the blob and streaming chunk tasks) one bare
+   batch list. The stage hook recognizes the exact type ahead of the
+   codec — the _TaskFrame pattern — and frames the typed 'm' stream off
+   it; a foreign handle unwraps to the plain form for the 'I' writer. */
+static PyTypeObject MizuMapResultType = {
+  PyVarObject_HEAD_INIT(NULL, 0)
+  .tp_name = "_pymizu._MapResult",
+  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_doc = "A map runner result marked for the typed result codec.",
+};
+
+static PyObject *map_result_new(PyObject *hist, PyObject *vals) {
+  PyObject *items[3] = { Py_True, hist, vals };
+  return frame_tuple_new(&MizuMapResultType, items, 3);
+}
+
+static PyObject *batch_result_new(PyObject *batch) {
+  PyObject *items[3] = { Py_False, batch, Py_None };
+  return frame_tuple_new(&MizuMapResultType, items, 3);
+}
+
 // Errors -------------------------------------------------------------------------
 
 /* ShmError's 'bytes' field: the requested size of a region that was not
@@ -834,8 +858,10 @@ enum {
   PYMIZU_TAG_BUFFER = 'Y',    /* a buffer-protocol leaf, inline bytes */
   PYMIZU_TAG_BUFREF = 'r',    /* a buffer leaf by reference (SHM_VEC name) */
   PYMIZU_TAG_FRAMEREF = 'F',  /* a Frame by reference (a MIZL region name) */
-  PYMIZU_TAG_NUMPY = 'a'      /* a numpy scalar / 0-d array: wire type,
+  PYMIZU_TAG_NUMPY = 'a',     /* a numpy scalar / 0-d array: wire type,
                                  form (0 scalar, 1 array), element bytes */
+  PYMIZU_TAG_MAPRES = 'm'     /* a map runner result: form, the hist pairs,
+                                 typed or pickled batch leaves */
 };
 
 /* Exact-type checks throughout: a subclass (IntEnum, a str subclass) keeps
@@ -1454,6 +1480,340 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
   return rc;
 }
 
+// Map results ----------------------------------------------------------------
+
+/* The map runner's publish codec (the 'P' 'm' tag): a map runner returns
+   (hist, vals) — hist the list of (lo, hi) batch ranges, vals the
+   parallel list of per-batch value lists (None on the template path) —
+   and the blob / streaming chunk tasks return one bare batch list. Each
+   batch is one leaf:
+     kind 0 typed:   type np shape m(u32) count(u64), count * m elements
+     kind 1 pickled: len(u64), a protocol-4 pickle of the batch list
+   Element 0 decides a leaf's class; every other element must match it by
+   type pointer (a tuple/list element additionally by length and per-item
+   type pointer). np 0 rebuilds Python scalars, np 1 the wire type's
+   canonical numpy scalar (the numpy row's discipline). A batch is small
+   (the morsel geometry), so a leaf never splits: any mismatch, an int
+   past int64, an empty batch, a bool, a str, None, an array, or a numpy
+   scalar whose buffer format has no wire type sends the whole batch to
+   the pickled leaf. An old build's reader errors loudly on the tag, the
+   numpy row's discipline — pools are homogeneous builds by requirement. */
+
+typedef struct {
+  int kind;          /* 0 typed, 1 pickled */
+  int type;          /* the wire type (kind 0) */
+  int np;            /* 0 Python scalars, 1 numpy scalars */
+  int shape;         /* 0 scalar elements, 1 tuples of m, 2 lists of m */
+  uint32_t m;        /* items per element (shape 1 / 2) */
+  PyObject *pickled; /* kind 1 (owned) */
+} mapres_leaf;
+
+/* The leaf class off one representative item. 0 typed, -1 pickled.
+   Never sets an error. */
+static int mapres_item_class(PyObject *it, int *type, int *np) {
+  if (PyFloat_CheckExact(it)) {
+    *type = MIZU_TYPE_REAL;
+    *np = 0;
+    return 0;
+  }
+  if (PyLong_CheckExact(it)) {
+    *type = MIZU_TYPE_INT64;
+    *np = 0;
+    return 0;
+  }
+  if (PyComplex_CheckExact(it)) {
+    *type = MIZU_TYPE_CPLX;
+    *np = 0;
+    return 0;
+  }
+  if (mizu_py_np_kind(it) == 2) {
+    Py_buffer v;
+    if (PyObject_GetBuffer(it, &v, PyBUF_ND | PyBUF_FORMAT) < 0) {
+      PyErr_Clear();
+      return -1;
+    }
+    int t = wire_type_of_fmt(v.format, v.itemsize);
+    PyBuffer_Release(&v);
+    if (t == 0) return -1;
+    *type = t;
+    *np = 1;
+    return 0;
+  }
+  return -1;
+}
+
+/* An exact-int range check, folded into classification: an int outside
+   int64 declines the leaf to the pickled form. Never sets an error. */
+static int mapres_int_ok(PyObject *it) {
+  long long v = PyLong_AsLongLong(it);
+  if (v == -1 && PyErr_Occurred()) {
+    PyErr_Clear();
+    return 0;
+  }
+  return 1;
+}
+
+/* Classify one batch list into lp. 0 typed, -1 pickled. Never sets an
+   error. */
+static int mapres_classify(PyObject *batch, mapres_leaf *lp) {
+  if (!PyList_CheckExact(batch)) return -1;
+  Py_ssize_t n = PyList_GET_SIZE(batch);
+  if (n == 0) return -1;
+  PyObject *e0 = PyList_GET_ITEM(batch, 0);
+  lp->shape = 0;
+  lp->m = 1;
+  PyObject *rep = e0;
+  PyTypeObject *tp0;
+  if (PyTuple_CheckExact(e0) || PyList_CheckExact(e0)) {
+    const int is_t = PyTuple_CheckExact(e0) != 0;
+    Py_ssize_t m = is_t ? PyTuple_GET_SIZE(e0) : PyList_GET_SIZE(e0);
+    if (m == 0) return -1;
+    lp->shape = is_t ? 1 : 2;
+    lp->m = (uint32_t) m;
+    rep = is_t ? PyTuple_GET_ITEM(e0, 0) : PyList_GET_ITEM(e0, 0);
+  }
+  tp0 = Py_TYPE(rep);
+  if (mapres_item_class(rep, &lp->type, &lp->np) < 0) return -1;
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *e = PyList_GET_ITEM(batch, i);
+    if (lp->shape == 0) {
+      if (Py_TYPE(e) != tp0) return -1;
+      if (lp->type == MIZU_TYPE_INT64 && lp->np == 0 &&
+          !mapres_int_ok(e))
+        return -1;
+      continue;
+    }
+    if (Py_TYPE(e) != Py_TYPE(e0)) return -1;
+    Py_ssize_t m =
+      lp->shape == 1 ? PyTuple_GET_SIZE(e) : PyList_GET_SIZE(e);
+    if (m != (Py_ssize_t) lp->m) return -1;
+    for (Py_ssize_t j = 0; j < m; j++) {
+      PyObject *it = lp->shape == 1 ? PyTuple_GET_ITEM(e, j) :
+        PyList_GET_ITEM(e, j);
+      if (Py_TYPE(it) != tp0) return -1;
+      if (lp->type == MIZU_TYPE_INT64 && lp->np == 0 &&
+          !mapres_int_ok(it))
+        return -1;
+    }
+  }
+  lp->kind = 0;
+  lp->pickled = NULL;
+  return 0;
+}
+
+static uint64_t mapres_leaf_size(PyObject *batch, const mapres_leaf *lp) {
+  if (lp->kind == 1)
+    return 9 + (uint64_t) PyBytes_GET_SIZE(lp->pickled);
+  uint64_t count = (uint64_t) PyList_GET_SIZE(batch);
+  return 16 + count * lp->m * mizu_type_elt_size(lp->type);
+}
+
+/* Extract one item's wire bytes. -1 with no error set abandons the stage
+   (a type/range surprise past classification — the pickle fallback
+   restages clean). */
+static int mapres_put_item(uint8_t **p, PyObject *it,
+                           const mapres_leaf *lp) {
+  switch (lp->type) {
+  case MIZU_TYPE_REAL: {
+    /* np.float64 subclasses float: the fast macro serves both */
+    double d = PyFloat_AS_DOUBLE(it);
+    memcpy(*p, &d, 8);
+    *p += 8;
+    return 0;
+  }
+  case MIZU_TYPE_CPLX: {
+    /* np.complex128 subclasses complex */
+    Py_complex c = PyComplex_AsCComplex(it);
+    if (c.real == -1.0 && PyErr_Occurred()) {
+      PyErr_Clear();
+      return -1;
+    }
+    memcpy(*p, &c.real, 8);
+    memcpy(*p + 8, &c.imag, 8);
+    *p += 16;
+    return 0;
+  }
+  default: {   /* INT64 / INT / RAW */
+    PyObject *ix;
+    if (lp->np) {
+      ix = PyNumber_Index(it);
+      if (ix == NULL) {
+        PyErr_Clear();
+        return -1;
+      }
+    } else {
+      ix = it;   /* an exact int already */
+    }
+    long long v = PyLong_AsLongLong(ix);
+    if (lp->np) Py_DECREF(ix);
+    if (v == -1 && PyErr_Occurred()) {
+      PyErr_Clear();
+      return -1;
+    }
+    if (lp->type == MIZU_TYPE_INT64) {
+      memcpy(*p, &v, 8);
+      *p += 8;
+    } else if (lp->type == MIZU_TYPE_INT) {
+      if (v < INT32_MIN || v > INT32_MAX) return -1;
+      int32_t x = (int32_t) v;
+      memcpy(*p, &x, 4);
+      *p += 4;
+    } else {
+      if (v < 0 || v > 255) return -1;
+      *(*p)++ = (uint8_t) v;
+    }
+    return 0;
+  }
+  }
+}
+
+static int mapres_write_leaf(uint8_t **p, PyObject *batch,
+                             const mapres_leaf *lp) {
+  if (lp->kind == 1) {
+    *(*p)++ = 1;
+    Py_ssize_t n = PyBytes_GET_SIZE(lp->pickled);
+    codec_put64(p, (uint64_t) n);
+    memcpy(*p, PyBytes_AS_STRING(lp->pickled), (size_t) n);
+    *p += n;
+    return 0;
+  }
+  *(*p)++ = 0;
+  *(*p)++ = (uint8_t) lp->type;
+  *(*p)++ = (uint8_t) lp->np;
+  *(*p)++ = (uint8_t) lp->shape;
+  codec_put32(p, lp->m);
+  Py_ssize_t n = PyList_GET_SIZE(batch);
+  codec_put64(p, (uint64_t) n);
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *e = PyList_GET_ITEM(batch, i);
+    if (lp->shape == 0) {
+      if (mapres_put_item(p, e, lp) < 0) return -1;
+      continue;
+    }
+    for (uint32_t j = 0; j < lp->m; j++) {
+      PyObject *it = lp->shape == 1 ?
+        PyTuple_GET_ITEM(e, (Py_ssize_t) j) :
+        PyList_GET_ITEM(e, (Py_ssize_t) j);
+      if (mapres_put_item(p, it, lp) < 0) return -1;
+    }
+  }
+  return 0;
+}
+
+/* One hist pair's range validation (the size pass proves every pair, so
+   the write pass cannot fail). 0 ok, -1 decline to pickle. */
+static int mapres_hist_ok(PyObject *pair) {
+  if (!PyTuple_CheckExact(pair) || PyTuple_GET_SIZE(pair) != 2) return -1;
+  unsigned long long lo =
+    PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(pair, 0));
+  unsigned long long hi =
+    PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(pair, 1));
+  if ((lo == (unsigned long long) -1 ||
+       hi == (unsigned long long) -1) &&
+      PyErr_Occurred()) {
+    PyErr_Clear();
+    return -1;
+  }
+  return 0;
+}
+
+/* Try the map-result codec; returns 0 staged, 1 error, -1 fall back to
+   pickle. The task frame's size-then-write discipline: pass 1 classifies
+   every leaf and pickles the fallback ones, pass 2 emits inline or
+   straight into the reservation. */
+static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
+                            uint8_t *payload, uint32_t inline_max,
+                            mizu_handle *h) {
+  PyObject *a1 = PyTuple_GET_ITEM(frame, 1);
+  PyObject *a2 = PyTuple_GET_ITEM(frame, 2);
+  Py_ssize_t nb = 1;
+  int has_vals = 0;
+  uint64_t sz = 3;   /* magic, tag, form */
+  if (form1) {
+    if (!PyList_CheckExact(a1)) return -1;
+    nb = PyList_GET_SIZE(a1);
+    has_vals = a2 != Py_None;
+    if (has_vals &&
+        (!PyList_CheckExact(a2) || PyList_GET_SIZE(a2) != nb))
+      return -1;
+    for (Py_ssize_t i = 0; i < nb; i++)
+      if (mapres_hist_ok(PyList_GET_ITEM(a1, i)) < 0) return -1;
+    sz += 4 + (uint64_t) nb * 16 + 1;
+  }
+  mapres_leaf *plans =
+    PyMem_Malloc((size_t) (has_vals ? nb : form1 ? 0 : 1) *
+                 sizeof(mapres_leaf));
+  if (plans == NULL && (has_vals || !form1)) {
+    PyErr_NoMemory();
+    return 1;
+  }
+  Py_ssize_t nl = form1 ? (has_vals ? nb : 0) : 1;
+  int rc = 0;
+  for (Py_ssize_t i = 0; rc == 0 && i < nl; i++) {
+    PyObject *batch = form1 ? PyList_GET_ITEM(a2, i) : a1;
+    if (mapres_classify(batch, &plans[i]) == 0) {
+      sz += mapres_leaf_size(batch, &plans[i]);
+      continue;
+    }
+    plans[i].kind = 1;
+    plans[i].pickled = PyObject_CallFunction(mizu_dumps, "Oi", batch, 4);
+    if (plans[i].pickled == NULL) rc = 1;
+    else sz += mapres_leaf_size(batch, &plans[i]);
+  }
+  if (rc == 0) {
+    uint8_t *buf = payload;
+    const int spilled = sz > (uint64_t) inline_max;
+    if (spilled) {
+      buf = mizu_py_stage_reserve((size_t) sz, hdr, payload, h);
+      if (buf == NULL) rc = 1;
+    }
+    if (rc == 0) {
+      uint8_t *p = buf;
+      *p++ = MIZU_PYMIZU_CODEC_MAGIC;
+      *p++ = PYMIZU_TAG_MAPRES;
+      *p++ = (uint8_t) form1;
+      if (form1) {
+        codec_put32(&p, (uint32_t) nb);
+        for (Py_ssize_t i = 0; i < nb; i++) {
+          PyObject *pair = PyList_GET_ITEM(a1, i);
+          unsigned long long lo =
+            PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(pair, 0));
+          unsigned long long hi =
+            PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(pair, 1));
+          codec_put64(&p, (uint64_t) lo);
+          codec_put64(&p, (uint64_t) hi);
+        }
+        *p++ = (uint8_t) has_vals;
+      }
+      int wrc = 0;
+      for (Py_ssize_t i = 0; wrc == 0 && i < nl; i++)
+        wrc = mapres_write_leaf(&p, form1 ? PyList_GET_ITEM(a2, i) : a1,
+                                &plans[i]);
+      if (wrc == 0 && !spilled) {
+        hdr->kind = MIZU_KIND_INLINE;
+        hdr->len = (uint32_t) (p - buf);
+        /* a result stream references nothing of its own */
+        hdr->aux = MIZU_AUX_F_KEEPERLESS;
+      } else if (wrc == 0 && (size_t) (p - buf) != (size_t) sz) {
+        /* the reservation is stamped with sz up front: a count
+           disagreement leaves stale bytes under it — abandon */
+        mizu_stage_rollback(h);
+        PyErr_SetString(MizuError, "pymizu: map result write mismatch");
+        rc = 1;
+      } else if (wrc != 0) {
+        /* a write-pass surprise: roll the reservation back so the
+           caller's pickle fallback restages clean */
+        mizu_stage_rollback(h);
+        rc = -1;
+      }
+    }
+  }
+  for (Py_ssize_t i = 0; i < nl; i++)
+    if (plans[i].kind == 1) Py_XDECREF(plans[i].pickled);
+  PyMem_Free(plans);
+  return rc;
+}
+
 /* An exact builtin can carry neither Arrow dunder (no instance dict, an
    immutable type): the foreign path's producer probes are provably wasted
    on it — the same exact-type discipline the codec applies. */
@@ -1610,6 +1970,47 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     } else {
       PyErr_Clear();
     }
+  }
+  if (Py_TYPE(obj) == &MizuMapResultType) {
+    /* a map runner's result marker: the typed 'm' stream same-language,
+       ahead of the frame checks below. On a foreign handle the marker
+       unwraps to its plain form for the 'I' writer — a foreign submitter
+       (an R host driving Python workers through a spec map) must receive
+       today's objects; leaving the subclass on that path would make the
+       'I' writer decline it and the task recover as an error stream */
+    const int form1 = PyTuple_GET_ITEM(obj, 0) == Py_True;
+    int owned = 0;
+    PyObject *plain;
+    if (form1) {
+      plain = PyTuple_Pack(2, PyTuple_GET_ITEM(obj, 1),
+                           PyTuple_GET_ITEM(obj, 2));
+      if (plain == NULL) return 1;
+      owned = 1;
+    } else {
+      plain = PyTuple_GET_ITEM(obj, 1);
+    }
+    if (foreign) {
+      int frc = stage_impl(plain, hdr, payload, inline_max, h, peer_lang,
+                           peer_caps);
+      if (owned) Py_DECREF(plain);
+      return frc;
+    }
+    int mrc = stage_map_result(obj, form1, hdr, payload, inline_max, h);
+    if (mrc < 0) {
+      /* the fallback pickles the plain form: a pickled _MapResult would
+         not reconstruct on the submitter (the type is not importable
+         there) */
+      PyObject *stream = PyObject_CallFunction(mizu_dumps, "Oi", plain, 4);
+      if (owned) Py_DECREF(plain);
+      if (stream == NULL) return 1;
+      int brc = stage_bytes((const uint8_t *) PyBytes_AS_STRING(stream),
+                            (size_t) PyBytes_GET_SIZE(stream),
+                            hdr, payload, inline_max, h);
+      Py_DECREF(stream);
+      return brc;
+    }
+    if (owned) Py_DECREF(plain);
+    return mrc;
   }
   if (foreign) {
     /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
@@ -4176,6 +4577,226 @@ static PyObject *frame_read_task(const uint8_t **p, const uint8_t *end,
   return out;
 }
 
+/* The map-result readers (the 'P' 'm' tag). NULL with no error set is a
+   corrupt stream — codec_read's discipline; a reader's own error (the
+   no-numpy MizuError, a failed unpickle) propagates. */
+
+/* One Python scalar off a typed leaf's bytes (np 0). */
+static PyObject *mapres_scalar_py(const uint8_t **q, int type) {
+  switch (type) {
+  case MIZU_TYPE_RAW: {
+    uint8_t v;
+    memcpy(&v, *q, 1);
+    *q += 1;
+    return PyLong_FromLong(v);
+  }
+  case MIZU_TYPE_INT: {
+    int32_t v;
+    memcpy(&v, *q, 4);
+    *q += 4;
+    return PyLong_FromLong(v);
+  }
+  case MIZU_TYPE_INT64: {
+    int64_t v;
+    memcpy(&v, *q, 8);
+    *q += 8;
+    return PyLong_FromLongLong(v);
+  }
+  case MIZU_TYPE_REAL: {
+    double v;
+    memcpy(&v, *q, 8);
+    *q += 8;
+    return PyFloat_FromDouble(v);
+  }
+  default: {   /* MIZU_TYPE_CPLX */
+    double re, im;
+    memcpy(&re, *q, 8);
+    memcpy(&im, *q + 8, 8);
+    *q += 16;
+    return PyComplex_FromDoubles(re, im);
+  }
+  }
+}
+
+/* np 0: the batch rebuilt in a C loop straight off the bytes — no numpy
+   needed (today's pickle of Python scalars already reads without it). */
+static PyObject *mapres_build_py(const uint8_t *data, int type, int shape,
+                                 uint32_t m, uint64_t count) {
+  PyObject *out = PyList_New((Py_ssize_t) count);
+  if (out == NULL) return NULL;
+  const uint8_t *q = data;
+  for (uint64_t i = 0; i < count; i++) {
+    PyObject *elt;
+    if (shape == 0) {
+      elt = mapres_scalar_py(&q, type);
+    } else {
+      elt = shape == 1 ? PyTuple_New((Py_ssize_t) m) :
+        PyList_New((Py_ssize_t) m);
+      if (elt != NULL) {
+        for (uint32_t j = 0; j < m; j++) {
+          PyObject *it = mapres_scalar_py(&q, type);
+          if (it == NULL) Py_CLEAR(elt);
+          else if (shape == 1) PyTuple_SET_ITEM(elt, (Py_ssize_t) j, it);
+          else PyList_SET_ITEM(elt, (Py_ssize_t) j, it);
+        }
+      }
+    }
+    if (elt == NULL) {
+      Py_DECREF(out);
+      return NULL;
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, elt);
+  }
+  return out;
+}
+
+/* np 1: one frombuffer array of the wire dtype (the scalar class is the
+   dtype positional), then the exact scalars off it — list(arr) for
+   scalars; the shapes pack its runs of m. numpy is required: today the
+   same publish fails inside unpickle (ModuleNotFoundError) — parity with
+   the better message. */
+static PyObject *mapres_build_np(const uint8_t *data, int type, int shape,
+                                 uint32_t m, uint64_t count) {
+  static PyObject *frombuffer;   /* np.frombuffer, resolved on first read */
+  PyObject *np = numpy_module();
+  if (np == NULL) {
+    PyErr_SetString(MizuError,
+                    "pymizu: reading a map result of numpy scalars requires "
+                    "numpy");
+    return NULL;
+  }
+  if (frombuffer == NULL) {
+    frombuffer = PyObject_GetAttrString(np, "frombuffer");
+    if (frombuffer == NULL) return NULL;
+  }
+  PyObject *cls = np_scalar_cls(np, type);
+  if (cls == NULL) return NULL;
+  uint64_t n = (uint64_t) count * m * mizu_type_elt_size(type);
+  PyObject *bytes =
+    PyBytes_FromStringAndSize((const char *) data, (Py_ssize_t) n);
+  if (bytes == NULL) {
+    Py_DECREF(cls);
+    return NULL;
+  }
+  PyObject *arr = PyObject_CallFunction(frombuffer, "NO", bytes, cls);
+  Py_DECREF(cls);
+  if (arr == NULL) return NULL;
+  PyObject *flat = PySequence_List(arr);
+  Py_DECREF(arr);
+  if (flat == NULL) return NULL;
+  if (shape == 0) return flat;
+  PyObject *out = PyList_New((Py_ssize_t) count);
+  if (out == NULL) {
+    Py_DECREF(flat);
+    return NULL;
+  }
+  for (uint64_t i = 0; i < count; i++) {
+    PyObject *elt = shape == 1 ? PyTuple_New((Py_ssize_t) m) :
+      PyList_New((Py_ssize_t) m);
+    if (elt == NULL) {
+      Py_DECREF(flat);
+      Py_DECREF(out);
+      return NULL;
+    }
+    for (uint32_t j = 0; j < m; j++) {
+      PyObject *it = PyList_GET_ITEM(flat, (Py_ssize_t) (i * m + j));
+      Py_INCREF(it);
+      if (shape == 1) PyTuple_SET_ITEM(elt, (Py_ssize_t) j, it);
+      else PyList_SET_ITEM(elt, (Py_ssize_t) j, it);
+    }
+    PyList_SET_ITEM(out, (Py_ssize_t) i, elt);
+  }
+  Py_DECREF(flat);
+  return out;
+}
+
+static PyObject *mapres_read_leaf(const uint8_t **p, const uint8_t *end) {
+  if ((size_t) (end - *p) < 1) return NULL;
+  int kind = *(*p)++;
+  if (kind == 1) {
+    if ((size_t) (end - *p) < 8) return NULL;
+    uint64_t n = codec_get64(p);
+    if (n > (uint64_t) (end - *p)) return NULL;
+    PyObject *r = PyObject_CallFunction(mizu_loads, "y#", (const char *) *p,
+                                        (Py_ssize_t) n);
+    if (r != NULL) *p += n;
+    return r;
+  }
+  if (kind != 0) return NULL;
+  if ((size_t) (end - *p) < 15) return NULL;
+  int type = *(*p)++;
+  int np = *(*p)++;
+  int shape = *(*p)++;
+  uint32_t m = codec_get32(p);
+  uint64_t count = codec_get64(p);
+  size_t elt = mizu_type_elt_size(type);
+  if (elt == 0 || np > 1 || shape > 2 || m == 0) return NULL;
+  uint64_t stride = (uint64_t) elt * m;
+  if (count > (uint64_t) (end - *p) / stride) return NULL;
+  const uint8_t *data = *p;
+  *p += count * stride;
+  if (np == 0) return mapres_build_py(data, type, shape, m, count);
+  return mapres_build_np(data, type, shape, m, count);
+}
+
+static PyObject *map_result_read(const uint8_t **p, const uint8_t *end) {
+  if ((size_t) (end - *p) < 1) return NULL;
+  int form = *(*p)++;
+  if (form == 0) return mapres_read_leaf(p, end);
+  if (form != 1) return NULL;
+  if ((size_t) (end - *p) < 5) return NULL;
+  uint32_t nb = codec_get32(p);
+  /* the hist pairs plus the has_vals byte */
+  if ((uint64_t) (end - *p) < (uint64_t) nb * 16 + 1) return NULL;
+  PyObject *hist = PyList_New((Py_ssize_t) nb);
+  if (hist == NULL) return NULL;
+  for (uint32_t i = 0; i < nb; i++) {
+    uint64_t lo = codec_get64(p);
+    uint64_t hi = codec_get64(p);
+    PyObject *pair =
+      Py_BuildValue("(KK)", (unsigned long long) lo,
+                    (unsigned long long) hi);
+    if (pair == NULL) {
+      Py_DECREF(hist);
+      return NULL;
+    }
+    PyList_SET_ITEM(hist, (Py_ssize_t) i, pair);
+  }
+  int has_vals = *(*p)++;
+  if (has_vals > 1) {
+    Py_DECREF(hist);
+    return NULL;
+  }
+  PyObject *vals;
+  if (!has_vals) {
+    Py_INCREF(vals = Py_None);
+  } else {
+    vals = PyList_New((Py_ssize_t) nb);
+    if (vals == NULL) {
+      Py_DECREF(hist);
+      return NULL;
+    }
+    for (uint32_t i = 0; i < nb; i++) {
+      PyObject *leaf = mapres_read_leaf(p, end);
+      if (leaf == NULL) {
+        Py_DECREF(hist);
+        Py_DECREF(vals);
+        return NULL;
+      }
+      PyList_SET_ITEM(vals, (Py_ssize_t) i, leaf);
+    }
+  }
+  PyObject *out = PyTuple_New(2);
+  if (out == NULL) {
+    Py_DECREF(hist);
+    Py_DECREF(vals);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, hist);
+  PyTuple_SET_ITEM(out, 1, vals);
+  return out;
+}
+
 static PyObject *codec_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
   const uint8_t *p = src + 1, *end = src + n;
   if (p >= end) goto corrupt;
@@ -4208,6 +4829,13 @@ static PyObject *codec_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
   case PYMIZU_TAG_NUMPY:
     p--;   /* the scalar reader consumes its own tag */
     out = codec_read_scalar(&p, end);
+    if (out == NULL) {
+      if (!PyErr_Occurred()) goto corrupt;
+      return NULL;
+    }
+    break;
+  case PYMIZU_TAG_MAPRES:
+    out = map_result_read(&p, end);
     if (out == NULL) {
       if (!PyErr_Occurred()) goto corrupt;
       return NULL;
@@ -8757,6 +9385,41 @@ static PyObject *pymizu_call_frame(PyObject *Py_UNUSED(module),
   return call_frame_new(args[0], nargs == 2 ? args[1] : Py_None);
 }
 
+PyDoc_STRVAR(map_result_doc,
+"_map_result(hist, vals) -> tuple\n\n\
+The morsel runner's result marker: a (hist, vals) publish tagged for the\n\
+typed map-result codec. vals is the list of per-batch lists, or None on\n\
+the template path. Facade use only (the Pool.map runner builds it).");
+
+static PyObject *pymizu_map_result(PyObject *Py_UNUSED(module),
+                                   PyObject *const *args,
+                                   Py_ssize_t nargs) {
+  if (nargs != 2 || !PyList_Check(args[0]) ||
+      (args[1] != Py_None && !PyList_Check(args[1]))) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _map_result expects (list, list|None)");
+    return NULL;
+  }
+  return map_result_new(args[0], args[1]);
+}
+
+PyDoc_STRVAR(batch_result_doc,
+"_batch_result(batch) -> tuple\n\n\
+The blob / streaming chunk's result marker: one bare batch list tagged\n\
+for the typed map-result codec. Facade use only (the Pool.map chunk\n\
+tasks build it).");
+
+static PyObject *pymizu_batch_result(PyObject *Py_UNUSED(module),
+                                     PyObject *const *args,
+                                     Py_ssize_t nargs) {
+  if (nargs != 1 || !PyList_Check(args[0])) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: _batch_result expects a list");
+    return NULL;
+  }
+  return batch_result_new(args[0]);
+}
+
 PyDoc_STRVAR(write_task_doc,
 "_write_task(code, kind, args, kwargs, target, ident) -> bytes\n\n\
 Frame a task stream (tag 0x12) from its components, the exec hook's\n\
@@ -9058,6 +9721,10 @@ static PyMethodDef pymizu_methods[] = {
    METH_FASTCALL, call_frame_doc},
   {"_runner_frame", (PyCFunction)(void (*)(void)) pymizu_runner_frame,
    METH_FASTCALL, runner_frame_doc},
+  {"_map_result", (PyCFunction)(void (*)(void)) pymizu_map_result,
+   METH_FASTCALL, map_result_doc},
+  {"_batch_result", (PyCFunction)(void (*)(void)) pymizu_batch_result,
+   METH_FASTCALL, batch_result_doc},
   {"_write_task", (PyCFunction)(void (*)(void)) pymizu_write_task,
    METH_FASTCALL, write_task_doc},
   {"_map_desc_write", (PyCFunction)(void (*)(void)) pymizu_map_desc_write,
@@ -9135,6 +9802,8 @@ PyInit__pymizu(void)
   if (PyType_Ready(&MizuCallFrameType) < 0) return NULL;
   MizuRunnerFrameType.tp_base = &PyTuple_Type;
   if (PyType_Ready(&MizuRunnerFrameType) < 0) return NULL;
+  MizuMapResultType.tp_base = &PyTuple_Type;
+  if (PyType_Ready(&MizuMapResultType) < 0) return NULL;
 
   /* cloudpickle when installed, stock pickle otherwise; both read each
      other's protocol-4 streams */
