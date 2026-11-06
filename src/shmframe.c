@@ -15,15 +15,6 @@
 
 #include "pyshmframe.h"
 
-static PyObject *MizuError;
-static PyObject *MizuDeclinedError;
-
-void mizu_py_shmframe_register(PyObject *mizu_error,
-                               PyObject *declined_error) {
-  MizuError = mizu_error;
-  MizuDeclinedError = declined_error;
-}
-
 /* The provenance registry's record types. */
 #define PYMIZU_PV_MAX 256
 #define PV_NBUFS 4

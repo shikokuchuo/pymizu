@@ -78,10 +78,6 @@ struct frame_cols *ixs_frame_cols_build(PyObject *obj);
 
 // shmframe.c: the export-provenance registry (Phase 3.8) -------------------------
 
-/* Exception stash, mirroring mizu_py_interop_register. */
-void mizu_py_shmframe_register(PyObject *mizu_error,
-                               PyObject *declined_error);
-
 /* A region-backed Frame's Arrow export records what each acquisition
    handed out; an outgoing frame whose columns all match one acquisition's
    record stages as the region's REF. */
