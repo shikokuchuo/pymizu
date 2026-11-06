@@ -116,6 +116,77 @@ static inline int bitmap_at(const uint8_t *bm, int64_t i) {
   return (bm[i >> 3] >> (i & 7)) & 1;
 }
 
+/* The lazy validity bitmap: starts NULL (all-valid implied); the first
+   null at lane i allocates the bitmap over n lanes and backfills the
+   preceding (all-valid) lanes. 0 ok, -1 allocation failure. */
+static inline int bitmap_mark_null(uint8_t **valid, uint64_t n, int64_t i) {
+  if (*valid != NULL) return 0;
+  uint8_t *bm = mizu_py_bitmap_calloc(n);
+  if (bm == NULL) return -1;
+  for (int64_t j = 0; j < i; j++) bm[j >> 3] |= 1 << (j & 7);
+  *valid = bm;
+  return 0;
+}
+
+/* The MIZU_TYPE -> FCOL correspondence for the fixed-width vector kinds;
+   -1 a type with no column kind (unreachable behind the cursor's closed
+   type set and the element-size gates). */
+static inline int fcol_of_type(int wire_type) {
+  switch (wire_type) {
+  case MIZU_TYPE_REAL: return FCOL_F64;
+  case MIZU_TYPE_INT: return FCOL_I32;
+  case MIZU_TYPE_INT64: return FCOL_I64;
+  case MIZU_TYPE_RAW: return FCOL_U8;
+  case MIZU_TYPE_CPLX: return FCOL_C128;
+  case MIZU_TYPE_LGL: return FCOL_LGL;
+  default: return -1;
+  }
+}
+
+/* The inverse: kind -> wire type, 0 a kind with no view form. */
+static inline int fcol_type_of(int kind) {
+  switch (kind) {
+  case FCOL_F64: return MIZU_TYPE_REAL;
+  case FCOL_I32: return MIZU_TYPE_INT;
+  case FCOL_I64: return MIZU_TYPE_INT64;
+  case FCOL_U8: return MIZU_TYPE_RAW;
+  case FCOL_C128: return MIZU_TYPE_CPLX;
+  default: return 0;
+  }
+}
+
+/* One column name into the block's packed store: name_off[i] stamped ahead
+   of the append (the span of name i-1 ends at it), the duplicate scan
+   against the i names already packed when check_dups. Returns
+   FRAME_PACK_OK packed, FRAME_PACK_DUP a duplicate, FRAME_PACK_OVERFLOW
+   past the int32 offset range, FRAME_PACK_NOMEM an allocation failure
+   (raised). */
+enum {
+  FRAME_PACK_OK = 0,
+  FRAME_PACK_DUP,
+  FRAME_PACK_OVERFLOW,
+  FRAME_PACK_NOMEM
+};
+static inline int frame_name_pack(frame_cols *fc, int i, size_t *name_len,
+                                  const char *s, size_t len, int check_dups) {
+  fc->name_off[i] = (int32_t) *name_len;
+  if (check_dups)
+    for (int j = 0; j < i; j++)
+      if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) == len &&
+          memcmp(fc->names + fc->name_off[j], s, len) == 0)
+        return FRAME_PACK_DUP;
+  if (len > (size_t) INT32_MAX - *name_len) return FRAME_PACK_OVERFLOW;
+  char *nb = realloc(fc->names, *name_len + len + 1);
+  if (nb == NULL) {
+    PyErr_NoMemory();
+    return FRAME_PACK_NOMEM;
+  }
+  fc->names = nb;
+  memcpy(fc->names + *name_len, s, len);
+  *name_len += len;
+  return FRAME_PACK_OK;
+}
+
 static inline int span_has_na32(const int32_t *p, size_t n) {
   for (size_t i = 0; i < n; i++)
     if (p[i] == MIZU_NA_INT32) return 1;

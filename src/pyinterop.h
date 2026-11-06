@@ -203,6 +203,38 @@ static inline double mizu_py_temporal_scale(int unit) {
   return 1.0;
 }
 
+/* A timedelta64 unit's counts-to-seconds scale: a day/week unit first,
+   then the sub-day scales. */
+static inline double mizu_py_difftime_scale(int unit) {
+  return unit == TU_DAY ? 86400.0 : unit == TU_WEEK ? 604800.0 :
+    mizu_py_temporal_scale(unit);
+}
+
+/* The int64 counts behind a classified temporal array or scalar:
+   .view("int64") and the ND|FORMAT export cannot fail for a classified
+   object (an exact ndarray or a numpy scalar views same-itemsize, and
+   numpy scalars export the buffer protocol) — a failure would be a numpy
+   change, not user input. 0 ok (*view owns the view, *bv its held
+   buffer), 1 the view/export failed (the "cannot cross" decline), 2 the
+   array is past 1-D (its own decline). */
+static inline int mizu_py_temporal_counts(PyObject *obj, PyObject **view,
+                                          Py_buffer *bv) {
+  *view = PyObject_CallMethod(obj, "view", "s", "int64");
+  if (*view == NULL ||
+      PyObject_GetBuffer(*view, bv, PyBUF_ND | PyBUF_FORMAT) != 0) {
+    PyErr_Clear();
+    Py_XDECREF(*view);
+    *view = NULL;
+    return 1;
+  }
+  if (bv->ndim > 1) {
+    PyBuffer_Release(bv);
+    Py_CLEAR(*view);
+    return 2;
+  }
+  return 0;
+}
+
 /* The temporal dtype probe off .dtype.str, ahead of any buffer
    acquisition (numpy refuses the buffer protocol for temporal dtypes):
    1 datetime64 / 2 timedelta64 with the TU_* unit and the delta flag,

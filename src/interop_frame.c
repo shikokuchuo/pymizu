@@ -275,22 +275,10 @@ static void fcol_view_valid(const fcol *c, const uint8_t **valid,
    remote column borrows a region the frame's anchor does not cover: the
    wrap rides a fresh open of the referenced region (the copy tiers the
    fallback on a gone one). */
-/* fcol_to_obj's kind -> wire type, 0 a kind with no view form. */
-static int fcol_wire_type(int kind) {
-  switch (kind) {
-  case FCOL_F64: return MIZU_TYPE_REAL;
-  case FCOL_I32: return MIZU_TYPE_INT;
-  case FCOL_I64: return MIZU_TYPE_INT64;
-  case FCOL_U8: return MIZU_TYPE_RAW;
-  case FCOL_C128: return MIZU_TYPE_CPLX;
-  default: return 0;
-  }
-}
-
 static PyObject *fcol_to_obj(const fcol *c, PyObject *owner,
                              PyObject *loan) {
   uint64_t n = (uint64_t) c->n;
-  const int type = c->borrowed ? fcol_wire_type(c->kind) : 0;
+  const int type = c->borrowed ? fcol_type_of(c->kind) : 0;
   if (type != 0) {
     const uint8_t *valid;
     int64_t nulls;
@@ -560,7 +548,8 @@ typedef struct frame_export {
   long acq_pid;
   ptrdiff_t acq_delta;      /* its mapping minus the frame's (the rebase) */
   ArrowSchema root_s;
-  ArrowSchema *col_s;         /* [ncols] */
+  ArrowSchema *col_s;         /* [ncols] — the anchor of the one carved
+                                 block holding every array below */
   ArrowSchema **col_s_ptr;    /* [ncols] */
   ArrowSchema *dict_s;        /* [ncols], DICT columns only */
   ArrowArray root_a;
@@ -591,15 +580,7 @@ static void frame_export_decref(frame_export *ex) {
     mizu_shm_close(ex->acq, 0);
   }
   frame_cols_decref(ex->fc);
-  free(ex->col_s);
-  free(ex->col_s_ptr);
-  free(ex->dict_s);
-  free(ex->col_a);
-  free(ex->col_a_ptr);
-  free(ex->dict_a);
-  free(ex->bufs);
-  free(ex->dict_bufs);
-  free(ex->fmts);
+  free(ex->col_s);   /* the carved block's anchor (every per-column array) */
   free(ex);
 }
 
@@ -812,23 +793,29 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
       (const uint8_t *) mizu_shm_addr(oshm);
     mizu_py_debug_span_add(mizu_shm_addr(acq), mizu_shm_size(acq));
   }
-  ex->col_s = calloc((size_t) ncols, sizeof(ArrowSchema));
-  ex->col_s_ptr = calloc((size_t) ncols, sizeof(ArrowSchema *));
-  ex->dict_s = calloc((size_t) ncols, sizeof(ArrowSchema));
-  ex->col_a = calloc((size_t) ncols, sizeof(ArrowArray));
-  ex->col_a_ptr = calloc((size_t) ncols, sizeof(ArrowArray *));
-  ex->dict_a = calloc((size_t) ncols, sizeof(ArrowArray));
-  ex->bufs = calloc((size_t) ncols * 3, sizeof(void *));
-  ex->dict_bufs = calloc((size_t) ncols * 3, sizeof(void *));
-  ex->fmts = calloc((size_t) ncols, 64);
-  if (ex->col_s == NULL || ex->col_s_ptr == NULL || ex->dict_s == NULL ||
-      ex->col_a == NULL || ex->col_a_ptr == NULL || ex->dict_a == NULL ||
-      ex->bufs == NULL || ex->dict_bufs == NULL || ex->fmts == NULL) {
-    free(nulls);
-    frame_export_decref(ex);
-    frame_export_decref(ex);
-    free(st);
-    return PyErr_NoMemory();
+  /* the per-column structs carved from one block (the ixs_arrow_open
+     pattern): col_s the anchor, the release frees it alone */
+  {
+    const size_t nn = (size_t) ncols;
+    uint8_t *blk = calloc(nn, 2 * sizeof(ArrowSchema) +
+                          sizeof(ArrowSchema *) + 2 * sizeof(ArrowArray) +
+                          sizeof(ArrowArray *) + 6 * sizeof(void *) + 64);
+    if (blk == NULL) {
+      free(nulls);
+      frame_export_decref(ex);
+      frame_export_decref(ex);
+      free(st);
+      return PyErr_NoMemory();
+    }
+    ex->col_s = (ArrowSchema *) blk;
+    ex->col_s_ptr = (ArrowSchema **) (ex->col_s + nn);
+    ex->dict_s = (ArrowSchema *) (ex->col_s_ptr + nn);
+    ex->col_a = (ArrowArray *) (ex->dict_s + nn);
+    ex->col_a_ptr = (ArrowArray **) (ex->col_a + nn);
+    ex->dict_a = (ArrowArray *) (ex->col_a_ptr + nn);
+    ex->bufs = (const void **) (ex->dict_a + nn);
+    ex->dict_bufs = (const void **) (ex->bufs + 3 * nn);
+    ex->fmts = (char (*)[64]) (ex->dict_bufs + 3 * nn);
   }
   if (frame_cols_cnames(fc) < 0) {
     free(nulls);
@@ -1258,11 +1245,8 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         PyObject *s = PyList_GET_ITEM(payload, j);
         if (s == Py_None) {
           nulls++;
-          if (valid == NULL) {
-            valid = mizu_py_bitmap_calloc((uint64_t) n);
-            if (valid == NULL) goto str_nomem;
-            for (Py_ssize_t q = 0; q < j; q++) valid[q >> 3] |= 1 << (q & 7);
-          }
+          if (bitmap_mark_null(&valid, (uint64_t) n, (int64_t) j) != 0)
+            goto str_nomem;
         } else {
           if (!PyUnicode_Check(s)) goto str_malformed;
           if (valid != NULL) valid[j >> 3] |= 1 << (j & 7);
@@ -1363,14 +1347,9 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
         PyObject *v = PyList_GET_ITEM(payload, j);
         if (v == Py_None) {
           nulls++;
-          if (valid == NULL) {
-            valid = mizu_py_bitmap_calloc((uint64_t) n);
-            if (valid == NULL) {
-              free(vals);
-              goto nomem;
-            }
-            for (Py_ssize_t q = 0; q < j; q++)
-              valid[q >> 3] |= 1 << (q & 7);
+          if (bitmap_mark_null(&valid, (uint64_t) n, (int64_t) j) != 0) {
+            free(vals);
+            goto nomem;
           }
           vals[j] = 0;
         } else {
@@ -1512,18 +1491,9 @@ static PyObject *frame_rebuild(PyObject *Py_UNUSED(m), PyObject *args) {
     Py_ssize_t len;
     const char *u = PyUnicode_AsUTF8AndSize(s, &len);
     if (u == NULL) goto fc_malformed;
-    /* stamp name_off[i] ahead of the scan: the span of name i-1 ends at it */
-    fc->name_off[i] = (int32_t) name_len;
-    for (int j = 0; j < i; j++)
-      if ((size_t) (fc->name_off[j + 1] - fc->name_off[j]) ==
-            (size_t) len &&
-          memcmp(fc->names + fc->name_off[j], u, (size_t) len) == 0)
-        goto fc_malformed;
-    char *nb = realloc(fc->names, name_len + (size_t) len + 1);
-    if (nb == NULL) goto fc_nomem;
-    fc->names = nb;
-    memcpy(fc->names + name_len, u, (size_t) len);
-    name_len += (size_t) len;
+    const int prc = frame_name_pack(fc, i, &name_len, u, (size_t) len, 1);
+    if (prc == FRAME_PACK_NOMEM) goto fc_fail;   /* raised */
+    if (prc != FRAME_PACK_OK) goto fc_malformed;
   }
   fc->name_off[ncols] = (int32_t) name_len;
   /* row names: None, a str list, or an int list (back to the array) */
@@ -1574,8 +1544,10 @@ fc_malformed:
   frame_cols_decref(fc);
   goto malformed2;
 fc_nomem:
+  /* past the fc->cols = cols transfer: the decref frees cols — the
+     nomem tail would free it a second time */
   frame_cols_decref(fc);
-  goto nomem;
+  return PyErr_NoMemory();
 fc_fail:
   frame_cols_decref(fc);
   return NULL;
