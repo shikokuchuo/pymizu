@@ -8,9 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A latent double-free in `Frame`'s pickle-rebuild path
-  (`_frame_rebuild`): an allocation failure building integer row names
-  after the column transfer freed the column block twice.
+- Fixed a rare crash when unpickling a `Frame` under memory pressure.
 
 ## [0.1.0] - 2026-11-04
 
