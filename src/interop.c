@@ -1448,6 +1448,39 @@ static int tscale_ns(const attr_ent *e) {
     memcmp(e->val.ptr, "ns", 2) == 0;
 }
 
+/* The attr-shape gates, single-sourced across the read paths (the stream
+   attr dispatcher, the frame column fills, the atomic home): these
+   define the wire shapes the R package mirrors, so a second copy is a
+   conformance bug waiting. type is the value's wire type. */
+static int shape_factor(const attr_ent *cls, const attr_ent *lv, int nent,
+                        int type) {
+  return cls != NULL && lv != NULL && nent == 2 &&
+    (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
+     class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
+    type == MIZU_TYPE_INT &&
+    (lv->kind == AV_STR || lv->kind == AV_STRLIST);
+}
+
+static int shape_date(const attr_ent *cls, int nent, int type) {
+  return cls != NULL && nent == 1 &&
+    class_is(cls, MIZU_IX_CLASS_DATE, NULL) && type == MIZU_TYPE_REAL;
+}
+
+static int shape_posixct(const attr_ent *cls, const attr_ent *tz, int nent,
+                         int type) {
+  return cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
+    class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
+    type == MIZU_TYPE_REAL;
+}
+
+/* The difftime class form; the units' own verdict is the branch's
+   (difftime_secs_of), a malformed units declining with the branch's
+   no-home, never the gate's. */
+static int shape_difftime(const attr_ent *cls, int nent, int type) {
+  return cls != NULL && nent == 2 &&
+    class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) && type == MIZU_TYPE_REAL;
+}
+
 // The labeled shapes (MIZU_CAP_LABELED) --------------------------------------------
 
 /* The DimArray type from sys.modules only (the fast gates' probe:
@@ -2210,6 +2243,15 @@ static double difftime_unit_secs(const char *u, size_t n) {
   return 0.0;
 }
 
+/* The difftime shape's units half: the seconds multiplier for a known
+   units string, 0 for a missing or malformed one. */
+static double difftime_secs_of(const attr_ent *ents, int nent) {
+  const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
+  return un != NULL && un->kind == AV_STR ?
+    difftime_unit_secs((const char *) un->val.ptr, (size_t) un->val.count) :
+    0.0;
+}
+
 /* A dim attribute's (dims, nd) pair: AV_INT the length-1 form (stored to
    *one), AV_INTSPAN the span. 1 extracted, 0 a different form (the caller
    raises its path's message). */
@@ -2383,13 +2425,8 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
   const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
-  const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
   const attr_ent *dnm = NULL, *dn = NULL;
-  if (cls != NULL && lv != NULL && nent == 2 &&
-      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-      vtype == MIZU_TYPE_INT &&
-      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+  if (shape_factor(cls, lv, nent, vtype)) {
     /* a standalone ordered factor surfaces like a plain one */
     int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
       (one_i > -2147483648LL && one_i <= 2147483647LL ? (int32_t) one_i : 0);
@@ -2493,22 +2530,17 @@ static PyObject *ixr_attr(mizu_ix *cur, const ixr_mode *mode) {
     Py_XDECREF(entries);
     Py_XDECREF(axis);
     Py_DECREF(arr);
-  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-             vtype == MIZU_TYPE_REAL) {
+  } else if (shape_date(cls, nent, vtype)) {
     out = realv_to_datetime(vptr, vn, 1);
-  } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-             vtype == MIZU_TYPE_REAL) {
+  } else if (shape_posixct(cls, tz, nent, vtype)) {
     out = realv_to_datetime(vptr, vn, 0);   /* tzone: display metadata,
                                                dropped standalone */
-  } else if (cls != NULL && nent == 2 && un != NULL &&
-             un->kind == AV_STR && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
-             vtype == MIZU_TYPE_REAL &&
-             difftime_unit_secs((const char *) un->val.ptr,
-                                (size_t) un->val.count) != 0.0) {
-    out = realv_to_timedelta(vptr, vn,
-                             difftime_unit_secs((const char *) un->val.ptr,
-                                                (size_t) un->val.count));
+  } else if (shape_difftime(cls, nent, vtype)) {
+    const double us = difftime_secs_of(ents, nent);
+    if (us != 0.0)
+      out = realv_to_timedelta(vptr, vn, us);
+    else
+      ixr_no_home(ents, nent, "an attributed value");
   } else {
     ixr_no_home(ents, nent, "an attributed value");
   }
@@ -2705,11 +2737,7 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
     const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
     const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
     const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
-    if (cls != NULL && lv != NULL && nent == 2 &&
-        (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-         class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-        vtype == MIZU_TYPE_INT &&
-        (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+    if (shape_factor(cls, lv, nent, vtype)) {
       int32_t one32 = one_i == INT64_MIN ? MIZU_NA_INT32 :
         (one_i > -2147483648LL && one_i <= 2147483647LL ?
          (int32_t) one_i : 0);
@@ -2726,24 +2754,16 @@ static int ixr_column(mizu_ix *cur, fcol *c) {
                               MIZU_IX_CLASS_FACTOR);
         rc = 0;
       }
-    } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-               vtype == MIZU_TYPE_REAL) {
+    } else if (shape_date(cls, nent, vtype)) {
       rc = fcol_date_fill((const double *) vptr, vn, c);
-    } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-               class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-               vtype == MIZU_TYPE_REAL) {
+    } else if (shape_posixct(cls, tz, nent, vtype)) {
       rc = fcol_ts_fill((const double *) vptr, vn,
                         tz != NULL && tz->kind == AV_STR ?
                           (const char *) tz->val.ptr : "",
                         tz != NULL && tz->kind == AV_STR ?
                           (size_t) tz->val.count : 0, c);
-    } else if (cls != NULL && nent == 2 &&
-               class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
-               vtype == MIZU_TYPE_REAL) {
-      const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
-      const double us = un != NULL && un->kind == AV_STR ?
-        difftime_unit_secs((const char *) un->val.ptr,
-                           (size_t) un->val.count) : 0.0;
+    } else if (shape_difftime(cls, nent, vtype)) {
+      const double us = difftime_secs_of(ents, nent);
       if (us != 0.0)
         rc = fcol_difftime_fill((const double *) vptr, vn, us, c);
       else
@@ -3402,11 +3422,7 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   const attr_ent *ts = attr_find(ents, nent, MIZU_IX_ATTR_TSCALE);
-  if (cls != NULL && lv != NULL && nent == 2 &&
-      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-      tag == MIZU_TYPE_INT &&
-      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+  if (shape_factor(cls, lv, nent, tag)) {
     if (levels_read(lv, &c->lev_off, &c->bytes, &c->nlev,
                     &c->bytes_len) == 0) {
       c->kind = FCOL_DICT;
@@ -3419,12 +3435,9 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
       tree_valid(c, base, e->valid);
       rc = 0;
     }
-  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-             tag == MIZU_TYPE_REAL) {
+  } else if (shape_date(cls, nent, tag)) {
     rc = fcol_date_fill((const double *) data, (uint64_t) e->length, c);
-  } else if (cls != NULL && (nent == 1 || (nent == 2 && tz != NULL)) &&
-             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-             tag == MIZU_TYPE_REAL) {
+  } else if (shape_posixct(cls, tz, nent, tag)) {
     rc = fcol_ts_fill((const double *) data, (uint64_t) e->length,
                       tz != NULL && tz->kind == AV_STR ?
                         (const char *) tz->val.ptr : "",
@@ -3446,12 +3459,8 @@ static int tree_column_fill(const uint8_t *base, const mizu_mizl_entry *e,
     c->borrowed = 1;
     tree_valid(c, base, e->valid);
     rc = 0;
-  } else if (cls != NULL && nent == 2 && class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) &&
-             tag == MIZU_TYPE_REAL) {
-    const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
-    const double us = un != NULL && un->kind == AV_STR ?
-      difftime_unit_secs((const char *) un->val.ptr,
-                         (size_t) un->val.count) : 0.0;
+  } else if (shape_difftime(cls, nent, tag)) {
+    const double us = difftime_secs_of(ents, nent);
     if (us != 0.0)
       rc = fcol_difftime_fill((const double *) data, (uint64_t) e->length,
                               us, c);
@@ -3599,12 +3608,9 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
   const attr_ent *cls = attr_find(ents, nent, MIZU_IX_ATTR_CLASS);
   const attr_ent *lv = attr_find(ents, nent, MIZU_IX_ATTR_LEVELS);
   const attr_ent *dm = attr_find(ents, nent, MIZU_IX_ATTR_DIM);
+  const attr_ent *tz = attr_find(ents, nent, MIZU_IX_ATTR_TZONE);
   const attr_ent *nm2 = NULL, *dn = NULL;
-  if (cls != NULL && lv != NULL && nent == 2 &&
-      (class_is(cls, MIZU_IX_CLASS_FACTOR, NULL) ||
-       class_is(cls, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR)) &&
-      type == MIZU_TYPE_INT &&
-      (lv->kind == AV_STR || lv->kind == AV_STRLIST)) {
+  if (shape_factor(cls, lv, nent, type)) {
     /* a standalone ordered factor surfaces like a plain one */
     int32_t *lev_off = NULL, *codes = NULL;
     uint8_t *lev_bytes = NULL;
@@ -3697,22 +3703,13 @@ PyObject *mizu_py_atomic_home(PyObject *owner, PyObject *loan, int type,
     Py_XDECREF(entries);
     Py_XDECREF(axis);
     Py_DECREF(view);
-  } else if (cls != NULL && nent == 1 && class_is(cls, MIZU_IX_CLASS_DATE, NULL) &&
-             type == MIZU_TYPE_REAL) {
+  } else if (shape_date(cls, nent, type)) {
     out = realv_to_datetime(data, (uint64_t) n, 1);
-  } else if (cls != NULL &&
-             (nent == 1 ||
-              (nent == 2 && attr_find(ents, nent, MIZU_IX_ATTR_TZONE) != NULL)) &&
-             class_is(cls, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
-             type == MIZU_TYPE_REAL) {
+  } else if (shape_posixct(cls, tz, nent, type)) {
     out = realv_to_datetime(data, (uint64_t) n, 0);   /* tzone: display
                                                          metadata, dropped */
-  } else if (cls != NULL && nent == 2 &&
-             class_is(cls, MIZU_IX_CLASS_DIFFTIME, NULL) && type == MIZU_TYPE_REAL) {
-    const attr_ent *un = attr_find(ents, nent, MIZU_IX_ATTR_UNITS);
-    const double us = un != NULL && un->kind == AV_STR ?
-      difftime_unit_secs((const char *) un->val.ptr,
-                         (size_t) un->val.count) : 0.0;
+  } else if (shape_difftime(cls, nent, type)) {
+    const double us = difftime_secs_of(ents, nent);
     if (us != 0.0)
       out = realv_to_timedelta(data, (uint64_t) n, us);
     else
