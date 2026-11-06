@@ -434,11 +434,19 @@ finalizer — short-circuits to the released-pool answer instead).
   `await task` / `Task.collect_async()` (raises the flattened remote
   error), `Pool.collect_any_async()` / `collect_all_async()` (sync-verb
   semantics incl. `index`), `await` a map handle. Discipline:
-  - Enrollment is announce (`_task_notify(tasks, 1)`) before arm, then a
-    synchronous re-check; settle (resolve/reject/detach) withdraws every
-    announce, restoring each slot's one-writer regime — a detached task
-    is blocking-collectible again. Cancelling a Future only detaches,
-    never cancels the task/map.
+  - Enrollment is announce (`_task_notify(tasks, 1)`), then a terminal
+    probe of the new tasks only, and only then the arm — an
+    already-published task settles at the call site with no arm cycle at
+    all, and the post-arm re-check again covers the new enrollment only
+    (every other slot's publish rides the armed word's wake). Settle
+    (resolve/reject/detach) withdraws every announce, restoring each
+    slot's one-writer regime — a detached task is blocking-collectible
+    again. Cancelling a Future only detaches, never cancels the task/map.
+  - The pool arm is sticky: the pump's emptied set leaves it standing for
+    the next enrollment to reuse (an arm+disarm pair per await was a
+    quarter of the sequential collect_async row); only a wake that finds
+    nothing enrolled disarms (one spurious pass per idle period), plus
+    the teardown and loop-change paths. Detaches never disarm.
   - One consumer per result: an enrolled task carries the C
     `async_pending` flag and refuses blocking collects and a second
     enrollment ("one consumer per result"); a promise-armed map handle
