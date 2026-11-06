@@ -192,7 +192,6 @@ def test_stream_window_expired_at_collect(pool):
     script = iter([False, True])  # refill pre-check, then the loop head
     win = _map_mod._StreamWindow(
         pool,
-        pymizu,
         name,
         [(0, 1), (1, 2)],
         1,
@@ -219,7 +218,6 @@ def test_stream_window_expired_at_refill(pool):
     script = iter([False, False, True])
     win = _map_mod._StreamWindow(
         pool,
-        pymizu,
         name,
         [(0, 1), (1, 2)],
         1,
@@ -282,7 +280,6 @@ def test_stream_fail_drains_sibling_errors():
     ]
     with pytest.raises(pymizu.TaskError) as exc_info:
         _map_mod._stream_fail(
-            pymizu,
             handles,
             [0, 1, 2, 3],
             [(0, 2), (2, 4), (4, 6), (6, 8)],
@@ -302,7 +299,7 @@ def test_stream_fail_death_takes_precedence():
     ]
     with pytest.raises(pymizu.WorkerDiedError) as exc_info:
         _map_mod._stream_fail(
-            pymizu, handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
+            handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
         )
     assert exc_info.value.lost == [(4, 6)]
 
@@ -322,7 +319,7 @@ def test_stream_fail_ignores_consumed_cancel():
     ]
     with pytest.raises(pymizu.TaskError) as exc_info:
         _map_mod._stream_fail(
-            pymizu, handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
+            handles, [0, 1, 2], [(0, 2), (2, 4), (4, 6)], first
         )
     assert exc_info.value.index == 3
 
@@ -334,7 +331,7 @@ def test_stream_fail_indexless_error_stays_fatal():
     infra = pymizu.TaskError("attach failed")
     handles = [_FakeHandle(infra)]
     with pytest.raises(pymizu.TaskError) as exc_info:
-        _map_mod._stream_fail(pymizu, handles, [0], [(0, 2)], first)
+        _map_mod._stream_fail(handles, [0], [(0, 2)], first)
     assert exc_info.value is infra
 
 
@@ -346,7 +343,7 @@ def test_stream_fail_collect_failure_stays_fatal():
         _FakeHandle(pymizu.MizuError("payload region vanished"), state="ok")
     ]
     with pytest.raises(pymizu.MizuError, match="payload region vanished"):
-        _map_mod._stream_fail(pymizu, handles, [0], [(0, 2)], first)
+        _map_mod._stream_fail(handles, [0], [(0, 2)], first)
 
 
 def test_stream_spec_fn_view_collect_raises(pool):
@@ -621,9 +618,7 @@ def test_stream_fail_spec_drains_siblings(pool):
     handles = [None, h_first, h_ok, h_sib]
     ranges = [(0, 10), (10, 20), (20, 30), (30, 40)]
     with pytest.raises(pymizu.TaskError) as exc_info:
-        _map_mod._stream_fail(
-            pymizu, handles, [0, 1, 2, 3], ranges, first, [None] * 4
-        )
+        _map_mod._stream_fail(handles, [0, 1, 2, 3], ranges, first, [None] * 4)
     assert exc_info.value is first
     assert first.index == 2
 
@@ -640,7 +635,7 @@ def test_stream_fail_spec_sibling_without_index_raises(pool):
     except pymizu.TaskError as e:
         first = e
     with pytest.raises(pymizu.TaskError) as exc_info:
-        _map_mod._stream_fail(pymizu, [h_plain], [0], [(0, 4)], first, [None])
+        _map_mod._stream_fail([h_plain], [0], [(0, 4)], first, [None])
     assert not hasattr(exc_info.value, "index")
     assert exc_info.value.remote_type == "ValueError"
 
@@ -661,7 +656,6 @@ def test_stream_fail_spec_reraises_died():
             first = e
         with pytest.raises(pymizu.WorkerDiedError) as exc_info:
             _map_mod._stream_fail(
-                pymizu,
                 [h_pend, h_die],
                 [0, 1],
                 [(0, 4), (4, 8)],
@@ -684,7 +678,6 @@ def test_stream_window_spec_submit_expiry(pool):
     )
     win = _map_mod._StreamWindowSpec(
         pool,
-        pymizu,
         [(0, 2), (2, 4)],
         1,
         plan,
@@ -709,7 +702,6 @@ def test_stream_window_spec_loop_expiry(pool):
     )
     win = _map_mod._StreamWindowSpec(
         pool,
-        pymizu,
         [(0, 2), (2, 4)],
         1,
         plan,
@@ -738,7 +730,6 @@ def test_stream_window_spec_refill_expiry(pool):
     )
     win = _map_mod._StreamWindowSpec(
         pool,
-        pymizu,
         [(0, 2), (2, 4)],
         1,
         plan,

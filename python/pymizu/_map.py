@@ -41,15 +41,12 @@ import math as _math
 import random as _random
 import time as _time
 from collections.abc import Callable as _Callable
-from typing import TYPE_CHECKING
 from typing import Any as _Any
 from typing import Literal as _Literal
 from typing import NoReturn as _NoReturn
 
+import pymizu
 from pymizu import _LANG_PYTHON, _LANG_R, _get_aio, _pymizu, _split_source
-
-if TYPE_CHECKING:
-    import pymizu
 
 try:
     import cloudpickle as _pickle
@@ -146,8 +143,6 @@ def _map_check_native(pool: _Any, fn: _Any) -> tuple[bool, int]:
     -------
         The `(is_spec, worker_language)` pair.
     """
-    import pymizu
-
     ident = pool._h._worker_ident()
     if isinstance(fn, pymizu.call):
         if ident is None:
@@ -229,8 +224,6 @@ def _resolve_name(code: str) -> _Callable[..., _Any]:
 
     modname, dot, attr = code.rpartition(".")
     if not dot or not modname or not attr:
-        import pymizu
-
         raise pymizu.MizuError(
             "pymizu: malformed map descriptor: the task name is not qualified"
         )
@@ -274,8 +267,6 @@ def _runner_ix(
     as the worker: unpack and run the native loop, rebuilding this
     language's own seed spec from the neutral pair (an int seed's bytes
     are its ascii form, exactly as `_seed_spec` builds them)."""
-    import pymizu
-
     k = gen_field >> _GEN_SHIFT
     gen = gen_field % (1 << _GEN_SHIFT)
     ctx = _map_ctx(region_name)
@@ -519,8 +510,6 @@ def _runner(
     lists ride the runner's single ordinary result publish; on the
     template path values land in the region's output area instead and the
     publish carries the history alone."""
-    import pymizu
-
     pool = pymizu.current_pool()
     assert pool is not None  # a runner always executes inside a task
     ctx = _map_ctx(region_name)
@@ -779,8 +768,6 @@ def pool_map(
     tasks already in are cancelled and the TIMEOUT sentinel returns (no
     handle); the collection deadline is `collect()`'s. An error raises at
     the call site with the same backstop."""
-    import pymizu
-
     plan = _Plan(pool, fn, args, kwargs, n_chunks, template, stream)
     seed_spec = _resolve_seed(plan, seed)
     collect_mode = _resolve_collect(plan, collect)
@@ -824,15 +811,14 @@ def pool_map(
     try:
         if plan.stream:
             timed_out = m._open_stream(
-                pymizu, fn, x, probe, template, free_rs, remaining, expired
+                fn, x, probe, template, free_rs, remaining, expired
             )
         elif blob is not None:
             timed_out = m._open_blob(
-                pymizu, blob, live, free_rs, inj_cap, remaining, expired
+                blob, live, free_rs, inj_cap, remaining, expired
             )
         else:
             timed_out = m._open_region(
-                pymizu,
                 fn,
                 x,
                 probe,
@@ -864,6 +850,20 @@ def _stream_geometry(n: int, c: int) -> list:
     return ranges
 
 
+def _stream_window_params(
+    plan: _Plan, n: int, live: int, free_rs: int
+) -> tuple[int, list]:
+    """The streaming window's geometry, single-homed: the chunk count c
+    (`n_chunks` or 32 per live worker) and the window width w (2 per live
+    worker, bounded by the chunks and the free result slots), with c's
+    fixed ranges. `live` is 0-clamped by the callers."""
+    live = max(1, live)
+    c = min(n, plan.n_chunks if plan.n_chunks is not None else 32 * live)
+    c = max(1, c)
+    w = max(1, min(c, 2 * live, free_rs))
+    return w, _stream_geometry(n, c)
+
+
 def _stream_slicer(
     x: _Any, probe: tuple | None
 ) -> _Callable[[int, int], _Any]:
@@ -880,7 +880,6 @@ def _stream_slicer(
 
 
 def _stream_fail(
-    pymizu,
     handles: list,
     oi: list,
     ranges: list,
@@ -957,9 +956,7 @@ class _StreamWindow:
     submits and collects; expiry returns the sentinel."""
 
     __slots__ = (
-        "spec",
         "pool",
-        "pymizu",
         "name",
         "ranges",
         "w",
@@ -971,10 +968,11 @@ class _StreamWindow:
         "next_k",
     )
 
+    spec = False
+
     def __init__(
         self,
         pool: pymizu.Pool,
-        pymizu,
         name: str,
         ranges: list,
         w: int,
@@ -982,9 +980,7 @@ class _StreamWindow:
         slicer: _Callable[[int, int], _Any],
         tmpl: bool,
     ) -> None:
-        self.spec = False
         self.pool = pool
-        self.pymizu = pymizu
         self.name = name
         self.ranges = ranges
         self.w = w
@@ -1023,7 +1019,7 @@ class _StreamWindow:
                     ),
                     remaining(),
                 )
-            except self.pymizu.SubmitTimeoutError:
+            except pymizu.SubmitTimeoutError:
                 # ring-full past the deadline is the map's timeout
                 return False
             self.handles[self.next_k] = h
@@ -1036,7 +1032,6 @@ class _StreamWindow:
         remaining: _Callable[[], float | None],
         expired: _Callable[[], bool],
     ) -> list | _pymizu.Sentinel | None:
-        pymizu = self.pymizu
         n = self.ranges[-1][1]
         out = None if self.tmpl else [None] * n
         while self.oi:
@@ -1053,7 +1048,7 @@ class _StreamWindow:
                 e.lost = [self.ranges[self.oi[e.index]]]
                 raise
             except pymizu.TaskError as e:
-                _stream_fail(pymizu, self.handles, self.oi, self.ranges, e)
+                _stream_fail(self.handles, self.oi, self.ranges, e)
             if got is pymizu.TIMEOUT:
                 return pymizu.TIMEOUT
             idx, v = got
@@ -1084,9 +1079,7 @@ class _StreamWindowSpec:
     map() time and tops up per completion, `drive` collects."""
 
     __slots__ = (
-        "spec",
         "pool",
-        "pymizu",
         "ranges",
         "w",
         "plan",
@@ -1103,10 +1096,11 @@ class _StreamWindowSpec:
         "next_k",
     )
 
+    spec = True
+
     def __init__(
         self,
         pool: pymizu.Pool,
-        pymizu,
         ranges: list,
         w: int,
         plan: _Plan,
@@ -1116,9 +1110,7 @@ class _StreamWindowSpec:
         template: _Any,
         seed: tuple[int, int] | None,
     ) -> None:
-        self.spec = True
         self.pool = pool
-        self.pymizu = pymizu
         self.ranges = ranges
         self.w = w
         self.plan = plan
@@ -1169,6 +1161,7 @@ class _StreamWindowSpec:
                     plan.lang,
                 )
                 x_sec = None
+            assert desc is not None  # the x-less branch keeps desc0
             name, capsule = _pymizu._map_stage(
                 desc, x_sec, n_k, n_k, self.template, plan.convert, plan.lang
             )
@@ -1205,7 +1198,6 @@ class _StreamWindowSpec:
         remaining: _Callable[[], float | None],
         expired: _Callable[[], bool],
     ) -> list | _pymizu.Sentinel | _Any:
-        pymizu = self.pymizu
         plan = self.plan
         tprobe = plan.tprobe
         n = self.ranges[-1][1]
@@ -1230,7 +1222,6 @@ class _StreamWindowSpec:
                 raise
             except pymizu.TaskError as e:
                 _stream_fail(
-                    pymizu,
                     self.handles,
                     self.oi,
                     self.ranges,
@@ -1360,7 +1351,6 @@ def _map_workers_gone(pool: pymizu.Pool) -> bool:
 
 
 def _collect_region(
-    pymizu,
     pool: pymizu.Pool,
     capsule: _Any,
     handles: list,
@@ -1572,7 +1562,6 @@ class Map:
 
     def _open_blob(
         self,
-        pymizu,
         blob: bytes,
         live: int,
         free_rs: int,
@@ -1593,28 +1582,22 @@ class Map:
             inj_cap,
         )
         c = max(1, c)
-        size, extra = divmod(n, c)
-        sizes = [size + 1] * extra + [size] * (c - extra)
-        lo = 0
-        for k in range(c):
+        for lo, hi in _stream_geometry(n, c):
             # pre-check, not just the verb's: a nested (worker-side)
             # submit never waits on ring space, so an expired deadline
             # must be caught here, before the payload is built
             if expired():
                 return True
-            hi = lo + sizes[k]
             h = self.pool._h.submit(
                 (_chunk, (blob, lo, hi, self.seed), {}), remaining()
             )
             self.handles.append(h)
             self.ranges.append((lo, hi))
-            lo = hi
         self.kind = "blob"
         return False
 
     def _open_region(
         self,
-        pymizu,
         fn: _Callable[..., _Any],
         x: _Any,
         probe: tuple | None,
@@ -1665,7 +1648,6 @@ class Map:
 
     def _open_stream(
         self,
-        pymizu,
         fn: _Callable[..., _Any],
         x: _Any,
         probe: tuple | None,
@@ -1680,17 +1662,12 @@ class Map:
         expiry."""
         plan = self.plan
         n = self.n
-        live = max(1, self.live)
-        c = min(n, plan.n_chunks if plan.n_chunks is not None else 32 * live)
-        c = max(1, c)
-        w = max(1, min(c, 2 * live, free_rs))
-        ranges = _stream_geometry(n, c)
+        w, ranges = _stream_window_params(plan, n, self.live, free_rs)
         self.kind = "stream"
         self.ranges = ranges
         if plan.spec:
             self.run = _StreamWindowSpec(
                 self.pool,
-                pymizu,
                 ranges,
                 w,
                 plan,
@@ -1709,7 +1686,6 @@ class Map:
         self.name = name
         self.run = _StreamWindow(
             self.pool,
-            pymizu,
             name,
             ranges,
             w,
@@ -1724,33 +1700,50 @@ class Map:
         run = self.run
         return run.handles if run is not None else self.handles
 
+    def _cancel_capsules(self, close: bool) -> None:
+        """Set the fail-fast word on the run's own region (or the
+        prepared map's staged one) and the spec window's chunk regions,
+        unlinking them too when `close` (the collect-end form keeps a
+        view-collected region for the view, and a clean prepared stage
+        for the O(1) re-arm)."""
+        if self.pm is None:
+            if self.capsule is not None:
+                _pymizu._map_cancel_set(self.capsule)
+                if close and not self._transferred:
+                    _pymizu._map_close(self.capsule)
+                    self.capsule = None
+        elif self.pm._capsule is not None:
+            _pymizu._map_cancel_set(self.pm._capsule)
+            if close and not self._transferred:
+                self.pm._capsule = None
+                self.pm._name = None
+        run = self.run
+        if run is not None and run.spec:
+            for i, cap in enumerate(run.capsules):
+                if cap is not None:
+                    _pymizu._map_cancel_set(cap)
+                    if close:
+                        _pymizu._map_close(cap)
+                        run.capsules[i] = None
+
+    def _cancel_tasks(self) -> None:
+        """Cancel every outstanding task of the run (a clean collect
+        consumed them all — a no-op then)."""
+        for h in self._tasks():
+            if h is not None:
+                h.cancel()
+
     def _abort(self) -> None:
         """The submit-time backstop: cancel what landed; a one-shot map
         unlinks its region explicitly, a prepared run drops the stage
         (the next run restages into a fresh one)."""
-        if self.pm is None:
-            if self.capsule is not None:
-                _pymizu._map_cancel_set(self.capsule)
-                _pymizu._map_close(self.capsule)
-                self.capsule = None
-        elif self.pm._capsule is not None:
-            _pymizu._map_cancel_set(self.pm._capsule)
-            self.pm._capsule = None
-            self.pm._name = None
-        run = self.run
-        if run is not None and run.spec:
-            for cap in run.capsules:
-                if cap is not None:
-                    _pymizu._map_cancel_set(cap)
-                    _pymizu._map_close(cap)
-        for h in self._tasks():
-            if h is not None:
-                h.cancel()
+        self._cancel_capsules(True)
+        self._cancel_tasks()
         self._done = True
 
     # The collect halves ---------------------------------------------------
 
-    def _collect(self, pymizu, remaining, expired) -> _Any:
+    def _collect(self, remaining, expired) -> _Any:
         plan = self.plan
         if self.kind == "empty":
             if plan.tprobe is None:
@@ -1777,19 +1770,10 @@ class Map:
             out = self.run.drive(remaining, expired)
             if out is pymizu.TIMEOUT or plan.spec or plan.tprobe is None:
                 return out
-            got, transferred = _gather_out(
-                self.capsule, plan.tprobe, self.n, self.collect_mode
-            )
-            if transferred:
-                self._transferred = True
-                if self.pm is not None:
-                    self.pm._capsule = None
-                    self.pm._name = None
-            return got
+            return self._take_view()
         # the region path: collect under the exhausted-runner trim,
         # splice by element position — or gather the output area
         out = _collect_region(
-            pymizu,
             self.pool,
             self.capsule,
             self.handles,
@@ -1804,8 +1788,18 @@ class Map:
         )
         if out is pymizu.TIMEOUT or plan.tprobe is None:
             return out
+        return self._take_view()
+
+    def _take_view(self) -> _Any:
+        """The template gather tail, shared by the region and stream
+        kinds: a view collect transfers the region to the view (the
+        prepared map's back-reference then drops it, so the next run
+        restages into a fresh region)."""
+        plan = self.plan
+        tprobe = plan.tprobe
+        assert tprobe is not None  # the callers gate on plan.tprobe
         out, transferred = _gather_out(
-            self.capsule, plan.tprobe, self.n, self.collect_mode
+            self.capsule, tprobe, self.n, self.collect_mode
         )
         if transferred:
             self._transferred = True
@@ -1821,39 +1815,15 @@ class Map:
         stage for the O(1) re-arm and drops an unclean one (a straggler
         of an unclean run faces no generation fence, so the next run
         restages into a fresh region)."""
-        pm = self.pm
-        if pm is None:
-            if self.capsule is not None:
-                _pymizu._map_cancel_set(self.capsule)
-                if not self._transferred:
-                    _pymizu._map_close(self.capsule)
-                self.capsule = None
-            run = self.run
-            if run is not None and run.spec:
-                for i, cap in enumerate(run.capsules):
-                    if cap is not None:
-                        _pymizu._map_cancel_set(cap)
-                        _pymizu._map_close(cap)
-                        run.capsules[i] = None
-            for h in self._tasks():
-                if h is not None:
-                    h.cancel()
-            return
-        pending = [h for h in self._tasks() if h is not None]
-        if pending and pm._capsule is not None:
-            _pymizu._map_cancel_set(pm._capsule)
-        if unclean and not self._transferred:
-            pm._capsule = None
-            pm._name = None
-        for h in pending:
-            h.cancel()
+        self._cancel_capsules(unclean)
+        self._cancel_tasks()
 
-    def _resolve(self, pymizu, remaining, expired) -> _Any:
+    def _resolve(self, remaining, expired) -> _Any:
         """The collect half shared by collect() and the async _finish():
         run the kind's collect, classify clean/unclean for the stage's
         fate, clean up."""
         try:
-            out = self._collect(pymizu, remaining, expired)
+            out = self._collect(remaining, expired)
         except BaseException:
             self._cleanup(True)
             if self._cancelled:
@@ -1873,6 +1843,20 @@ class Map:
         self._cleanup(False)
         return out
 
+    def _gate(self) -> None:
+        """The consumer gate shared by the blocking and async collects:
+        one collection per handle, one consumer per result, a cancelled
+        run never collects."""
+        if self._done:
+            raise pymizu.MizuError("pymizu: map handle is already collected")
+        if self._promised:
+            raise pymizu.MizuError(
+                "pymizu: map handle has a pending async consumer — one "
+                "consumer per result"
+            )
+        if self._cancelled:
+            raise pymizu.CancelledError("pymizu: map cancelled")
+
     def collect(self, timeout: float | None = None) -> _Any:
         """Block for the map's results; collect exactly once.
 
@@ -1888,20 +1872,10 @@ class Map:
             The results, with the same shapes and outcomes as
             [`PreparedMap.run()`](`pymizu.PreparedMap`) documents.
         """
-        import pymizu
-
-        if self._done:
-            raise pymizu.MizuError("pymizu: map handle is already collected")
-        if self._promised:
-            raise pymizu.MizuError(
-                "pymizu: map handle has a pending async consumer — one "
-                "consumer per result"
-            )
-        if self._cancelled:
-            raise pymizu.CancelledError("pymizu: map cancelled")
+        self._gate()
         self._done = True
         remaining, expired = _deadline(timeout)
-        return self._resolve(pymizu, remaining, expired)
+        return self._resolve(remaining, expired)
 
     def collect_async(self) -> _Any:
         """Resolve one asyncio.Future with the results `collect()` returns.
@@ -1912,17 +1886,7 @@ class Map:
         (only `cancel()` does). A streaming map refuses, because its sliding
         task window advances in the blocking collect loop.
         """
-        import pymizu
-
-        if self._done:
-            raise pymizu.MizuError("pymizu: map handle is already collected")
-        if self._promised:
-            raise pymizu.MizuError(
-                "pymizu: map handle has a pending async consumer — one "
-                "consumer per result"
-            )
-        if self._cancelled:
-            raise pymizu.CancelledError("pymizu: map cancelled")
+        self._gate()
         if self.kind == "stream":
             raise pymizu.MizuError(
                 "pymizu: a streaming map handle collects blocking only — "
@@ -1943,11 +1907,9 @@ class Map:
         """The async settle's gather: every enrolled task terminal, so
         the blocking machinery never parks (a deadline of None parks on
         nothing)."""
-        import pymizu
-
         self._done = True
         remaining, expired = _deadline(None)
-        return self._resolve(pymizu, remaining, expired)
+        return self._resolve(remaining, expired)
 
     def _pre_scan(self, term: set) -> None:
         """The morsel trim per wake, as the sync collect's passes: a
@@ -1977,16 +1939,8 @@ class Map:
         if self._cancelled:
             return
         self._cancelled = True
-        if self.capsule is not None:
-            _pymizu._map_cancel_set(self.capsule)
-        run = self.run
-        if run is not None and run.spec:
-            for cap in run.capsules:
-                if cap is not None:
-                    _pymizu._map_cancel_set(cap)
-        for h in self._tasks():
-            if h is not None:
-                h.cancel()
+        self._cancel_capsules(False)
+        self._cancel_tasks()
 
     def __del__(self) -> None:
         # the GC backstop mirrors the sync one for a dropped UNCOLLECTED
@@ -2075,8 +2029,6 @@ class PreparedMap:
         template: _Any = None,
         stream: bool = False,
     ) -> None:
-        import pymizu
-
         if not isinstance(pool, pymizu.Pool):
             raise TypeError("pymizu: pool must be a pymizu.Pool")
         plan = _Plan(pool, fn, args, kwargs, n_chunks, template, stream)
@@ -2086,18 +2038,9 @@ class PreparedMap:
                 "cannot stream — a spec stream stages its chunk regions at "
                 "run time, so there is nothing to prepare"
             )
-        self._pymizu = pymizu
         self._pool = pool
         self._plan = plan
-        self._spec = plan.spec
-        self._lang = plan.lang
-        self._convert = plan.convert
-        self._tprobe = plan.tprobe
-        self._stream = plan.stream
         self._fn = fn
-        self._args = plan.args
-        self._kwargs = plan.kwargs
-        self._n_chunks = plan.n_chunks
         self._template = template
         self._set_x(x)
         self._capsule = None
@@ -2114,32 +2057,27 @@ class PreparedMap:
         current caps (the morsel geometry, or a streaming map's fixed
         chunk ranges — whose descriptor is x-independent: fn, args,
         kwargs)."""
-        probe, x, n = _probe_x(self._spec, x, self._convert, self._stream)
+        plan = self._plan
+        probe, x, n = _probe_x(plan.spec, x, plan.convert, plan.stream)
         self._probe = probe
         self._x = x
         self._n = n
         live, free_rs, inj_cap, _ = self._pool._h._map_caps()
-        if self._stream:
-            self._desc = _pickle.dumps((self._fn, self._args, self._kwargs), 4)
-            c = min(
-                n,
-                self._n_chunks
-                if self._n_chunks is not None
-                else 32 * max(1, live),
-            )
-            self._ranges = _stream_geometry(n, max(1, c))
+        if plan.stream:
+            self._desc = _pickle.dumps((self._fn, plan.args, plan.kwargs), 4)
+            _, self._ranges = _stream_window_params(plan, n, live, free_rs)
             return
         self._desc = _write_desc(
-            self._spec,
+            plan.spec,
             self._fn,
-            self._args,
-            self._kwargs,
+            plan.args,
+            plan.kwargs,
             x,
             probe,
-            self._lang,
+            plan.lang,
         )
         _, self._morsel, self._n_morsels = _morsel_geometry(
-            n, self._n_chunks, live, free_rs, inj_cap
+            n, plan.n_chunks, live, free_rs, inj_cap
         )
 
     def _swap_x(self, x: _Any) -> None:
@@ -2153,18 +2091,19 @@ class PreparedMap:
         region). A streaming map's region is x-independent, so any shape
         re-slices — only a length change under a template restages (the
         output area sizes off the staged n)."""
-        if self._stream:
+        plan = self._plan
+        if plan.stream:
             n = self._n
             self._set_x(x)
             if (
                 self._capsule is not None
-                and self._tprobe is not None
+                and plan.tprobe is not None
                 and self._n != n
             ):
                 self._capsule = None
                 self._name = None
             return
-        probe = _pymizu._map_probe_x(x, self._convert)
+        probe = _pymizu._map_probe_x(x, plan.convert)
         if probe is not None and probe[0] == _TAG_COMPLEX and _np is None:
             probe = None
         if (
@@ -2175,9 +2114,7 @@ class PreparedMap:
             and probe[1] == self._n
         ):
             try:
-                _pymizu._map_swap_x(
-                    self._capsule, x, self._convert, self._lang
-                )
+                _pymizu._map_swap_x(self._capsule, x, plan.convert, plan.lang)
             except Exception:
                 # a conversion warning escalated after the write completed:
                 # the section holds the new x but the staged state is
@@ -2195,15 +2132,16 @@ class PreparedMap:
         self._name = None
 
     def _stage(self) -> None:
-        if self._stream:
+        plan = self._plan
+        if plan.stream:
             name, capsule = _pymizu._map_stage(
                 self._desc,
                 None,
                 self._n,
                 1,
                 self._template,
-                self._convert,
-                self._lang,
+                plan.convert,
+                plan.lang,
             )
         else:
             name, capsule = _pymizu._map_stage(
@@ -2212,8 +2150,8 @@ class PreparedMap:
                 self._n,
                 self._morsel,
                 self._template,
-                self._convert,
-                self._lang,
+                plan.convert,
+                plan.lang,
             )
         self._name, self._capsule, self._gen = name, capsule, 0
 
@@ -2266,15 +2204,15 @@ class PreparedMap:
             an interrupted run (timeout, an error, a worker death) drops it, so
             the next run stages a fresh one either way.
         """
-        pymizu = self._pymizu
+        plan = self._plan
         if self._closed:
             raise pymizu.MizuError("pymizu: map handle is closed")
-        seed_spec = _resolve_seed(self._plan, seed)
-        collect_mode = _resolve_collect(self._plan, collect)
+        seed_spec = _resolve_seed(plan, seed)
+        collect_mode = _resolve_collect(plan, collect)
         if x is not None:
             self._swap_x(x)
         if self._n == 0:
-            return Map._empty(self._pool, self._plan)
+            return Map._empty(self._pool, plan)
         if self._capsule is None:
             # a view-collected run transferred the region: restage fresh
             self._stage()
@@ -2291,29 +2229,26 @@ class PreparedMap:
         remaining, expired = _deadline(timeout)
         name = self._name
         assert name is not None  # n > 0 stages at prepare / restage above
-        m = Map(pool, self._plan)
+        m = Map(pool, plan)
         m.pm = self
         m.n = self._n
         m.live = live
         m.seed = seed_spec
         m.collect_mode = collect_mode
-        if self._stream:
-            c = len(self._ranges)
-            w = max(1, min(c, 2 * max(1, live), free_rs))
+        if plan.stream:
             m.kind = "stream"
             m.ranges = self._ranges
             m.capsule = self._capsule
             m.name = name
             m.run = _StreamWindow(
                 pool,
-                pymizu,
                 name,
                 self._ranges,
-                w,
                 # never a spec map here: the (seed_bytes, offset) form
+                _stream_window_params(plan, self._n, live, free_rs)[0],
                 seed_spec,  # pyrefly: ignore [bad-argument-type]
                 _stream_slicer(self._x, self._probe),
-                self._tprobe is not None,
+                plan.tprobe is not None,
             )
             timed_out = not m.run.refill(remaining, expired)
         else:
@@ -2332,7 +2267,7 @@ class PreparedMap:
                 remaining,
                 expired,
                 m.handles,
-                self._spec,
+                plan.spec,
             )
         if timed_out:
             m._abort()

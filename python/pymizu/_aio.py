@@ -47,6 +47,14 @@ _QUANTUM_N = 2048
 _QUANTUM_SEC = 0.001
 
 
+def _quantum_hit(work: int, deadline: float) -> bool:
+    """The drain quantum verdict: the item cap, or the wall-clock bound
+    probed every 64 items (the clock read itself is not free)."""
+    return work >= _QUANTUM_N or (
+        (work & 63) == 0 and _time.monotonic() >= deadline
+    )
+
+
 class _WaiterFuture(_asyncio.Future):
     """The enrollment waiters: cancel() routes straight to the detach
     half (never the task or collection), dropping the per-settle
@@ -235,23 +243,28 @@ def _settle_channel_now(st: _ChanState, value: _Any) -> None:
     st._disarm()
 
 
+def _settle_via_loop(st: _Any, settle: _Any, arg: _Any) -> None:
+    """The teardown settle's thread discipline, shared by both handle
+    kinds: asyncio Futures are loop-thread-confined, so the settle rides
+    call_soon_threadsafe when a loop captured one (settling in place on a
+    closed loop); the teardown never waits on it."""
+    loop = st.loop
+    if loop is None:
+        settle(st, arg)
+        return
+    try:
+        loop.call_soon_threadsafe(settle, st, arg)
+    except RuntimeError:
+        settle(st, arg)  # a closed loop: settle in place
+
+
 def settle_channel(ch: pymizu.Channel, value: _Any) -> None:
     """The facade teardown's settle: resolve every pending recv with the
-    terminal value (CLOSED on close, PEER_GONE on destroy) and disarm.
-    asyncio Futures are loop-thread-confined, so the settle rides
-    call_soon_threadsafe when a loop captured one; the teardown never
-    waits on it."""
+    terminal value (CLOSED on close, PEER_GONE on destroy) and disarm."""
     st = ch._h._aio
     if st is None:
         return
-    loop = st.loop
-    if loop is None:
-        _settle_channel_now(st, value)
-        return
-    try:
-        loop.call_soon_threadsafe(_settle_channel_now, st, value)
-    except RuntimeError:
-        _settle_channel_now(st, value)  # a closed loop: settle in place
+    _settle_via_loop(st, _settle_channel_now, value)
 
 
 # Pools ---------------------------------------------------------------------
@@ -353,9 +366,7 @@ class _PoolState:
                             fut.set_exception(e)
                     progressed = True
                     work += 1
-                    if work >= _QUANTUM_N or (
-                        (work & 63) == 0 and _time.monotonic() >= deadline
-                    ):
+                    if _quantum_hit(work, deadline):
                         assert self.loop is not None
                         self.loop.call_soon(self._pump)
                         return
@@ -371,9 +382,7 @@ class _PoolState:
                     _settle_collection(self, c)
                     progressed = True
                     work += 1
-                    if work >= _QUANTUM_N or (
-                        (work & 63) == 0 and _time.monotonic() >= deadline
-                    ):
+                    if _quantum_hit(work, deadline):
                         assert self.loop is not None
                         self.loop.call_soon(self._pump)
                         return
@@ -595,16 +604,8 @@ def _settle_pool_now(st: _PoolState, exc: BaseException) -> None:
 
 def settle_pool(pool_h: _Any, exc: BaseException) -> None:
     """The facade teardown's settle: fail every enrolled waiter with the
-    closed-handle error and disarm. Rides call_soon_threadsafe (asyncio
-    Futures are loop-thread-confined); the teardown never waits on it."""
+    closed-handle error and disarm."""
     st = pool_h._aio
     if st is None:
         return
-    loop = st.loop
-    if loop is None:
-        _settle_pool_now(st, exc)
-        return
-    try:
-        loop.call_soon_threadsafe(_settle_pool_now, st, exc)
-    except RuntimeError:
-        _settle_pool_now(st, exc)  # a closed loop: settle in place
+    _settle_via_loop(st, _settle_pool_now, exc)

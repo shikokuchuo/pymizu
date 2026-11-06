@@ -1014,9 +1014,7 @@ def test_collect_region_fatal_runner_error(pool):
         h = pool.submit(fail_at, 0, 0)
         remaining, expired = _map._deadline(10)
         with pytest.raises(pymizu.TaskError) as exc_info:
-            _map._collect_region(
-                pymizu, pool, capsule, [h], 6, remaining, expired
-            )
+            _map._collect_region(pool, capsule, [h], 6, remaining, expired)
         assert not hasattr(exc_info.value, "index")
     finally:
         _map._ctx_cache.pop(name, None)
@@ -1038,7 +1036,6 @@ def test_collect_region_deferral_timeout(pool):
         remaining, _ = _map._deadline(10)
         checks = iter([False, True])
         out = _map._collect_region(
-            pymizu,
             pool,
             capsule,
             [h],

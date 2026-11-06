@@ -1317,7 +1317,9 @@ class Pool:
         return _get_map().pool_map(
             self,
             _get_map()._Star(fn),
-            list(x),
+            # the copy is load-bearing only for a non-list x (a buffer's
+            # row-as-element semantics); a list is already the list
+            x if type(x) is list else list(x),
             args,
             kwargs,
             n_chunks=n_chunks,
