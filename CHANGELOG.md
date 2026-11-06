@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a rare deadlock where `Pool.stop()` could hang indefinitely
+  when a `PoolExecutor` wrapped the pool.
 - Fixed a rare crash when unpickling a `Frame` under memory pressure.
 
 ## [0.1.0] - 2026-11-04
