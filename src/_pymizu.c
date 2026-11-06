@@ -6430,8 +6430,18 @@ static void pool_gate_yield(void) {
    finalizer cannot wait. Both words are GIL-guarded like in_flight: the
    stop raises the flag, then yields the GIL until the in-flight count
    drains, so nothing is mid-call when the core releases. */
-static void pool_stop_gate(MizuPool *self) {
+static int pool_stop_gate(MizuPool *self) {
+  /* A direct-mode notify callback (the executor's drain) runs on the
+     listener thread the core's watch stop waits out: parking it here
+     deadlocks — the stop holding the word blocks on this very callback.
+     Answer the closed handle instead; the drain treats it as the pool's
+     mid-drain destroy and returns. */
+  if (self->stopping && notify_cb_active != NULL) {
+    PyErr_SetString(PyExc_ValueError, "pymizu: pool handle is closed");
+    return -1;
+  }
   while (self->stopping) pool_gate_yield();
+  return 0;
 }
 
 static mizu_pool *pool_peek(MizuPool *self) {
@@ -6445,7 +6455,7 @@ static mizu_pool *pool_peek(MizuPool *self) {
 }
 
 static mizu_pool *pool_get(MizuPool *self) {
-  pool_stop_gate(self);
+  if (pool_stop_gate(self) < 0) return NULL;
   mizu_pool *p = pool_peek(self);
   if (p == NULL && !PyErr_Occurred())
     PyErr_SetString(PyExc_ValueError, "pymizu: pool handle is closed");

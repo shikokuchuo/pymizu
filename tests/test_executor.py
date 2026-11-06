@@ -322,3 +322,28 @@ def test_no_drain_thread(pool):
         }
         after = {t.name for t in threading.enumerate()}
     assert not any("executor" in n for n in after - before)
+
+
+def test_stop_racing_a_listener_drain_no_deadlock(pool):
+    # a direct-mode drain in flight when stop() runs must not park on
+    # the stop gate: the core's watch stop waits the callback out while
+    # the callback would wait out the gate — the gate answers the
+    # callback the closed handle instead
+    entered = threading.Event()
+    release = threading.Event()
+
+    def drain():
+        entered.set()
+        assert release.wait(5)
+        with pytest.raises(ValueError, match="pool handle is closed"):
+            pool._h._notify_rearm()
+
+    pool._h._notify_arm(None, drain)
+    pool._h._task_notify([pool.submit(sleep_ident, 0.5)], True)
+    assert entered.wait(5)
+    stopper = threading.Thread(target=pool.stop)
+    stopper.start()
+    time.sleep(0.2)  # the stop raises the gate word, then enters the core
+    release.set()
+    stopper.join(10)
+    assert not stopper.is_alive()
