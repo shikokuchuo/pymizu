@@ -4,7 +4,7 @@ Orderly shutdown (controller only).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1423-L1448)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1425-L1450)
 
 ``` python
 Pool.stop(timeout=5.0)

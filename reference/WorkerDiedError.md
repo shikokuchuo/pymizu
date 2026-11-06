@@ -4,7 +4,7 @@ The executing worker died mid-task. Carries 'slot' and 'pid' attributes identify
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L82-L87)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L83-L89)
 
 ``` python
 WorkerDiedError()
