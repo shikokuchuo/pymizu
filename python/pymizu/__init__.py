@@ -144,6 +144,32 @@ def launcher(
 # the internal name under the launcher= parameters' own shadowing
 _default_launcher = launcher
 
+# The deferred submodules, imported on first use and cached on a module
+# global: _aio pulls in asyncio and _map try-imports numpy, so the
+# import stays lazy, but the per-call sites skip the import machinery
+# after the first. The holder names differ from the submodule names:
+# importing a submodule rebinds it as a package attribute.
+_aio_lazy: _Any = None
+_map_lazy: _Any = None
+
+
+def _get_aio() -> _Any:
+    global _aio_lazy
+    if _aio_lazy is None:
+        from pymizu import _aio
+
+        _aio_lazy = _aio
+    return _aio_lazy
+
+
+def _get_map() -> _Any:
+    global _map_lazy
+    if _map_lazy is None:
+        from pymizu import _map
+
+        _map_lazy = _map
+    return _map_lazy
+
 
 class Channel:
     """A shared-memory channel handle (process-private).
@@ -166,6 +192,10 @@ class Channel:
 
     _h: _pymizu._Channel
     _proc: _subprocess.Popen | None
+    _send: _Callable[..., _Any]  # the hot C verbs' bound methods, cached
+    _recv: _Callable[..., _Any]  # by _wrap (one allocation per handle,
+    _send_batch: _Callable[..., _Any]  # not one per call)
+    _recv_batch: _Callable[..., _Any]
     drop: bytes  # set by _attach()
 
     def __init__(self):
@@ -176,6 +206,10 @@ class Channel:
         self = cls.__new__(cls)
         self._h = handle
         self._proc = None
+        self._send = handle.send
+        self._recv = handle.recv
+        self._send_batch = handle.send_batch
+        self._recv_batch = handle.recv_batch
         return self
 
     @classmethod
@@ -309,7 +343,7 @@ class Channel:
             Another verb is in flight on this side from a second
             thread: a side is confined to one thread at a time.
         """
-        return self._h.send(x)
+        return self._send(x)
 
     def _send_error(self, exc: BaseException) -> bool:
         """The peer shim's uncaught-error send: frame the exception as an
@@ -325,7 +359,7 @@ class Channel:
         Returns the number accepted, which is fewer than ``len(xs)`` when
         the ring fills or a terminal state is reached.
         """
-        return self._h.send_batch(xs)
+        return self._send_batch(xs)
 
     def recv(self, timeout: float | None = None) -> _Any:
         """Receive one value.
@@ -349,7 +383,7 @@ class Channel:
             a side is confined to one thread and one consumer form at
             a time.
         """
-        return self._h.recv(timeout)
+        return self._recv(timeout)
 
     def recv_async(self) -> _Any:
         """Receive the next value as an `asyncio.Future`.
@@ -383,9 +417,7 @@ class Channel:
         consumed and the async consumer keeps flowing, so the other outstanding
         calls are unaffected.
         """
-        from pymizu import _aio
-
-        return _aio.chan_recv_async(self)
+        return _get_aio().chan_recv_async(self)
 
     async def __aiter__(self) -> _Any:
         """Iterate over received payloads until CLOSED or PEER_GONE.
@@ -416,7 +448,7 @@ class Channel:
 
         Returns a list (possibly short or empty), or a terminal sentinel.
         """
-        return self._h.recv_batch(n, timeout)
+        return self._recv_batch(n, timeout)
 
     def close(self, timeout: float = 5.0) -> bool:
         """Close the channel in an orderly way.
@@ -435,9 +467,7 @@ class Channel:
         ok = self._h.close(timeout)
         if ok and self._h._aio is not None:
             # a completed close settles pending recv futures with CLOSED
-            from pymizu import _aio
-
-            _aio.settle_channel(self, CLOSED)
+            _get_aio().settle_channel(self, CLOSED)
         if not ok:
             _warnings.warn(
                 "pymizu: close timed out waiting for the peer; resources "
@@ -463,9 +493,7 @@ class Channel:
         verb stays confined to one thread (see the class docstring).
         """
         if self._h._aio is not None:
-            from pymizu import _aio
-
-            _aio.settle_channel(self, PEER_GONE)
+            _get_aio().settle_channel(self, PEER_GONE)
         return self._h.destroy()
 
     def alive(self) -> bool:
@@ -703,6 +731,10 @@ class Pool:
 
     _h: _pymizu._Pool
     _destroy_hooks: list  # the PoolExecutor's settle callbacks (lazily)
+    _submit: _Callable[..., _Any]  # the hot C verbs' bound methods,
+    _submit_batch: _Callable[..., _Any]  # cached by _wrap (one allocation
+    _collect_any: _Callable[..., _Any]  # per handle, not one per call)
+    _collect_all: _Callable[..., _Any]
 
     def __init__(self):
         raise TypeError("use Pool.create() or Pool.attach()")
@@ -711,6 +743,10 @@ class Pool:
     def _wrap(cls, handle: _pymizu._Pool) -> Pool:
         self = cls.__new__(cls)
         self._h = handle
+        self._submit = handle.submit
+        self._submit_batch = handle.submit_batch
+        self._collect_any = handle.collect_any
+        self._collect_all = handle.collect_all
         return self
 
     @classmethod
@@ -895,11 +931,11 @@ class Pool:
             if ident is None:
                 raise MizuError("pymizu: no worker has joined this pool")
             _check_qualified(fn.code, fn.kind, ident[0])
-            return self._h.submit(_call_frame(fn), timeout)
+            return self._submit(_call_frame(fn), timeout)
         if not callable(fn):
             raise TypeError("pymizu: fn must be callable")
         _check_native(self._h._worker_ident(), "Pool.submit")
-        return self._h.submit(_task_frame(fn, args, kwargs), timeout)
+        return self._submit(_task_frame(fn, args, kwargs), timeout)
 
     def submit_batch(
         self,
@@ -935,7 +971,7 @@ class Pool:
         """
         _check_native(self._h._worker_ident(), "Pool.submit_batch")
         # the C verb frames the zero-arg callables itself (one crossing)
-        return self._h.submit_batch(fns, timeout)
+        return self._submit_batch(fns, timeout)
 
     def collect_any(
         self, tasks: _Iterable[Task], timeout: float | None = None
@@ -963,7 +999,7 @@ class Pool:
             waiting half is confined to one thread (the class
             docstring).
         """
-        return self._h.collect_any(tasks, timeout)
+        return self._collect_any(tasks, timeout)
 
     def collect_all(
         self, tasks: _Iterable[Task], timeout: float | None = None
@@ -994,7 +1030,7 @@ class Pool:
             waiting half is confined to one thread (the class
             docstring).
         """
-        return self._h.collect_all(tasks, timeout)
+        return self._collect_all(tasks, timeout)
 
     def collect_any_async(self, tasks: _Iterable[Task]) -> _Any:
         """The event-driven [`collect_any()`](`pymizu.Pool.collect_any`).
@@ -1017,9 +1053,7 @@ class Pool:
             detaches every task, so each can be collected blocking again, and
             never cancels them.
         """
-        from pymizu import _aio
-
-        return _aio.collect_any_async(self, tasks)
+        return _get_aio().collect_any_async(self, tasks)
 
     def collect_all_async(self, tasks: _Iterable[Task]) -> _Any:
         """The event-driven [`collect_all()`](`pymizu.Pool.collect_all`).
@@ -1040,9 +1074,7 @@ class Pool:
             and the rest stay collectible. Cancelling the Future detaches every
             task and never cancels them.
         """
-        from pymizu import _aio
-
-        return _aio.collect_all_async(self, tasks)
+        return _get_aio().collect_all_async(self, tasks)
 
     def map(
         self,
@@ -1231,9 +1263,7 @@ class Pool:
         >>> results
         [5, 4, 3, 2, 1, 0, 1, 2, 3, 4]
         """
-        from pymizu import _map
-
-        return _map.pool_map(
+        return _get_map().pool_map(
             self,
             fn,
             x,
@@ -1277,8 +1307,6 @@ class Pool:
         is Python-only. Everything else (seeding, templates, streaming, the
         errors) works as in [`map()`](`pymizu.Pool.map`).
         """
-        from pymizu import _map
-
         if type(fn) is call:
             raise TypeError(
                 "pymizu: a call spec cannot starmap — element unpacking "
@@ -1286,9 +1314,9 @@ class Pool:
             )
         if not callable(fn):
             raise TypeError("pymizu: fn must be callable")
-        return _map.pool_map(
+        return _get_map().pool_map(
             self,
-            _map._Star(fn),
+            _get_map()._Star(fn),
             list(x),
             args,
             kwargs,
@@ -1327,9 +1355,7 @@ class Pool:
         output area is sized for the staged length. Close the handle (or use it
         as a context manager) to release the region.
         """
-        from pymizu import _map
-
-        return _map.PreparedMap(
+        return _get_map().PreparedMap(
             self,
             fn,
             x,
@@ -1438,9 +1464,7 @@ class Pool:
         for hook in getattr(self, "_destroy_hooks", ()):
             hook()
         if self._h._aio is not None:
-            from pymizu import _aio
-
-            _aio.settle_pool(
+            _get_aio().settle_pool(
                 self._h, ValueError("pymizu: pool handle is closed")
             )
         return self._h.destroy()
@@ -1593,9 +1617,7 @@ def current_rng() -> _np.random.Generator | None:
     element's stash. A later call rebuilds from the seed, restarting the stream
     instead of continuing it.
     """
-    from pymizu import _map
-
-    return _map._current_rng()
+    return _get_map()._current_rng()
 
 
 def default_pool() -> Pool | None:
