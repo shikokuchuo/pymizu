@@ -4,7 +4,7 @@ A read-only snapshot of the pool's state (dict).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1448-L1456)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1472-L1480)
 
 ``` python
 Pool.info()

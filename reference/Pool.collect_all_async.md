@@ -4,7 +4,7 @@ The event-driven [`collect_all()`](../reference/Pool.collect_all.md#pymizu.Pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1024-L1045)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1058-L1077)
 
 ``` python
 Pool.collect_all_async(tasks)

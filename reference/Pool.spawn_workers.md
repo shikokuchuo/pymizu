@@ -4,7 +4,7 @@ Spawn `n` additional workers and wait for them to join.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1350-L1395)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1376-L1421)
 
 ``` python
 Pool.spawn_workers(

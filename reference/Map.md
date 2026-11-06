@@ -4,7 +4,7 @@ A staged, submitted map; collects exactly once, through this handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1506-L2009)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1506-L2007)
 
 ``` python
 Map(
@@ -29,7 +29,7 @@ Stop the run: workers halt within about one batch.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1970-L1991)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1968-L1989)
 
 ``` python
 cancel()
@@ -65,7 +65,7 @@ Resolve one asyncio.Future with the results `collect()` returns.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1906-L1939)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1906-L1937)
 
 ``` python
 collect_async()
