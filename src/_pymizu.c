@@ -5623,28 +5623,38 @@ Bounded: the ordinary send never blocks for ring space, so a full ring\n\
 drops the stream (the stderr traceback stands either way). True on\n\
 publish, False on a full ring or an already-closed channel.");
 
+/* The pinned-payload send bracket shared by _send_error and
+   _channel_send_raw: the hctx field set inside the role guard (two pinned
+   sends can no longer interleave set/clear across the GIL drop). Both
+   clears are load-bearing: the stage hook clears on the pointer-match,
+   and the clear here is unconditional — the core can return FULL without
+   ever staging. as_bool selects the return mapping. */
+static PyObject *chan_send_pinned(MizuChannel *self, PyObject *arg,
+                                  PyObject **field, int as_bool) {
+  mizu_channel *c = chan_get(self);
+  if (c == NULL) return NULL;
+  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
+  *field = arg;
+  mizu_status st;
+  CHAN_ALLOW_THREADS(self);
+  st = mizu_channel_send(c, (void *) arg);
+  CHAN_RESUME();
+  *field = NULL;
+  int err = chan_call_done(self, c, st);
+  role_leave(&self->verb_active);
+  if (err) return NULL;
+  return as_bool ? PyBool_FromLong(st == MIZU_OK) :
+    status_or_sentinel(st, Py_None);
+}
+
 static PyObject *Channel_send_error(MizuChannel *self, PyObject *arg) {
   if (!PyExceptionInstance_Check(arg)) {
     PyErr_SetString(PyExc_TypeError,
                     "pymizu: expected an exception instance");
     return NULL;
   }
-  mizu_channel *c = chan_get(self);
-  if (c == NULL) return NULL;
   MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
-  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
-  /* the err_exc bracket lives inside the guard: two _send_error calls can
-     no longer interleave set/clear across the GIL drop */
-  hctx->err_exc = arg;
-  mizu_status st;
-  CHAN_ALLOW_THREADS(self);
-  st = mizu_channel_send(c, (void *) arg);
-  CHAN_RESUME();
-  hctx->err_exc = NULL;
-  int err = chan_call_done(self, c, st);
-  role_leave(&self->verb_active);
-  if (err) return NULL;
-  return PyBool_FromLong(st == MIZU_OK);
+  return chan_send_pinned(self, arg, &hctx->err_exc, 1);
 }
 
 /* A tuple snapshot for the batch verbs: the GIL drops for the batch, so
@@ -9025,22 +9035,8 @@ static PyObject *pymizu_channel_send_raw(PyObject *Py_UNUSED(module),
     return NULL;
   }
   MizuChannel *self = (MizuChannel *) h;
-  mizu_channel *c = chan_get(self);
-  if (c == NULL) return NULL;
   MizuHandleCtx *hctx = (MizuHandleCtx *) self->vcache;
-  if (role_enter(&self->verb_active, chan_concurrent_msg)) return NULL;
-  /* as _send_error: the bracket lives inside the guard, so two raw sends
-     cannot interleave set/clear across the GIL drop */
-  hctx->raw_payload = b;
-  mizu_status st;
-  CHAN_ALLOW_THREADS(self);
-  st = mizu_channel_send(c, (void *) b);
-  CHAN_RESUME();
-  hctx->raw_payload = NULL;
-  int err = chan_call_done(self, c, st);
-  role_leave(&self->verb_active);
-  if (err) return NULL;
-  return status_or_sentinel(st, Py_None);
+  return chan_send_pinned(self, b, &hctx->raw_payload, 0);
 }
 
 static PyMethodDef pymizu_methods[] = {
