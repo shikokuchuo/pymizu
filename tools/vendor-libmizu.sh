@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="5012d52cf7dfe5e3adb28288b51423d742b1cbb7"  # libmizu: v0.1.0
+PIN="6dfe3754d7a334860f84677309eeef282eb09f77"  # libmizu: masked int32/int64 fuse
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
