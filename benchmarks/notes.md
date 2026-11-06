@@ -73,10 +73,10 @@ probes and A/B isolations stay in the log.
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec prepared | 0.1 us/elt | 2026-10-01 |
 | crosslang map compute, spec | 335k tasks/s | 2026-10-03 |
-| submit plan k = 0 (W2 row) | 292.3 us/task | 2026-10-04 |
-| submit plan k = 1 (W2 row) | 280.7 us/task | 2026-10-04 |
-| submit plan k = 4 (W2 row) | 301.9 us/task | 2026-10-04 |
-| submit plan k = 16 (W2 row) | 351.8 us/task | 2026-10-04 |
+| submit plan k = 0 (W2 row) | 87.1 us/task | 2026-11-06 |
+| submit plan k = 1 (W2 row) | 100.7 us/task | 2026-11-06 |
+| submit plan k = 4 (W2 row) | 97.6 us/task | 2026-11-06 |
+| submit plan k = 16 (W2 row) | 155.0 us/task | 2026-11-06 |
 | event-driven, channel armed | 2.62M rt/s | 2026-10-27 |
 | event-driven, channel recv_async | 622k rt/s | 2026-10-27 |
 | event-driven, pool collect_async | 520k tasks/s | 2026-10-27 |
@@ -1137,3 +1137,26 @@ executor outstanding 0.953-0.988, event-driven 0.980-1.034) sit inside
 that band. No table swap — an A/B isolation run, logged per convention.
 
 Status: full suite 1044 pass, 1 skip.
+
+## 2026-11-06 — Phase 2 hot-path efficiency (59d947d, 669720d, a70e42d, 9176a33)
+
+The backlog's phase 2 (branch refactor/hot-path-efficiency): the 'I'
+walker records one (index | borrowed key) path segment per descent and
+renders only at decline time; ixe_fcol's masked arms gate on the
+recorded vnulls; layout.c's MIZL write pass records the remote-leaf
+validity claim as it goes (the third element walk is gone); and the
+facades cache hot bound C verbs plus lazy _aio/_map holders. Four A/B
+runs against 53cd2ee on the same host, which was jittery (in-process
+controls swung 0.945-1.097; the widen and R-echo rows moved +/-20% on
+untouched code). Item 1's target rows dominate: plan k = 0/1/4/16 went
+263.6 -> 87.1, 290.6 -> 100.7, 292.0 -> 97.6, 349.8 -> 159.2 us/task
+(-55% to -67%) — a structural win, so the table's four plan rows swap
+to the day's per-row bests. All-rows geomeans vs the prior build:
+1.070 (item 1), 0.996 (item 2), 0.985 (item 3) — items 2-3 parity
+inside the noise band (their exact paths have no bench row; the
+masked-Arrow and MIZH/MIZS rows stand as adjacent signal). One
+pre-existing anomaly, visible on the baseline build too: stage masked
+int64 ran 202-210 us/send against the table's 97.6 — a definition or
+host drift to re-check on a quiet host, not phase 2's doing.
+
+Status: full suite 1044 pass, 1 skip; ruff + pyrefly clean.
