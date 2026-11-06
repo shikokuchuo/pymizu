@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Faster sends of nested list, tuple, or dict payloads to R peers.
+- Faster sends of int64 numpy arrays to R peers.
 
 ### Fixed
 

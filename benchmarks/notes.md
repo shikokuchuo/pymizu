@@ -1160,3 +1160,12 @@ int64 ran 202-210 us/send against the table's 97.6 — a definition or
 host drift to re-check on a quiet host, not phase 2's doing.
 
 Status: full suite 1044 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-06 — masked int64 conversion fuse (libmizu 6dfe375)
+
+The masked int64 anomaly was the conversion kernel's genuine-sentinel
+count: a second pass over dst that only the int32/int64 rows pay.
+libmizu 6dfe375 fuses it into the copy; re-vendored here. Same-host
+A/B: masked int64 185.6 -> ~140 us/send, the int64:int32 gap ~1.5x ->
+~1.1x. No best-known swap — 140 does not beat the 97.6 quiet-machine
+record.
