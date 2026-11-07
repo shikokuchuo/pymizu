@@ -121,6 +121,9 @@ class PoolExecutor(_Executor):
         self._armed = False
         self._shutdown = False
         self._broken: Exception | None = None
+        # the native-worker verdict, cached once known: the pool's worker
+        # word never resets once set, and a None (no worker yet) re-reads
+        self._native = False
         # a pool destroy publishes nothing: the facade's hook fails the
         # outstanding futures (its own teardown never wakes the drain)
         hooks = getattr(pool, "_destroy_hooks", None)
@@ -200,7 +203,11 @@ class PoolExecutor(_Executor):
                 self._pool_h._task_notify([task], True)
                 terminal = None
             else:
-                _pkg._check_native(self._pool_h._worker_ident(), "Pool.submit")
+                if not self._native:
+                    ident = self._pool_h._worker_ident()
+                    if ident is not None:
+                        _pkg._check_native(ident, "Pool.submit")
+                        self._native = True
                 with self._submits:
                     # the fused submit + announce + terminal re-check
                     task, terminal = self._exec_submit(fn, args, kwargs)

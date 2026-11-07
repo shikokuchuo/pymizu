@@ -393,6 +393,16 @@ def _collection_ready(c: _Collection, term: set) -> bool:
     return term.issuperset(c.tasks)
 
 
+def _collection_ready_now(st: _PoolState, c: _Collection) -> bool:
+    """The enrollment probe's cheap readiness verdict: a bool list plus
+    the short-circuiting builtin, never a set — burst enrollments (every
+    member still pending) cost one C walk and no hashing."""
+    term = st.pool_h._tasks_terminal(c.tasks)
+    if c.kind == "any":
+        return any(term)
+    return all(term)
+
+
 def _settle_collection(st: _PoolState, c: _Collection) -> None:
     c.done = True
     try:
@@ -479,12 +489,11 @@ def _enroll_collection(
     if c.tasks:
         st.pool_h._tasks_enroll(c.tasks)
     try:
-        if c.tasks and _collection_ready(
-            c, st.pool_h._tasks_terminal_set(c.tasks)
-        ):
+        if c.tasks and _collection_ready_now(st, c):
             # already terminal: settle here, never arming
             _settle_collection(st, c)
             return fut
+        fresh_arm = not st.armed
         _arm(st, loop)
     except BaseException:
         if c.tasks:
@@ -493,9 +502,11 @@ def _enroll_collection(
     st.collections.append(c)
     fut._detach = lambda: _detach_collection(st, c)
     if c.tasks:
-        # the post-arm re-check covers this collection only (the
-        # transplant); every other slot's publish rides the armed wake
-        if _collection_ready(c, st.pool_h._tasks_terminal_set(c.tasks)):
+        # the post-arm re-check covers this collection only, and only a
+        # fresh arm needs it: under a standing arm a racing publish
+        # signals the wake whose pump scans the set (the R enroll's
+        # fence-when-armed rule)
+        if fresh_arm and _collection_ready_now(st, c):
             _settle_collection(st, c)
     else:
         # an empty map: nothing to wake for — settle from the call site
