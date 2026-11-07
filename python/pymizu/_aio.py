@@ -310,17 +310,17 @@ class _Collection:
 
 
 class _PoolState:
-    """A pool handle's async consumer state: the single-task futures and
-    the collections sharing the submitter's one coalescing word. Lives on
-    the C handle's ``_aio`` slot; the notify record's drain is ``_pump``."""
+    """A pool handle's async consumer state: the collections sharing the
+    submitter's one coalescing word (the single-task waiters live in the
+    C registry on the handle). Lives on the C handle's ``_aio`` slot; the
+    notify record's drain is ``_pump``."""
 
-    __slots__ = ("pool_h", "loop", "armed", "singles", "collections")
+    __slots__ = ("pool_h", "loop", "armed", "collections")
 
     def __init__(self, pool_h: _Any) -> None:
         self.pool_h = pool_h
         self.loop: _asyncio.AbstractEventLoop | None = None
         self.armed = False
-        self.singles: dict[_Any, _asyncio.Future] = {}
         self.collections: list[_Collection] = []
 
     def _disarm(self) -> None:
@@ -328,22 +328,16 @@ class _PoolState:
             self.armed = False
             self.pool_h._notify_disarm()
 
-    def _enrolled(self) -> list:
-        tasks = list(self.singles)
-        for c in self.collections:
-            if not c.done:
-                tasks.extend(c.tasks)
-        return tasks
-
     def _pump(self) -> None:
         """One drain pass (one per wake): re-arm the submitter word, scan
-        the enrolled set, resolve what newly turned terminal. The pass
-        exits only when a scan finds nothing new — the re-arm then stands
-        and a publish signals the next wake (the announce/recheck
-        transplant). The arm is sticky: a pass that worked leaves it
-        standing for the next enrollment to reuse; only a wake finding
-        nothing enrolled at all disarms (one spurious pass per idle
-        period)."""
+        the enrolled set, resolve what newly turned terminal. The singles
+        half is one C scan over the enrolled words; the collections half
+        scans its own tasks. The pass exits only when a scan finds nothing
+        new — the re-arm then stands and a publish signals the next wake
+        (the announce/recheck transplant). The arm is sticky: a pass that
+        worked leaves it standing for the next enrollment to reuse; only
+        a wake finding nothing enrolled at all disarms (one spurious pass
+        per idle period)."""
         if not self.armed:
             return
         work = 0
@@ -352,46 +346,40 @@ class _PoolState:
             first = True
             while True:
                 self.pool_h._notify_rearm()
-                tasks = self._enrolled()
-                if not tasks:
-                    if first:
+                n, left = self.pool_h._pump_singles(_QUANTUM_N - work)
+                work += n
+                if n and _quantum_hit(work, deadline):
+                    assert self.loop is not None
+                    self.loop.call_soon(self._pump)
+                    return
+                colls = [c for c in self.collections if not c.done]
+                if not colls and left == 0:
+                    # the sticky arm drops only on a wake that finds
+                    # nothing enrolled; a worked pass leaves it standing
+                    if first and n == 0:
                         self._disarm()
                     return
                 first = False
-                term = self.pool_h._tasks_terminal_set(tasks)
-                progressed = False
-                for task in list(self.singles):
-                    if task not in term:
-                        continue
-                    fut = self.singles.pop(task)
-                    task._async_set(False)
-                    if not fut.done():
-                        try:
-                            fut.set_result(task.collect(0))
-                        except Exception as e:
-                            fut.set_exception(e)
-                    progressed = True
-                    work += 1
-                    if _quantum_hit(work, deadline):
-                        assert self.loop is not None
-                        self.loop.call_soon(self._pump)
-                        return
-                for c in list(self.collections):
-                    if c.done:
-                        continue
-                    if not _collection_ready(c, term):
-                        # the morsel trim, as the sync collect's passes:
-                        # dead-weight runners cancel into a wake
-                        if c.pre_scan is not None:
-                            c.pre_scan(term)
-                        continue
-                    _settle_collection(self, c)
-                    progressed = True
-                    work += 1
-                    if _quantum_hit(work, deadline):
-                        assert self.loop is not None
-                        self.loop.call_soon(self._pump)
-                        return
+                progressed = n > 0
+                if colls:
+                    term = self.pool_h._tasks_terminal_set(
+                        [t for c in colls for t in c.tasks]
+                    )
+                    for c in colls:
+                        if not _collection_ready(c, term):
+                            # the morsel trim, as the sync collect's
+                            # passes: dead-weight runners cancel into a
+                            # wake
+                            if c.pre_scan is not None:
+                                c.pre_scan(term)
+                            continue
+                        _settle_collection(self, c)
+                        progressed = True
+                        work += 1
+                        if _quantum_hit(work, deadline):
+                            assert self.loop is not None
+                            self.loop.call_soon(self._pump)
+                            return
                 if not progressed:
                     return
         except Exception as e:
@@ -435,17 +423,15 @@ def _settle_collection(st: _PoolState, c: _Collection) -> None:
 def _fail_all(st: _PoolState, exc: BaseException) -> None:
     """Settle every enrolled waiter with the same error (a broken scan —
     the pool destroyed mid-wait — or a loop change)."""
-    singles = st.singles
     colls = st.collections
-    st.singles = {}
     st.collections = []
-    tasks = [*singles, *(t for c in colls for t in c.tasks)]
+    tasks = [t for c in colls for t in c.tasks]
     if tasks:
         # best-effort: the pool may already be gone — nothing to withdraw
         # from then, and the flags still clear
         st.pool_h._tasks_release(tasks)
-    for fut in singles.values():
-        _settle(fut, exc, exc=True)
+    # the singles half, one C sweep over the registry
+    st.pool_h._singles_fail(exc)
     for c in colls:
         c.done = True
         _settle(c.fut, exc, exc=True)
@@ -537,57 +523,34 @@ def _detach_collection(st: _PoolState, c: _Collection) -> None:
         c.ondetach()
 
 
-def _resolve_single(fut: _asyncio.Future, task: _Any) -> None:
-    """collect(0) a terminal task into its waiter (the pump's settle half):
-    the enrollment's flag is clear by then, so the one-consumer gate
-    passes."""
-    try:
-        fut.set_result(task.collect(0))
-    except Exception as e:
-        fut.set_exception(e)
-
-
-def task_collect_async(task: _Any) -> _asyncio.Future:
-    """[`Task.collect_async()`](`pymizu.Task.collect_async`)'s engine (the
-    C method forwards here). Enroll (flag + announce), probe terminal, and
-    only then arm: an already-published task settles at the call site with
-    no arm cycle at all."""
+def _collect_async_pending(task: _Any) -> _asyncio.Future:
+    """[`Task.collect_async()`](`pymizu.Task.collect_async`)'s pending
+    half, called from the C fast path with the enrollment already on
+    (flag + announce) and the task probed pending: arm, register in the
+    C registry, re-check the one entry."""
     loop = _asyncio.get_running_loop()
     st = _pool_state(task.pool)
-    st.pool_h._tasks_enroll([task])  # raises on a second consumer
     try:
-        if st.pool_h._tasks_terminal_set([task]):
-            # already published: settle here, never arming
-            st.pool_h._tasks_release([task])
-            fut = _WaiterFuture()
-            _resolve_single(fut, task)
-            return fut
         _arm(st, loop)
+        # registered only after the arm: a loop change in _arm fails the
+        # old loop's waiters, never this fresh one (the channel's
+        # discipline)
+        fut = _WaiterFuture()
+        fut._detach = lambda: _detach_single(st, task)
+        st.pool_h._singles_add(task, fut)
     except BaseException:
+        # best-effort, idempotent (the C caller unwinds the same way)
         st.pool_h._tasks_release([task])
         raise
-    # registered only after the arm: a loop change in _arm fails the old
-    # loop's waiters, never this fresh one (the channel's discipline)
-    fut = _WaiterFuture()
-    fut._detach = lambda: _detach_single(st, task)
-    st.singles[task] = fut
-    # the post-arm re-check covers the new entry only (the transplant);
-    # every other slot's publish rides the armed word's wake
-    if st.pool_h._tasks_terminal_set([task]):
-        st.singles.pop(task)
-        st.pool_h._tasks_release([task])
-        _resolve_single(fut, task)
     return fut
 
 
 def _detach_single(st: _PoolState, task: _Any) -> None:
-    """Future.cancel() detaches the waiter: the announce un-stores and the
-    task leaves the armed set, so a later blocking collect() works. The
-    sticky arm is the next empty wake's to drop, not the detach's."""
-    if st.singles.pop(task, None) is None:
-        return
-    # best-effort withdraw: a destroyed pool has nothing to withdraw from
-    st.pool_h._tasks_release([task])
+    """Future.cancel() detaches the waiter: the registry drops the entry,
+    clearing the flag and withdrawing the announce, so a later blocking
+    collect() works. The sticky arm is the next empty wake's to drop, not
+    the detach's."""
+    st.pool_h._singles_remove(task)
 
 
 def _task_list(tasks: _Any) -> list:

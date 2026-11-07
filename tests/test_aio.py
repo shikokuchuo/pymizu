@@ -620,23 +620,85 @@ def test_single_cancel_at_settle_detaches_late(pool):
 
 
 def test_collect_async_on_destroyed_pool_rolls_back():
-    # an enrollment failing at the announce restores the task's flag (the
-    # engine called directly: the method's own guard raises first)
+    # an enrollment failing at the announce leaves no flag behind: the
+    # next attempt raises the same way
     p = pymizu.Pool.create(1)
     task = p.submit(square, 2)
     p.destroy()
     try:
-        from pymizu import _aio
 
         async def main():
             with pytest.raises(ValueError, match="closed"):
-                _aio.task_collect_async(task)
+                task.collect_async()
             with pytest.raises(ValueError, match="closed"):
-                _aio.task_collect_async(task)  # the flag was restored
+                task.collect_async()  # no flag left behind
 
         asyncio.run(main())
     finally:
         p.destroy()
+
+
+def test_collect_async_arm_failure_rolls_back(pool, monkeypatch):
+    # the pending half's arm failure unwinds the enrollment (flag and
+    # announce restored): the task is blocking-collectible again
+    from pymizu import _aio
+
+    def boom(st, loop):
+        raise RuntimeError("arm failed")
+
+    monkeypatch.setattr(_aio, "_arm", boom)
+
+    async def main():
+        task = pool.submit(sleep_ident, 0.3)
+        with pytest.raises(RuntimeError, match="arm failed"):
+            task.collect_async()
+        assert task.collect(timeout=5) == 0.3
+
+    asyncio.run(main())
+
+
+def test_collect_async_terminal_error_rejects(pool):
+    # a task that already failed settles through the C fast path as
+    # set_exception, never arming
+    async def main():
+        task = pool.submit(fail_at, 4, 4)
+        deadline = time.monotonic() + 5
+        while not pool._h._tasks_terminal([task])[0]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        fut = task.collect_async()
+        assert fut.done()
+        with pytest.raises(pymizu.TaskError):
+            await fut
+
+    asyncio.run(main())
+
+
+def test_waiter_future_does_not_pin_pool():
+    # the C registry is GC-traversed: once the closed loop bounces the
+    # wake (the C disarm drops the drain refs), a waiter future whose
+    # callback closes over the pool does not pin it
+    import gc
+    import weakref
+
+    def make():
+        pool = pymizu.Pool.create(1)
+
+        async def enroll():
+            task = pool.submit(sleep_ident, 0.2)
+            fut = task.collect_async()
+            fut.add_done_callback(lambda f: pool)
+
+        asyncio.run(enroll())
+        return weakref.ref(pool)
+
+    ref = make()
+    time.sleep(0.5)  # the publish bounces off the closed loop: C disarm
+    deadline = time.monotonic() + 5
+    while ref() is not None:
+        gc.collect()
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
 
 
 def test_terminal_settle_needs_no_arm(pool):
@@ -709,9 +771,9 @@ def test_arm_survives_settle_and_detach(pool):
     asyncio.run(main())
 
 
-def test_enrollment_scans_the_new_task_only(pool):
+def test_enrollment_never_scans_the_enrolled_set(pool):
     # k pending singles: every enrollment's probe and post-arm re-check
-    # read the new task's state alone, never the whole enrolled set
+    # are one-word C reads — no scan of the enrolled set is ever built
     from pymizu import _aio
 
     sizes = []
@@ -729,8 +791,9 @@ def test_enrollment_scans_the_new_task_only(pool):
         pool._h._aio = _aio._PoolState(Rec())
         tasks = [pool.submit(sleep_ident, 0.3) for _ in range(8)]
         futs = [t.collect_async() for t in tasks]
-        assert sizes == [1] * (2 * len(tasks))
+        assert sizes == []
         assert await asyncio.gather(*futs) == [0.3] * 8
+        assert sizes == []
 
     asyncio.run(main())
 
@@ -800,7 +863,7 @@ def test_collect_all_async_one_future(pool):
         fut = pool.collect_all_async(tasks)
         st = pool._h._aio
         assert len(st.collections) == 1
-        assert not st.singles
+        assert pool._h._pump_singles(0) == (0, 0)  # never one per task
         assert st.collections[0].fut is fut
         assert await fut == [i * i for i in range(8)]
 
