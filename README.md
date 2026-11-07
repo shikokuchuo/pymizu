@@ -73,8 +73,8 @@ Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled pay
 |----|----|----|----|
 | Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
 | Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
-| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 70.3 µs/elt | 176x |
-| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 129 ms | 30x |
+| 8 KB vector round trip | 2.4 µs | 100.7 µs | 42x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 2.9 ms | 123 ms | 42x |
 
 Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound work at a single core):
 
@@ -82,13 +82,11 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 |----|----|----|----|
 | Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
 | Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
-| Parallel map overhead, trivial function, 4 workers | 0.4 µs/elt* | 2.6 µs/elt | 6.5x |
-| Parallel map of 2,000 ~5 µs tasks, 4 workers | 4.3 ms | 50 ms | 12x |
+| 8 KB vector round trip | 2.4 µs | 9.3 µs | 3.9x |
+| Parallel map of 2,000 ~5 µs tasks, 4 workers | 2.9 ms | 48 ms | 17x |
 
 `benchmarks/mizu-bench.py` runs the pymizu rows standalone.
 See [how pymizu compares](https://shikokuchuo.net/pymizu/user-guide/benchmarks.html) with Ray, Dask, joblib, and modern CPython.
-
-\* elt = element; microseconds of wall time per map element.
 
 ## Drop-in `concurrent.futures`
 

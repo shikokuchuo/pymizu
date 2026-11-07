@@ -1283,3 +1283,29 @@ pool collect_async (1.59M), channel recv_async (648k), the executor
 outstanding row, and the new executor sync row (4.8 us/task).
 
 Status: full suite 1071 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-07 — stdlib comparison re-read; README/docs tables refreshed
+
+Full mizu-stdlib-bench.py on main (dd96753) after the map work. The
+README / docs tables moved to mizu's row shape — round trip, pipelined,
+8 KB vector round trip (new: 2.4 us vs 100.7 process / 9.3 thread — the
+one payload row that also beats the thread pool), winsum x 2000 (4.3 ->
+2.9 ms) — with this run's numbers on the changed rows; round-trip and
+pipelined measured inside their bands and keep their values.
+
+| row | pymizu | cf process | cf thread |
+|---|---|---|---|
+| sequential rt | 0.8 us/task | 87.6 us/task | 9.3 us/task |
+| pipelined | 2,037,714 tasks/s | 19,896 tasks/s | 410,930 tasks/s |
+| payload 8,000 B | 2.4 us/task | 100.7 us/task | 9.3 us/task |
+| payload 800,000 B | 57.8 us/task | 374.1 us/task | 9.3 us/task |
+| payload 8,000,000 B | 101.7 us/task | 3,589.9 us/task | 9.2 us/task |
+| fan-out x 2000, 4 workers | 275.7k tasks/s | 17.1k tasks/s | 43.3k tasks/s |
+| map trivial f, 4 workers | 0.1 us/elt | 68.3 us/elt | 2.8 us/elt |
+| map winsum x 2000, 4 workers | 691.2k tasks/s | 16.2k tasks/s | 42.0k tasks/s |
+| map skewed f x 4000, 4 workers | 5.3 ms wall | 256.4 ms wall | 46.9 ms wall |
+
+(cf interpreter pool: sequential 19.6 us, pipelined 65.1k; payload and
+map rows unsupported.)
+
+Status: report-only run plus the table refresh; no code change.
