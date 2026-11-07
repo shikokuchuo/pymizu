@@ -568,9 +568,11 @@ finalizer — short-circuits to the released-pool answer instead).
     the run's `_Map` handle. A view-collected run restages into a
     fresh region.
   - The element loop is Python (`_run_batch`, `_map_write` on the
-    template path) — a C batch loop was tried and reverted 2026-08-24:
-    the winsum scaling gap is memory bandwidth, not interpreter
-    overhead.
+    template path); the unseeded path runs one try around the loop and
+    calls `fn(get(i))` directly when no args ride along (the index
+    annotation unchanged). A C batch loop removes nothing further: the
+    residual per-element cost is numpy scalar creation plus the user's
+    fn call, which C cannot accelerate without numpy headers.
   - `Pool.map(seed=...)`: deterministic per-element streams of the stdlib
     `random` module — `random.seed(SHA-256(seed_bytes + (i +
     offset).to_bytes(8, "little")))`; `seed=(seed, offset)` shifts every

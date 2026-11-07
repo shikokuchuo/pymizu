@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster sends of int64 numpy arrays to R peers.
 - Faster `Pool.map()` collection when the function returns numpy
   scalars, or tuples of them: results no longer pass through pickle.
+- Faster `Pool.map()` per-element dispatch, most on calls with no extra
+  arguments.
 
 ### Fixed
 
