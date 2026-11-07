@@ -1201,7 +1201,9 @@ class Pool:
         [`DeclinedError`](`pymizu.DeclinedError`) at the `map()` call.
         ``seed=`` crosses as a language-neutral pair and each worker language
         derives its own streams, so a spec map takes int seeds only (on R
-        workers, the seed within 32-bit range and the offset at most 2^53).
+        workers, the seed within 32-bit range and the offset at most 2^53;
+        with ``stream=True``, the offset plus ``len(x)`` must stay within
+        2^53).
         Results are reproducible within a worker language but not identical
         across languages.
 

@@ -216,6 +216,20 @@ def _seed_wire(
     return (seed, offset)
 
 
+def _seed_wire_stream(pair: tuple[int, int] | None, n: int, lang: int) -> None:
+    """The streaming spec map's seed gate: the refill composes each
+    chunk's element streams at `pair[1] + lo`, and an R worker seeks
+    that offset in doubles — exact only to 2^53, where the region
+    path's jump composition never rounds. Decline rather than diverge
+    (mizu's own streaming gate)."""
+    if pair is not None and lang == _LANG_R and pair[1] > 2**53 - (n - 1):
+        raise TypeError(
+            "pymizu: a seed offset plus the map length must stay within "
+            "2^53 on R workers — doubles cannot represent larger integers "
+            "exactly"
+        )
+
+
 def _resolve_name(code: str) -> _Callable[..., _Any]:
     """Resolve a name-kind spec's qualified name through the worker's own
     module machinery (there is no name registry): split at the last dot,
@@ -291,7 +305,10 @@ def _view_accessor(x: _Any) -> _Callable[[int], _Any]:
         if hasattr(x, "to_list"):
             return x.to_list().__getitem__
         if _np is None:
-            return memoryview(x).__getitem__
+            mv = memoryview(x)
+            if mv.format == "Zd":
+                raise TypeError("pymizu: a complex128 view x needs numpy")
+            return mv.__getitem__
     return x.__getitem__
 
 
@@ -301,6 +318,10 @@ def _raw_accessor(view: _Any, tag: int) -> _Callable[[int], _Any]:
     element; no worker ever copies more than the elements it reads."""
     if _np is not None:
         return _np.frombuffer(view, dtype=_TAG_NP[tag]).__getitem__
+    if tag == _TAG_COMPLEX:
+        # a foreign submitter stages complex natively; a memoryview
+        # cannot cast to it
+        raise TypeError("pymizu: a complex128 map x needs numpy")
     return view.cast(_TAG_MV[tag]).__getitem__
 
 
@@ -625,6 +646,8 @@ def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
     if _np is not None:
         a = _np.frombuffer(raw, dtype=_TAG_NP[tag])
         return a.reshape(n, m) if m > 1 else a
+    if tag == _TAG_COMPLEX:
+        raise TypeError("pymizu: a complex128 template output needs numpy")
     fmt = _TAG_MV[tag]
     mv = memoryview(raw).cast(fmt)
     return mv.cast(fmt, [n, m]) if m > 1 else mv
@@ -1689,6 +1712,7 @@ class Map:
         self.kind = "stream"
         self.ranges = ranges
         if plan.spec:
+            _seed_wire_stream(self.seed, n, plan.lang)
             self.run = _StreamWindowSpec(
                 self.pool,
                 ranges,
