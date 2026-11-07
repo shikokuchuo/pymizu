@@ -7,15 +7,19 @@ drain quantum, and the enrollment discipline. No polling and no extra
 threads anywhere — the watch rides the core's death-listener machinery,
 and a burst collapses to one wake per idle-to-data transition.
 
-Enrollment (announce before arm, then re-check) is the parker protocol
-transplanted, exactly as the core documents it: a task's result slot
-gains a NOTIFY announce, the submitter's word arms, and the synchronous
-scan resolves whatever was already published. Settle (resolve, reject,
-cancel) withdraws every announce, restoring each slot's one-writer regime
-— a detached task or collection is blocking-collectible again. One
-consumer per result: an enrolled task refuses blocking collects and a
-second enrollment; cancelling the Future detaches the waiter, never the
-task.
+Enrollment is the parker protocol transplanted, in the R enroll's order:
+a task's result slot gains a NOTIFY announce, its state is probed, and
+only a pending task arms the submitter's word — an already-published task
+settles at the call site with no arm cycle at all, and the post-arm
+re-check covers the new entry only (every other slot's publish rides the
+armed word's wake). The arm is sticky: it survives an emptied waiter set
+for the next enrollment to reuse, dropping only on a wake that finds
+nothing enrolled (one spurious pass per idle period) or at teardown.
+Settle (resolve, reject, cancel) withdraws every announce, restoring each
+slot's one-writer regime — a detached task or collection is
+blocking-collectible again. One consumer per result: an enrolled task
+refuses blocking collects and a second enrollment; cancelling the Future
+detaches the waiter, never the task.
 
 Every drain is bounded per callback (the quantum below) and re-scheduled
 with ``loop.call_soon``: under sustained load the ring never empties, and
@@ -306,17 +310,17 @@ class _Collection:
 
 
 class _PoolState:
-    """A pool handle's async consumer state: the single-task futures and
-    the collections sharing the submitter's one coalescing word. Lives on
-    the C handle's ``_aio`` slot; the notify record's drain is ``_pump``."""
+    """A pool handle's async consumer state: the collections sharing the
+    submitter's one coalescing word (the single-task waiters live in the
+    C registry on the handle). Lives on the C handle's ``_aio`` slot; the
+    notify record's drain is ``_pump``."""
 
-    __slots__ = ("pool_h", "loop", "armed", "singles", "collections")
+    __slots__ = ("pool_h", "loop", "armed", "collections")
 
     def __init__(self, pool_h: _Any) -> None:
         self.pool_h = pool_h
         self.loop: _asyncio.AbstractEventLoop | None = None
         self.armed = False
-        self.singles: dict[_Any, _asyncio.Future] = {}
         self.collections: list[_Collection] = []
 
     def _disarm(self) -> None:
@@ -324,68 +328,58 @@ class _PoolState:
             self.armed = False
             self.pool_h._notify_disarm()
 
-    def _maybe_disarm(self) -> None:
-        if not self.singles and not self.collections:
-            self._disarm()
-
-    def _enrolled(self) -> list:
-        tasks = list(self.singles)
-        for c in self.collections:
-            if not c.done:
-                tasks.extend(c.tasks)
-        return tasks
-
     def _pump(self) -> None:
-        """One drain pass (synchronous at arm, then one per wake): re-arm
-        the submitter word, scan the enrolled set, resolve what newly
-        turned terminal. The pass exits only when a scan finds nothing
+        """One drain pass (one per wake): re-arm the submitter word, scan
+        the enrolled set, resolve what newly turned terminal. The singles
+        half is one C scan over the enrolled words; the collections half
+        scans its own tasks. The pass exits only when a scan finds nothing
         new — the re-arm then stands and a publish signals the next wake
-        (the announce/recheck transplant)."""
+        (the announce/recheck transplant). The arm is sticky: a pass that
+        worked leaves it standing for the next enrollment to reuse; only
+        a wake finding nothing enrolled at all disarms (one spurious pass
+        per idle period)."""
         if not self.armed:
             return
         work = 0
         deadline = _time.monotonic() + _QUANTUM_SEC
         try:
+            first = True
             while True:
                 self.pool_h._notify_rearm()
-                tasks = self._enrolled()
-                if not tasks:
-                    self._disarm()
+                n, left = self.pool_h._pump_singles(_QUANTUM_N - work)
+                work += n
+                if n and _quantum_hit(work, deadline):
+                    assert self.loop is not None
+                    self.loop.call_soon(self._pump)
                     return
-                term = self.pool_h._tasks_terminal_set(tasks)
-                progressed = False
-                for task in list(self.singles):
-                    if task not in term:
-                        continue
-                    fut = self.singles.pop(task)
-                    task._async_set(False)
-                    if not fut.done():
-                        try:
-                            fut.set_result(task.collect(0))
-                        except Exception as e:
-                            fut.set_exception(e)
-                    progressed = True
-                    work += 1
-                    if _quantum_hit(work, deadline):
-                        assert self.loop is not None
-                        self.loop.call_soon(self._pump)
-                        return
-                for c in list(self.collections):
-                    if c.done:
-                        continue
-                    if not _collection_ready(c, term):
-                        # the morsel trim, as the sync collect's passes:
-                        # dead-weight runners cancel into a wake
-                        if c.pre_scan is not None:
-                            c.pre_scan(term)
-                        continue
-                    _settle_collection(self, c)
-                    progressed = True
-                    work += 1
-                    if _quantum_hit(work, deadline):
-                        assert self.loop is not None
-                        self.loop.call_soon(self._pump)
-                        return
+                colls = [c for c in self.collections if not c.done]
+                if not colls and left == 0:
+                    # the sticky arm drops only on a wake that finds
+                    # nothing enrolled; a worked pass leaves it standing
+                    if first and n == 0:
+                        self._disarm()
+                    return
+                first = False
+                progressed = n > 0
+                if colls:
+                    term = self.pool_h._tasks_terminal_set(
+                        [t for c in colls for t in c.tasks]
+                    )
+                    for c in colls:
+                        if not _collection_ready(c, term):
+                            # the morsel trim, as the sync collect's
+                            # passes: dead-weight runners cancel into a
+                            # wake
+                            if c.pre_scan is not None:
+                                c.pre_scan(term)
+                            continue
+                        _settle_collection(self, c)
+                        progressed = True
+                        work += 1
+                        if _quantum_hit(work, deadline):
+                            assert self.loop is not None
+                            self.loop.call_soon(self._pump)
+                            return
                 if not progressed:
                     return
         except Exception as e:
@@ -399,9 +393,22 @@ def _collection_ready(c: _Collection, term: set) -> bool:
     return term.issuperset(c.tasks)
 
 
+def _collection_ready_now(st: _PoolState, c: _Collection) -> bool:
+    """The enrollment probe's cheap readiness verdict: a bool list plus
+    the short-circuiting builtin, never a set — burst enrollments (every
+    member still pending) cost one C walk and no hashing."""
+    term = st.pool_h._tasks_terminal(c.tasks)
+    if c.kind == "any":
+        return any(term)
+    return all(term)
+
+
 def _settle_collection(st: _PoolState, c: _Collection) -> None:
     c.done = True
-    st.collections.remove(c)
+    try:
+        st.collections.remove(c)
+    except ValueError:
+        pass  # settling at the enrollment call site: never registered
     # un-enroll every member in one call: a consumed slot's announce was
     # consumed by its publish (the withdrawal restores the plain announce
     # only where this submitter's still stands), the unconsumed return to
@@ -426,17 +433,15 @@ def _settle_collection(st: _PoolState, c: _Collection) -> None:
 def _fail_all(st: _PoolState, exc: BaseException) -> None:
     """Settle every enrolled waiter with the same error (a broken scan —
     the pool destroyed mid-wait — or a loop change)."""
-    singles = st.singles
     colls = st.collections
-    st.singles = {}
     st.collections = []
-    tasks = [*singles, *(t for c in colls for t in c.tasks)]
+    tasks = [t for c in colls for t in c.tasks]
     if tasks:
         # best-effort: the pool may already be gone — nothing to withdraw
         # from then, and the flags still clear
         st.pool_h._tasks_release(tasks)
-    for fut in singles.values():
-        _settle(fut, exc, exc=True)
+    # the singles half, one C sweep over the registry
+    st.pool_h._singles_fail(exc)
     for c in colls:
         c.done = True
         _settle(c.fut, exc, exc=True)
@@ -475,14 +480,20 @@ def _enroll_collection(
     ondetach: _Any = None,
 ) -> _asyncio.Future:
     """The shared collection enrollment: one fused enroll (flag per task +
-    announce, all-or-nothing — a second consumer raises here), arm, and
-    the synchronous re-check. One Future per collection — never one per
-    task."""
+    announce, all-or-nothing — a second consumer raises here), the
+    terminal probe, and only then the arm — a collection whose readiness
+    already holds settles at the call site with no arm cycle at all. One
+    Future per collection — never one per task."""
     fut = _WaiterFuture()
     c = _Collection(kind, list(tasks), fut, finish, pre_scan, ondetach)
     if c.tasks:
         st.pool_h._tasks_enroll(c.tasks)
     try:
+        if c.tasks and _collection_ready_now(st, c):
+            # already terminal: settle here, never arming
+            _settle_collection(st, c)
+            return fut
+        fresh_arm = not st.armed
         _arm(st, loop)
     except BaseException:
         if c.tasks:
@@ -491,10 +502,14 @@ def _enroll_collection(
     st.collections.append(c)
     fut._detach = lambda: _detach_collection(st, c)
     if c.tasks:
-        st._pump()
+        # the post-arm re-check covers this collection only, and only a
+        # fresh arm needs it: under a standing arm a racing publish
+        # signals the wake whose pump scans the set (the R enroll's
+        # fence-when-armed rule)
+        if fresh_arm and _collection_ready_now(st, c):
+            _settle_collection(st, c)
     else:
-        # an empty map: nothing to wake for — settle from the arm's
-        # synchronous half
+        # an empty map: nothing to wake for — settle from the call site
         _settle_collection(st, c)
     return fut
 
@@ -517,38 +532,36 @@ def _detach_collection(st: _PoolState, c: _Collection) -> None:
         st.pool_h._tasks_release(c.tasks)
     if c.ondetach is not None:
         c.ondetach()
-    st._maybe_disarm()
 
 
-def task_collect_async(task: _Any) -> _asyncio.Future:
-    """[`Task.collect_async()`](`pymizu.Task.collect_async`)'s engine (the
-    C method forwards here)."""
+def _collect_async_pending(task: _Any) -> _asyncio.Future:
+    """[`Task.collect_async()`](`pymizu.Task.collect_async`)'s pending
+    half, called from the C fast path with the enrollment already on
+    (flag + announce) and the task probed pending: arm, register in the
+    C registry, re-check the one entry."""
     loop = _asyncio.get_running_loop()
-    pool_h = task.pool
-    st = _pool_state(pool_h)
-    pool_h._tasks_enroll([task])  # raises on a second consumer
+    st = _pool_state(task.pool)
     try:
         _arm(st, loop)
+        # registered only after the arm: a loop change in _arm fails the
+        # old loop's waiters, never this fresh one (the channel's
+        # discipline)
+        fut = _WaiterFuture()
+        fut._detach = lambda: _detach_single(st, task)
+        st.pool_h._singles_add(task, fut)
     except BaseException:
-        pool_h._tasks_release([task])
+        # best-effort, idempotent (the C caller unwinds the same way)
+        st.pool_h._tasks_release([task])
         raise
-    # registered only after the arm: a loop change in _arm fails the old
-    # loop's waiters, never this fresh one (the channel's discipline)
-    fut = _WaiterFuture()
-    fut._detach = lambda: _detach_single(st, task)
-    st.singles[task] = fut
-    st._pump()
     return fut
 
 
 def _detach_single(st: _PoolState, task: _Any) -> None:
-    """Future.cancel() detaches the waiter: the announce un-stores and the
-    task leaves the armed set, so a later blocking collect() works."""
-    if st.singles.pop(task, None) is None:
-        return
-    # best-effort withdraw: a destroyed pool has nothing to withdraw from
-    st.pool_h._tasks_release([task])
-    st._maybe_disarm()
+    """Future.cancel() detaches the waiter: the registry drops the entry,
+    clearing the flag and withdrawing the announce, so a later blocking
+    collect() works. The sticky arm is the next empty wake's to drop, not
+    the detach's."""
+    st.pool_h._singles_remove(task)
 
 
 def _task_list(tasks: _Any) -> list:

@@ -6940,6 +6940,25 @@ static PyTypeObject MizuChannelType = {
 
 typedef struct {
   PyObject_HEAD
+  uint64_t word;       /* the core's 8-byte mizu_task, by value */
+  PyObject *pool;      /* keeps the pool handle alive */
+  unsigned async_pending;  /* an asyncio consumer enrolled: blocking
+                              collects refuse (one consumer per result) */
+} MizuTask;
+
+/* One entry per enrolled single-task asyncio waiter, the R registry's
+   form: the cached mizu_task word beside the task handle (the word serves
+   the per-wake scan — mizu_pool_task_state is total on a stale word, so
+   no handle is re-read — while the handle rides along only for the
+   async_pending release) and the _WaiterFuture to settle. */
+typedef struct {
+  uint64_t word;
+  MizuTask *task;    /* owned */
+  PyObject *future;  /* owned */
+} MizuAsyncWaiter;
+
+typedef struct {
+  PyObject_HEAD
   mizu_pool *core;
   mizu_pool *zombie;   /* a destroy deferred to the last in-flight verb */
   long self_pid;
@@ -6953,19 +6972,14 @@ typedef struct {
   PyObject *trace_fn;  /* the registered trace callable, or NULL */
   MizuNotify *notify;  /* the notify record, lazily from the first arm */
   PyObject *aio_state; /* the Python async state (pymizu._aio), owned */
+  MizuAsyncWaiter *waiters;  /* the asyncio singles registry */
+  Py_ssize_t n_waiters;
+  Py_ssize_t waiters_cap;
   MIZU_ATOMIC(unsigned) producer_active;  /* the single-producer guard */
   MIZU_ATOMIC(unsigned) waiter_active;    /* the one-waiter guard: parking
                                              waits only — a zero-timeout
                                              poll never announces or parks */
 } MizuPool;
-
-typedef struct {
-  PyObject_HEAD
-  uint64_t word;       /* the core's 8-byte mizu_task, by value */
-  PyObject *pool;      /* keeps the pool handle alive */
-  unsigned async_pending;  /* an asyncio consumer enrolled: blocking
-                              collects refuse (one consumer per result) */
-} MizuTask;
 
 /* Submitter/controller handles release the GIL around every verb; worker
    handles hold it (exec_fn reentry) and drop it only around bounded sleeps
@@ -7322,6 +7336,405 @@ fail:
   PyMem_Free(ts);
   Py_DECREF(seq);
   return NULL;
+}
+
+// The asyncio singles registry (pymizu._aio's per-pool waiters) ------------------
+
+/* The asyncio fast path's cached lookups, resolved on first use (callers
+   hold the GIL): asyncio.get_running_loop, _aio._WaiterFuture, and its
+   inherited set_result / set_exception. */
+static PyObject *aio_running_loop_fn;
+static PyObject *aio_waiter_type;
+static PyObject *aio_set_result_fn;
+static PyObject *aio_set_exception_fn;
+
+static int aio_cache_init(void) {
+  if (aio_waiter_type != NULL) return 0;
+  PyObject *mod = PyImport_ImportModule("asyncio");
+  if (mod == NULL) return -1;
+  aio_running_loop_fn = PyObject_GetAttrString(mod, "get_running_loop");
+  Py_DECREF(mod);
+  if (aio_running_loop_fn == NULL) return -1;
+  mod = PyImport_ImportModule("pymizu._aio");
+  if (mod == NULL) goto fail;
+  aio_waiter_type = PyObject_GetAttrString(mod, "_WaiterFuture");
+  Py_DECREF(mod);
+  if (aio_waiter_type == NULL) goto fail;
+  aio_set_result_fn = PyObject_GetAttrString(aio_waiter_type, "set_result");
+  aio_set_exception_fn =
+    PyObject_GetAttrString(aio_waiter_type, "set_exception");
+  if (aio_set_result_fn == NULL || aio_set_exception_fn == NULL) goto fail;
+  return 0;
+fail:
+  Py_CLEAR(aio_running_loop_fn);
+  Py_CLEAR(aio_waiter_type);
+  Py_CLEAR(aio_set_result_fn);
+  Py_CLEAR(aio_set_exception_fn);
+  return -1;
+}
+
+/* Settle a waiter with a collected outcome (v consumed): set_result, or
+   set_exception with the _Caught box's exception. Tolerates a closed loop
+   (as _aio._settle does); anything else propagates. */
+static int aio_settle(PyObject *fut, PyObject *v) {
+  PyObject *meth, *arg;
+  if (Py_TYPE(v) == &MizuCaughtType) {
+    meth = aio_set_exception_fn;
+    arg = ((MizuCaught *) v)->exc;
+  } else {
+    meth = aio_set_result_fn;
+    arg = v;
+  }
+  PyObject *cargs[2] = { fut, arg };
+  PyObject *r = PyObject_Vectorcall(meth, cargs, 2, NULL);
+  Py_DECREF(v);
+  if (r != NULL) {
+    Py_DECREF(r);
+    return 0;
+  }
+  if (PyErr_ExceptionMatches(PyExc_RuntimeError)) {
+    PyErr_Clear();
+    return 0;
+  }
+  return -1;
+}
+
+/* Swap-remove: the settle order of independent waiters is not contractual
+   (each future's callbacks queue in loop order regardless). */
+static void waiters_remove(MizuPool *self, Py_ssize_t i) {
+  MizuAsyncWaiter *w = &self->waiters[i];
+  Py_DECREF(w->task);
+  Py_DECREF(w->future);
+  Py_ssize_t last = --self->n_waiters;
+  if (i != last) self->waiters[i] = self->waiters[last];
+}
+
+/* Drop every entry, releasing each task's async_pending flag so the tasks
+   stay collectible: the GC clear and the dealloc. Announce withdrawal is
+   the wake's or the teardown's business, never the GC's. */
+static void waiters_clear(MizuPool *self) {
+  for (Py_ssize_t i = 0; i < self->n_waiters; i++) {
+    MizuAsyncWaiter *w = &self->waiters[i];
+    w->task->async_pending = 0;
+    Py_DECREF(w->task);
+    Py_DECREF(w->future);
+  }
+  self->n_waiters = 0;
+}
+
+/* Settle one registry entry whose word turned terminal: collect at 0
+   (never parks), settle the future, release the flag, unlink. The entry
+   leaves the registry either way — a collect failure (a stale word)
+   settles the future with the error, the pump's per-task discipline. */
+static int waiters_settle_one(MizuPool *self, mizu_pool *p, Py_ssize_t i) {
+  MizuAsyncWaiter *w = &self->waiters[i];
+  PyObject *fut = w->future;
+  Py_INCREF(fut);            /* outlives the unlink below */
+  mizu_task t = { w->word };
+  void *v = NULL;
+  mizu_status st = mizu_pool_collect(p, &t, &v, 0);
+  w->task->async_pending = 0;
+  waiters_remove(self, i);
+  int rc;
+  if (st == MIZU_OK) {
+    rc = aio_settle(fut, (PyObject *) v);
+  } else {
+    if (st == MIZU_TIMEOUT)  /* the state read raced a slot transition */
+      PyErr_SetString(MizuError,
+                      "pymizu: internal: terminal task collect timed out");
+    else
+      pool_raise(p);
+    PyObject *et, *ev, *tb;
+    PyErr_Fetch(&et, &ev, &tb);
+    PyErr_NormalizeException(&et, &ev, &tb);
+    PyObject *cargs[2] = { fut, ev != NULL ? ev : et };
+    PyObject *r = PyObject_Vectorcall(aio_set_exception_fn, cargs, 2, NULL);
+    Py_XDECREF(r);
+    Py_XDECREF(et);
+    Py_XDECREF(ev);
+    Py_XDECREF(tb);
+    if (r != NULL) {
+      rc = 0;
+    } else if (PyErr_ExceptionMatches(PyExc_RuntimeError)) {
+      PyErr_Clear();         /* a closed loop: unnotifyable either way */
+      rc = 0;
+    } else {
+      rc = -1;
+    }
+  }
+  Py_DECREF(fut);
+  return rc;
+}
+
+PyDoc_STRVAR(pool_pump_singles_doc,
+"_pump_singles(max_settle) -> (settled, remaining)\n\n\
+The pool pump's singles half: one scan over the enrolled words, collecting\n\
+at 0 and settling every terminal entry, at most max_settle of them (the\n\
+drain quantum's remainder). Returns the settled count and the registry's\n\
+size after the pass.\n\n");
+
+static PyObject *Pool_pump_singles(MizuPool *self, PyObject *arg) {
+  Py_ssize_t max = PyNumber_AsSsize_t(arg, PyExc_OverflowError);
+  if (max == -1 && PyErr_Occurred()) return NULL;
+  if (aio_cache_init() < 0) return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  Py_ssize_t settled = 0, i = 0;
+  while (i < self->n_waiters && settled < max) {
+    mizu_task t = { self->waiters[i].word };
+    const int tst = mizu_pool_task_state(p, &t);
+    if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) {
+      i++;
+      continue;
+    }
+    if (waiters_settle_one(self, p, i) < 0) return NULL;
+    settled++;               /* entry i was removed: the swap re-checks */
+  }
+  return Py_BuildValue("(nn)", settled, self->n_waiters);
+}
+
+PyDoc_STRVAR(pool_singles_add_doc,
+"_singles_add(task, future) -> None\n\n\
+Register one pending single-task waiter (the enrollment's flag and\n\
+announce are already on), then run the transplant's post-arm re-check on\n\
+the new entry only: a task that published between the enrollment probe\n\
+and the arm settles here.\n\n");
+
+static PyObject *Pool_singles_add(MizuPool *self, PyObject *args) {
+  PyObject *task_o, *fut;
+  if (!PyArg_ParseTuple(args, "OO:_singles_add", &task_o, &fut))
+    return NULL;
+  if (Py_TYPE(task_o) != &MizuTaskType) {
+    PyErr_SetString(PyExc_TypeError, "pymizu: not a task handle");
+    return NULL;
+  }
+  MizuTask *task = (MizuTask *) task_o;
+  if ((MizuPool *) task->pool != self) {
+    PyErr_SetString(PyExc_ValueError,
+                    "pymizu: task handles must belong to this pool handle");
+    return NULL;
+  }
+  if (aio_cache_init() < 0) return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (self->n_waiters == self->waiters_cap) {
+    Py_ssize_t cap = self->waiters_cap > 0 ? self->waiters_cap * 2 : 8;
+    MizuAsyncWaiter *nw =
+      PyMem_Realloc(self->waiters, (size_t) cap * sizeof(*nw));
+    if (nw == NULL) return PyErr_NoMemory();
+    self->waiters = nw;
+    self->waiters_cap = cap;
+  }
+  MizuAsyncWaiter *w = &self->waiters[self->n_waiters++];
+  w->word = task->word;
+  Py_INCREF(task);
+  w->task = task;
+  Py_INCREF(fut);
+  w->future = fut;
+  mizu_task t = { task->word };
+  const int tst = mizu_pool_task_state(p, &t);
+  if (tst != MIZU_RS_PENDING && tst != MIZU_RS_RUNNING &&
+      waiters_settle_one(self, p, self->n_waiters - 1) < 0)
+    return NULL;
+  Py_RETURN_NONE;
+}
+
+PyDoc_STRVAR(pool_singles_remove_doc,
+"_singles_remove(task) -> bool\n\n\
+Drop one registered waiter (the detach): clear its async_pending flag and\n\
+best-effort withdraw the announce (a destroyed pool has nothing to\n\
+withdraw from). True when the task was registered.\n\n");
+
+static PyObject *Pool_singles_remove(MizuPool *self, PyObject *arg) {
+  if (Py_TYPE(arg) != &MizuTaskType) {
+    PyErr_SetString(PyExc_TypeError, "pymizu: not a task handle");
+    return NULL;
+  }
+  MizuTask *task = (MizuTask *) arg;
+  for (Py_ssize_t i = 0; i < self->n_waiters; i++) {
+    if (self->waiters[i].task != task) continue;
+    task->async_pending = 0;
+    if (self->core != NULL && !self->stopping &&
+        self->self_pid == mizu_self_pid()) {
+      mizu_task t = { self->waiters[i].word };
+      (void) mizu_pool_task_notify(self->core, &t, 1, 0);
+    }
+    waiters_remove(self, i);
+    Py_RETURN_TRUE;
+  }
+  Py_RETURN_FALSE;
+}
+
+PyDoc_STRVAR(pool_singles_fail_doc,
+"_singles_fail(exc) -> int\n\n\
+Settle every registered waiter with the same exception (the _aio fail-all\n\
+sweep): flags cleared, announces withdrawn best-effort, futures failed\n\
+tolerating a closed loop. Returns the dropped count.\n\n");
+
+static PyObject *Pool_singles_fail(MizuPool *self, PyObject *exc) {
+  if (aio_cache_init() < 0) return NULL;
+  const int live = self->core != NULL && !self->stopping &&
+    self->self_pid == mizu_self_pid();
+  for (Py_ssize_t i = 0; i < self->n_waiters; i++) {
+    MizuAsyncWaiter *w = &self->waiters[i];
+    w->task->async_pending = 0;
+    if (live) {
+      mizu_task t = { w->word };
+      (void) mizu_pool_task_notify(self->core, &t, 1, 0);
+    }
+    PyObject *cargs[2] = { w->future, exc };
+    PyObject *r = PyObject_Vectorcall(aio_set_exception_fn, cargs, 2, NULL);
+    /* the sweep never aborts mid-way: a closed loop's waiter is
+       unnotifyable either way */
+    if (r == NULL) PyErr_Clear();
+    else Py_DECREF(r);
+  }
+  Py_ssize_t n = self->n_waiters;
+  waiters_clear(self);
+  return PyLong_FromSsize_t(n);
+}
+
+// The PoolExecutor's fused verbs -------------------------------------------------
+
+PyDoc_STRVAR(pool_exec_submit_doc,
+"_exec_submit(payload, timeout=None) -> (_Task, bool)\n\n\
+The executor's fused submit: the submit, the per-slot NOTIFY announce,\n\
+and the terminal re-check in one call (no task array or bool-list\n\
+allocations). The bool is the re-check's verdict: a task already\n\
+terminal at this point resolves at the call site. Same error taxonomy\n\
+as submit().\n\n");
+
+static PyObject *Pool_exec_submit(MizuPool *self, PyObject *args,
+                                  PyObject *kw) {
+  static char *kwlist[] = {"payload", "timeout", NULL};
+  PyObject *payload, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:_exec_submit", kwlist,
+                                   &payload, &tmo))
+    return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  if (role_enter(&self->producer_active, pool_producer_msg)) return NULL;
+  mizu_task t;
+  mizu_status st = MIZU_OK;
+  int err = 0;
+  /* Sliced like submit: a Pool_destroy breaks the wait out. */
+  double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
+  for (;;) {
+    POOL_ALLOW_THREADS(self);
+    st = mizu_pool_submit_flags(p, (void *) payload, 0, &t, slice);
+    POOL_RESUME();
+    if (pool_call_done(self, p, st)) {
+      err = 1;
+      break;
+    }
+    if (st != MIZU_FULL || ms >= 0 || self->core == NULL) break;
+  }
+  role_leave(&self->producer_active);
+  if (err) return NULL;
+  if (st == MIZU_FULL && ms < 0) {
+    pool_get(self);   /* destroyed mid-wait: the closed-handle ValueError */
+    return NULL;
+  }
+  if (st == MIZU_FULL) {
+    PyErr_SetString(MizuSubmitTimeoutError,
+                    "pymizu: submission timed out (injection ring full)");
+    return NULL;
+  }
+  /* a destroy may have landed mid-wait (pool_call_done may free p):
+     re-validate before the announce */
+  p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (mizu_pool_task_notify(p, &t, 1, 1) != MIZU_OK) return pool_raise(p);
+  const int tst = mizu_pool_task_state(p, &t);
+  PyObject *task = (PyObject *) task_wrap(self, &t);
+  if (task == NULL) return NULL;
+  PyObject *terminal =
+    PyBool_FromLong(tst != MIZU_RS_PENDING && tst != MIZU_RS_RUNNING);
+  if (terminal == NULL) {
+    Py_DECREF(task);
+    return NULL;
+  }
+  PyObject *out = PyTuple_New(2);
+  if (out == NULL) {
+    Py_DECREF(task);
+    Py_DECREF(terminal);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, task);
+  PyTuple_SET_ITEM(out, 1, terminal);
+  return out;
+}
+
+PyDoc_STRVAR(pool_tasks_collect_terminal_doc,
+"_tasks_collect_terminal(tasks) -> list of (index, value, is_exc)\n\n\
+The executor drain's fused scan: for every terminal task in the snapshot,\n\
+collect at 0 (never parks) and report (index, value-or-exception,\n\
+is_exc). A collect failure (a stale word) reports the exception as the\n\
+value — the drain's per-task discipline, never aborting the pass.\n\n");
+
+static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
+                                             PyObject *arg) {
+  mizu_task *ts;
+  size_t n;
+  MizuPool *pool = tasks_get(self, arg, &ts, &n, 0);
+  if (pool == NULL) return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  PyObject *out = PyList_New(0);
+  if (out == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  for (size_t i = 0; i < n; i++) {
+    const int tst = mizu_pool_task_state(p, &ts[i]);
+    if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) continue;
+    void *v = NULL;
+    mizu_status st = mizu_pool_collect(p, &ts[i], &v, 0);
+    PyObject *val;
+    int is_exc = 0;
+    if (st == MIZU_OK) {
+      if (Py_TYPE(v) == &MizuCaughtType) {
+        val = ((MizuCaught *) v)->exc;
+        Py_INCREF(val);
+        Py_DECREF(v);
+        is_exc = 1;
+      } else {
+        val = (PyObject *) v;
+      }
+    } else {
+      if (st == MIZU_TIMEOUT)  /* the state read raced a slot transition */
+        PyErr_SetString(MizuError,
+                        "pymizu: internal: terminal task collect timed out");
+      else
+        pool_raise(p);
+      PyObject *et, *ev, *tb;
+      PyErr_Fetch(&et, &ev, &tb);
+      PyErr_NormalizeException(&et, &ev, &tb);
+      Py_XDECREF(tb);
+      if (ev != NULL) {
+        val = ev;
+        Py_XDECREF(et);
+      } else {
+        val = et;   /* the exception class; Fetch guarantees it */
+      }
+      is_exc = 1;
+    }
+    PyObject *row = Py_BuildValue("(nNi)", (Py_ssize_t) i, val, is_exc);
+    if (row == NULL || PyList_Append(out, row) < 0) {
+      Py_XDECREF(row);
+      PyMem_Free(ts);
+      Py_DECREF(out);
+      return NULL;
+    }
+    Py_DECREF(row);
+  }
+  PyMem_Free(ts);
+  return out;
 }
 
 // Pool verbs ---------------------------------------------------------------------
@@ -8333,12 +8746,18 @@ static PyObject *Pool_repr(MizuPool *self) {
 static int Pool_traverse(MizuPool *self, visitproc visit, void *arg) {
   Py_VISIT(self->trace_fn);
   Py_VISIT(self->aio_state);
+  for (Py_ssize_t i = 0; i < self->n_waiters; i++) {
+    Py_VISIT(self->waiters[i].task);
+    Py_VISIT(self->waiters[i].future);
+  }
   return 0;
 }
 
 static int Pool_clear(MizuPool *self) {
   Py_CLEAR(self->trace_fn);
   Py_CLEAR(self->aio_state);
+  waiters_clear(self);   /* a future callback closing over the pool must
+                            not pin it (the trace_fn discipline) */
   return 0;
 }
 
@@ -8363,6 +8782,8 @@ static void Pool_dealloc(MizuPool *self) {
       mizu_pool_abandon(self->core);
   }
   view_cache_free(self->vcache);
+  waiters_clear(self);
+  PyMem_Free(self->waiters);
   Py_XDECREF(self->trace_fn);
   Py_XDECREF(self->aio_state);
   MizuPoolType.tp_free((PyObject *) self);
@@ -8710,6 +9131,18 @@ static PyMethodDef Pool_methods[] = {
    pool_tasks_terminal_set_doc},
   {"_tasks_terminal", (PyCFunction) Pool_tasks_terminal, METH_O,
    pool_tasks_terminal_doc},
+  {"_pump_singles", (PyCFunction) Pool_pump_singles, METH_O,
+   pool_pump_singles_doc},
+  {"_singles_add", (PyCFunction) Pool_singles_add, METH_VARARGS,
+   pool_singles_add_doc},
+  {"_singles_remove", (PyCFunction) Pool_singles_remove, METH_O,
+   pool_singles_remove_doc},
+  {"_singles_fail", (PyCFunction) Pool_singles_fail, METH_O,
+   pool_singles_fail_doc},
+  {"_exec_submit", (PyCFunction)(void (*)(void)) Pool_exec_submit,
+   METH_VARARGS | METH_KEYWORDS, pool_exec_submit_doc},
+  {"_tasks_collect_terminal", (PyCFunction) Pool_tasks_collect_terminal,
+   METH_O, pool_tasks_collect_terminal_doc},
   {NULL, NULL, 0, NULL}
 };
 
@@ -8907,14 +9340,67 @@ task (only cancel() does).");
 
 static PyObject *Task_collect_async(MizuTask *self,
                                     PyObject *Py_UNUSED(args)) {
+  if (aio_cache_init() < 0) return NULL;
+  /* the running-loop guard, as _aio's engine: collect_async outside a
+     loop raises before any enrollment */
+  PyObject *loop = PyObject_CallNoArgs(aio_running_loop_fn);
+  if (loop == NULL) return NULL;
+  Py_DECREF(loop);
   MizuPool *pool;
-  (void) task_get(self, &pool);
+  mizu_task t = task_get(self, &pool);
   if (pool == NULL) return NULL;
-  PyObject *fn = aio_func("task_collect_async");
-  if (fn == NULL) return NULL;
-  PyObject *r = PyObject_CallOneArg(fn, (PyObject *) self);
-  Py_DECREF(fn);
-  return r;
+  if (self->async_pending) {
+    PyErr_SetString(MizuError,
+                    "pymizu: task has a pending async consumer — one "
+                    "consumer per result");
+    return NULL;
+  }
+  mizu_pool *p = pool_get(pool);
+  if (p == NULL) return NULL;
+  /* the R enroll's order: flag, announce, probe — and only a pending task
+     arms (the Python half registers and re-checks the one entry) */
+  self->async_pending = 1;
+  if (mizu_pool_task_notify(p, &t, 1, 1) != MIZU_OK) {
+    self->async_pending = 0;
+    return pool_raise(p);
+  }
+  const int tst = mizu_pool_task_state(p, &t);
+  if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) {
+    PyObject *fn = aio_func("_collect_async_pending");
+    if (fn == NULL) goto unwind;
+    PyObject *r = PyObject_CallOneArg(fn, (PyObject *) self);
+    Py_DECREF(fn);
+    if (r != NULL) return r;
+  unwind:
+    /* best-effort (idempotent): the helper's own rollback usually ran */
+    self->async_pending = 0;
+    (void) mizu_pool_task_notify(p, &t, 1, 0);
+    return NULL;
+  }
+  /* terminal at enrollment: collect, release the enrollment, settle a
+     fresh waiter — no arm cycle, no Python frame */
+  void *v = NULL;
+  mizu_status st = mizu_pool_collect(p, &t, &v, 0);
+  self->async_pending = 0;
+  (void) mizu_pool_task_notify(p, &t, 1, 0);
+  if (st != MIZU_OK) {
+    if (st == MIZU_TIMEOUT)  /* the state read raced a slot transition */
+      PyErr_SetString(MizuError,
+                      "pymizu: internal: terminal task collect timed out");
+    else
+      pool_raise(p);
+    return NULL;
+  }
+  PyObject *fut = PyObject_CallNoArgs(aio_waiter_type);
+  if (fut == NULL) {
+    Py_DECREF((PyObject *) v);
+    return NULL;
+  }
+  if (aio_settle(fut, (PyObject *) v) < 0) {
+    Py_DECREF(fut);
+    return NULL;
+  }
+  return fut;
 }
 
 static PyObject *Task_am_await(MizuTask *self) {

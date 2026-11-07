@@ -78,11 +78,12 @@ probes and A/B isolations stay in the log.
 | submit plan k = 4 (W2 row) | 97.6 us/task | 2026-11-06 |
 | submit plan k = 16 (W2 row) | 155.0 us/task | 2026-11-06 |
 | event-driven, channel armed | 2.62M rt/s | 2026-10-27 |
-| event-driven, channel recv_async | 622k rt/s | 2026-10-27 |
-| event-driven, pool collect_async | 520k tasks/s | 2026-10-27 |
+| event-driven, channel recv_async | 648k rt/s | 2026-11-06 |
+| event-driven, pool collect_async | 1.59M tasks/s | 2026-11-06 |
 | event-driven, pool collect_all_async | 1.72M tasks/s | 2026-10-27 |
 | event-driven, pool 64 waiters | 2.28M tasks/s | 2026-10-27 |
-| executor outstanding 500 / 1,000 / 2,000 / 4,000 | 64.1k / 65.0k / 61.9k / 61.9k tasks/s | 2026-10-27 |
+| executor outstanding 500 / 1,000 / 2,000 / 4,000 | 77.4k / 80.8k / 80.8k / 80.4k tasks/s | 2026-11-06 |
+| executor sync | 4.8 us/task | 2026-11-06 |
 
 ## Run log
 
@@ -1246,3 +1247,39 @@ Best-known swaps: map trivial f (0.06) and its prepared row (0.05),
 winsum x 2000 (706.7k) and x 20000 (759.3k).
 
 Status: map + stream suites 175 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-06 — asyncio pump and PoolExecutor C fast paths [(a5ac913, 82b84c6, 7b6b50b, 3a65881, 21c32dd)]
+
+`Task.collect_async()` runs end to end in C when the result is already
+published (no arm cycle, no Python frame), the pool pump's arm is sticky
+(one arm+disarm pair per idle period, not per await), enrollment probes
+terminal before arming and re-checks the new entry only (never the
+enrolled set), and the singles waiters live in a C word registry scanned
+per wake. The executor's submit fuses submit + announce + terminal
+re-check (`_exec_submit`), resolving a terminal-at-submit task inline
+with no drain pass, and the drain's scan is one `_tasks_collect_terminal`
+call. A/B below is aa1dc4c -> tip, same host back to back; the "executor
+sync" row is new (submit 1,000, then result() 1,000, 4 workers, const) —
+its before value is the same shape run against aa1dc4c by probe.
+
+| row | before | after |
+|---|---|---|
+| pool collect_async | 522.6k tasks/s | 1,592.0k tasks/s |
+| pool collect_all_async | 1.69M tasks/s | 1.70M tasks/s |
+| pool 64 waiters | 2.07M tasks/s | 1.93M tasks/s |
+| channel recv_async | 680k rt/s | 648k rt/s |
+| channel armed | 2.56M rt/s | 2.44M rt/s |
+| executor outstanding 500 / 1,000 / 2,000 / 4,000 | 59.3k / 60.3k / 59.0k / 59.0k tasks/s | 77.4k / 80.8k / 80.8k / 80.4k tasks/s |
+| executor sync | 5.38 us/task | 4.8 us/task |
+
+The 64-waiters row pays the trade: the old per-enrollment full-set pump
+(122 passes per rep) settled collections inside the enrollment burst;
+the new O(1) enrollments defer every settle to 2-3 wake passes after it
+(~1 ms of loop round-trips per rep). Enrollment itself is far cheaper
+and per-wake work unchanged — the dip is latency placement, not
+throughput. Sections 1-6 flat (8M payload's before run was a high
+outlier; the after value matches the best-known). Best-known swaps:
+pool collect_async (1.59M), channel recv_async (648k), the executor
+outstanding row, and the new executor sync row (4.8 us/task).
+
+Status: full suite 1071 pass, 1 skip; ruff + pyrefly clean.

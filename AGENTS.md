@@ -425,20 +425,40 @@ finalizer — short-circuits to the released-pool answer instead).
   schedules a trampoline via `loop.call_soon_threadsafe` (a `RuntimeError`
   there is a closed loop: disarm) or, for the executor's loop-free arm,
   calls the drain in place. `python/pymizu/_aio.py` is the drain half —
-  the channel recv FIFO, the per-pool-handle enrollment (single tasks,
-  and one-Future collections for `collect_any_async` /
-  `collect_all_async` / maps), the bounded drain quantum (2048 items or
-  ~1 ms per callback, `loop.call_soon` re-schedule) — imported lazily by
-  the verbs so `import pymizu` never pays for asyncio. Verbs:
+  the channel recv FIFO, the one-Future collections
+  (`collect_any_async` / `collect_all_async` / maps), the bounded drain
+  quantum (2048 items or ~1 ms per callback, `loop.call_soon`
+  re-schedule) — imported lazily by the verbs so `import pymizu` never
+  pays for asyncio. Single-task waiters are C-side end to end:
+  `Task.collect_async()` enrolls (flag + announce) and probes terminal in
+  C, and an already-published task collects at 0 and settles a fresh
+  `_WaiterFuture` with no arm cycle and no Python frame; only the pending
+  half calls back into `_aio._collect_async_pending` (arm, register,
+  re-check the one entry). The registry is a C array on the `_Pool`
+  object (the mizu `notify_r.c` form: each entry caches the task's
+  `mizu_task` word for the scan beside the handle for the flag release
+  and the future), GC-traversed and -cleared like `trace_fn`, with four
+  verbs: `_singles_add` (register + the one-entry re-check),
+  `_singles_remove` (the detach), `_singles_fail` (the fail-all sweep),
+  and `_pump_singles(max)` (the per-wake scan: collect at 0 and settle
+  every terminal entry, capped at the quantum's remainder). Verbs:
   `Channel.recv_async()` + `async for` (terminals stay sentinel VALUES),
   `await task` / `Task.collect_async()` (raises the flattened remote
   error), `Pool.collect_any_async()` / `collect_all_async()` (sync-verb
   semantics incl. `index`), `await` a map handle. Discipline:
-  - Enrollment is announce (`_task_notify(tasks, 1)`) before arm, then a
-    synchronous re-check; settle (resolve/reject/detach) withdraws every
-    announce, restoring each slot's one-writer regime — a detached task
-    is blocking-collectible again. Cancelling a Future only detaches,
-    never cancels the task/map.
+  - Enrollment is announce (`_task_notify(tasks, 1)`), then a terminal
+    probe of the new tasks only, and only then the arm — an
+    already-published task settles at the call site with no arm cycle at
+    all, and the post-arm re-check again covers the new enrollment only
+    (every other slot's publish rides the armed word's wake). Settle
+    (resolve/reject/detach) withdraws every announce, restoring each
+    slot's one-writer regime — a detached task is blocking-collectible
+    again. Cancelling a Future only detaches, never cancels the task/map.
+  - The pool arm is sticky: the pump's emptied set leaves it standing for
+    the next enrollment to reuse (an arm+disarm pair per await was a
+    quarter of the sequential collect_async row); only a wake that finds
+    nothing enrolled disarms (one spurious pass per idle period), plus
+    the teardown and loop-change paths. Detaches never disarm.
   - One consumer per result: an enrolled task carries the C
     `async_pending` flag and refuses blocking collects and a second
     enrollment ("one consumer per result"); a promise-armed map handle
@@ -448,7 +468,8 @@ finalizer — short-circuits to the released-pool answer instead).
     executor's future fails "already collected" on the next wake.
   - Drains re-arm the edge-triggered word per pass and re-scan until a
     pass finds nothing new (the announce/recheck transplant); the pool
-    scan is one `_tasks_terminal` call per pass.
+    scan is one `_pump_singles` C call per pass over the enrolled words
+    (collections scan their own tasks with `_tasks_terminal_set`).
   - Streaming maps refuse `collect_async()` (the sliding window needs
     the blocking turn loop).
   - Facade `destroy()`/`close()` settle pending futures through
@@ -470,7 +491,14 @@ finalizer — short-circuits to the released-pool answer instead).
   thread (the stdlib executors' management-thread discipline).
   `_TaskFuture.cancel()` also detaches the task from the outstanding
   set at once (a cancelled queued task frees CANCEL->FREE with no
-  publish, so no wake would ever cover it).
+  publish, so no wake would ever cover it). Its hot path is two fused
+  verbs: `submit()` rides `_exec_submit` (submit + per-slot announce +
+  the terminal re-check in one C call; the facade path stays for `call`
+  specs and the callable gate), resolving a terminal-at-submit task
+  inline with no drain pass, and the drain's scan is one
+  `_tasks_collect_terminal` call over the outstanding snapshot (collect
+  at 0 per terminal task, the exception captured per row) with the dict
+  pop and `_resolve` per result in Python.
 - Map conventions (`src/map.c`, `python/pymizu/_map.py`):
   - Handle-first (breaking, mirrors mizu): `Pool.map()` /
     `Pool.starmap()` / `PreparedMap.run()` stage + submit and return a
