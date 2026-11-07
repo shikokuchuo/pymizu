@@ -491,7 +491,14 @@ finalizer — short-circuits to the released-pool answer instead).
   thread (the stdlib executors' management-thread discipline).
   `_TaskFuture.cancel()` also detaches the task from the outstanding
   set at once (a cancelled queued task frees CANCEL->FREE with no
-  publish, so no wake would ever cover it).
+  publish, so no wake would ever cover it). Its hot path is two fused
+  verbs: `submit()` rides `_exec_submit` (submit + per-slot announce +
+  the terminal re-check in one C call; the facade path stays for `call`
+  specs and the callable gate), resolving a terminal-at-submit task
+  inline with no drain pass, and the drain's scan is one
+  `_tasks_collect_terminal` call over the outstanding snapshot (collect
+  at 0 per terminal task, the exception captured per row) with the dict
+  pop and `_resolve` per result in Python.
 - Map conventions (`src/map.c`, `python/pymizu/_map.py`):
   - Handle-first (breaking, mirrors mizu): `Pool.map()` /
     `Pool.starmap()` / `PreparedMap.run()` stage + submit and return a

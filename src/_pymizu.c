@@ -7594,6 +7594,149 @@ static PyObject *Pool_singles_fail(MizuPool *self, PyObject *exc) {
   return PyLong_FromSsize_t(n);
 }
 
+// The PoolExecutor's fused verbs -------------------------------------------------
+
+PyDoc_STRVAR(pool_exec_submit_doc,
+"_exec_submit(payload, timeout=None) -> (_Task, bool)\n\n\
+The executor's fused submit: the submit, the per-slot NOTIFY announce,\n\
+and the terminal re-check in one call (no task array or bool-list\n\
+allocations). The bool is the re-check's verdict: a task already\n\
+terminal at this point resolves at the call site. Same error taxonomy\n\
+as submit().\n\n");
+
+static PyObject *Pool_exec_submit(MizuPool *self, PyObject *args,
+                                  PyObject *kw) {
+  static char *kwlist[] = {"payload", "timeout", NULL};
+  PyObject *payload, *tmo = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:_exec_submit", kwlist,
+                                   &payload, &tmo))
+    return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) return NULL;
+  double ms;
+  if (timeout_ms_of(tmo, &ms) < 0) return NULL;
+  if (role_enter(&self->producer_active, pool_producer_msg)) return NULL;
+  mizu_task t;
+  mizu_status st = MIZU_OK;
+  int err = 0;
+  /* Sliced like submit: a Pool_destroy breaks the wait out. */
+  double slice = ms < 0 ? MIZU_PY_WAIT_SLICE_MS : ms;
+  for (;;) {
+    POOL_ALLOW_THREADS(self);
+    st = mizu_pool_submit_flags(p, (void *) payload, 0, &t, slice);
+    POOL_RESUME();
+    if (pool_call_done(self, p, st)) {
+      err = 1;
+      break;
+    }
+    if (st != MIZU_FULL || ms >= 0 || self->core == NULL) break;
+  }
+  role_leave(&self->producer_active);
+  if (err) return NULL;
+  if (st == MIZU_FULL && ms < 0) {
+    pool_get(self);   /* destroyed mid-wait: the closed-handle ValueError */
+    return NULL;
+  }
+  if (st == MIZU_FULL) {
+    PyErr_SetString(MizuSubmitTimeoutError,
+                    "pymizu: submission timed out (injection ring full)");
+    return NULL;
+  }
+  /* a destroy may have landed mid-wait (pool_call_done may free p):
+     re-validate before the announce */
+  p = pool_get(self);
+  if (p == NULL) return NULL;
+  if (mizu_pool_task_notify(p, &t, 1, 1) != MIZU_OK) return pool_raise(p);
+  const int tst = mizu_pool_task_state(p, &t);
+  PyObject *task = (PyObject *) task_wrap(self, &t);
+  if (task == NULL) return NULL;
+  PyObject *terminal =
+    PyBool_FromLong(tst != MIZU_RS_PENDING && tst != MIZU_RS_RUNNING);
+  if (terminal == NULL) {
+    Py_DECREF(task);
+    return NULL;
+  }
+  PyObject *out = PyTuple_New(2);
+  if (out == NULL) {
+    Py_DECREF(task);
+    Py_DECREF(terminal);
+    return NULL;
+  }
+  PyTuple_SET_ITEM(out, 0, task);
+  PyTuple_SET_ITEM(out, 1, terminal);
+  return out;
+}
+
+PyDoc_STRVAR(pool_tasks_collect_terminal_doc,
+"_tasks_collect_terminal(tasks) -> list of (index, value, is_exc)\n\n\
+The executor drain's fused scan: for every terminal task in the snapshot,\n\
+collect at 0 (never parks) and report (index, value-or-exception,\n\
+is_exc). A collect failure (a stale word) reports the exception as the\n\
+value — the drain's per-task discipline, never aborting the pass.\n\n");
+
+static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
+                                             PyObject *arg) {
+  mizu_task *ts;
+  size_t n;
+  MizuPool *pool = tasks_get(self, arg, &ts, &n, 0);
+  if (pool == NULL) return NULL;
+  mizu_pool *p = pool_get(self);
+  if (p == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  PyObject *out = PyList_New(0);
+  if (out == NULL) {
+    PyMem_Free(ts);
+    return NULL;
+  }
+  for (size_t i = 0; i < n; i++) {
+    const int tst = mizu_pool_task_state(p, &ts[i]);
+    if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) continue;
+    void *v = NULL;
+    mizu_status st = mizu_pool_collect(p, &ts[i], &v, 0);
+    PyObject *val;
+    int is_exc = 0;
+    if (st == MIZU_OK) {
+      if (Py_TYPE(v) == &MizuCaughtType) {
+        val = ((MizuCaught *) v)->exc;
+        Py_INCREF(val);
+        Py_DECREF(v);
+        is_exc = 1;
+      } else {
+        val = (PyObject *) v;
+      }
+    } else {
+      if (st == MIZU_TIMEOUT)  /* the state read raced a slot transition */
+        PyErr_SetString(MizuError,
+                        "pymizu: internal: terminal task collect timed out");
+      else
+        pool_raise(p);
+      PyObject *et, *ev, *tb;
+      PyErr_Fetch(&et, &ev, &tb);
+      PyErr_NormalizeException(&et, &ev, &tb);
+      Py_XDECREF(tb);
+      if (ev != NULL) {
+        val = ev;
+        Py_XDECREF(et);
+      } else {
+        val = et;   /* the exception class; Fetch guarantees it */
+      }
+      is_exc = 1;
+    }
+    PyObject *row = Py_BuildValue("(nNi)", (Py_ssize_t) i, val, is_exc);
+    if (row == NULL || PyList_Append(out, row) < 0) {
+      Py_XDECREF(row);
+      PyMem_Free(ts);
+      Py_DECREF(out);
+      return NULL;
+    }
+    Py_DECREF(row);
+  }
+  PyMem_Free(ts);
+  return out;
+}
+
 // Pool verbs ---------------------------------------------------------------------
 
 PyDoc_STRVAR(pool_submit_doc,
@@ -8996,6 +9139,10 @@ static PyMethodDef Pool_methods[] = {
    pool_singles_remove_doc},
   {"_singles_fail", (PyCFunction) Pool_singles_fail, METH_O,
    pool_singles_fail_doc},
+  {"_exec_submit", (PyCFunction)(void (*)(void)) Pool_exec_submit,
+   METH_VARARGS | METH_KEYWORDS, pool_exec_submit_doc},
+  {"_tasks_collect_terminal", (PyCFunction) Pool_tasks_collect_terminal,
+   METH_O, pool_tasks_collect_terminal_doc},
   {NULL, NULL, 0, NULL}
 };
 

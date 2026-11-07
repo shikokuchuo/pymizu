@@ -1134,6 +1134,26 @@ def executor_rows():
 
 executor_rows()
 
+
+def executor_sync_row():
+    # the adapter's own overhead apart from the asyncio wrap (whose
+    # per-future self-pipe write is a stdlib floor): submit m, then
+    # result() m — the futures are long done by the reap loop
+    with pymizu.PoolExecutor.create(
+        4, max_submitters=2, result_slots=16384, launcher=worker_launcher
+    ) as ex:
+
+        def rep():
+            futs = [ex.submit(const) for _ in range(1000)]
+            for f in futs:
+                assert f.result() == 1
+
+        rep()
+        note_us("executor sync", "Python", 1000, rep)
+
+
+executor_sync_row()
+
 # summary ---------------------------------------------------------------------
 
 print("\n== summary ==")

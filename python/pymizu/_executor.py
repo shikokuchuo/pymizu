@@ -19,6 +19,7 @@ from concurrent.futures import Future as _Future
 from typing import TYPE_CHECKING
 from typing import Any as _Any
 
+import pymizu as _pkg
 from pymizu import _pymizu
 
 if TYPE_CHECKING:
@@ -184,25 +185,35 @@ class PoolExecutor(_Executor):
                 )
             if self._broken is not None:
                 raise self._broken
-            with self._submits:
-                task = self._pool.submit(fn, *args, **kwargs)
-            future = _TaskFuture(task, self._detach)
-            self._outstanding[future] = task
             if not self._armed:
                 # a NULL loop: the drain runs directly on the listener
                 # thread (set_result is thread-safe by design)
                 self._pool_h._notify_arm(None, self._drain)
                 self._armed = True
-            # the per-slot NOTIFY announce, then the re-check: a slot
-            # already terminal at this point resolves from the scan
-            # (announce before arming is the parker transplant)
-            self._pool_h._task_notify([task], True)
-        # the re-check covers a publish that beat the announce: scan and
-        # resolve the new task only (a drain pass per submit costs
-        # O(outstanding) per submission); a publish past the announce
-        # rides the armed word's wake instead. Not popped: a fail-all
-        # landed in between and already settled the future
-        if self._scan([task])[0]:
+            if type(fn) is _pkg.call or not callable(fn):
+                # the facade path keeps the call-spec and callable gates
+                with self._submits:
+                    task = self._pool.submit(fn, *args, **kwargs)
+                # the per-slot NOTIFY announce, then the re-check: a slot
+                # already terminal at this point resolves from the scan
+                # (announce before arming is the parker transplant)
+                self._pool_h._task_notify([task], True)
+                terminal = None
+            else:
+                _pkg._check_native(self._pool_h._worker_ident(), "Pool.submit")
+                with self._submits:
+                    # the fused submit + announce + terminal re-check
+                    task, terminal = self._exec_submit(fn, args, kwargs)
+            future = _TaskFuture(task, self._detach)
+            self._outstanding[future] = task
+        # the re-check covers a publish that beat the announce: resolve
+        # the new task only (a drain pass per submit costs O(outstanding)
+        # per submission); a publish past the announce rides the armed
+        # word's wake instead. Not popped: a fail-all landed in between
+        # and already settled the future
+        if terminal is None:
+            terminal = self._scan([task])[0]
+        if terminal:
             with self._cond:
                 popped = self._outstanding.pop(future, None) is not None
             if popped:
@@ -215,6 +226,15 @@ class PoolExecutor(_Executor):
                 with self._cond:
                     self._cond.notify_all()
         return future
+
+    def _exec_submit(
+        self, fn: _Callable[..., _Any], args: tuple, kwargs: dict
+    ) -> tuple[_pymizu._Task, bool]:
+        """The fused submit + announce + terminal re-check (one method
+        for tests to seam)."""
+        return self._pool_h._exec_submit(
+            _pymizu._task_frame(fn, args, kwargs), None
+        )
 
     def shutdown(
         self, wait: bool = True, *, cancel_futures: bool = False
@@ -265,15 +285,21 @@ class PoolExecutor(_Executor):
             self._pool_h._notify_disarm()
 
     def _scan(self, tasks: list) -> list:
-        """The drain's terminal scan (one method for tests to seam)."""
+        """The submit re-check's terminal scan (one method for tests to
+        seam)."""
         return self._pool_h._tasks_terminal(tasks)
 
+    def _collect_terminal(self, tasks: list) -> list:
+        """The drain's fused scan-and-collect: (index, value-or-error,
+        is_exc) per terminal task (one method for tests to seam)."""
+        return self._pool_h._tasks_collect_terminal(tasks)
+
     def _drain(self) -> None:
-        """One drain pass (the listener callback and the submit-time
-        re-check): re-arm the submitter word, scan the outstanding set,
-        resolve what turned terminal — looping until a pass finds
-        nothing new, so a publish racing the pass rides the re-armed
-        word's next signal (the announce/recheck transplant)."""
+        """One drain pass (the listener callback): re-arm the submitter
+        word, scan the outstanding set, resolve what turned terminal —
+        looping until a pass finds nothing new, so a publish racing the
+        pass rides the re-armed word's next signal (the announce/recheck
+        transplant)."""
         if not self._draining.acquire(blocking=False):
             return  # the running drain's re-check covers this call
         try:
@@ -291,26 +317,21 @@ class PoolExecutor(_Executor):
                     self._disarm()
                     return
                 try:
-                    terminal = self._scan([t for _, t in items])
+                    results = self._collect_terminal([t for _, t in items])
                 except Exception as e:
                     # infrastructure failure: fail everything outstanding
                     self._fail_all(e)
                     return
-                progressed = False
-                for (future, task), term in zip(items, terminal, strict=False):
-                    if not term:
-                        continue
+                for index, value, is_exc in results:
+                    future = items[index][0]
                     with self._cond:
                         if self._outstanding.pop(future, None) is None:
                             continue
-                    try:
-                        value = task.collect(0)
-                    except Exception as e:
-                        self._resolve(future, exception=e)
+                    if is_exc:
+                        self._resolve(future, exception=value)
                     else:
                         self._resolve(future, result=value)
-                    progressed = True
-                if progressed:
+                if results:
                     # one shutdown-waiter wake per pass, not per resolve
                     with self._cond:
                         self._cond.notify_all()
