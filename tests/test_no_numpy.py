@@ -10,6 +10,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 
 def _run_without_numpy(tmp_path, script):
     (tmp_path / "numpy.py").write_text(
@@ -163,6 +165,14 @@ def test_map_complex_declines_without_numpy(tmp_path):
         try:
             v = ch.recv(timeout=30)
             assert type(v).__name__ == "_ShmView"
+            # the worker-side view accessor declines it too, ahead of the
+            # 'Zd' memoryview that cannot index
+            try:
+                _map._view_accessor(v)
+            except TypeError as e:
+                assert "complex128" in str(e)
+            else:
+                raise AssertionError("no TypeError")
             p = pymizu.Pool.create(2)
             try:
                 # a complex buffer x declines the raw section (the list
@@ -197,6 +207,63 @@ def test_map_complex_declines_without_numpy(tmp_path):
             ch.close()
         """,
     )
+
+
+def test_map_complex_wrap_out_without_numpy(tmp_path):
+    # the collector-side twin: a foreign-staged complex template output
+    # declines informatively where the _TAG_MV lookup would KeyError
+    _run_without_numpy(
+        tmp_path,
+        """
+        from pymizu import _map
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+        try:
+            _map._wrap_out(bytes(16), 15, 1, 1)
+            raise SystemExit("expected TypeError")
+        except TypeError as e:
+            assert "complex128" in str(e)
+        """,
+    )
+
+
+def test_map_complex_x_numpyless_worker(tmp_path):
+    # the mirror of the shimmed-driver tests: this driver keeps numpy and
+    # stages a complex raw x section; the shimmed workers must decline it
+    # informatively, not die on a bare KeyError from the _TAG_MV lookup
+    (tmp_path / "numpy.py").write_text(
+        'raise ImportError("numpy blocked by test")\n'
+    )
+
+    def numpyless_worker_launcher(token, slot):
+        env = dict(os.environ)
+        prev = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            str(tmp_path) if not prev else str(tmp_path) + os.pathsep + prev
+        )
+        return subprocess.Popen(
+            [sys.executable, "-m", "pymizu.worker", token, str(slot)],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    import numpy as np
+    from tests.helpers import square
+
+    import pymizu
+
+    p = pymizu.Pool.create(1, launcher=numpyless_worker_launcher)
+    try:
+        with pytest.raises(pymizu.TaskError) as exc_info:
+            p.map(square, np.arange(40000, dtype=np.complex128)).collect(
+                timeout=30
+            )
+        assert exc_info.value.remote_type == "TypeError"
+        assert "complex128" in str(exc_info.value)
+    finally:
+        p.stop()
 
 
 def test_map_result_python_scalars_without_numpy(tmp_path):

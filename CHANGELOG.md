@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a `KeyError` when a worker or collector without numpy received a
+  complex map `x` or template from an R host; it now raises an
+  informative error.
+- Fixed `Pool.map(stream=True)` silently deriving wrong RNG streams on
+  R workers when the seed offset plus `len(x)` exceeded 2^53; this now
+  raises at the call site.
 - Fixed a rare deadlock where `Pool.stop()` could hang indefinitely
   when a `PoolExecutor` wrapped the pool.
 - Fixed a rare crash when unpickling a `Frame` under memory pressure.

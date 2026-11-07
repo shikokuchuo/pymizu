@@ -385,6 +385,20 @@ def test_stream_spec_map_seed_invariance(r_pool):
         assert got == want
 
 
+def test_stream_seed_offset_beyond_exact_range_raises(r_pool):
+    # chunk bases compose the element offsets in R doubles — past 2^53
+    # the derived stream would silently diverge, so the map declines at
+    # the call site (the region path composes exactly and stays admitted)
+    fn = pymizu.call(source="runif(1)")
+    with pytest.raises(TypeError, match=r"2\^53"):
+        r_pool.map(fn, [1, 2, 3], seed=(7, 2**53 - 1), stream=True)
+    # the boundary itself crosses and matches the region map's streams
+    assert (
+        r_pool.map(fn, [1, 2], seed=(7, 2**53 - 1), stream=True).collect()
+        == r_pool.map(fn, [1, 2], seed=(7, 2**53 - 1)).collect()
+    )
+
+
 def test_stream_spec_map_error_index_min():
     # sibling errors drained into the minimum selection, offset by each
     # chunk's base — the same-language min-index discipline over R workers

@@ -110,6 +110,19 @@ def test_stream_seed_offset(pool):
     assert whole[5:] == tail
 
 
+def test_stream_seed_wire_offset_gate():
+    # the streaming spec map's R-worker gate: chunk bases compose the
+    # element offsets in R doubles, so offset + (n - 1) must stay within
+    # 2^53 (the region path's jump composition never rounds and stays
+    # ungated). The end-to-end form is test_crosslang_map.py's.
+    with pytest.raises(TypeError, match=r"2\^53"):
+        _map_mod._seed_wire_stream((7, 2**53 - 1), 3, _map_mod._LANG_R)
+    # the boundary itself, same-language pools, and no seed all pass
+    _map_mod._seed_wire_stream((7, 2**53 - 1), 2, _map_mod._LANG_R)
+    _map_mod._seed_wire_stream((7, 2**53 + 5), 3, _map_mod._LANG_PYTHON)
+    _map_mod._seed_wire_stream(None, 3, _map_mod._LANG_R)
+
+
 def test_stream_fail_fast_element_index(pool):
     # the regression the index guard fixes: collect_any's position stamp
     # must not clobber the envelope's element index (element 4 is in
