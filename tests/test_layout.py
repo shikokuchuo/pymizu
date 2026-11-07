@@ -146,6 +146,26 @@ def big_ints(n=20000):
     return list(range(n))
 
 
+def test_top_level_scalars():
+    # the foreign fast gate: top-level exact scalars stage as the 'I'
+    # header + scalar tag directly, the pymizu_ix_stage bytes without
+    # the walk; -(2**63) reads back as None — the NA sentinel mapping
+    # (the crosslang suite pins the R side reading NA_integer64_)
+    h, p = foreign_pair()
+    try:
+        for x in (True, False, 1, 2**40, 2.5, 1 + 2j):
+            assert h.send(x) is None
+            got = p.recv(5)
+            assert got == x and type(got) is type(x)
+        assert h.send(-(2**63)) is None
+        assert p.recv(5) is None
+        with pytest.raises(pymizu.DeclinedError, match="int64"):
+            h.send(2**90)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_mizl_tree_roundtrip():
     # a nested tree crosses as one MIZL region: string leaves wrap as
     # views, scalars read as the 'I' codec's values
