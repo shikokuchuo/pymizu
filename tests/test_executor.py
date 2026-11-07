@@ -228,6 +228,70 @@ def test_asyncio_wrap_future(pool):
         assert asyncio.run(main()) == 49
 
 
+def test_submit_terminal_skips_the_drain_pass(pool, monkeypatch):
+    # a task terminal at submit resolves from the re-check alone: no
+    # O(outstanding) drain pass per submission (the seam counts main
+    # thread passes only — the listener's wake drain is the other regime)
+    main = threading.current_thread()
+    with pymizu.PoolExecutor(pool) as ex:
+        drains = []
+        orig_drain = ex._drain
+
+        def counting_drain():
+            if threading.current_thread() is main:
+                drains.append(1)
+            else:
+                orig_drain()
+
+        orig_scan = ex._scan
+
+        def patient_scan(tasks):
+            deadline = time.monotonic() + 5
+            while not all(orig_scan(tasks)):
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
+            return [True] * len(tasks)
+
+        monkeypatch.setattr(ex, "_drain", counting_drain)
+        monkeypatch.setattr(ex, "_scan", patient_scan)
+        fut = ex.submit(square, 6)
+        assert fut.result(timeout=5) == 36
+        assert drains == []
+
+
+def test_submit_recheck_losing_to_fail_all(pool, monkeypatch):
+    # a fail-all landing between the announce and the re-check: the
+    # submit's resolve skips the already-failed future (the pop finds
+    # nothing) rather than resolving it a second time
+    err = pymizu.MizuError("infrastructure failure")
+
+    def failing_scan(tasks):
+        ex._fail_all(err)
+        return [True] * len(tasks)
+
+    with pymizu.PoolExecutor(pool) as ex:
+        monkeypatch.setattr(ex, "_scan", failing_scan)
+        fut = ex.submit(square, 2)
+        with pytest.raises(pymizu.MizuError) as exc_info:
+            fut.result(timeout=5)
+        assert exc_info.value is err
+
+
+def test_done_callbacks_run_on_listener_thread(pool):
+    # a task completing after submit resolves off the wake: its done
+    # callbacks run on the listener thread (the stdlib management-thread
+    # discipline), never on the submitting one
+    main = threading.current_thread()
+    seen = []
+    with pymizu.PoolExecutor(pool) as ex:
+        fut = ex.submit(sleep_ident, 0.3)
+        fut.add_done_callback(
+            lambda f: seen.append(threading.current_thread())
+        )
+        assert fut.result(timeout=5) == 0.3
+    assert seen and seen[0] is not main
+
+
 def test_drain_reentry_skips(pool, monkeypatch):
     # a drain already running holds the lock: a concurrent call (the
     # submit-time re-check) returns at once, covered by the running

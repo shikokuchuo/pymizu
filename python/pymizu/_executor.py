@@ -197,12 +197,23 @@ class PoolExecutor(_Executor):
             # already terminal at this point resolves from the scan
             # (announce before arming is the parker transplant)
             self._pool_h._task_notify([task], True)
-        # the re-check covers a publish that beat the announce: scan the
-        # new task only (a full-drain per submit costs O(outstanding) per
-        # submission); a publish past the announce rides the armed word's
-        # wake instead
+        # the re-check covers a publish that beat the announce: scan and
+        # resolve the new task only (a drain pass per submit costs
+        # O(outstanding) per submission); a publish past the announce
+        # rides the armed word's wake instead. Not popped: a fail-all
+        # landed in between and already settled the future
         if self._scan([task])[0]:
-            self._drain()
+            with self._cond:
+                popped = self._outstanding.pop(future, None) is not None
+            if popped:
+                try:
+                    value = task.collect(0)
+                except Exception as e:
+                    self._resolve(future, exception=e)
+                else:
+                    self._resolve(future, result=value)
+                with self._cond:
+                    self._cond.notify_all()
         return future
 
     def shutdown(
