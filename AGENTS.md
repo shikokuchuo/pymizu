@@ -239,14 +239,33 @@ finalizer — short-circuits to the released-pool answer instead).
      read arm rides `read_shm_vec` (a region-backed Frame, the
      `ctx->gone` discipline); an adopted (from_arrow) Frame needs no
      special casing.
-  7. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
+  7. `_MapResult` (the map runner result marker, a tuple subclass built
+     only through the `_map_result` / `_batch_result` factories — the
+     `_TaskFrame` pattern; the stage hook sits ahead of the foreign
+     branch, not with the other frame checks) -> the typed map-result
+     codec (`PYMIZU_TAG_MAPRES` 'm'): form 1 the morsel runner's
+     (hist, vals) — the (lo, hi) pairs then one leaf per batch — form 0
+     the blob / streaming chunk's one bare batch leaf. A batch of
+     matching scalars crosses as a typed leaf (wire type, np form,
+     shape, m, count, then the raw element bytes): exact Python
+     float/int/complex (np 0) or numpy scalars (np 1, the wire type's
+     canonical scalar class on read — the numpy row's discipline),
+     tuples/lists of m included; anything else (a type change
+     mid-batch, an int past int64, bool, str, None, an unmappable numpy
+     dtype) pickles per batch. An np 1 leaf read without numpy raises a
+     named MizuError (the unpickle ModuleNotFoundError's parity). On a
+     foreign handle the marker unwraps to its plain form for the 'I'
+     writer — a foreign submitter (an R host driving Python workers
+     through a spec map) receives today's objects. An old build's
+     reader errors loudly on the tag, the numpy row's discipline.
+  8. The compact binary codec (`MIZU_PYMIZU_CODEC_MAGIC` 0x50 'P',
      defined in the vendored `mizu_ext.h` next to mizu's own
      `MIZU_CODEC_MAGIC` 0x52 'R' — one registry for both bindings): bool,
      int64-bounded int, float, str, bytes, None, and one flat
      list/tuple/dict level of those, capped at 64 elements. Exact-type
      checks throughout, so subclasses keep their pickle semantics;
      anything else falls back.
-  8. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
+  9. Pickle protocol 4 over INLINE/ARENA/SHM_RAW.
 
   `stage_bytes` frames the pickle/codec/task-frame streams over the
   INLINE/ARENA/SHM_RAW tiers; the INLINE frame stamps the keeperless
@@ -492,6 +511,15 @@ finalizer — short-circuits to the released-pool answer instead).
     reset/trim, cancel, lost-set scan — is the core's morsel module
     (`mizu_morsel_*`, vendored `morsel.c`; one layout for both bindings). Runners are ordinary tasks submitted with
     `MIZU_ENTRY_RUNNER` via `_Pool._submit_runner`.
+  - Runner results ride the typed map-result codec (tag 'm'): `_runner`
+    returns `_pymizu._map_result(hist, vals-or-None)`, and the blob
+    path's `_chunk` and the streaming `_stream_chunk` return
+    `_pymizu._batch_result(batch)` — the three producers. The marker
+    decodes to today's plain objects on the submitter, so the consumers
+    (`_collect_region`'s splice, the blob branch of `Map._collect`,
+    `_StreamWindow.drive`) are unchanged; `_runner_ix` inherits the
+    marker from `_runner`, the stage hook's foreign unwrap keeping an R
+    host on the 'I' writer's plain pair.
   - Cross-language maps (Phase 5): a `pymizu.call` spec as
     `Pool.map()`'s `fn` always takes the region path (the blob path's
     chunk tasks are private frames). The descriptor is the `'I'` form

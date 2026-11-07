@@ -13,7 +13,14 @@ import threading
 import time
 
 import pytest
-from tests.helpers import chan_pair, fail_at, sleep_ident, sleep_on, square
+from tests.helpers import (
+    chan_pair,
+    fail_at,
+    np_f64,
+    sleep_ident,
+    sleep_on,
+    square,
+)
 
 import pymizu
 from pymizu import _pymizu
@@ -836,6 +843,18 @@ def test_map_collect_async(pool):
     async def main():
         m = pool.map(square, range(4))
         assert await m.collect_async() == [0, 1, 4, 9]
+
+    asyncio.run(main())
+
+
+def test_map_collect_async_numpy_scalars(pool):
+    # the typed map-result stream decodes on the same collect path
+    np = pytest.importorskip("numpy")
+
+    async def main():
+        out = await pool.map(np_f64, list(range(200)))
+        assert all(type(v) is np.float64 for v in out)
+        assert out == [v * 2 for v in range(200)]
 
     asyncio.run(main())
 

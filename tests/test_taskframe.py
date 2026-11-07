@@ -635,3 +635,147 @@ def test_read_stream_task_frame_bad_leaves():
             + (5).to_bytes(8, "little")
             + b"n"
         )
+
+
+# -- the map-result codec (tag 'm') -------------------------------------------
+
+_REAL = 14
+_CPLX = 15
+_INT64 = 32
+
+
+def _leaf(type_, np_, shape, m, body):
+    return (
+        b"\x00" + bytes([type_, np_, shape]) + m.to_bytes(4, "little") + body
+    )
+
+
+def test_read_stream_map_result_typed_leaves():
+    import struct
+
+    # form 0, REAL np 0 scalars
+    leaf = _leaf(_REAL, 0, 0, 1, (2).to_bytes(8, "little")) + struct.pack(
+        "<2d", 1.5, 2.5
+    )
+    assert _read_stream(b"Pm\x00" + leaf) == [1.5, 2.5]
+    # form 1: the hist pairs, then one leaf per batch
+    stream = (
+        b"Pm\x01"
+        + (1).to_bytes(4, "little")
+        + (0).to_bytes(8, "little")
+        + (2).to_bytes(8, "little")
+        + b"\x01"
+        + leaf
+    )
+    assert _read_stream(stream) == ([(0, 2)], [[1.5, 2.5]])
+    # form 1, has_vals 0: the template publish
+    stream = (
+        b"Pm\x01"
+        + (1).to_bytes(4, "little")
+        + (3).to_bytes(8, "little")
+        + (9).to_bytes(8, "little")
+        + b"\x00"
+    )
+    assert _read_stream(stream) == ([(3, 9)], None)
+    # shape 1 (tuples of m) off Python scalars
+    leaf = _leaf(_REAL, 0, 1, 2, (2).to_bytes(8, "little")) + struct.pack(
+        "<4d", 1, 2, 3, 4
+    )
+    assert _read_stream(b"Pm\x00" + leaf) == [(1.0, 2.0), (3.0, 4.0)]
+    # shape 2 (lists of m) of complex scalars
+    leaf = _leaf(_CPLX, 0, 2, 2, (1).to_bytes(8, "little")) + struct.pack(
+        "<4d", 1, 2, 3, 4
+    )
+    assert _read_stream(b"Pm\x00" + leaf) == [[(1 + 2j), (3 + 4j)]]
+    # INT64 scalars
+    leaf = _leaf(_INT64, 0, 0, 1, (2).to_bytes(8, "little")) + struct.pack(
+        "<2q", -5, 1 << 62
+    )
+    assert _read_stream(b"Pm\x00" + leaf) == [-5, 1 << 62]
+
+
+def test_read_stream_map_result_numpy_leaf():
+    import struct
+
+    # np 1: exact numpy scalars rebuilt through frombuffer
+    leaf = _leaf(_REAL, 1, 0, 1, (2).to_bytes(8, "little")) + struct.pack(
+        "<2d", 1.5, 2.5
+    )
+    out = _read_stream(b"Pm\x00" + leaf)
+    assert all(type(v) is np.float64 for v in out)
+    assert out == [1.5, 2.5]
+    # shape 1: tuples of the exact scalar class
+    leaf = _leaf(_INT64, 1, 1, 2, (2).to_bytes(8, "little")) + struct.pack(
+        "<4q", 1, 2, 3, 4
+    )
+    out = _read_stream(b"Pm\x00" + leaf)
+    assert all(type(e) is tuple for e in out)
+    assert all(type(v) is np.int64 for e in out for v in e)
+    assert out == [(1, 2), (3, 4)]
+
+
+def test_read_stream_map_result_pickled_leaf():
+    body = pickle.dumps(["a", 1], protocol=4)
+    leaf = b"\x01" + len(body).to_bytes(8, "little") + body
+    assert _read_stream(b"Pm\x00" + leaf) == ["a", 1]
+
+
+def test_read_stream_map_result_corrupt():
+    import struct
+
+    leaf = _leaf(_REAL, 0, 0, 1, (2).to_bytes(8, "little")) + struct.pack(
+        "<2d", 1.5, 2.5
+    )
+    # a bad form byte
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x07")
+    # a bad kind byte
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00\x03")
+    # a truncated typed leaf
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00" + leaf[:6])
+    # a truncated pickled leaf
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00\x01\x04")
+    # m == 0
+    bad = _leaf(_REAL, 0, 0, 0, (2).to_bytes(8, "little")) + struct.pack(
+        "<2d", 1.5, 2.5
+    )
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00" + bad)
+    # a shape or np byte out of range
+    bad = _leaf(_REAL, 2, 0, 1, (1).to_bytes(8, "little")) + struct.pack(
+        "<d", 1.0
+    )
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00" + bad)
+    # a count that overruns the span
+    bad = _leaf(_REAL, 0, 0, 1, (100).to_bytes(8, "little")) + struct.pack(
+        "<d", 1.0
+    )
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00" + bad)
+    # a wire type with no element size (STR)
+    bad = _leaf(16, 0, 0, 1, (1).to_bytes(8, "little")) + b"12345678"
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00" + bad)
+    # a truncated hist
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x01" + (1).to_bytes(4, "little") + b"\x00" * 8)
+    # the hist complete but the has_vals byte missing
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x01" + (1).to_bytes(4, "little") + b"\x00" * 16)
+    # a has_vals byte out of range
+    stream = (
+        b"Pm\x01"
+        + (1).to_bytes(4, "little")
+        + (0).to_bytes(8, "little")
+        + (2).to_bytes(8, "little")
+        + b"\x02"
+    )
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(stream)
+    # trailing bytes past the value
+    with pytest.raises(pymizu.MizuError, match="corrupt"):
+        _read_stream(b"Pm\x00" + leaf + b"x")

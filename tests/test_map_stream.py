@@ -17,6 +17,7 @@ from tests.helpers import (
     identity,
     kill_at,
     map_ctx_names,
+    np_f64,
     pair_up,
     rand_elt,
     scalar_double,
@@ -53,6 +54,14 @@ def test_stream_matches_non_streaming(pool):
 
 def test_stream_empty(pool):
     assert pool.map(square, [], stream=True).collect() == []
+
+
+def test_stream_result_numpy_scalar_exact(pool):
+    # the streaming window's _stream_chunk publishes through _batch_result
+    np = pytest.importorskip("numpy")
+    out = pool.map(np_f64, list(range(500)), stream=True).collect()
+    assert all(type(v) is np.float64 for v in out)
+    assert out == [v * 2 for v in range(500)]
 
 
 def test_stream_args_kwargs(pool):

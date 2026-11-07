@@ -199,6 +199,74 @@ def test_map_complex_declines_without_numpy(tmp_path):
     )
 
 
+def test_map_result_python_scalars_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import pymizu
+        from pymizu import _map
+        from tests.helpers import scalar_double, square
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+        p = pymizu.Pool.create(2)
+        try:
+            # the np 0 leaf rebuilds Python scalars with no numpy anywhere,
+            # in both the driver and its workers
+            out = p.map(square, list(range(200))).collect()
+            assert all(type(v) is int for v in out)
+            assert out == [i * i for i in range(200)]
+            out = p.map(scalar_double, list(range(200))).collect()
+            assert all(type(v) is float for v in out)
+            assert out == [float(v) * 2 for v in range(200)]
+        finally:
+            p.stop()
+        """,
+    )
+
+
+def test_map_result_numpy_leaf_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import os
+        import subprocess
+        import sys
+
+        import pymizu
+        from pymizu import _map
+        from tests.helpers import np_f64
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+
+        def numpy_worker_launcher(token, slot):
+            # the workers keep numpy: only this process is shimmed
+            env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+            return subprocess.Popen(
+                [sys.executable, "-m", "pymizu.worker", token, str(slot)],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+
+        p = pymizu.Pool.create(2, launcher=numpy_worker_launcher)
+        try:
+            # the workers' np.float64 results cross as the np 1 leaf: the
+            # no-numpy driver raises the named error at the decode (parity
+            # with today's ModuleNotFoundError inside unpickle)
+            try:
+                p.map(np_f64, [1.0, 2.0, 3.0]).collect(timeout=30)
+                raise SystemExit("expected MizuError")
+            except pymizu.MizuError as e:
+                assert "numpy" in str(e)
+        finally:
+            p.stop()
+        """,
+    )
+
+
 def test_interop_without_numpy(tmp_path):
     _run_without_numpy(
         tmp_path,
