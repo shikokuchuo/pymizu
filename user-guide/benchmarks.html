@@ -281,16 +281,16 @@ ul.task-list li input[type="checkbox"] {
 <td>129x</td>
 </tr>
 <tr class="odd">
-<td>Parallel map overhead, trivial function, 4 workers</td>
-<td>0.4 µs/elt*</td>
-<td>70.3 µs/elt</td>
-<td>176x</td>
+<td>8 KB vector round trip</td>
+<td>2.4 µs</td>
+<td>100.7 µs</td>
+<td>42x</td>
 </tr>
 <tr class="even">
 <td>Parallel map of 2,000 ~5 µs tasks, 4 workers</td>
-<td>4.3 ms</td>
-<td>129 ms</td>
-<td>30x</td>
+<td>2.9 ms</td>
+<td>123 ms</td>
+<td>42x</td>
 </tr>
 </tbody>
 </table>
@@ -318,20 +318,19 @@ ul.task-list li input[type="checkbox"] {
 <td>5.9x</td>
 </tr>
 <tr class="odd">
-<td>Parallel map overhead, trivial function, 4 workers</td>
-<td>0.4 µs/elt*</td>
-<td>2.6 µs/elt</td>
-<td>6.5x</td>
+<td>8 KB vector round trip</td>
+<td>2.4 µs</td>
+<td>9.3 µs</td>
+<td>3.9x</td>
 </tr>
 <tr class="even">
 <td>Parallel map of 2,000 ~5 µs tasks, 4 workers</td>
-<td>4.3 ms</td>
-<td>50 ms</td>
-<td>12x</td>
+<td>2.9 ms</td>
+<td>48 ms</td>
+<td>17x</td>
 </tr>
 </tbody>
 </table>
-<p>* elt = element, in microseconds of wall time per map element.</p>
 <section id="how-pymizu-compares" class="level1">
 <h1>How pymizu compares</h1>
 <p>pymizu runs processes in parallel on one machine and moves data through shared memory instead of pickled copies. The tools below overlap at the edges; they differ in what has to run, how data moves, and what survives a crash.</p>

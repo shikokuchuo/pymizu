@@ -1048,7 +1048,7 @@
     "href": "index.html#benchmarks",
     "title": "pymizu",
     "section": "Benchmarks",
-    "text": "Benchmarks\nCommunication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).\nAgainst ProcessPoolExecutor (tasks run in separate processes, with pickled payloads):\n\n\n\nBenchmark\npymizu\nProcessPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n94.2 µs\n135x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n18,500 tasks/s\n129x\n\n\nParallel map overhead, trivial function, 4 workers\n0.4 µs/elt*\n70.3 µs/elt\n176x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n4.3 ms\n129 ms\n30x\n\n\n\nAgainst ThreadPoolExecutor (tasks share one process, so the GIL caps CPU-bound work at a single core):\n\n\n\nBenchmark\npymizu\nThreadPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n9.5 µs\n14x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n405,000 tasks/s\n5.9x\n\n\nParallel map overhead, trivial function, 4 workers\n0.4 µs/elt*\n2.6 µs/elt\n6.5x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n4.3 ms\n50 ms\n12x\n\n\n\n* elt = element; microseconds of wall time per map element.\nSee Benchmarks for how pymizu compares with other frameworks, and for the benchmark scripts."
+    "text": "Benchmarks\nCommunication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).\nAgainst ProcessPoolExecutor (tasks run in separate processes, with pickled payloads):\n\n\n\nBenchmark\npymizu\nProcessPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n94.2 µs\n135x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n18,500 tasks/s\n129x\n\n\n8 KB vector round trip\n2.4 µs\n100.7 µs\n42x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n2.9 ms\n123 ms\n42x\n\n\n\nAgainst ThreadPoolExecutor (tasks share one process, so the GIL caps CPU-bound work at a single core):\n\n\n\nBenchmark\npymizu\nThreadPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.7 µs\n9.5 µs\n14x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n405,000 tasks/s\n5.9x\n\n\n8 KB vector round trip\n2.4 µs\n9.3 µs\n3.9x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n2.9 ms\n48 ms\n17x\n\n\n\nSee Benchmarks for how pymizu compares with other frameworks, and for the benchmark scripts."
   },
   {
     "objectID": "index.html#drop-in-concurrent.futures",
@@ -2273,7 +2273,7 @@
     "href": "user-guide/benchmarks.html",
     "title": "Benchmarks",
     "section": "",
-    "text": "These tables measure task-communication overhead against the stdlib concurrent.futures pools, on an Apple M4 Pro (benchmarks/mizu-stdlib-bench.py).\nFirst, ProcessPoolExecutor: tasks run in separate processes, and every payload crosses as a pickle.\nNext, ThreadPoolExecutor: tasks share one process, so the GIL caps CPU-bound work at one core.\n* elt = element, in microseconds of wall time per map element.",
+    "text": "These tables measure task-communication overhead against the stdlib concurrent.futures pools, on an Apple M4 Pro (benchmarks/mizu-stdlib-bench.py).\nFirst, ProcessPoolExecutor: tasks run in separate processes, and every payload crosses as a pickle.\nNext, ThreadPoolExecutor: tasks share one process, so the GIL caps CPU-bound work at one core.",
     "crumbs": [
       "User Guide",
       "Guide",
