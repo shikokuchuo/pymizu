@@ -763,7 +763,6 @@ def test_codec_stream_declines():
     assert _codec_stream({i: i for i in range(65)}) is None
     assert _codec_stream({1}) is None  # a set has no codec row
     assert _codec_stream(object()) is None
-    assert _codec_stream([[]]) is None  # no nested containers
     assert _codec_stream(bytearray(1)) is None  # not an exact codec type
 
 
@@ -772,6 +771,15 @@ def test_codec_stream_spill():
     s = "x" * 5000
     assert _codec_stream([s]) == (
         b"Pl"
+        + (1).to_bytes(4, "little")
+        + b"s"
+        + (5000).to_bytes(4, "little")
+        + b"x" * 5000
+    )
+    assert _codec_stream([[s]]) == (
+        b"Pl"
+        + (1).to_bytes(4, "little")
+        + b"l"
         + (1).to_bytes(4, "little")
         + b"s"
         + (5000).to_bytes(4, "little")

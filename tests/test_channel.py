@@ -79,7 +79,7 @@ def test_send_return_contract(echo):
 
 
 def test_codec_roundtrip(echo):
-    # the compact-codec subset: scalars and one flat container level
+    # the compact-codec subset: scalars and container trees of them
     payloads = [
         True,
         False,
@@ -100,6 +100,9 @@ def test_codec_roundtrip(echo):
         (True, 1, 2.5, "x", b"y"),
         ["a"] * 64,  # at the container cap
         {"k": 1, 2: "v", 3.5: (b"z",)[0]},
+        [None, 1],
+        [1, [2]],
+        {"k": {"v": 1}},
         list(range(1000)),  # codec stream past the inline budget
     ]
     for x in payloads:
@@ -138,15 +141,64 @@ def test_codec_fallback(echo):
     payloads = [
         None,
         2**63,  # past int64
-        [1, [2]],  # nested container
-        {"k": {"v": 1}},
-        [None, 1],  # None is not a codec scalar
         list(range(65)),  # over the container cap
         "\ud800",  # lone surrogate: no UTF-8 encoding
     ]
     for x in payloads:
         assert echo.send(x) is None
         assert echo.recv(timeout=5) == x
+
+
+def test_codec_nested_roundtrip(echo):
+    # nested container trees cross in the codec, exact type per level
+    deep = cur = []
+    for _ in range(100):
+        cur.append([])
+        cur = cur[0]
+    cur.append("bottom")
+    payloads = [
+        {"k": [1, {"n": (2.5, b"z")}]},
+        [[], {}, ()],
+        deep,
+    ]
+    for x in payloads:
+        assert echo.send(x) is None
+        out = echo.recv(timeout=5)
+        assert out == x
+        assert type(out) is type(x)
+
+
+def test_codec_nested_fallback(echo):
+    # an over-cap inner container declines the codec: the tree rides pickle
+    x = [[0] * 65]
+    assert echo.send(x) is None
+    assert echo.recv(timeout=5) == x
+    # a cyclic graph walks into the depth bound: pickle, the cycle intact
+    y = []
+    y.append(y)
+    assert echo.send(y) is None
+    out = echo.recv(timeout=5)
+    assert out[0] is out
+
+
+def test_codec_nested_aliasing(echo):
+    # a shared subtree crosses as independent copies (the codec does not
+    # memoize): equal per occurrence, never identical
+    x = [1, 2]
+    assert echo.send([x, x]) is None
+    out = echo.recv(timeout=5)
+    assert out == [x, x]
+    assert out[0] is not out[1]
+
+
+def test_codec_node_budget(echo):
+    # a doubling DAG walks past the node budget: pickle, aliasing intact
+    x = [1]
+    for _ in range(20):
+        x = [x, x]
+    assert echo.send(x) is None
+    out = echo.recv(timeout=30)
+    assert out[0] is out[1]
 
 
 def test_bytes_roundtrip(echo):
@@ -918,6 +970,36 @@ def test_unrecognized_stream_is_a_foreign_payload():
         pymizu.ForeignPayloadError, match="unrecognized payload"
     ):
         pymizu._pymizu._read_stream(b"\x01")
+
+
+def test_codec_nested_stream_dispatch():
+    # a hand-crafted nested stream decodes: [1, [2]]
+    stream = (
+        b"P"
+        + b"l"
+        + (2).to_bytes(4, "little")
+        + b"i"
+        + (1).to_bytes(8, "little")
+        + b"l"
+        + (1).to_bytes(4, "little")
+        + b"i"
+        + (2).to_bytes(8, "little")
+    )
+    assert pymizu._pymizu._read_stream(stream) == [1, [2]]
+
+
+def test_codec_deep_stream_is_corrupt():
+    # nesting past PYMIZU_CODEC_MAXDEPTH (500) fails the depth bound: the
+    # corrupt-slot error, which is also an old build's answer to a nested
+    # stream
+    stream = (
+        b"P"
+        + (b"l" + (1).to_bytes(4, "little")) * 501
+        + b"l"
+        + (0).to_bytes(4, "little")
+    )
+    with pytest.raises(pymizu.MizuError, match="corrupt payload slot"):
+        pymizu._pymizu._read_stream(stream)
 
 
 def test_recv_batch_stops_before_a_foreign_payload():

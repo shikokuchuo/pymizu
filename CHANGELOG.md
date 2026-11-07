@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (non-prepared) map collected by value.
 - Faster `Pool.map()` with a `pymizu.call()` source spec, especially
   spec-stream maps with many chunks.
+- Faster sends of nested list, tuple, and dict payloads between Python
+  processes.
 
 ### Fixed
 
