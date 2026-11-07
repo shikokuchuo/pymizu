@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scalars, or tuples of them: results no longer pass through pickle.
 - Faster sends of int64 numpy arrays to R peers.
 - Faster sends of nested list, tuple, or dict payloads to R peers.
+- Faster sends of top-level bool, int, float, and complex scalars to R
+  peers.
 
 ### Fixed
 

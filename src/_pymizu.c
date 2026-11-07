@@ -1046,48 +1046,82 @@ static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   return 0;
 }
 
-/* Same-language exact-type scalars: the codec's bool/int/float rows
-   written directly, ahead of the buffer probe and the container-capable
-   walk. Only types without the buffer protocol dispatch here — bytes and
-   numpy keep the raw tiers (the wire keeps RAWVEC); a str past the STR1
-   budget still reaches the codec's spill. 0 staged, -1 the general path
-   decides (a non-scalar, an int past int64, an inline budget under 10 —
-   the codec's malloc spill covers it). Never sets an error. */
+/* Exact-type scalars written directly, ahead of the REF probes, the
+   buffer probe and the container-capable walks: same-language the
+   codec's bool/int/float rows, a foreign peer the 'I' header + scalar
+   tag — ixw_stream's byte forms through the same put helpers, worst
+   case 19 bytes, always INLINE (the pymizu_ix_stage INLINE stamps; no
+   conversion, so no cvt warn). Only types without the buffer protocol
+   dispatch here — bytes and numpy keep the raw tiers (the wire keeps
+   RAWVEC); a str past the STR1 budget still reaches the codec's spill;
+   a same-language complex keeps its pickle path. 0 staged, -1 the
+   general path decides (a non-scalar, an int past int64, a degenerate
+   inline budget — the codec's malloc spill / the 'I' spill tiers cover
+   it). Never sets an error. */
 static int stage_scalar_fast(PyObject *obj, mizu_slot_hdr *hdr,
-                             uint8_t *payload, uint32_t inline_max) {
+                             uint8_t *payload, uint32_t inline_max,
+                             int foreign) {
   if (PyBool_Check(obj)) {
-    if (inline_max < 3) return -1;
-    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
-    payload[1] = PYMIZU_TAG_BOOL;
-    payload[2] = (uint8_t) (obj == Py_True);
-    hdr->len = 3;
+    if (foreign) {
+      if (inline_max < 4) return -1;
+      uint8_t *p = payload + mizu_ix_put_header(payload);
+      p += mizu_ix_put_lgl(p, obj == Py_True);
+      hdr->len = (uint32_t) (p - payload);
+    } else {
+      if (inline_max < 3) return -1;
+      payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
+      payload[1] = PYMIZU_TAG_BOOL;
+      payload[2] = (uint8_t) (obj == Py_True);
+      hdr->len = 3;
+    }
   } else if (PyLong_CheckExact(obj)) {
     long long v = PyLong_AsLongLong(obj);
     if (v == -1 && PyErr_Occurred()) {
-      PyErr_Clear();   /* OverflowError: an exotic int rides pickle */
+      PyErr_Clear();   /* OverflowError: pickle / the 'I' decline decides */
       return -1;
     }
-    if (inline_max < 10) return -1;
-    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
-    payload[1] = PYMIZU_TAG_INT;
-    uint8_t *p = payload + 2;
-    codec_put64(&p, (uint64_t) v);
-    hdr->len = 10;
+    if (foreign) {
+      if (inline_max < 11) return -1;
+      uint8_t *p = payload + mizu_ix_put_header(payload);
+      p += mizu_ix_put_int(p, (int64_t) v);
+      hdr->len = (uint32_t) (p - payload);
+    } else {
+      if (inline_max < 10) return -1;
+      payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
+      payload[1] = PYMIZU_TAG_INT;
+      uint8_t *p = payload + 2;
+      codec_put64(&p, (uint64_t) v);
+      hdr->len = 10;
+    }
   } else if (PyFloat_CheckExact(obj)) {
-    if (inline_max < 10) return -1;
     double d = PyFloat_AS_DOUBLE(obj);
-    uint64_t u;
-    memcpy(&u, &d, 8);
-    payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
-    payload[1] = PYMIZU_TAG_FLOAT;
-    uint8_t *p = payload + 2;
-    codec_put64(&p, u);
-    hdr->len = 10;
+    if (foreign) {
+      if (inline_max < 11) return -1;
+      uint8_t *p = payload + mizu_ix_put_header(payload);
+      p += mizu_ix_put_real(p, d);
+      hdr->len = (uint32_t) (p - payload);
+    } else {
+      if (inline_max < 10) return -1;
+      uint64_t u;
+      memcpy(&u, &d, 8);
+      payload[0] = MIZU_PYMIZU_CODEC_MAGIC;
+      payload[1] = PYMIZU_TAG_FLOAT;
+      uint8_t *p = payload + 2;
+      codec_put64(&p, u);
+      hdr->len = 10;
+    }
+  } else if (foreign && PyComplex_CheckExact(obj)) {
+    /* foreign-only: a same-language complex keeps its pickle path */
+    if (inline_max < 19) return -1;
+    uint8_t *p = payload + mizu_ix_put_header(payload);
+    p += mizu_ix_put_cplx(p, PyComplex_RealAsDouble(obj),
+                          PyComplex_ImagAsDouble(obj));
+    hdr->len = (uint32_t) (p - payload);
   } else {
     return -1;
   }
   hdr->kind = MIZU_KIND_INLINE;
-  hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a flat codec stream references nothing */
+  hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a flat scalar stream references nothing */
   return 0;
 }
 
@@ -1884,10 +1918,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       return 0;
     }
   }
-  /* same-language exact-type scalars skip the buffer probe, the frame
-     checks, and the codec's container walk; a foreign peer's scalars
-     route to the 'I' writer below */
-  if (!foreign && stage_scalar_fast(obj, hdr, payload, inline_max) == 0)
+  if (stage_scalar_fast(obj, hdr, payload, inline_max, foreign) == 0)
     return 0;
   if (Py_TYPE(obj) == &MizuShmStrViewType) {
     /* a region-backed string view re-sent whole: its region name (REF,
@@ -2016,7 +2047,9 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
        stream front-end (__arrow_c_stream__), then the 'I' writer —
        whose decline is the send-time DeclinedError. An exact builtin
-       provably carries neither dunder, so its probes are skipped */
+       provably carries neither dunder, so its probes are skipped. A
+       top-level scalar staged at the fast gate above; nested ones still
+       reach the 'I' writer through ixw_value */
     if (!arrow_probe_skip(obj)) {
       int arc = stage_arrow(obj, hdr, payload, inline_max, h, peer_lang);
       if (arc >= 0) return arc;
