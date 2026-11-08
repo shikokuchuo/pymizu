@@ -1499,3 +1499,26 @@ outstanding). Best-known swaps: pipelined pool batch 4.09M,
 collect_all_async 3.67M, 64 waiters 3.44M.
 
 Status: full suite 1115 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-08 — Phase 4 of the performance plan [(bfc9575, 5d52a42, b2d86cc, ed1c591, 5760515)]
+
+Phase 4 of .posit/assistant/plans/2026-11-08-performance-improvements.md:
+the compact codec's size/write passes fuse into one validating walk (the
+writer's exact bytes pinned by the new `_codec_stream` hook), a
+`pymizu.Frame` caches its stage construction at the first same-language
+send, and the clean validity verdict memoizes on `_MapOutView` and
+`_ShmView`. A/B against 38cde4d (alternating suite runs + best-of-5
+probes):
+
+| row | before | after |
+|---|---|---|
+| view arrow export, map / converted (suite) | 411.0 / 410.6 us/export | 10.6-11.0 / 10.1 us/export (~40x) |
+| frame resend, heap-backed (suite) | 10.5 us/send | 9.1 / 9.6 us/send |
+| codec list rt (probe) | 0.584 / 0.622 us/rt | 0.521 / 0.549 us/rt |
+| codec dict rt (probe) | 0.642 / 0.649 us/rt | 0.582 / 0.645 us/rt |
+
+The region-backed resend row is flat (0.5 us/send): a fully-borrowed
+frame stages remote leaves, O(1) either way. Regression guards within
+their bands.
+
+Status: full suite 1125 pass, 1 skip; ruff + pyrefly clean.
