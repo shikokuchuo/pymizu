@@ -455,7 +455,11 @@ def _pool_state(pool_h: _Any) -> _PoolState:
     return st
 
 
-def _arm(st: _PoolState, loop: _asyncio.AbstractEventLoop) -> None:
+def _arm(st: _PoolState, loop: _asyncio.AbstractEventLoop) -> bool:
+    """Arm the endpoint; True when the enrollment must re-check — a fresh
+    arm, or a loop re-capture: while the record pointed at the dead loop,
+    a publish's signal ended at its closed call_soon_threadsafe (the C
+    callback's RuntimeError disarm), so no pump rides that wake."""
     if st.armed and st.loop is not loop:
         # as the channel's: the old loop closed; fail its waiters and
         # re-capture
@@ -463,11 +467,12 @@ def _arm(st: _PoolState, loop: _asyncio.AbstractEventLoop) -> None:
         st.armed = False
     if st.armed:
         # the announce stands (the core's re-arm is a no-op on an armed
-        # word); the enrollment's synchronous re-check follows
-        return
+        # word); the signals keep landing on this live loop
+        return False
     st.pool_h._notify_arm(loop, st._pump)
     st.armed = True
     st.loop = loop
+    return True
 
 
 def _enroll_collection(
@@ -493,8 +498,7 @@ def _enroll_collection(
             # already terminal: settle here, never arming
             _settle_collection(st, c)
             return fut
-        fresh_arm = not st.armed
-        _arm(st, loop)
+        fresh_arm = _arm(st, loop)
     except BaseException:
         if c.tasks:
             st.pool_h._tasks_release(c.tasks)  # best-effort, never raises
@@ -502,10 +506,10 @@ def _enroll_collection(
     st.collections.append(c)
     fut._detach = lambda: _detach_collection(st, c)
     if c.tasks:
-        # the post-arm re-check covers this collection only, and only a
-        # fresh arm needs it: under a standing arm a racing publish
-        # signals the wake whose pump scans the set (the R enroll's
-        # fence-when-armed rule)
+        # the post-arm re-check covers this collection only, and only an
+        # arm that (re-)captures needs it: under a standing arm on this
+        # same loop a racing publish signals the wake whose pump scans
+        # the set (the R enroll's fence-when-armed rule)
         if fresh_arm and _collection_ready_now(st, c):
             _settle_collection(st, c)
     else:

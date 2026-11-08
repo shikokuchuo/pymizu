@@ -912,6 +912,64 @@ def test_collection_cancel_unenrolls(pool):
     asyncio.run(main())
 
 
+def test_reenroll_on_a_fresh_loop_rechecks(pool, monkeypatch):
+    # a collection enrolled under a loop re-capture must re-check: its
+    # members can publish while the record still points at the previous
+    # loop's closed call_soon_threadsafe, where their wake ends (the C
+    # callback's RuntimeError disarm) — skipping the re-check on the
+    # strength of the stale standing arm waits forever. The patched arm
+    # widens that window to a certainty.
+    from pymizu import _aio
+
+    async def first():
+        t = pool.submit(square, 1)
+        assert await pool.collect_all_async([t]) == [1]
+
+    asyncio.run(first())  # the sticky arm now rides a closed loop
+
+    real_arm = _aio._arm
+
+    def slow_arm(st, loop):
+        # the enrollment gap: the members publish, the watch fires, the
+        # closed-loop RuntimeError disarm eats the wake
+        time.sleep(0.5)
+        return real_arm(st, loop)
+
+    monkeypatch.setattr(_aio, "_arm", slow_arm)
+
+    async def second():
+        tasks = [pool.submit(sleep_ident, 0.1) for _ in range(2)]
+        fut = pool.collect_all_async(tasks)
+        assert await asyncio.wait_for(fut, 5) == [0.1, 0.1]
+
+    asyncio.run(second())
+
+
+def test_wake_to_a_closed_loop_does_not_brick(pool):
+    # a wake scheduled against a closed loop fails its call_soon_threadsafe
+    # with no trampoline ever running: the coalesce flag must release with
+    # it, or every later signal is absorbed as already-scheduled and the
+    # next loop's waiters hang. The publish below fires exactly that wake;
+    # second() settles only if a fresh signal still pumps.
+    async def first():
+        t = pool.submit(sleep_ident, 0.1)
+        assert await pool.collect_all_async([t]) == [0.1]
+
+    asyncio.run(first())  # a pump settle leaves the sticky word standing
+
+    t = pool.submit(sleep_ident, 0.1)
+    pool._h._task_notify([t], 1)  # announced: its publish signals the
+    time.sleep(0.3)  # endpoint on the closed loop before a blocking
+    assert t.collect(timeout=5) == 0.1  # collect swaps the announce
+
+    async def second():
+        tasks = [pool.submit(sleep_ident, 0.2) for _ in range(2)]
+        fut = pool.collect_all_async(tasks)
+        assert await asyncio.wait_for(fut, 5) == [0.2, 0.2]
+
+    asyncio.run(second())
+
+
 def test_collect_async_validation(pool):
     async def main():
         with pytest.raises(ValueError, match="non-empty"):
