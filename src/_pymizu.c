@@ -1790,14 +1790,16 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
       if (mapres_hist_ok(PyList_GET_ITEM(a1, i)) < 0) return -1;
     sz += 4 + (uint64_t) nb * 16 + 1;
   }
-  mapres_leaf *plans =
-    PyMem_Malloc((size_t) (has_vals ? nb : form1 ? 0 : 1) *
-                 sizeof(mapres_leaf));
-  if (plans == NULL && (has_vals || !form1)) {
-    PyErr_NoMemory();
-    return 1;
-  }
   Py_ssize_t nl = form1 ? (has_vals ? nb : 0) : 1;
+  mapres_leaf splans[8];   /* the small-map / tail-claim majority */
+  mapres_leaf *plans = splans;
+  if (nl > (Py_ssize_t) (sizeof splans / sizeof *splans)) {
+    plans = PyMem_Malloc((size_t) nl * sizeof(mapres_leaf));
+    if (plans == NULL) {
+      PyErr_NoMemory();
+      return 1;
+    }
+  }
   int rc = 0;
   for (Py_ssize_t i = 0; rc == 0 && i < nl; i++) {
     PyObject *batch = form1 ? PyList_GET_ITEM(a2, i) : a1;
@@ -1860,7 +1862,7 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
   }
   for (Py_ssize_t i = 0; i < nl; i++)
     if (plans[i].kind == 1) Py_XDECREF(plans[i].pickled);
-  PyMem_Free(plans);
+  if (plans != splans) PyMem_Free(plans);
   return rc;
 }
 
