@@ -450,6 +450,80 @@ class Channel:
         """
         return self._recv_batch(n, timeout)
 
+    def recv_batch_async(self, n: int = 256) -> _Any:
+        """Receive up to ``n`` values as one list on an `asyncio.Future`.
+
+        The burst form of [`recv_async()`](`pymizu.Channel.recv_async`):
+        one Future resolves with a whole burst of arrivals at once, the
+        high-throughput receive form — one resolution per burst rather
+        than one per message.
+
+        Parameters
+        ----------
+        n
+            The maximum batch size.
+
+        Returns
+        -------
+            An `asyncio.Future` resolving with a list of up to ``n``
+            values in arrival order — possibly short: it resolves as
+            soon as at least one value is available, never waiting to
+            fill. Terminal states stay values: the Future resolves with
+            the `CLOSED` / `PEER_GONE` sentinel. An ``n`` past the drain
+            quantum (2048) resolves with at most one quantum per pass.
+
+        Raises
+        ------
+        ValueError
+            ``n`` is less than 1.
+        ConcurrentUseError
+            A blocking receive on this side from another thread races
+            the armed async consumer: a side is confined to one thread
+            and one consumer form at a time.
+
+        Details
+        -------
+        Outstanding calls on one channel —
+        [`recv_async()`](`pymizu.Channel.recv_async`) singles and batch
+        waiters mixed — resolve in call order, each batch waiter taking
+        up to its ``n`` from the burst (at least one when it is reached,
+        so a batch reached late in a busy pass can resolve short).
+        Cancelling the Future detaches the waiter, and the next message
+        goes to the next waiter. There is no ``timeout`` argument: use
+        `asyncio.timeout` or `asyncio.wait_for`. A channel created with
+        ``spin=True`` cannot arm and raises. The async consumer is the
+        side's one consumer: a blocking
+        [`recv()`](`pymizu.Channel.recv`) on the same side while waiters
+        are pending raises
+        [`ConcurrentUseError`](`pymizu.ConcurrentUseError`).
+
+        A declined foreign payload (see
+        [`recv_async()`](`pymizu.Channel.recv_async`)) ahead of a batch
+        resolves it short with the values before it; the waiter that
+        reaches the declined message rejects with
+        [`ForeignPayloadError`](`pymizu.ForeignPayloadError`), and the
+        consumer keeps flowing.
+
+        Examples
+        --------
+        ```{python}
+        import pymizu
+
+        with pymizu.Channel.create('''
+        import pymizu
+        while True:
+            x = ch.recv()
+            if x is pymizu.CLOSED:
+                break
+            ch.send(x)
+        ''') as ch:
+            ch.send_batch([1, 2, 3])
+            batch = await ch.recv_batch_async()
+        batch
+        ```
+        """
+        return _get_aio().chan_recv_async(self, n)
+
     def close(self, timeout: float = 5.0) -> bool:
         """Close the channel in an orderly way.
 
