@@ -27,7 +27,7 @@ from tests.helpers import (
     sum_mixed,
     sum_pair,
     sum_pair_flaky,
-    sum_two,
+    two_buffers,
 )
 
 import pymizu
@@ -162,29 +162,17 @@ def test_small_numpy_arg_is_a_writable_copy(pool):
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
 )
-def test_abandoned_bufref_stage_rolls_back(pool):
-    # a by-reference leaf's retain followed by a write-pass failure: the
-    # abandoned checkout rolls back, so the pickle fallback reuses the
-    # region instead of orphaning it for a fresh one (P-17)
-    def reuse():
-        return next(
-            s["spill_reuse"]
-            for s in pool.stats()["submitters"]
-            if s["pid"] == os.getpid()
-        )
-
-    # seed the free list with one region (a big pickled payload: its
-    # surrender at collect is deterministic)
-    assert pool.submit(len, "x" * 200000).collect(timeout=15) == 200000
-    before = reuse()
+def test_size_pass_view_carried_into_write(pool):
+    # the write pass consumes the size pass's open buffer view — one
+    # negotiation per leaf, so an exporter refusing a second export still
+    # stages as buffer leaves: big by reference (a read-only view), small
+    # a writable copy. The P-17 write-pass decline this replaces is gone
+    # by construction: the write never re-exports.
     big = np.full(16000, 1.0)  # 125 KiB: past the zero-copy floor
     flaky = BufferFailAfterFirst(np.full(10, 2.0))
-    t = pool.submit(sum_two, big, flaky)
-    # the pickle fallback pops the rolled-back BUFREF region: one
-    # published spill frame, marked reused (an orphaned checkout would
-    # force a fresh create: reuse delta 0)
-    assert reuse() - before == 1
-    assert t.collect(timeout=15) == 16020.0
+    out = pool.submit(two_buffers, big, flaky).collect(timeout=15)
+    assert out == (True, False, 16000.0, 20.0)
+    assert flaky.calls == 1
 
 
 def test_container_with_buffer_leaves(pool):
@@ -345,12 +333,13 @@ def test_two_buffer_leaves_dict_one_region_budget(pool):
     assert out == float(a.sum() + b.sum())
 
 
-def test_container_leaf_write_decline_pickles(pool):
-    # a container element whose write-pass buffer export fails (the size
-    # pass passed): the whole task tuple pickles, values exact
+def test_container_leaf_buffer_decline_pickles(pool):
+    # a container element whose buffer export fails at the size pass:
+    # the whole task tuple pickles, values exact (buffer declines are
+    # size-pass only — the write pass consumes the open views)
     a = np.full(16000, 1.0)
-    flaky = BufferFailAfterFirst(np.full(10, 2.0))
-    out = pool.submit(sum_pair_flaky, [a, flaky]).collect(timeout=10)
+    refusing = BufferFailAfterFirst(np.full(10, 2.0), fail_after=0)
+    out = pool.submit(sum_pair_flaky, [a, refusing]).collect(timeout=10)
     assert out == 16020.0
     a = np.arange(1000000, dtype=np.float64)
     (backing, head), writable, total = pool.submit(

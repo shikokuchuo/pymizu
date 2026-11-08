@@ -1208,18 +1208,30 @@ typedef struct {
   PyObject *fn_mod;       /* kind 0 (owned) */
   PyObject *fn_qual;      /* kind 0 (owned) */
   PyObject *fn_pickled;   /* kind 1 (owned) */
+  Py_buffer *views;       /* buffer leaves' open views in open order;
+                             [view_next, nviews) still held (owned) */
+  Py_ssize_t nviews;
+  Py_ssize_t view_next;   /* consumed by the write pass */
+  Py_ssize_t views_cap;
 } frame_plan;
 
 static void frame_plan_clear(frame_plan *fp) {
   Py_XDECREF(fp->fn_mod);
   Py_XDECREF(fp->fn_qual);
   Py_XDECREF(fp->fn_pickled);
+  for (Py_ssize_t i = fp->view_next; i < fp->nviews; i++)
+    PyBuffer_Release(&fp->views[i]);
+  PyMem_Free(fp->views);
 }
 
 /* Buffer leaf, size pass: the same gate as stage_raw (wire_type_of, the
    zc floor, the churn snapshot), and the same subclass rejection — a
    MaskedArray argument keeps its mask on the plain-tuple pickle fallback.
-   0 ok, -1 reject. */
+   The open view is carried into the write pass (one buffer negotiation
+   per leaf, and the write reads the very bytes this pass counted — the
+   buffer protocol permits a different buffer per GetBuffer call); the
+   GIL is held across the stage and no user code runs between the passes,
+   so holding it is legal. 0 ok, -1 reject. */
 static int frame_buf_size(PyObject *o, frame_plan *fp) {
   if (buffer_subclass_reject(o)) return -1;
   Py_buffer v;
@@ -1229,16 +1241,33 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
   }
   int type = wire_type_of(&v);
   size_t n = (size_t) v.len;
-  PyBuffer_Release(&v);
-  if (type == 0 || n > (SIZE_MAX >> 9)) return -1;
+  if (type == 0 || n > (SIZE_MAX >> 9)) {
+    PyBuffer_Release(&v);
+    return -1;
+  }
   const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   if (!fp->churn && n >= zc_gate) {
-    if (fp->ref) return -1;   /* one staging checkout per frame */
+    if (fp->ref) {
+      PyBuffer_Release(&v);
+      return -1;   /* one staging checkout per frame */
+    }
     fp->ref = 1;
     fp->sz += 11 + MIZU_NAME_MAX;   /* tag, type, count, name_len, name */
   } else {
     fp->sz += 10 + (uint64_t) n;
   }
+  if (fp->nviews == fp->views_cap) {
+    Py_ssize_t cap = fp->views_cap != 0 ? fp->views_cap * 2 : 4;
+    Py_buffer *nv = PyMem_Realloc(fp->views, (size_t) cap * sizeof *nv);
+    if (nv == NULL) {
+      /* a decline, not the task's error: the pickle fallback restages */
+      PyBuffer_Release(&v);
+      return -1;
+    }
+    fp->views = nv;
+    fp->views_cap = cap;
+  }
+  fp->views[fp->nviews++] = v;
   return 0;
 }
 
@@ -1346,20 +1375,16 @@ reject:
   return -1;
 }
 
-/* Buffer leaf, write pass: the size pass validated and decided, so only
-   the BUFREF spill get can fail (a churn race) — return -1 to abandon the
-   stage. Nothing is retained yet at that point (the failed get leaves no
-   checkout, and a frame carries at most one BUFREF leaf), so the pickle
-   fallback starts clean. */
-static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
-                           mizu_handle *h) {
-  Py_buffer v;
-  if (PyObject_GetBuffer(o, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) {
-    PyErr_Clear();
-    return -1;
-  }
-  int type = wire_type_of(&v);
-  size_t n = (size_t) v.len;
+/* Buffer leaf, write pass: consumes the view the size pass left open for
+   this leaf (open order — the write re-walk is deterministic), so only
+   the BUFREF spill get can fail (a churn race) — return -1 to abandon
+   the stage. Nothing is retained yet at that point (the failed get
+   leaves no checkout, and a frame carries at most one BUFREF leaf), so
+   the pickle fallback starts clean. */
+static int frame_buf_write(uint8_t **p, frame_plan *fp, mizu_handle *h) {
+  Py_buffer *v = &fp->views[fp->view_next++];
+  int type = wire_type_of(v);
+  size_t n = (size_t) v->len;
   const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   int rc = 0;
   if (!fp->churn && n >= zc_gate) {
@@ -1376,7 +1401,7 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
     mizu_mizh_write(base, type, (int64_t) (n / mizu_type_elt_size(type)));
     /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp) */
     mizu_mizh_validity_set(base, 0, -1);
-    memcpy(base + MIZU_HEADER_SIZE, v.buf, n);
+    memcpy(base + MIZU_HEADER_SIZE, v->buf, n);
     mizu_stage_retain_zc(h, shm);
     *(*p)++ = PYMIZU_TAG_BUFREF;
     *(*p)++ = (uint8_t) type;
@@ -1388,11 +1413,11 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
     *(*p)++ = PYMIZU_TAG_BUFFER;
     *(*p)++ = (uint8_t) type;
     codec_put64(p, (uint64_t) n);
-    memcpy(*p, v.buf, n);
+    memcpy(*p, v->buf, n);
     *p += n;
   }
 out:
-  PyBuffer_Release(&v);
+  PyBuffer_Release(v);
   return rc;
 }
 
@@ -1422,17 +1447,17 @@ static int frame_ref_write(uint8_t **p, PyObject *o, const frame_plan *fp,
   return 0;
 }
 
-static int frame_flat_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+static int frame_flat_write(uint8_t **p, PyObject *o, frame_plan *fp,
                             mizu_handle *h) {
   if (o == Py_None || codec_tag_of(o) != 0) {
     codec_put_scalar(p, o);
     return 0;
   }
   if (Py_TYPE(o) == &MizuFrameType) return frame_ref_write(p, o, fp, h);
-  return frame_buf_write(p, o, fp, h);
+  return frame_buf_write(p, fp, h);
 }
 
-static int frame_leaf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+static int frame_leaf_write(uint8_t **p, PyObject *o, frame_plan *fp,
                             mizu_handle *h) {
   if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
     int is_list = PyList_CheckExact(o) != 0;
