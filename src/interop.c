@@ -5399,7 +5399,7 @@ static void ixs_free(ixs *x) {
       x->schema.release(&x->schema);
     if (x->st != NULL && x->st->release != NULL) x->st->release(x->st);
   }
-  free(x->cols);
+  if (x->cols != x->cols_stash) free(x->cols);
   Py_XDECREF(x->cap);
   memset(x, 0, sizeof(*x));
 }
@@ -5504,21 +5504,28 @@ static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep1,
     *keep1 = blk;
     return ar;
   }
-  const ArrowArray **batches = malloc((x->hold.nb != 0 ? x->hold.nb : 1) *
-                                      sizeof(*batches));
-  if (batches == NULL) {
-    PyErr_NoMemory();
-    return NULL;
+  /* nb == 1 rides the struct's slot and *keep1 stays NULL (the callers'
+     free(NULL) discipline); a larger pull heap-allocates */
+  const ArrowArray **batches = &x->batch1;
+  if (x->hold.nb == 1) {
+    x->batch1 = x->hold.arrs;
+  } else {
+    batches = malloc((x->hold.nb != 0 ? x->hold.nb : 1) *
+                     sizeof(*batches));
+    if (batches == NULL) {
+      PyErr_NoMemory();
+      return NULL;
+    }
+    for (size_t b = 0; b < x->hold.nb; b++) batches[b] = &x->hold.arrs[b];
   }
-  for (size_t b = 0; b < x->hold.nb; b++) batches[b] = &x->hold.arrs[b];
   mizu_arrow *ar = NULL;
   mizu_status st = mizu_arrow_open(&ar, &x->schema, batches, x->hold.nb,
                                    peer_caps);
   if (st != MIZU_OK) {
-    free(batches);
+    if (batches != &x->batch1) free(batches);
     return NULL;
   }
-  *keep1 = (void *) batches;
+  if (batches != &x->batch1) *keep1 = (void *) batches;
   return ar;
 }
 
@@ -5559,7 +5566,8 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     ixs_decline("a zero-column Arrow frame has no portable home");
     return 1;
   }
-  x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
+  x->cols = x->ncols <= IXS_COLS_STASH ? x->cols_stash :
+    calloc((size_t) x->ncols, sizeof(ixs_pcol));
   if (x->cols == NULL) {
     PyErr_NoMemory();
     return 1;
@@ -5672,11 +5680,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
                           uint32_t inline_max, mizu_handle *h) {
   x->ncols = 1;
   x->single = 1;
-  x->cols = calloc(1, sizeof(ixs_pcol));
-  if (x->cols == NULL) {
-    PyErr_NoMemory();
-    return 1;
-  }
+  x->cols = x->cols_stash;
   if (!x->borrowed_hold && ixs_pull(x) < 0) return 1;
   /* the classification and validation are the core's (the single column
      wrapped as a one-column struct), the TLS decline re-raised here; the
@@ -5893,7 +5897,8 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   }
   x->ncols = (int) x->schema.n_children;
   if (x->ncols < 1 || x->schema.children == NULL) goto out;
-  x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
+  x->cols = x->ncols <= IXS_COLS_STASH ? x->cols_stash :
+    calloc((size_t) x->ncols, sizeof(ixs_pcol));
   if (x->cols == NULL) goto out;
   if (!x->borrowed_hold && ixs_pull(x) < 0) goto out;
   /* the real peer caps word: the core stage's conjunction needs it (the
@@ -5970,7 +5975,6 @@ int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
   x.row_names = f->row_names;
   x.r_attrs = f->r_attrs;
   int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h, peer_caps);
-  x.hold.arrs = NULL;
   ixs_free(&x);
   return rc;
 }
@@ -6479,7 +6483,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
     goto done;
   }
   x.ncols = (int) x.schema.n_children;
-  x.cols = calloc((size_t) x.ncols, sizeof(ixs_pcol));
+  x.cols = x.ncols <= IXS_COLS_STASH ? x.cols_stash :
+    calloc((size_t) x.ncols, sizeof(ixs_pcol));
   if (x.cols == NULL) {
     PyErr_NoMemory();
     goto done;

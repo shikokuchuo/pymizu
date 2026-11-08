@@ -51,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a corrupt stream sent to a Python peer when a list, tuple, or
+  dict contained a `str` or `bytes` item larger than 4 GiB; the payload
+  now falls back to pickle and arrives intact.
 - Fixed a `KeyError` when a worker or collector without numpy received a
   complex map `x` or template from an R host; it now raises an
   informative error.

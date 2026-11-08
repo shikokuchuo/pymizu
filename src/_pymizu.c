@@ -1130,12 +1130,13 @@ static int codec_walk(PyObject *o, uint8_t **pp, const uint8_t *end,
     return 0;
   }
   if (PyDict_CheckExact(o)) {
-    if (PyDict_Size(o) > PYMIZU_CODEC_CAP) return -1;
+    const Py_ssize_t n = PyDict_Size(o);
+    if (n > PYMIZU_CODEC_CAP) return -1;
     uint8_t *p = codec_emit(pp, end, sz, 5);
     if (p != NULL) {
       p[0] = PYMIZU_TAG_DICT;
       p++;
-      codec_put32(&p, (uint32_t) PyDict_Size(o));
+      codec_put32(&p, (uint32_t) n);
     }
     PyObject *k, *v;
     Py_ssize_t pos = 0;
@@ -10358,14 +10359,12 @@ static PyObject *pymizu_codec_stream(PyObject *Py_UNUSED(module),
   if (rc < 0) Py_RETURN_NONE;
   if (rc == 0)
     return PyBytes_FromStringAndSize((const char *) scratch, (Py_ssize_t) sz);
-  uint8_t *buf = PyMem_Malloc((size_t) sz);
-  if (buf == NULL) return PyErr_NoMemory();
+  PyObject *out = PyBytes_FromStringAndSize(NULL, (Py_ssize_t) sz);
+  if (out == NULL) return NULL;
+  uint8_t *buf = (uint8_t *) PyBytes_AS_STRING(out);
   buf[0] = MIZU_PYMIZU_CODEC_MAGIC;
   uint8_t *p = buf + 1;
   codec_put(&p, arg);
-  PyObject *out =
-    PyBytes_FromStringAndSize((const char *) buf, (Py_ssize_t) sz);
-  PyMem_Free(buf);
   return out;
 }
 
