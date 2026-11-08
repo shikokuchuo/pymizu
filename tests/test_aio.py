@@ -309,6 +309,54 @@ def test_recv_async_terminal_skips_cancelled():
         peer.destroy()
 
 
+def test_recv_async_cancelled_middle_keeps_order():
+    # a cancelled waiter mid-FIFO consumes nothing: the live waiters
+    # resolve in arrival order
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_async()
+            f2 = host.recv_async()
+            f3 = host.recv_async()
+            f2.cancel()
+            for x in ("a", "b"):
+                peer.send(x)
+            assert await f1 == "a"
+            assert await f3 == "b"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_cancelled_batch_skipped():
+    # a cancelled batch waiter settles the counters: the live waiters
+    # resolve in order
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_batch_async(2)
+            f2 = host.recv_async()
+            f1.cancel()
+            st = host._h._aio
+            assert (st.wants, st.batches) == (1, 0)
+            for x in ("a", "b"):
+                peer.send(x)
+            assert await f2 == "a"
+            # a batch waiter never waits to fill: "b" alone resolves it
+            assert await host.recv_batch_async(2) == ["b"]
+            peer.send("c")
+            assert await host.recv_async() == "c"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
 def test_channel_drain_error_fails_waiters():
     # a handle broken under an armed drain fails the waiters with the
     # closed-handle error
