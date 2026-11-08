@@ -1016,7 +1016,7 @@ while (TRUE) {
     finally:
         ch.close(timeout=10)
 
-# 8b. frame resend: the cached stage construction ------------------------------
+# 8b. frame resend: the cached stage construction -----------------------------
 
 print("\n== 8b. frame resend (same-language, 1-col 800 KB frame) ==")
 
@@ -1063,7 +1063,7 @@ else:
         p.destroy()
         h.destroy()
 
-# 8c. view Arrow re-export: the clean-verdict memo -----------------------------
+# 8c. view Arrow re-export: the clean-verdict memo ----------------------------
 
 print("\n== 8c. view Arrow re-export (validity memo) ==")
 
@@ -1107,7 +1107,10 @@ else:
 
         warmup(rep, n=1)
         note_us(
-            "view arrow export", "f64 clean (converted)", m, rep,
+            "view arrow export",
+            "f64 clean (converted)",
+            m,
+            rep,
             "us/export",
         )
     finally:

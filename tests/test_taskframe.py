@@ -674,18 +674,31 @@ def test_codec_stream_containers():
         b"Pl" + (2).to_bytes(4, "little") + b"nn"
     )
     assert _codec_stream((1, "a")) == (
-        b"Pt" + (2).to_bytes(4, "little") + b"i" + (1).to_bytes(8, "little")
-        + b"s" + (1).to_bytes(4, "little") + b"a"
+        b"Pt"
+        + (2).to_bytes(4, "little")
+        + b"i"
+        + (1).to_bytes(8, "little")
+        + b"s"
+        + (1).to_bytes(4, "little")
+        + b"a"
     )
     assert _codec_stream({"k": True, "j": 2}) == (
-        b"Pd" + (2).to_bytes(4, "little")
-        + b"s" + (1).to_bytes(4, "little") + b"k" + b"b\x01"
-        + b"s" + (1).to_bytes(4, "little") + b"j"
-        + b"i" + (2).to_bytes(8, "little")
+        b"Pd"
+        + (2).to_bytes(4, "little")
+        + b"s"
+        + (1).to_bytes(4, "little")
+        + b"k"
+        + b"b\x01"
+        + b"s"
+        + (1).to_bytes(4, "little")
+        + b"j"
+        + b"i"
+        + (2).to_bytes(8, "little")
     )
     # the cap is inclusive: 64 elements ride, and the writer round-trips
     assert _codec_stream([0] * 64) == (
-        b"Pl" + (64).to_bytes(4, "little")
+        b"Pl"
+        + (64).to_bytes(4, "little")
         + (b"i" + (0).to_bytes(8, "little")) * 64
     )
     assert _read_stream(_codec_stream([1, "a", 2.5, None, True])) == (
@@ -711,8 +724,11 @@ def test_codec_stream_spill():
     # past the verb's scratch budget: the exact count + write-only re-walk
     s = "x" * 5000
     assert _codec_stream([s]) == (
-        b"Pl" + (1).to_bytes(4, "little")
-        + b"s" + (5000).to_bytes(4, "little") + b"x" * 5000
+        b"Pl"
+        + (1).to_bytes(4, "little")
+        + b"s"
+        + (5000).to_bytes(4, "little")
+        + b"x" * 5000
     )
 
 

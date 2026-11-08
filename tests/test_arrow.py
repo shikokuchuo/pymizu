@@ -1180,7 +1180,9 @@ def test_mapview_export_double_clean_and_na(pool):
     # the clean verdict memoizes per view: re-exports stay exact, and an
     # NA area rebuilds its bitmap per export
     out = pool.map(
-        scalar_double, list(range(100)), template=np.empty(1),
+        scalar_double,
+        list(range(100)),
+        template=np.empty(1),
         collect="view",
     ).collect()
     view = _mapview(out)
@@ -1190,7 +1192,9 @@ def test_mapview_export_double_clean_and_na(pool):
     assert first.equals(second)
 
     out = pool.map(
-        na_int, list(range(30)), template=np.empty(1, dtype=np.int32),
+        na_int,
+        list(range(30)),
+        template=np.empty(1, dtype=np.int32),
         collect="view",
     ).collect()
     view = _mapview(out)
