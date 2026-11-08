@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster sends of small list, tuple, and dict payloads between Python
+  processes.
 - Faster repeated `Pool.submit()` of the same callable, and faster
   `pymizu.call()` spec tasks. Replacing a function in an already-imported
   module no longer affects workers that have already run it: restart

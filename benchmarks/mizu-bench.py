@@ -176,6 +176,38 @@ def seq_channel(ch):
 with_channel(ECHO_PEER, seq_channel, capacity=1024)
 
 
+def seq_channel_codec_list(ch):
+    # small flat containers ride the compact codec: one fused count/write
+    # walk per send is the staging cost this row watches
+    payload = [1, "alpha", 2.5, None, True, b"\x00\xff"]
+    warmup(lambda: (ch.send(payload), ch.recv(timeout=30)))
+
+    def rep():
+        for _ in range(nc):
+            ch.send(payload)
+            ch.recv(timeout=30)
+
+    note_us("sequential rt", "pymizu channel (codec list)", nc, rep, "us/rt")
+
+
+with_channel(ECHO_PEER, seq_channel_codec_list, capacity=1024)
+
+
+def seq_channel_codec_dict(ch):
+    payload = {"a": 1, "b": "x", "c": 2.5, "d": None}
+    warmup(lambda: (ch.send(payload), ch.recv(timeout=30)))
+
+    def rep():
+        for _ in range(nc):
+            ch.send(payload)
+            ch.recv(timeout=30)
+
+    note_us("sequential rt", "pymizu channel (codec dict)", nc, rep, "us/rt")
+
+
+with_channel(ECHO_PEER, seq_channel_codec_dict, capacity=1024)
+
+
 def seq_pool(p):
     warmup(lambda: p.submit(const).collect(timeout=30))
 
