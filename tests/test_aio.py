@@ -536,6 +536,36 @@ def test_recv_batch_async_quantum():
         peer.destroy()
 
 
+def test_channel_quantum_cap_reschedule():
+    # a decline carrying the pass's work to exactly the quantum skips the
+    # post-burst reschedule, so the loop-top cap reschedules instead —
+    # the tail waiter resolving proves the next pass ran
+    h = _pymizu._channel_new(4096, 256, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    p.ready_set()
+    assert h.ready_wait(5)
+    host, peer = pymizu.Channel._wrap(h), pymizu.Channel._wrap(p)
+    n = _quantum_n()
+    try:
+
+        async def main():
+            batch = host.recv_batch_async(n - 1)
+            declined = host.recv_async()
+            tail = host.recv_async()
+            assert peer.send_batch(list(range(n - 1))) == n - 1
+            _pymizu._channel_send_raw(peer._h, b"R")
+            peer.send("tail")
+            assert await batch == list(range(n - 1))
+            with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
+                await declined
+            assert await tail == "tail"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
 def test_iter_batches_async():
     # the async batch iterator yields the burst lists and ends on CLOSED
     host, peer = chan_pair()
