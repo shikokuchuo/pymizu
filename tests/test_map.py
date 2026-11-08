@@ -598,6 +598,14 @@ def test_map_result_unpublishable_batch(pool):
     assert pool.map(square, range(4)).collect(timeout=15) == [0, 1, 4, 9]
 
 
+def test_map_result_many_claims():
+    # one runner claiming past the stack plan array (8 morsels): the leaf
+    # plans grow to the heap — results stay exact
+    with pymizu.Pool.create(1) as p:
+        out = p.map(square, list(range(512)), n_chunks=512).collect(timeout=30)
+    assert out == [i * i for i in range(512)]
+
+
 def test_map_result_blob_path_exact(pool):
     # the blob path's _chunk publishes through _batch_result
     out = pool.map(np_f64, [1.0, 2.0, 3.0]).collect()

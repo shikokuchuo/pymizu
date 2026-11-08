@@ -10,6 +10,7 @@ import pickle
 import subprocess
 import sys
 import threading
+import types
 from functools import partial
 
 import numpy as np
@@ -121,6 +122,36 @@ def test_fn_cache_serves_stale_rebind(monkeypatch):
         assert p.submit(fn, 1).collect(timeout=10) == 1
         monkeypatch.setattr(helpers, "identity", lambda x: "rebound")
         assert p.submit(fn, 2).collect(timeout=10) == 2
+        p.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+def test_fn_cache_miss_then_success(monkeypatch):
+    # the resolution cache stores successes only: a task whose module is
+    # not yet importable errors, then resolves once it is
+    mod = types.ModuleType("dynmod_phase3")
+
+    def late():
+        return 42
+
+    late.__module__ = "dynmod_phase3"
+    late.__qualname__ = "late"
+    mod.late = late
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        p = pymizu.Pool._wrap(h)
+        with pytest.raises(pymizu.TaskError):
+            p.submit(late).collect(timeout=10)
+        monkeypatch.setitem(sys.modules, "dynmod_phase3", mod)
+        assert p.submit(late).collect(timeout=10) == 42
         p.stop()
         loop.join(timeout=10)
         wk.destroy()

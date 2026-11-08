@@ -143,6 +143,38 @@ def test_spec_fn_cache_serves_stale_rebind(monkeypatch):
         h.destroy()
 
 
+def test_spec_fn_cache_miss_then_success(monkeypatch):
+    # the name cache stores successes only: a spec task whose attribute
+    # does not yet exist errors, then resolves once it does
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        p = pymizu.Pool._wrap(h)
+        # the plain callable warms the worker's identity word for the
+        # spec submits
+        assert p.submit(helpers.square, 2).collect(timeout=10) == 4
+        with pytest.raises(pymizu.TaskError):
+            p.submit(pymizu.call("tests.helpers.late_spec_fn")).collect(
+                timeout=10
+            )
+        monkeypatch.setattr(helpers, "late_spec_fn", lambda: 42, raising=False)
+        assert (
+            p.submit(pymizu.call("tests.helpers.late_spec_fn")).collect(
+                timeout=10
+            )
+            == 42
+        )
+        p.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
 def test_spec_task_conversion_warning_survives_the_rewrite():
     # a spec task past the inline budget rewrites its stream: the
     # conversion warning record rides the rewrite walk, so a large uint64
