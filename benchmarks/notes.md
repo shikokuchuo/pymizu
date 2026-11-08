@@ -51,6 +51,7 @@ probes and A/B isolations stay in the log.
 | map trivial f | 0.06 us/elt | 2026-11-06 |
 | map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
 | map trivial f, seed | 1.7 us/elt | 2026-11-06 |
+| map trivial f, stream | 0.17 us/elt | 2026-11-08 |
 | map trivial f, prepared | 0.05 us/elt | 2026-11-06 |
 | map winsum x 2000 | 715.0k tasks/s | 2026-11-08 |
 | map winsum x 20000 | 759.3k tasks/s | 2026-11-06 |
@@ -78,7 +79,8 @@ probes and A/B isolations stay in the log.
 | submit plan k = 4 (W2 row) | 97.6 us/task | 2026-11-06 |
 | submit plan k = 16 (W2 row) | 155.0 us/task | 2026-11-06 |
 | event-driven, channel armed | 2.67M rt/s | 2026-11-08 |
-| event-driven, channel recv_async | 662k rt/s | 2026-11-08 |
+| event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
+| event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
 | event-driven, pool collect_async | 1.65M tasks/s | 2026-11-08 |
 | event-driven, pool collect_all_async | 1.73M tasks/s | 2026-11-08 |
 | event-driven, pool 64 waiters | 2.28M tasks/s | 2026-10-27 |
@@ -1404,3 +1406,31 @@ recv_async 662k, collect_async 1.65M, collect_all_async 1.73M; the
 executor outstanding tuple; plan k = 0 82.7 and k = 1 99.1.
 
 Status: full suite 1103 pass, 1 skip; no code change.
+
+## 2026-11-08 — Phases 1-2 of the performance plan [(73d4e06, 2a62d2a, 7b5a1f0, 5f7e4ae, a772305, 3b7ee26)]
+
+Phases 1-2 of .posit/assistant/plans/2026-11-08-performance-improvements.md:
+non-raising interned-key module probes, exact-`bytes` staging straight
+into the raw tier, scalar-first template element writes, local-index
+streaming chunks, one seed hash per batch (byte-identical draws, pinned
+by the new golden tests), and O(1) channel-waiter detach with
+module-level detach functions. A/B against the phase-0 baseline (suite
+rows; finer values from a best-of-5 probe):
+
+| row | before | after |
+|---|---|---|
+| channel recv_async cancel | 227.8k cancel/s | 879.0k cancel/s (~4x) |
+| channel recv_async | 655.8k rt/s | 834.2k rt/s (+27%) |
+| map trivial f, stream | 0.1801 us/elt | 0.1685 us/elt |
+| map trivial f, seed | 1.6639 us/elt | 1.6546 us/elt |
+
+The cancel row's 4x is the detach itself; recv_async's +27% is the
+enrollment lambda removal. The seed hash caching nets under 1% —
+`random.seed()`'s per-element SHA-512 dominates that row, not the
+hashing half. Phase 1's watch rows (pipelined channel/pool, 8 KB
+payload, map template) are flat at suite resolution, as expected for
+per-op nanosecond wins. Best-known swaps: channel recv_async (834k);
+the two new rows enter the table (map stream 0.17, recv_async cancel
+1.00M).
+
+Status: full suite 1105 pass, 1 skip; ruff + pyrefly clean.
