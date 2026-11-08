@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises at the call site.
 - Fixed a rare deadlock where `Pool.stop()` could hang indefinitely
   when a `PoolExecutor` wrapped the pool.
+- Fixed a rare hang of `Pool.collect_any_async()`,
+  `Pool.collect_all_async()`, or an awaited map when the pool was used
+  from a new event loop after a previous one closed (for example
+  back-to-back `asyncio.run()` calls).
 - Fixed a rare crash when unpickling a `Frame` under memory pressure.
 
 ## [0.1.0] - 2026-11-04

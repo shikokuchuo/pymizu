@@ -5937,6 +5937,9 @@ static void notify_cb(void *ctx) {
     } else {
       PyErr_WriteUnraisable(rec->drain_cb);
     }
+    /* no trampoline will run: release the coalesce flag with the ref —
+       left set, every later signal is absorbed as already-scheduled */
+    atomic_store_explicit(&rec->scheduled, 0, memory_order_release);
     notify_unref(rec);         /* the scheduled ref: no trampoline will run */
   } else {
     Py_DECREF(r);
@@ -5985,6 +5988,12 @@ static void notify_store(MizuNotify *rec, PyObject *loop, PyObject *cb) {
   rec->loop = loop;
   rec->drain_cb = cb;
   rec->call_soon = call_soon;
+  /* a trampoline queued on a replaced loop never runs (asyncio discards
+     pending callbacks at close): clear the coalesce flag or it absorbs
+     every later signal. On the same live loop the reset is benign — a
+     genuinely queued trampoline re-arms it, and a double-schedule costs
+     one idempotent drain. */
+  atomic_store_explicit(&rec->scheduled, 0, memory_order_release);
   /* the arming thread moves with every store: a loop change re-arms from
      the new loop's thread without a C disarm */
   rec->arm_thread = PyThread_get_thread_ident();
