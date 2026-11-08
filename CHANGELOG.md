@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Pool.map()` result (e.g. `pa.array(view)`).
 - Faster sends of small list, tuple, and dict payloads between Python
   processes.
+- Much faster relay of frames larger than 64 MB (for example a
+  1e6-row, 10-column frame): the sending process no longer creates a
+  fresh shared-memory region per send.
+- `PoolExecutor` resolves large bursts of outstanding futures faster.
 - Faster repeated `Pool.submit()` of the same callable, and faster
   `pymizu.call()` spec tasks. Replacing a function in an already-imported
   module no longer affects workers that have already run it: restart

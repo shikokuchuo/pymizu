@@ -1522,3 +1522,37 @@ frame stages remote leaves, O(1) either way. Regression guards within
 their bands.
 
 Status: full suite 1125 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-08 — Phase 5 of the performance plan [(libmizu 7b42311)]
+
+The core's batch-collect verb (`mizu_pool_collect_terminal`), adopted
+by the executor drain and the asyncio pump, and the spill large slot
+retaining one over-cap (64 MB+) region per handle for relay re-stages.
+Measured caveat on the item-8 premise: the executor drain already
+batched (one wake collected 3,997 of 4,000 terminal tasks), so the ~80k
+ceiling is asyncio's per-future plumbing, not the scan — the verb buys
+a few percent, not a ceiling lift. A/B against main (38cde4d), two
+alternating pairs:
+
+| row | base (2 runs) | phase (2 runs) |
+|----|----|----|
+| frame 10col relay, Python (flat) | 4,840.7 / 4,922.2 us/send | 1,227.5 / 1,202.1 us/send (~4x) |
+| frame 10col relay, one computed col | 283.0 / 290.0 us/rt | 246.4 / 249.1 us/rt (-13%) |
+| frame 10col relay, unmodified REF | 6.0 / 5.9 us/rt | 5.3 / 5.4 us/rt |
+| executor outstanding 500 / 1k / 2k / 4k | 74.5 / 72.1 / 77.1 / 74.3k and 66.9 / 75.7 / 77.3 / 77.3k | 74.8 / 82.6 / 81.3 / 83.1k and 81.7 / 76.6 / 79.3 / 79.2k |
+| executor sync | 4.6 / 5.6 us/task | 4.9 / 4.6 us/task |
+| pool collect_async | 1.57M / 1.52M | 1.53M / 1.55M |
+| pool collect_all_async | 3.60M / 3.68M | 3.79M / 3.66M |
+| pool 64 waiters | 2.94M / 2.34M | 3.15M / 3.27M |
+| channel recv_async / cancel | 835k / 915k and 817k / 919k | 839k / 885k and 832k / 933k |
+| pipelined pool / batch | 1.93M / 4.04M and 1.72M / 3.31M | 1.69M / 3.99M and 1.77M / 3.56M |
+| fan-out x 2000 | 281.9k / 289.2k | 279.8k / 300.7k |
+
+The large slot is the win: the 80 MB frame region exceeded the 64 MB
+free-list cap, so every send paid a fresh region create. The
+one-computed-col remainder sits on the R side's older vendored core.
+Executor rows run a few percent ahead, the rest inside their bands. No
+best-known swaps.
+
+Status: full suite 1118 pass, 1 skip; ruff + pyrefly clean. libmizu
+unit/ext/integration tiers pass, ASan+UBSan clean; exports 203 symbols.
