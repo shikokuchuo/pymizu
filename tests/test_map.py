@@ -39,6 +39,7 @@ from tests.helpers import (
     pair_up_i64,
     py_pair,
     rand_elt,
+    rand_shift,
     scalar_cplx,
     scalar_double,
     scale_add,
@@ -400,6 +401,18 @@ def test_map_seed_bytes(pool):
     assert a == b == c
 
 
+def test_map_seed_with_args(pool):
+    # the seeded loop's args form draws the same per-element streams,
+    # batching-invariantly
+    base = pool.map(rand_elt, list(range(30)), seed=42).collect()
+    shifted = pool.map(rand_shift, [0.0] * 30, args=(7.5,), seed=42).collect()
+    assert shifted == [v + 7.5 for v in base]
+    shifted7 = pool.map(
+        rand_shift, [0.0] * 30, args=(7.5,), seed=42, n_chunks=7
+    ).collect()
+    assert shifted == shifted7
+
+
 def test_map_seed_restores_worker_rng(pool):
     # a seeded map restores the worker's own random state around its
     # batches: an unseeded task afterwards still draws from that stream
@@ -419,6 +432,20 @@ def test_map_seed_stdlib_derivation_unchanged(pool):
         0.5101559966523063,
         0.7226535016557073,
         0.3758578598845185,
+    ]
+
+
+def test_map_seed_stdlib_derivation_bytes_offset(pool):
+    # golden constants pin the bytes-seed and offset forms of the
+    # per-element derivation (the int-seed pin's companion)
+    out = pool.map(rand_elt, list(range(6)), seed=(b"k", 3)).collect()
+    assert out == [
+        0.9865397489245024,
+        0.13299068052672336,
+        0.4075993215607393,
+        0.9860956112658753,
+        0.5069493658271963,
+        0.6359661557337403,
     ]
 
 
@@ -696,6 +723,21 @@ def test_map_template_buffer_result(pool):
         pair_up, list(range(40)), template=np.empty(2), n_chunks=3
     ).collect()
     assert out.shape == (40, 2)
+
+
+def test_map_template_numpy_scalar_result(pool):
+    # numpy scalar results land in the output area through the scalar
+    # conversion, exact class and bytes (np.float64 is a float subclass,
+    # np.complex128 a complex one — never the buffer memcpy)
+    a = np.arange(50, dtype=np.float64)
+    out = pool.map(np_f64, a, template=np.empty(1)).collect()
+    assert out.dtype == np.float64
+    np.testing.assert_array_equal(out, a * 2)
+    out = pool.map(
+        np_c128, a, template=np.empty(1, dtype=np.complex128)
+    ).collect()
+    assert out.dtype == np.complex128
+    np.testing.assert_array_equal(out, a * 2)
 
 
 def test_map_template_view(pool):

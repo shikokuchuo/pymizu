@@ -469,6 +469,7 @@ int mizu_py_wire_type_of_fmt(const char *f, Py_ssize_t itemsize) {
    one pointer compare. */
 static PyTypeObject *mizu_array_type, *mizu_np_ndarray, *mizu_np_generic;
 static PyObject *mizu_np_scalars;   /* frozenset of numpy's own scalar types */
+static PyObject *mizu_mod_array, *mizu_mod_numpy;   /* interned probe keys */
 static int mizu_buf_types_probed;
 
 /* One attribute fetch for the probe: NULL leaves the gate without the
@@ -487,22 +488,35 @@ static PyTypeObject *buffer_type_attr(PyObject *mod, const char *name) {
    ran on a pre-numpy scalar must not cache "no numpy" forever. */
 static void buffer_types_probe(void) {
   if (mizu_buf_types_probed) return;
+  if (mizu_mod_array == NULL) {
+    /* interned keys + non-raising lookups: a miss costs no KeyError
+       set/clear (numpy-free installs re-probe on every buffer send) */
+    mizu_mod_array = PyUnicode_InternFromString("array");
+    mizu_mod_numpy = PyUnicode_InternFromString("numpy");
+    if (mizu_mod_array == NULL || mizu_mod_numpy == NULL) {
+      Py_CLEAR(mizu_mod_array);
+      Py_CLEAR(mizu_mod_numpy);
+      PyErr_Clear();
+      return;
+    }
+  }
   PyObject *mods = PyImport_GetModuleDict();
   if (mizu_array_type == NULL) {
-    PyObject *ar = PyMapping_GetItemString(mods, "array");
-    if (ar == NULL) {
-      PyErr_Clear();
-    } else {
+    PyObject *ar = PyDict_GetItemWithError(mods, mizu_mod_array);
+    if (ar != NULL) {
+      Py_INCREF(ar);   /* owned across the attr fetch: a module
+                          __getattr__ may run Python code */
       if (ar != Py_None)   /* sys.modules["array"] = None blocks imports */
         mizu_array_type = buffer_type_attr(ar, "array");
       Py_DECREF(ar);
+    } else if (PyErr_Occurred()) {
+      PyErr_Clear();
     }
   }
   if (mizu_np_ndarray == NULL) {
-    PyObject *np = PyMapping_GetItemString(mods, "numpy");
-    if (np == NULL) {
-      PyErr_Clear();
-    } else {
+    PyObject *np = PyDict_GetItemWithError(mods, mizu_mod_numpy);
+    if (np != NULL) {
+      Py_INCREF(np);
       if (np != Py_None) {   /* sys.modules["numpy"] = None blocks imports */
         mizu_np_ndarray = buffer_type_attr(np, "ndarray");
         mizu_np_generic = buffer_type_attr(np, "generic");
@@ -527,6 +541,8 @@ static void buffer_types_probe(void) {
         }
       }
       Py_DECREF(np);
+    } else if (PyErr_Occurred()) {
+      PyErr_Clear();
     }
   }
   mizu_buf_types_probed =
@@ -1945,6 +1961,19 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
          (peer_caps & (MIZU_CAP_ATTRS | MIZU_CAP_MIZL)) ==
            (MIZU_CAP_ATTRS | MIZU_CAP_MIZL)) &&
         ref_emit(mizu_py_loan_shm(flo), hdr, payload, inline_max) == 0)
+      return 0;
+  }
+  if (PyBytes_CheckExact(obj)) {
+    /* the common buffer payload, straight into the raw-tier reservation:
+       skips the buffer negotiation, the subclass/dimarray/temporal probes
+       and the REF .base walk — an exact bytes owns its storage, so it can
+       never be a received view echoing back. A declined reservation falls
+       through to the codec/pickle, as the buffer path's does */
+    Py_buffer v;
+    memset(&v, 0, sizeof(v));
+    v.buf = PyBytes_AS_STRING(obj);
+    v.len = PyBytes_GET_SIZE(obj);
+    if (stage_raw(&v, MIZU_TYPE_RAW, hdr, payload, inline_max, h) == 0)
       return 0;
   }
   if (PyObject_CheckBuffer(obj) && !buffer_subclass_reject(obj)) {

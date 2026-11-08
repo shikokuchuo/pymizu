@@ -43,23 +43,24 @@ probes and A/B isolations stay in the log.
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
 | pipelined, pool batch | 1.82M tasks/s | 2026-10-27 |
-| payload 8,000 B | 2.4 us/task | 2026-09-30 |
-| payload 800,000 B | 58.7 us/task | 2026-09-13 |
-| payload 8,000,000 B | 107.2 us/task | 2026-10-03 |
+| payload 8,000 B | 2.3 us/task | 2026-11-08 |
+| payload 800,000 B | 55.4 us/task | 2026-11-08 |
+| payload 8,000,000 B | 101.7 us/task | 2026-11-08 |
 | fan-out x 2000, 4 workers | 295.3k tasks/s | 2026-10-03 |
 | streaming, channel batch | 21.6M msg/s | 2026-10-03 |
 | map trivial f | 0.06 us/elt | 2026-11-06 |
 | map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
 | map trivial f, seed | 1.7 us/elt | 2026-11-06 |
+| map trivial f, stream | 0.17 us/elt | 2026-11-08 |
 | map trivial f, prepared | 0.05 us/elt | 2026-11-06 |
-| map winsum x 2000 | 706.7k tasks/s | 2026-11-06 |
+| map winsum x 2000 | 715.0k tasks/s | 2026-11-08 |
 | map winsum x 20000 | 759.3k tasks/s | 2026-11-06 |
-| map skewed f x 4000 | 5.6 ms wall | 2026-11-06 |
+| map skewed f x 4000 | 5.1 ms wall | 2026-11-08 |
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
-| frame 10col relay, unmodified REF | 5.9 us/rt | 2026-11-04 |
-| frame 10col relay, one computed col | 422.3 us/rt | 2026-10-03 |
+| frame 10col relay, unmodified REF | 5.3 us/rt | 2026-11-08 |
+| frame 10col relay, one computed col | 201.0 us/rt | 2026-11-08 |
 | frame strcol relay, unmodified string REF | 2,410.8 us/rt | 2026-10-03 |
 | stage widen (foreign pair) | 241.5 us/send | 2026-10-03 |
 | stage masked (foreign pair) | 97.3 us/send | 2026-10-01 |
@@ -73,16 +74,17 @@ probes and A/B isolations stay in the log.
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec prepared | 0.1 us/elt | 2026-10-01 |
 | crosslang map compute, spec | 335k tasks/s | 2026-10-03 |
-| submit plan k = 0 (W2 row) | 87.1 us/task | 2026-11-06 |
-| submit plan k = 1 (W2 row) | 100.7 us/task | 2026-11-06 |
+| submit plan k = 0 (W2 row) | 82.7 us/task | 2026-11-08 |
+| submit plan k = 1 (W2 row) | 99.1 us/task | 2026-11-08 |
 | submit plan k = 4 (W2 row) | 97.6 us/task | 2026-11-06 |
 | submit plan k = 16 (W2 row) | 155.0 us/task | 2026-11-06 |
-| event-driven, channel armed | 2.62M rt/s | 2026-10-27 |
-| event-driven, channel recv_async | 648k rt/s | 2026-11-06 |
-| event-driven, pool collect_async | 1.59M tasks/s | 2026-11-06 |
-| event-driven, pool collect_all_async | 1.72M tasks/s | 2026-10-27 |
+| event-driven, channel armed | 2.67M rt/s | 2026-11-08 |
+| event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
+| event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
+| event-driven, pool collect_async | 1.65M tasks/s | 2026-11-08 |
+| event-driven, pool collect_all_async | 1.73M tasks/s | 2026-11-08 |
 | event-driven, pool 64 waiters | 2.28M tasks/s | 2026-10-27 |
-| executor outstanding 500 / 1,000 / 2,000 / 4,000 | 77.4k / 80.8k / 80.8k / 80.4k tasks/s | 2026-11-06 |
+| executor outstanding 500 / 1,000 / 2,000 / 4,000 | 80.6k / 79.7k / 82.1k / 83.2k tasks/s | 2026-11-08 |
 | executor sync | 4.8 us/task | 2026-11-06 |
 
 ## Run log
@@ -1359,3 +1361,76 @@ and integration tiers pass; export surface unchanged.
 Status: report-only run plus the code changes above; the best-known
 table is untouched (M4 Pro rows — the masked/frame A/B on the M4 is
 still owed).
+
+## 2026-11-08 — M4 Pro re-baseline; owed masked/frame re-check [(1872b95)]
+
+Phase 0 of the performance plan
+(.posit/assistant/plans/2026-11-08-performance-improvements.md): the
+current source rebuilt (`pip install . --no-cache-dir`), the full
+suite, then two back-to-back mizu-bench.py runs on this host — the
+baseline the plan's later phases A/B against. This also lands the owed
+M4 Pro re-check of yesterday's Linux masked-conversion and frame-relay
+work. The frame win transfers: the 10col one-computed-col relay reads
+201.0 / 217.1 us against the 422.3 us record (the Arrow export's
+memoized null verdict) and the unmodified REF row 5.3 / 5.5. The
+masked int64 win does not: 183.3 / 184.2 us/send, back at this host's
+pre-fuse level (the 2026-11-06 post-fuse read here was ~140) — the
+Linux kernels' run-coalescing and fused sentinel count are x86
+cache-regime wins; whether they cost the M4 its 140 is an A/B against
+the pre-vendoring core, not pursued today. masked f64 (113.6 / 122.0)
+and masked+scan (151.3 / 124.2) sit in their bands.
+
+Results (run 1 / run 2, the plan's watch rows plus the re-check rows):
+
+| row | run 1 | run 2 |
+|---|---|---|
+| sequential rt, channel / pool | 0.4 / 0.8 us | 0.4 / 0.8 us |
+| pipelined, channel / channel batch | 4.20M / 10.00M rt/s | 4.11M / 9.77M rt/s |
+| pipelined, pool / pool batch | 2.09M / 1.80M tasks/s | 1.93M / 1.80M tasks/s |
+| payload 8,000 B | 2.3 us | 2.6 us |
+| map trivial f / template / seed / prepared | 0.1 / 0.0 / 1.7 / 0.0 us/elt | 0.1 / 0.0 / 1.6 / 0.0 us/elt |
+| map winsum x 2000 / x 20000 | 715.0k / 746.1k tasks/s | 623.8k / 739.8k tasks/s |
+| map template 20k, copy / view | 744.5k / 754.2k tasks/s | 748.6k / 756.9k tasks/s |
+| map skewed f | 5.3 ms | 5.1 ms |
+| stage masked / masked int64 / masked+scan | 113.6 / 184.2 / 151.3 us | 122.0 / 183.3 / 124.2 us |
+| frame 10col relay: REF / computed col / Python flat | 5.5 / 201.0 us / 4,274.9 us | 5.3 / 217.1 us / 4,326.4 us |
+| channel armed / recv_async | 2.58M / 654k rt/s | 2.67M / 662k rt/s |
+| pool collect_async / collect_all_async / 64 waiters | 1.61M / 1.73M / 1.99M tasks/s | 1.65M / 1.73M / 1.99M tasks/s |
+| executor outstanding 500 / 1k / 2k / 4k | 80.6k / 79.7k / 82.1k / 83.2k tasks/s | 77.6k / 78.5k / 80.9k / 80.6k tasks/s |
+| executor sync | 4.9 us | 5.4 us |
+
+Best-known swaps (the table's dates carry them): payload 8 KB 2.3,
+800 KB 55.4, 8 MB 101.7; map skewed 5.1 ms and winsum x 2000 715.0k;
+frame 10col REF 5.3 and one computed col 201.0; channel armed 2.67M,
+recv_async 662k, collect_async 1.65M, collect_all_async 1.73M; the
+executor outstanding tuple; plan k = 0 82.7 and k = 1 99.1.
+
+Status: full suite 1103 pass, 1 skip; no code change.
+
+## 2026-11-08 — Phases 1-2 of the performance plan [(73d4e06, 2a62d2a, 7b5a1f0, 5f7e4ae, a772305, 3b7ee26)]
+
+Phases 1-2 of .posit/assistant/plans/2026-11-08-performance-improvements.md:
+non-raising interned-key module probes, exact-`bytes` staging straight
+into the raw tier, scalar-first template element writes, local-index
+streaming chunks, one seed hash per batch (byte-identical draws, pinned
+by the new golden tests), and O(1) channel-waiter detach with
+module-level detach functions. A/B against the phase-0 baseline (suite
+rows; finer values from a best-of-5 probe):
+
+| row | before | after |
+|---|---|---|
+| channel recv_async cancel | 227.8k cancel/s | 879.0k cancel/s (~4x) |
+| channel recv_async | 655.8k rt/s | 834.2k rt/s (+27%) |
+| map trivial f, stream | 0.1801 us/elt | 0.1685 us/elt |
+| map trivial f, seed | 1.6639 us/elt | 1.6546 us/elt |
+
+The cancel row's 4x is the detach itself; recv_async's +27% is the
+enrollment lambda removal. The seed hash caching nets under 1% —
+`random.seed()`'s per-element SHA-512 dominates that row, not the
+hashing half. Phase 1's watch rows (pipelined channel/pool, 8 KB
+payload, map template) are flat at suite resolution, as expected for
+per-op nanosecond wins. Best-known swaps: channel recv_async (834k);
+the two new rows enter the table (map stream 0.17, recv_async cancel
+1.00M).
+
+Status: full suite 1105 pass, 1 skip; ruff + pyrefly clean.

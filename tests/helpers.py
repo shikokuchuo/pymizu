@@ -218,6 +218,12 @@ def rand_elt(i):
     return random.random()
 
 
+def rand_shift(v, k):
+    """A draw from the worker's stdlib random stream plus k (seeded maps
+    with args)."""
+    return random.random() + k
+
+
 def np_rand_elt(i):
     """A draw from the element's per-element numpy Generator (seeded
     maps): pymizu.current_rng() inside the task."""

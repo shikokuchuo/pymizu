@@ -453,24 +453,15 @@ static void pymap_raise_value(mizu_pymap *mh, uint64_t index) {
 
 /* Element e's value into its disjoint output-area slice: a buffer of the
    template's wire type and length m memcpys; for m == 1 a Python scalar
-   (float/int/bool/complex) converts. Returns 0 written, -1 raised. */
+   (float/int/bool/complex) converts. Scalars first: the numpy scalar
+   subclasses (np.float64 is a float subclass, np.complex128 a complex
+   one) are buffers, so buffer-first ordering pays a GetBuffer/Release
+   pair per element. Returns 0 written, -1 raised. */
 static int pymap_write_value(mizu_pymap *mh, uint64_t e, PyObject *v) {
   unsigned char *dst = (unsigned char *) mh->shm->addr + mh->h.out_off +
     e * (mh->h.out_m * mh->h.out_elt);
   size_t nbytes = (size_t) (mh->h.out_m * mh->h.out_elt);
-  if (PyObject_CheckBuffer(v)) {
-    Py_buffer b;
-    if (PyObject_GetBuffer(v, &b, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) == 0) {
-      int ok = mizu_py_wire_type_of(&b) == (int) mh->h.out_type &&
-               (uint64_t) b.len == (uint64_t) nbytes;
-      if (ok) memcpy(dst, b.buf, (size_t) b.len);
-      PyBuffer_Release(&b);
-      if (ok) return 0;
-    } else {
-      PyErr_Clear();
-    }
-  }
-  if (mh->h.out_m == 1 && !PyObject_CheckBuffer(v)) {
+  if (mh->h.out_m == 1) {
     switch (mh->h.out_type) {
     case MIZU_TYPE_REAL:
       if (PyFloat_Check(v)) {
@@ -528,6 +519,18 @@ static int pymap_write_value(mizu_pymap *mh, uint64_t e, PyObject *v) {
       }
       break;
     default: break;
+    }
+  }
+  if (PyObject_CheckBuffer(v)) {
+    Py_buffer b;
+    if (PyObject_GetBuffer(v, &b, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) == 0) {
+      int ok = mizu_py_wire_type_of(&b) == (int) mh->h.out_type &&
+               (uint64_t) b.len == (uint64_t) nbytes;
+      if (ok) memcpy(dst, b.buf, (size_t) b.len);
+      PyBuffer_Release(&b);
+      if (ok) return 0;
+    } else {
+      PyErr_Clear();
     }
   }
   pymap_raise_value(mh, e);
