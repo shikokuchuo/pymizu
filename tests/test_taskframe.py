@@ -9,10 +9,13 @@ import os
 import pickle
 import subprocess
 import sys
+import threading
+import types
 from functools import partial
 
 import numpy as np
 import pytest
+import tests.helpers as helpers
 from tests.helpers import (
     BufferFailAfterFirst,
     array_sum,
@@ -22,13 +25,15 @@ from tests.helpers import (
     is_readonly,
     square,
     sum_dict,
+    sum_list,
     sum_mixed,
     sum_pair,
     sum_pair_flaky,
-    sum_two,
+    two_buffers,
 )
 
 import pymizu
+from pymizu import _pymizu
 from pymizu._pymizu import _frame_rebuild, _read_stream, _task_frame
 
 
@@ -91,6 +96,69 @@ def test_fn_without_module_or_qualname_pickles(pool):
     assert pool.submit(noqual, 1).collect(timeout=5) == 3
 
 
+def test_fn_cache_clear_on_full():
+    # 70 distinct by-reference callables: past the cache cap (64) the
+    # worker's resolution cache clears whole and re-caches — results stay
+    # exact. One worker, so every resolution lands in one cache.
+    with pymizu.Pool.create(1) as p:
+        tasks = [
+            p.submit(getattr(helpers, f"cache_evict_{i}")) for i in range(70)
+        ]
+        assert [t.collect(timeout=15) for t in tasks] == list(range(70))
+
+
+def test_fn_cache_serves_stale_rebind(monkeypatch):
+    # the worker's resolution cache serves the first-seen object: a
+    # mid-process rebind is not picked up (documented on Pool.submit)
+    fn = helpers.identity
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        p = pymizu.Pool._wrap(h)
+        assert p.submit(fn, 1).collect(timeout=10) == 1
+        monkeypatch.setattr(helpers, "identity", lambda x: "rebound")
+        assert p.submit(fn, 2).collect(timeout=10) == 2
+        p.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+def test_fn_cache_miss_then_success(monkeypatch):
+    # the resolution cache stores successes only: a task whose module is
+    # not yet importable errors, then resolves once it is
+    mod = types.ModuleType("dynmod_phase3")
+
+    def late():
+        return 42
+
+    late.__module__ = "dynmod_phase3"
+    late.__qualname__ = "late"
+    mod.late = late
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        p = pymizu.Pool._wrap(h)
+        with pytest.raises(pymizu.TaskError):
+            p.submit(late).collect(timeout=10)
+        monkeypatch.setitem(sys.modules, "dynmod_phase3", mod)
+        assert p.submit(late).collect(timeout=10) == 42
+        p.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
 def test_scalar_none_kwargs_args(pool):
     out = pool.submit(echo, 1, None, "x", 2.5, k=None, b=True).collect(
         timeout=5
@@ -126,34 +194,29 @@ def test_small_numpy_arg_is_a_writable_copy(pool):
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="PEP 688 __buffer__ is CPython 3.12+"
 )
-def test_abandoned_bufref_stage_rolls_back(pool):
-    # a by-reference leaf's retain followed by a write-pass failure: the
-    # abandoned checkout rolls back, so the pickle fallback reuses the
-    # region instead of orphaning it for a fresh one (P-17)
-    def reuse():
-        return next(
-            s["spill_reuse"]
-            for s in pool.stats()["submitters"]
-            if s["pid"] == os.getpid()
-        )
-
-    # seed the free list with one region (a big pickled payload: its
-    # surrender at collect is deterministic)
-    assert pool.submit(len, "x" * 200000).collect(timeout=15) == 200000
-    before = reuse()
+def test_size_pass_view_carried_into_write(pool):
+    # the write pass consumes the size pass's open buffer view — one
+    # negotiation per leaf, so an exporter refusing a second export still
+    # stages as buffer leaves: big by reference (a read-only view), small
+    # a writable copy. The P-17 write-pass decline this replaces is gone
+    # by construction: the write never re-exports.
     big = np.full(16000, 1.0)  # 125 KiB: past the zero-copy floor
     flaky = BufferFailAfterFirst(np.full(10, 2.0))
-    t = pool.submit(sum_two, big, flaky)
-    # the pickle fallback pops the rolled-back BUFREF region: one
-    # published spill frame, marked reused (an orphaned checkout would
-    # force a fresh create: reuse delta 0)
-    assert reuse() - before == 1
-    assert t.collect(timeout=15) == 16020.0
+    out = pool.submit(two_buffers, big, flaky).collect(timeout=15)
+    assert out == (True, False, 16000.0, 20.0)
+    assert flaky.calls == 1
 
 
 def test_container_with_buffer_leaves(pool):
     out = pool.submit(sum_mixed, [np.arange(4.0), 5]).collect(timeout=5)
     assert out == 11.0
+
+
+def test_many_buffer_leaves(pool):
+    # six buffer leaves: past the stack-seeded view array (4), the frame
+    # plan grows to the heap — values stay exact
+    xs = [np.full(4, float(i)) for i in range(1, 7)]
+    assert pool.submit(sum_list, xs).collect(timeout=5) == 84.0
 
 
 def test_dict_arg_non_str_key_pickles(pool):
@@ -309,12 +372,13 @@ def test_two_buffer_leaves_dict_one_region_budget(pool):
     assert out == float(a.sum() + b.sum())
 
 
-def test_container_leaf_write_decline_pickles(pool):
-    # a container element whose write-pass buffer export fails (the size
-    # pass passed): the whole task tuple pickles, values exact
+def test_container_leaf_buffer_decline_pickles(pool):
+    # a container element whose buffer export fails at the size pass:
+    # the whole task tuple pickles, values exact (buffer declines are
+    # size-pass only — the write pass consumes the open views)
     a = np.full(16000, 1.0)
-    flaky = BufferFailAfterFirst(np.full(10, 2.0))
-    out = pool.submit(sum_pair_flaky, [a, flaky]).collect(timeout=10)
+    refusing = BufferFailAfterFirst(np.full(10, 2.0), fail_after=0)
+    out = pool.submit(sum_pair_flaky, [a, refusing]).collect(timeout=10)
     assert out == 16020.0
     a = np.arange(1000000, dtype=np.float64)
     (backing, head), writable, total = pool.submit(

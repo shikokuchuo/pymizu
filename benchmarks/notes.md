@@ -42,11 +42,11 @@ probes and A/B isolations stay in the log.
 | pipelined, channel | 4.68M rt/s | 2026-10-03 |
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
-| pipelined, pool batch | 1.82M tasks/s | 2026-10-27 |
-| payload 8,000 B | 2.3 us/task | 2026-11-08 |
+| pipelined, pool batch | 4.09M tasks/s | 2026-11-08 |
+| payload 8,000 B | 2.1 us/task | 2026-11-08 |
 | payload 800,000 B | 55.4 us/task | 2026-11-08 |
 | payload 8,000,000 B | 101.7 us/task | 2026-11-08 |
-| fan-out x 2000, 4 workers | 295.3k tasks/s | 2026-10-03 |
+| fan-out x 2000, 4 workers | 296.4k tasks/s | 2026-11-08 |
 | streaming, channel batch | 21.6M msg/s | 2026-10-03 |
 | map trivial f | 0.06 us/elt | 2026-11-06 |
 | map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
@@ -77,15 +77,15 @@ probes and A/B isolations stay in the log.
 | submit plan k = 0 (W2 row) | 82.7 us/task | 2026-11-08 |
 | submit plan k = 1 (W2 row) | 99.1 us/task | 2026-11-08 |
 | submit plan k = 4 (W2 row) | 97.6 us/task | 2026-11-06 |
-| submit plan k = 16 (W2 row) | 155.0 us/task | 2026-11-06 |
+| submit plan k = 16 (W2 row) | 147.8 us/task | 2026-11-08 |
 | event-driven, channel armed | 2.67M rt/s | 2026-11-08 |
 | event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
 | event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
 | event-driven, pool collect_async | 1.65M tasks/s | 2026-11-08 |
-| event-driven, pool collect_all_async | 1.73M tasks/s | 2026-11-08 |
-| event-driven, pool 64 waiters | 2.28M tasks/s | 2026-10-27 |
+| event-driven, pool collect_all_async | 3.67M tasks/s | 2026-11-08 |
+| event-driven, pool 64 waiters | 3.44M tasks/s | 2026-11-08 |
 | executor outstanding 500 / 1,000 / 2,000 / 4,000 | 80.6k / 79.7k / 82.1k / 83.2k tasks/s | 2026-11-08 |
-| executor sync | 4.8 us/task | 2026-11-06 |
+| executor sync | 4.5 us/task | 2026-11-08 |
 
 ## Run log
 
@@ -1434,3 +1434,68 @@ the two new rows enter the table (map stream 0.17, recv_async cancel
 1.00M).
 
 Status: full suite 1105 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-08 — Phase 3 of the performance plan [(e2468f0, a8e2ae6, ccdc91e, e421536; follow-ups 7bd317a, 88386df)]
+
+Phase 3 of .posit/assistant/plans/2026-11-08-performance-improvements.md:
+per-worker task-fn resolution caches (the by-ref decode and the interop
+name decode), the interrupt-check hook throttled to 1 ms per thread,
+stack-resident map-result leaf plans, and the task frame's buffer views
+carried open from the size pass into the write pass (one GetBuffer per
+leaf; the write-pass re-export decline is gone by construction — P-17's
+rollback assertion retires with its trigger). A/B against b8fd68f;
+finer values from best-of-5 probes (the spec and spin rows are
+probe-only — brief suite rows added for this read were dropped as
+confusing to consumers):
+
+| row | before | after |
+|---|---|---|
+| pool rt (probe) | 0.796 us/task | 0.648 us/task (-19%) |
+| pool spec rt (probe) | 1.308 us/task | 0.859 us/task (-34%) |
+| channel spin rt (probe) | 0.398 us/rt | 0.379 us/rt (-5%) |
+| payload 8 KB rt (probe) | 2.361 us/task | 2.147 us/task (-9%) |
+| pipelined pool batch (suite) | 1.81M tasks/s | 3.89M tasks/s |
+| collect_all_async (suite) | 1.74M tasks/s | 3.35M tasks/s |
+| 64 waiters (suite) | 1.90M tasks/s | 3.18M tasks/s |
+
+The resolution cache's win scales with how decode-bound the row is: the
+batch and async fan-out rows (worker decode on the hot path) roughly
+double, the submitter-bound pipelined row is flat (isolated A/B 2.04M ->
+1.95M, inside its wide band), and the spin row keeps ~5% with the
+control channel row flat. The before build's run died once in the
+executor 9b row ("task handle already collected" — a pre-existing
+submit/drain race from #31's fused re-check, not this phase); the 9a
+rows were captured ahead of it. Best-known swaps: pipelined pool batch
+3.89M, payload 8 KB 2.1, fan-out 296.4k, plan k = 16 147.8, executor
+sync 4.5, collect_all_async 3.35M, 64 waiters 3.18M.
+
+Status: full suite 1113 pass, 1 skip; ruff + pyrefly clean.
+
+Post-review follow-ups (7bd317a, 88386df): the map-result cleanup walks
+only the initialized plan prefix (a mid-list publish failure left later
+entries unread), and the task frame's view array is stack-seeded (a task
+with <= 4 buffer leaves pays no allocation). Re-confirmation A/B against
+b8fd68f (suite pair, then best-of-5 probes; the baseline built in place
+from a worktree):
+
+| row | before | after |
+|---|---|---|
+| pool rt (probe) | 0.856 us/task | 0.692 us/task (-19%) |
+| pool spec rt (probe) | 1.453 us/task | 1.040 us/task (-28%) |
+| buffer task rt (probe) | 2.206 us/task | 2.003 us/task (-9%) |
+| channel spin rt (probe) | 0.411 us/rt | 0.409 us/rt (flat) |
+| pipelined pool batch (suite) | 1.82M tasks/s | 4.09M tasks/s |
+| collect_all_async (suite) | 1.78M tasks/s | 3.67M tasks/s |
+| 64 waiters (suite) | 1.99M tasks/s | 3.44M tasks/s |
+| payload 8 KB (suite) | 2.5 us/task | 2.1 us/task |
+| executor sync (suite) | 7.1 us/task | 4.3 us/task |
+| fan-out x 2000 (suite) | 284k tasks/s | 304k tasks/s |
+
+The submitter-bound pipelined pool row stayed in its band across seven
+alternating pairs (baseline ~2.0M, HEAD ~1.9M — the suite's single 1.73M
+reading was a cold first run); the phase does not touch the submit path.
+Control rows flat (sequential channel rt, map rows, executor
+outstanding). Best-known swaps: pipelined pool batch 4.09M,
+collect_all_async 3.67M, 64 waiters 3.44M.
+
+Status: full suite 1115 pass, 1 skip; ruff + pyrefly clean.

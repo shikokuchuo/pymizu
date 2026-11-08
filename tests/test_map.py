@@ -17,6 +17,7 @@ from tests.helpers import (
     current_rng_or_none,
     fail_at,
     fail_or_sleep,
+    gen_result,
     huge_int,
     identity,
     is_even,
@@ -586,6 +587,23 @@ def test_map_result_one_element(pool):
     out = pool.map(np_f64, [3.0]).collect()
     assert out == [6.0]
     assert type(out[0]) is np.float64
+
+
+def test_map_result_unpublishable_batch(pool):
+    # a batch that cannot publish (a generator element) ends the runner
+    # result's classification mid-list: the failing leaf surfaces, the
+    # leaves never visited stay untouched, and the worker survives
+    with pytest.raises(pymizu.TaskError, match="cannot pickle"):
+        pool.map(gen_result, range(2000)).collect(timeout=30)
+    assert pool.map(square, range(4)).collect(timeout=15) == [0, 1, 4, 9]
+
+
+def test_map_result_many_claims():
+    # one runner claiming past the stack plan array (8 morsels): the leaf
+    # plans grow to the heap — results stay exact
+    with pymizu.Pool.create(1) as p:
+        out = p.map(square, list(range(512)), n_chunks=512).collect(timeout=30)
+    assert out == [i * i for i in range(512)]
 
 
 def test_map_result_blob_path_exact(pool):

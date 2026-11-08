@@ -149,10 +149,11 @@ class BadCallable:
 
 
 class BufferFailAfterFirst:
-    """A PEP 688 exporter whose __buffer__ fails past a call budget: the
-    stage size pass succeeds, the write pass declines (P-17). The layout
-    tree's walk probes twice per pass, so its write-pass failure wants
-    fail_after=3."""
+    """A PEP 688 exporter whose __buffer__ fails past a call budget. The
+    task frame negotiates once per leaf (the size pass's open view is
+    carried into the write pass), so fail_after=0 declines at the size
+    pass and any larger budget stages. The layout tree's walk probes
+    twice per pass, so its write-pass failure wants fail_after=3."""
 
     def __init__(self, a, fail_after=1):
         self.a = a
@@ -167,6 +168,16 @@ class BufferFailAfterFirst:
 
     def __release_buffer__(self, view):
         view.release()
+
+
+def two_buffers(a, b):
+    """Two buffer arguments' arrival forms: read-only flags and sums."""
+    return (
+        not a.flags.writeable,
+        not b.flags.writeable,
+        float(a.sum()),
+        float(b.sum()),
+    )
 
 
 def sum_two(a, b):
@@ -555,6 +566,16 @@ def sum_dict(d):
     return float(d["a"].sum() + d["b"].sum())
 
 
+def sum_list(xs):
+    """A list of array leaves: the sums, in one task."""
+    return float(sum(x.sum() for x in xs))
+
+
+def gen_result(i):
+    """A generator result past element 0: its batch cannot publish."""
+    return 0 if i == 0 else (x for x in [])
+
+
 def mul_add(a, b, c=0):
     """A multi-positional-arg callable (starmap tests)."""
     return a * b + c
@@ -926,3 +947,11 @@ def fail_indexed():
     e = ValueError("indexed failure")
     e._pymizu_map_index = 7
     raise e
+
+
+# One past the worker fn-resolution caches' clear-on-full cap (64), for
+# the eviction tests; exec gives each a clean top-level qualname so the
+# by-reference gate accepts it.
+for _i in range(70):
+    exec(f"def cache_evict_{_i}(): return {_i}")
+del _i

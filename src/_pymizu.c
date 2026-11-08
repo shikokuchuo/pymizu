@@ -1208,18 +1208,32 @@ typedef struct {
   PyObject *fn_mod;       /* kind 0 (owned) */
   PyObject *fn_qual;      /* kind 0 (owned) */
   PyObject *fn_pickled;   /* kind 1 (owned) */
+  Py_buffer *views;       /* buffer leaves' open views in open order;
+                             [view_next, nviews) still held (owned) */
+  Py_ssize_t nviews;
+  Py_ssize_t view_next;   /* consumed by the write pass */
+  Py_ssize_t views_cap;
+  Py_buffer sviews[4];    /* the stack seed: the common small task stays
+                             malloc-free */
 } frame_plan;
 
 static void frame_plan_clear(frame_plan *fp) {
   Py_XDECREF(fp->fn_mod);
   Py_XDECREF(fp->fn_qual);
   Py_XDECREF(fp->fn_pickled);
+  for (Py_ssize_t i = fp->view_next; i < fp->nviews; i++)
+    PyBuffer_Release(&fp->views[i]);
+  if (fp->views != fp->sviews) PyMem_Free(fp->views);
 }
 
 /* Buffer leaf, size pass: the same gate as stage_raw (wire_type_of, the
    zc floor, the churn snapshot), and the same subclass rejection — a
    MaskedArray argument keeps its mask on the plain-tuple pickle fallback.
-   0 ok, -1 reject. */
+   The open view is carried into the write pass (one buffer negotiation
+   per leaf, and the write reads the very bytes this pass counted — the
+   buffer protocol permits a different buffer per GetBuffer call); the
+   GIL is held across the stage and no user code runs between the passes,
+   so holding it is legal. 0 ok, -1 reject. */
 static int frame_buf_size(PyObject *o, frame_plan *fp) {
   if (buffer_subclass_reject(o)) return -1;
   Py_buffer v;
@@ -1229,16 +1243,40 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
   }
   int type = wire_type_of(&v);
   size_t n = (size_t) v.len;
-  PyBuffer_Release(&v);
-  if (type == 0 || n > (SIZE_MAX >> 9)) return -1;
+  if (type == 0 || n > (SIZE_MAX >> 9)) {
+    PyBuffer_Release(&v);
+    return -1;
+  }
   const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   if (!fp->churn && n >= zc_gate) {
-    if (fp->ref) return -1;   /* one staging checkout per frame */
+    if (fp->ref) {
+      PyBuffer_Release(&v);
+      return -1;   /* one staging checkout per frame */
+    }
     fp->ref = 1;
     fp->sz += 11 + MIZU_NAME_MAX;   /* tag, type, count, name_len, name */
   } else {
     fp->sz += 10 + (uint64_t) n;
   }
+  if (fp->nviews == fp->views_cap) {
+    Py_ssize_t cap = fp->views_cap * 2;
+    Py_buffer *nv;
+    if (fp->views == fp->sviews) {
+      nv = PyMem_Malloc((size_t) cap * sizeof *nv);
+      if (nv != NULL)
+        memcpy(nv, fp->sviews, (size_t) fp->nviews * sizeof *nv);
+    } else {
+      nv = PyMem_Realloc(fp->views, (size_t) cap * sizeof *nv);
+    }
+    if (nv == NULL) {
+      /* a decline, not the task's error: the pickle fallback restages */
+      PyBuffer_Release(&v);
+      return -1;
+    }
+    fp->views = nv;
+    fp->views_cap = cap;
+  }
+  fp->views[fp->nviews++] = v;
   return 0;
 }
 
@@ -1303,6 +1341,8 @@ static int frame_leaf_size(PyObject *o, frame_plan *fp) {
 static int frame_size(PyObject *frame, frame_plan *fp, uint32_t inline_max,
                       mizu_handle *h) {
   memset(fp, 0, sizeof(*fp));
+  fp->views = fp->sviews;
+  fp->views_cap = (Py_ssize_t) (sizeof fp->sviews / sizeof *fp->sviews);
   fp->sz = 2;   /* magic + task tag */
   fp->inline_max = inline_max;
   fp->churn = mizu_handle_churn(h);
@@ -1346,20 +1386,16 @@ reject:
   return -1;
 }
 
-/* Buffer leaf, write pass: the size pass validated and decided, so only
-   the BUFREF spill get can fail (a churn race) — return -1 to abandon the
-   stage. Nothing is retained yet at that point (the failed get leaves no
-   checkout, and a frame carries at most one BUFREF leaf), so the pickle
-   fallback starts clean. */
-static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
-                           mizu_handle *h) {
-  Py_buffer v;
-  if (PyObject_GetBuffer(o, &v, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) {
-    PyErr_Clear();
-    return -1;
-  }
-  int type = wire_type_of(&v);
-  size_t n = (size_t) v.len;
+/* Buffer leaf, write pass: consumes the view the size pass left open for
+   this leaf (open order — the write re-walk is deterministic), so only
+   the BUFREF spill get can fail (a churn race) — return -1 to abandon
+   the stage. Nothing is retained yet at that point (the failed get
+   leaves no checkout, and a frame carries at most one BUFREF leaf), so
+   the pickle fallback starts clean. */
+static int frame_buf_write(uint8_t **p, frame_plan *fp, mizu_handle *h) {
+  Py_buffer *v = &fp->views[fp->view_next++];
+  int type = wire_type_of(v);
+  size_t n = (size_t) v->len;
   const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   int rc = 0;
   if (!fp->churn && n >= zc_gate) {
@@ -1376,7 +1412,7 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
     mizu_mizh_write(base, type, (int64_t) (n / mizu_type_elt_size(type)));
     /* a Python buffer carries no NAs: known-NA-free (stage_raw's stamp) */
     mizu_mizh_validity_set(base, 0, -1);
-    memcpy(base + MIZU_HEADER_SIZE, v.buf, n);
+    memcpy(base + MIZU_HEADER_SIZE, v->buf, n);
     mizu_stage_retain_zc(h, shm);
     *(*p)++ = PYMIZU_TAG_BUFREF;
     *(*p)++ = (uint8_t) type;
@@ -1388,11 +1424,11 @@ static int frame_buf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
     *(*p)++ = PYMIZU_TAG_BUFFER;
     *(*p)++ = (uint8_t) type;
     codec_put64(p, (uint64_t) n);
-    memcpy(*p, v.buf, n);
+    memcpy(*p, v->buf, n);
     *p += n;
   }
 out:
-  PyBuffer_Release(&v);
+  PyBuffer_Release(v);
   return rc;
 }
 
@@ -1422,17 +1458,17 @@ static int frame_ref_write(uint8_t **p, PyObject *o, const frame_plan *fp,
   return 0;
 }
 
-static int frame_flat_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+static int frame_flat_write(uint8_t **p, PyObject *o, frame_plan *fp,
                             mizu_handle *h) {
   if (o == Py_None || codec_tag_of(o) != 0) {
     codec_put_scalar(p, o);
     return 0;
   }
   if (Py_TYPE(o) == &MizuFrameType) return frame_ref_write(p, o, fp, h);
-  return frame_buf_write(p, o, fp, h);
+  return frame_buf_write(p, fp, h);
 }
 
-static int frame_leaf_write(uint8_t **p, PyObject *o, const frame_plan *fp,
+static int frame_leaf_write(uint8_t **p, PyObject *o, frame_plan *fp,
                             mizu_handle *h) {
   if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
     int is_list = PyList_CheckExact(o) != 0;
@@ -1790,17 +1826,21 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
       if (mapres_hist_ok(PyList_GET_ITEM(a1, i)) < 0) return -1;
     sz += 4 + (uint64_t) nb * 16 + 1;
   }
-  mapres_leaf *plans =
-    PyMem_Malloc((size_t) (has_vals ? nb : form1 ? 0 : 1) *
-                 sizeof(mapres_leaf));
-  if (plans == NULL && (has_vals || !form1)) {
-    PyErr_NoMemory();
-    return 1;
-  }
   Py_ssize_t nl = form1 ? (has_vals ? nb : 0) : 1;
+  mapres_leaf splans[8];   /* the small-map / tail-claim majority */
+  mapres_leaf *plans = splans;
+  if (nl > (Py_ssize_t) (sizeof splans / sizeof *splans)) {
+    plans = PyMem_Malloc((size_t) nl * sizeof(mapres_leaf));
+    if (plans == NULL) {
+      PyErr_NoMemory();
+      return 1;
+    }
+  }
   int rc = 0;
+  Py_ssize_t ndone = 0;   /* the initialized prefix of plans[] */
   for (Py_ssize_t i = 0; rc == 0 && i < nl; i++) {
     PyObject *batch = form1 ? PyList_GET_ITEM(a2, i) : a1;
+    ndone = i + 1;
     if (mapres_classify(batch, &plans[i]) == 0) {
       sz += mapres_leaf_size(batch, &plans[i]);
       continue;
@@ -1858,9 +1898,11 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
       }
     }
   }
-  for (Py_ssize_t i = 0; i < nl; i++)
+  /* a mid-list exit leaves later entries untouched: the initialized
+     prefix only */
+  for (Py_ssize_t i = 0; i < ndone; i++)
     if (plans[i].kind == 1) Py_XDECREF(plans[i].pickled);
-  PyMem_Free(plans);
+  if (plans != splans) PyMem_Free(plans);
   return rc;
 }
 
@@ -4549,7 +4591,7 @@ static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
    the qualname attribute path. A resolution failure (a missing module on
    the worker) raises normally — inside py_exec's read_impl call it
    becomes the task's ERR envelope via the publish_exc discipline. */
-static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
+static PyObject *fn_resolve_uncached(PyObject *mod, PyObject *qual) {
   const char *name = PyUnicode_AsUTF8(mod);
   if (name == NULL) return NULL;
   PyObject *obj = PyImport_ImportModule(name);
@@ -4576,6 +4618,46 @@ static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
     qi = dot + 1;
   }
   return obj;
+}
+
+/* The resolution cache: (mod, qual) -> fn, success-only, cleared whole at
+   the cap. Every key is an importable module attribute (the fn_ref_parts
+   gate), and a worker only executes tasks, so serving a stale object
+   needs a mid-process rebind — not picked up (escape hatches: retire() /
+   spawn_workers, or cloudpickle, whose kind 1 bypasses the cache).
+   GIL-serialized by the decode path; a cache bookkeeping failure never
+   fails the resolved task. */
+#define MIZU_FN_CACHE_MAX 64
+static PyObject *mizu_fn_cache;
+
+static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
+  PyObject *key = PyTuple_Pack(2, mod, qual);
+  if (key == NULL) return NULL;
+  if (mizu_fn_cache != NULL) {
+    PyObject *hit = PyDict_GetItemWithError(mizu_fn_cache, key);
+    if (hit != NULL) {
+      Py_INCREF(hit);
+      Py_DECREF(key);
+      return hit;
+    }
+    if (PyErr_Occurred()) {
+      Py_DECREF(key);
+      return NULL;
+    }
+  }
+  PyObject *fn = fn_resolve_uncached(mod, qual);
+  if (fn != NULL) {
+    if (mizu_fn_cache == NULL) mizu_fn_cache = PyDict_New();
+    if (mizu_fn_cache == NULL) {
+      PyErr_Clear();
+    } else {
+      if (PyDict_Size(mizu_fn_cache) >= MIZU_FN_CACHE_MAX)
+        PyDict_Clear(mizu_fn_cache);
+      if (PyDict_SetItem(mizu_fn_cache, key, fn) < 0) PyErr_Clear();
+    }
+  }
+  Py_DECREF(key);
+  return fn;
 }
 
 /* The task frame: fn kind byte (0 by reference, 1 pickled), the args
@@ -5232,8 +5314,18 @@ static void list_sink(void *ctx, size_t i, void *obj) {
 /* The check hook: Ctrl-C becomes KeyboardInterrupt. Runs on the verb-calling
    thread only (the core's contract), which released the GIL around the verb —
    reacquire for PyErr_CheckSignals. A pending signal sets the exception on
-   this thread state; the veneer propagates it after the verb unwinds. */
+   this thread state; the veneer propagates it after the verb unwinds. The
+   round-trip is throttled to 1 ms per thread: every call site is a wait-loop
+   site (post-park or per spin-budget), so a park-bounded handle already
+   fires at most once per bounded park and the throttle binds only the spin
+   channel's µs-budget loop — worst-case added Ctrl-C latency inside a
+   spinning verb. mizu_now() is the core's monotonic clock (no wall-clock
+   step); the zero-init makes the first call check. */
 static int py_check(void *Py_UNUSED(ctx)) {
+  static _Thread_local double last_check;
+  const double now = mizu_now();
+  if (now - last_check < 0.001) return 0;
+  last_check = now;
   PyGILState_STATE gil = PyGILState_Ensure();
   int rc = PyErr_CheckSignals();
   PyGILState_Release(gil);

@@ -4,6 +4,7 @@ import threading
 import warnings
 
 import pytest
+import tests.helpers as helpers
 
 import pymizu
 from pymizu import _pymizu
@@ -94,6 +95,84 @@ def test_spec_tasks_run_same_language():
         # extra args with a spec are rejected
         with pytest.raises(TypeError, match="carries its own arguments"):
             p.submit(pymizu.call("math.sqrt", 16), 1)
+
+
+def test_spec_fn_cache_clear_on_full():
+    # the interop task path's name cache, past its clear-on-full cap (64):
+    # one worker, so every resolution lands in one cache — results stay
+    # exact
+    with pymizu.Pool.create(1) as p:
+        tasks = [
+            p.submit(pymizu.call(f"tests.helpers.cache_evict_{i}"))
+            for i in range(70)
+        ]
+        assert [t.collect(timeout=15) for t in tasks] == list(range(70))
+
+
+def test_spec_fn_cache_serves_stale_rebind(monkeypatch):
+    # the name cache's staleness discipline is the by-ref fn cache's
+    # (documented on Pool.submit): a mid-process rebind is not picked up
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        p = pymizu.Pool._wrap(h)
+        # the plain callable warms the worker's identity word for the
+        # spec submits
+        assert p.submit(helpers.square, 2).collect(timeout=10) == 4
+        assert (
+            p.submit(pymizu.call("tests.helpers.identity", 1)).collect(
+                timeout=10
+            )
+            == 1
+        )
+        monkeypatch.setattr(helpers, "identity", lambda x: "rebound")
+        assert (
+            p.submit(pymizu.call("tests.helpers.identity", 2)).collect(
+                timeout=10
+            )
+            == 2
+        )
+        p.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
+
+
+def test_spec_fn_cache_miss_then_success(monkeypatch):
+    # the name cache stores successes only: a spec task whose attribute
+    # does not yet exist errors, then resolves once it does
+    h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
+    try:
+        wk = _pymizu._pool_worker_join(h.token, 0)
+        loop = threading.Thread(
+            target=lambda: (wk.run(), wk.leave()), daemon=True
+        )
+        loop.start()
+        p = pymizu.Pool._wrap(h)
+        # the plain callable warms the worker's identity word for the
+        # spec submits
+        assert p.submit(helpers.square, 2).collect(timeout=10) == 4
+        with pytest.raises(pymizu.TaskError):
+            p.submit(pymizu.call("tests.helpers.late_spec_fn")).collect(
+                timeout=10
+            )
+        monkeypatch.setattr(helpers, "late_spec_fn", lambda: 42, raising=False)
+        assert (
+            p.submit(pymizu.call("tests.helpers.late_spec_fn")).collect(
+                timeout=10
+            )
+            == 42
+        )
+        p.stop()
+        loop.join(timeout=10)
+        wk.destroy()
+    finally:
+        h.destroy()
 
 
 def test_spec_task_conversion_warning_survives_the_rewrite():
