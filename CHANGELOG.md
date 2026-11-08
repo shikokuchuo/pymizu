@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by-reference function once and cache it. A rebound module attribute
   reaches only fresh workers (`retire()` / `spawn_workers()`); submitting
   with cloudpickle installed keeps by-value semantics.
+- Faster `spin=True` channel waits, which no longer round-trip the GIL on
+  every spin iteration.
 - `PoolExecutor` submits are faster in synchronous use, particularly
   with many outstanding futures.
 - `Task.collect_async()` and `await task` are much faster for tasks that

@@ -5272,8 +5272,18 @@ static void list_sink(void *ctx, size_t i, void *obj) {
 /* The check hook: Ctrl-C becomes KeyboardInterrupt. Runs on the verb-calling
    thread only (the core's contract), which released the GIL around the verb —
    reacquire for PyErr_CheckSignals. A pending signal sets the exception on
-   this thread state; the veneer propagates it after the verb unwinds. */
+   this thread state; the veneer propagates it after the verb unwinds. The
+   round-trip is throttled to 1 ms per thread: every call site is a wait-loop
+   site (post-park or per spin-budget), so a park-bounded handle already
+   fires at most once per bounded park and the throttle binds only the spin
+   channel's µs-budget loop — worst-case added Ctrl-C latency inside a
+   spinning verb. mizu_now() is the core's monotonic clock (no wall-clock
+   step); the zero-init makes the first call check. */
 static int py_check(void *Py_UNUSED(ctx)) {
+  static _Thread_local double last_check;
+  const double now = mizu_now();
+  if (now - last_check < 0.001) return 0;
+  last_check = now;
   PyGILState_STATE gil = PyGILState_Ensure();
   int rc = PyErr_CheckSignals();
   PyGILState_Release(gil);
