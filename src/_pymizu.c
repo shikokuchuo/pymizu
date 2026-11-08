@@ -4549,7 +4549,7 @@ static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
    the qualname attribute path. A resolution failure (a missing module on
    the worker) raises normally — inside py_exec's read_impl call it
    becomes the task's ERR envelope via the publish_exc discipline. */
-static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
+static PyObject *fn_resolve_uncached(PyObject *mod, PyObject *qual) {
   const char *name = PyUnicode_AsUTF8(mod);
   if (name == NULL) return NULL;
   PyObject *obj = PyImport_ImportModule(name);
@@ -4576,6 +4576,46 @@ static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
     qi = dot + 1;
   }
   return obj;
+}
+
+/* The resolution cache: (mod, qual) -> fn, success-only, cleared whole at
+   the cap. Every key is an importable module attribute (the fn_ref_parts
+   gate), and a worker only executes tasks, so serving a stale object
+   needs a mid-process rebind — not picked up (escape hatches: retire() /
+   spawn_workers, or cloudpickle, whose kind 1 bypasses the cache).
+   GIL-serialized by the decode path; a cache bookkeeping failure never
+   fails the resolved task. */
+#define MIZU_FN_CACHE_MAX 64
+static PyObject *mizu_fn_cache;
+
+static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
+  PyObject *key = PyTuple_Pack(2, mod, qual);
+  if (key == NULL) return NULL;
+  if (mizu_fn_cache != NULL) {
+    PyObject *hit = PyDict_GetItemWithError(mizu_fn_cache, key);
+    if (hit != NULL) {
+      Py_INCREF(hit);
+      Py_DECREF(key);
+      return hit;
+    }
+    if (PyErr_Occurred()) {
+      Py_DECREF(key);
+      return NULL;
+    }
+  }
+  PyObject *fn = fn_resolve_uncached(mod, qual);
+  if (fn != NULL) {
+    if (mizu_fn_cache == NULL) mizu_fn_cache = PyDict_New();
+    if (mizu_fn_cache == NULL) {
+      PyErr_Clear();
+    } else {
+      if (PyDict_Size(mizu_fn_cache) >= MIZU_FN_CACHE_MAX)
+        PyDict_Clear(mizu_fn_cache);
+      if (PyDict_SetItem(mizu_fn_cache, key, fn) < 0) PyErr_Clear();
+    }
+  }
+  Py_DECREF(key);
+  return fn;
 }
 
 /* The task frame: fn kind byte (0 by reference, 1 pickled), the args

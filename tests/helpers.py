@@ -926,3 +926,11 @@ def fail_indexed():
     e = ValueError("indexed failure")
     e._pymizu_map_index = 7
     raise e
+
+
+# One past the worker fn-resolution caches' clear-on-full cap (64), for
+# the eviction tests; exec gives each a clean top-level qualname so the
+# by-reference gate accepts it.
+for _i in range(70):
+    exec(f"def cache_evict_{_i}(): return {_i}")
+del _i

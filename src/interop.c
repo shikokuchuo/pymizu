@@ -6967,7 +6967,8 @@ static PyObject *ixt_key(mizu_ix *cur, PyObject *keyset) {
 /* Resolve the qualified name through the worker's own module machinery
    (there is no name registry): split at the last dot, import the module,
    take the attribute. */
-static PyObject *ixt_resolve_name(const unsigned char *code, uint64_t len) {
+static PyObject *ixt_resolve_uncached(const unsigned char *code,
+                                      uint64_t len) {
   uint64_t dot = len;
   while (dot > 0 && code[dot - 1] != '.') dot--;
   if (dot <= 1 || dot == len) {
@@ -6997,6 +6998,45 @@ static PyObject *ixt_resolve_name(const unsigned char *code, uint64_t len) {
   Py_DECREF(mod);
   Py_DECREF(attr);
   return fn;                  /* AttributeError likewise: the task's */
+}
+
+/* fn_resolve's cache twin for the 'I' task names, keyed on the raw
+   qualified-name bytes (the split-at-last-dot semantics differ from the
+   qualname walk, so no shared keys) — it skips the import and both
+   decodes per task. Same success-only, clear-on-full discipline;
+   exec_source_fn's lazy static is the in-file precedent. */
+#define MIZU_IXT_CACHE_MAX 64
+static PyObject *mizu_ixt_cache;
+
+static PyObject *ixt_resolve_name(const unsigned char *code, uint64_t len) {
+  PyObject *key = PyBytes_FromStringAndSize((const char *) code,
+                                            (Py_ssize_t) len);
+  if (key == NULL) return NULL;
+  if (mizu_ixt_cache != NULL) {
+    PyObject *hit = PyDict_GetItemWithError(mizu_ixt_cache, key);
+    if (hit != NULL) {
+      Py_INCREF(hit);
+      Py_DECREF(key);
+      return hit;
+    }
+    if (PyErr_Occurred()) {
+      Py_DECREF(key);
+      return NULL;
+    }
+  }
+  PyObject *fn = ixt_resolve_uncached(code, len);
+  if (fn != NULL) {
+    if (mizu_ixt_cache == NULL) mizu_ixt_cache = PyDict_New();
+    if (mizu_ixt_cache == NULL) {
+      PyErr_Clear();
+    } else {
+      if (PyDict_Size(mizu_ixt_cache) >= MIZU_IXT_CACHE_MAX)
+        PyDict_Clear(mizu_ixt_cache);
+      if (PyDict_SetItem(mizu_ixt_cache, key, fn) < 0) PyErr_Clear();
+    }
+  }
+  Py_DECREF(key);
+  return fn;
 }
 
 /* pymizu._exec_source, resolved lazily (the package is fully imported by
