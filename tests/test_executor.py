@@ -29,6 +29,21 @@ def test_submit_result(pool):
         assert fut.result(timeout=5) == 36
 
 
+def test_submit_call_spec(pool):
+    # a pymizu.call spec takes the facade submit path and resolves like
+    # a callable's task
+    with pymizu.PoolExecutor(pool) as ex:
+        fut = ex.submit(pymizu.call("math.sqrt", 81))
+        assert fut.result(timeout=5) == 9.0
+
+
+def test_submit_non_callable_raises(pool):
+    # the facade path's callable gate surfaces at the executor
+    with pymizu.PoolExecutor(pool) as ex:
+        with pytest.raises(TypeError, match="callable"):
+            ex.submit(42)
+
+
 def test_map_in_order(pool):
     with pymizu.PoolExecutor(pool) as ex:
         assert list(ex.map(square, range(10))) == [i * i for i in range(10)]

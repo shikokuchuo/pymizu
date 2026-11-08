@@ -245,6 +245,28 @@ def test_channel_closed_loop_mid_arm(ch):
     assert holder[0].exception() is not None
 
 
+def test_channel_closed_loop_settle_with_callback(ch):
+    # a stale waiter carrying a done callback: the loop-change failure's
+    # settle raises inside asyncio's own callback scheduling (the loop is
+    # closed) — swallowed, the waiter's exception is the user's signal
+    holder = []
+
+    async def first():
+        fut = ch.recv_async()
+        fut.add_done_callback(lambda f: None)
+        holder.append(fut)
+
+    asyncio.run(first())
+    ch.send(1)
+    time.sleep(0.2)  # the wake bounces off the closed loop
+
+    async def second():
+        assert await ch.recv_async() == 1
+
+    asyncio.run(second())
+    assert isinstance(holder[0].exception(), RuntimeError)
+
+
 def test_recv_async_cancelled_head_skipped():
     # a cancelled waiter at the FIFO head detaches in the drain: the
     # message goes to the next waiter and the late cancel callback no-ops
@@ -486,6 +508,39 @@ def test_recv_batch_async_validates_n(ch):
         assert await ch.recv_async() == 1
 
     asyncio.run(main())
+
+
+def test_recv_batch_async_index_n(ch):
+    # n ducks like the sync verb's: anything __index__-able
+    class Index:
+        def __init__(self, n):
+            self.n = n
+
+        def __index__(self):
+            return self.n
+
+    async def main():
+        fut = ch.recv_batch_async(Index(2))
+        ch.send_batch(["a", "b", "c"])
+        assert await fut == ["a", "b"]
+        assert await ch.recv_async() == "c"
+
+    asyncio.run(main())
+
+
+def test_recv_batch_async_on_destroyed_rolls_back(ch):
+    # the arm failure unwinds the batch enrollment: nothing enrolled,
+    # nothing armed, the counters back to zero
+    ch.destroy()
+
+    async def main():
+        with pytest.raises(ValueError, match="closed"):
+            ch.recv_batch_async(4)
+
+    asyncio.run(main())
+    st = ch._h._aio
+    assert st is not None and not st.armed and not st.fifo
+    assert (st.wants, st.batches) == (0, 0)
 
 
 def test_recv_batch_async_armed_refuses_blocking_recv(ch):
