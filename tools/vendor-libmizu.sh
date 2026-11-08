@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="57a400050e184894ca79139bc07b9693a8799a7e"  # libmizu: fence the pool task notify announce
+PIN="11fbecacca191c8633b742608e8d6ede5fbb65be"  # libmizu: masked-convert coalescing, count fusion, view prefault
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

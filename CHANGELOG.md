@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster sends of nested list, tuple, or dict payloads to R peers.
 - Faster sends of top-level bool, int, float, and complex scalars to R
   peers.
+- Much faster sends of nullable Arrow arrays to R peers.
+- Much faster repeated sends of the same `Frame` when its columns have
+  no nulls.
+- Faster first reads of large zero-copy task arguments and views on
+  Linux.
 
 ### Fixed
 

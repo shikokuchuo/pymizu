@@ -1309,3 +1309,53 @@ pipelined measured inside their bands and keep their values.
 map rows unsupported.)
 
 Status: report-only run plus the table refresh; no code change.
+
+## 2026-11-08 — Linux baseline and the linux-perf pass [(pymizu 3f1619a; libmizu 48fe302)]
+
+First full-suite read on a Linux host (Linux 7.0 x86_64, i7-1165G7
+4C/8T, 15 GB, THP=madvise, intel_pstate powersave / EPP
+balance_performance) against the M4 Pro best-known table: nearly every
+row lands in a 2.4-3.3x hardware band. The outliers got a tuning pass
+on the linux-perf branches of libmizu and pymizu (vendored here at
+433169c; the plan and per-item detail live in
+.posit/assistant/plans/linux-perf.md). The suite now defaults
+OPENBLAS_NUM_THREADS=1 — OpenBLAS's spinning thread pool contended
+with the measured processes on this 4C/8T host (the pipelined pool row
+swung 31% run-to-run; pinned it rides +/-3.5%).
+
+A/B on the divergent rows (before = this morning's main on this host;
+after = the branch, same host):
+
+| row | before | after |
+|----|----|----|
+| stage masked (f64, all-valid bitmap) | 704.1 us | 344.0 us |
+| stage masked int64 | 816.6 us | 635.5 us |
+| stage masked+scan (int32) | ~285-306 us | 188.0 us |
+| frame 10col relay, Python (flat) | 25,359 us | 14,759 us |
+| arg 8 MB, Python pool (flat) | 999.4 us | ~0.9-1.3 ms (noise band) |
+| plan k = 16 (per-candidate slope) | 601.9 us (+26.5/cand) | 534.3 us (+21.8/cand) |
+| pipelined, pool (1 worker) | 0.68-0.90M rt/s unstable | 982,564 tasks/s |
+
+The masked rows' fix is upstream (run-coalesced masked conversion plus
+a fused sentinel count for int32 and for past-LLC int64); masked f64
+now rides at 1.2x the identity row. The frame relay's 25 ms was
+stage-side: region-create churn 9.5 ms (the 80 MB region exceeds the
+64 MB spill free-list cap), the MIZL write 4.3 ms, and the Frame's
+Arrow export re-scanning every column for nulls per send 11 ms — the
+export's clean verdict now memoizes, which is the row's 1.7x. The
+remaining frame lever is the free-list byte cap (retention policy, not
+touched). arg-8 MB flat is bandwidth-bound in steady state (the
+worker's view cache recycles the mapping), and the plan-k slope lives
+in the R workers' own vendored core — the view-open prefault
+(MADV_POPULATE_READ past 1 MiB) lands its win on fresh mappings
+instead (frame regions, first touches). The pipelined pool row is
+submit-side stage-bound (~0.85 us/submit, no hotspot on callgrind);
+its instability was the OpenBLAS contention above, not wake latency
+(worker parks 0.18% of tasks).
+
+Full suite on the branch: 1092 passed, 12 skipped. libmizu unit, ext
+and integration tiers pass; export surface unchanged.
+
+Status: report-only run plus the code changes above; the best-known
+table is untouched (M4 Pro rows — the masked/frame A/B on the M4 is
+still owed).
