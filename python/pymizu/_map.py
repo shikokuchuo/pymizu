@@ -420,8 +420,12 @@ def _run_batch(
     lo: int,
     hi: int,
     seed_spec: tuple[bytes, int] | None,
+    base: int = 0,
 ) -> list:
     """One batch's element loop: fn(elt, *args, **kwargs) over [lo, hi).
+    `get` indexes relative to `base` — element i is ``get(i - base)``,
+    so the streaming chunk's slice iterates locally with the global
+    index paid only where it's needed (seeding, error annotation).
     An escaping error is annotated with the in-flight element index (the
     "first by element index" contract — the worker's error envelope
     carries it as the fourth tuple element). Seeded: install element i's
@@ -432,46 +436,52 @@ def _run_batch(
     global _elt_key, _rng_key
     out = []
 
-    def call_one(i: int) -> None:
-        try:
-            out.append(fn(get(i), *args, **kwargs))
-        except Exception as e:
-            e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
-            raise
-
     if seed_spec is None:
         # the unseeded hot path runs without call_one: one try around the
-        # loop (i is the in-flight element on raise, as there) and no
-        # per-element closure call or *args/**kwargs unpack — the common
-        # no-args map calls fn(get(i)) directly
+        # loop (j + base is the in-flight element on raise, as there) and
+        # no per-element closure call or *args/**kwargs unpack — the
+        # common no-args map calls fn(get(j)) directly
         append = out.append
-        i = lo
+        j = j0 = lo - base
+        j1 = hi - base
         if not args and not kwargs:
             try:
-                for i in range(lo, hi):
-                    append(fn(get(i)))
+                for j in range(j0, j1):
+                    append(fn(get(j)))
             except Exception as e:
-                e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
+                # pyrefly: ignore [missing-attribute]
+                e._pymizu_map_index = j + base
                 raise
             return out
         try:
-            for i in range(lo, hi):
-                append(fn(get(i), *args, **kwargs))
+            for j in range(j0, j1):
+                append(fn(get(j), *args, **kwargs))
         except Exception as e:
-            e._pymizu_map_index = i  # pyrefly: ignore [missing-attribute]
+            # pyrefly: ignore [missing-attribute]
+            e._pymizu_map_index = j + base
             raise
         return out
+
+    def call_one(j: int) -> None:
+        try:
+            out.append(fn(get(j), *args, **kwargs))
+        except Exception as e:
+            # pyrefly: ignore [missing-attribute]
+            e._pymizu_map_index = j + base
+            raise
+
     seed_bytes, offset = seed_spec
     state = _random.getstate()
     try:
-        for i in range(lo, hi):
+        for j in range(lo - base, hi - base):
+            i = j + base
             _elt_key = (seed_bytes, i + offset)
             _random.seed(
                 _hashlib.sha256(
                     seed_bytes + (i + offset).to_bytes(8, "little")
                 ).digest()
             )
-            call_one(i)
+            call_one(j)
     finally:
         _elt_key = _rng_key = None
         _random.setstate(state)
@@ -525,10 +535,11 @@ def _stream_chunk(
         ctx.fn,
         ctx.args,
         ctx.kwargs,
-        lambda i: sl[i - lo],
+        sl.__getitem__,
         lo,
         hi,
         seed_spec,
+        lo,
     )
     if ctx.tmpl:
         _pymizu._map_write(ctx.capsule, lo, batch)
