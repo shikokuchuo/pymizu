@@ -68,19 +68,23 @@ class _WaiterFuture(_asyncio.Future):
     asyncio's own thread-confinement discipline. ``want`` is the channel
     waiter's batch size (1 for a single recv); the pool half's futures
     are built by the C side with CallNoArgs, so the default costs it
-    nothing."""
+    nothing. ``_detach`` is one of the module-level detach functions —
+    stored plain, never a per-enrollment closure — taking the future
+    itself, with ``_st`` / ``_arg`` carrying its state and argument."""
 
-    __slots__ = ("_detach", "want")
+    __slots__ = ("_detach", "_st", "_arg", "want")
 
     def __init__(self) -> None:
         super().__init__()
         self._detach: _Any = None
+        self._st: _Any = None
+        self._arg: _Any = None
         self.want = 1
 
     def cancel(self, msg: _Any = None) -> bool:
         detach, self._detach = self._detach, None
         if detach is not None and not self.done():
-            detach()
+            detach(self)
         return super().cancel(msg)
 
 
@@ -106,13 +110,16 @@ class _ChanState:
     in arrival order. Lives on the C handle's ``_aio`` slot; the notify
     record's drain is ``_drain``. The raw handle is stashed (the drain's
     per-pass verbs skip the facade's attribute walk; _PoolState's pool_h
-    is the mirror). ``wants`` sums the FIFO members' batch sizes exactly —
-    every fifo mutation site adjusts it (append/remove, the drain's pops,
-    clear resetting) — so the drain's ask is O(1): a per-pass sum made
-    enrollment O(n·min(n, quantum)). Over-count is the hazard direction
+    is the mirror). ``wants`` sums the LIVE members' batch sizes
+    exactly: enrollment appends add, resolution pops subtract, and a
+    cancel settles its waiter's count at detach — the cancelled entry
+    then rides the FIFO as a dead slot the drain pops free (the lazy
+    head-pop: detach is O(1), never a deque scan) — so the drain's ask
+    is O(1): a per-pass sum made enrollment O(n·min(n, quantum)).
+    Over-count is the hazard direction
     (an ask past the live wants over-reads the burst into a popleft that
     raises, failing every waiter); under-count only shortens a burst.
-    ``batches`` counts the batch waiters (want > 1) under the same
+    ``batches`` counts the live batch waiters (want > 1) under the same
     discipline, so the distribution can run the index-free one-element-
     per-pop form when the FIFO is all singles — the common case pays no
     per-message bookkeeping beyond the counter."""
@@ -155,12 +162,10 @@ class _ChanState:
         try:
             while True:
                 while self.fifo and self.fifo[0].done():
-                    # a cancelled waiter detaches: the next message goes
+                    # a cancelled waiter's count settled at detach: the
+                    # pop alone reclaims it, and the next message goes
                     # to the next waiter
-                    w = self.fifo.popleft().want
-                    self.wants -= w
-                    if w > 1:
-                        self.batches -= 1
+                    self.fifo.popleft()
                 if not self.fifo:
                     self._disarm()
                     return
@@ -204,24 +209,28 @@ class _ChanState:
                     return
                 nb = len(burst)
                 if not self.batches:
-                    # all singles (wants == len here): the index-free
-                    # form, one element per pop, the counter settled in
-                    # bulk — exactly nb pops happened
+                    # all live members singles (wants == their count
+                    # here): the index-free form, one element per pop,
+                    # the counter settled in bulk — exactly nb live
+                    # pops happened; cancelled entries pop free
                     for x in burst:
                         fut = self.fifo.popleft()
-                        if not fut.done():
-                            fut.set_result(x)
+                        while fut.done():
+                            fut = self.fifo.popleft()
+                        fut.set_result(x)
                     self.wants -= nb
                 else:
                     i = 0
                     while i < nb:
                         fut = self.fifo.popleft()
+                        if fut.done():
+                            # settled at detach: pops free, consumes
+                            # nothing
+                            continue
                         w = fut.want
                         self.wants -= w
                         if w > 1:
                             self.batches -= 1
-                        if fut.done():
-                            continue
                         if w == 1:
                             fut.set_result(burst[i])
                             i += 1
@@ -295,7 +304,8 @@ def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
     if want > 1:
         # __init__ already stores 1: singles skip the slot store
         fut.want = want
-    fut._detach = lambda: _detach_chan(st, fut)
+    fut._detach = _detach_chan
+    fut._st = st
     st.fifo.append(fut)
     st.wants += want
     if want > 1:
@@ -304,11 +314,13 @@ def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
         try:
             ch._h._notify_arm(loop, st._drain)
         except BaseException:
-            # a spin channel, a destroyed handle: the waiter never enrolled
-            st.fifo.remove(fut)
+            # a spin channel, a destroyed handle: the waiter never
+            # enrolled — it is still the just-appended tail
+            assert st.fifo.pop() is fut
             st.wants -= want
             if want > 1:
                 st.batches -= 1
+            fut._detach = None
             raise
         st.armed = True
         st.loop = loop
@@ -316,18 +328,16 @@ def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
     return fut
 
 
-def _detach_chan(st: _ChanState, fut: _WaiterFuture) -> None:
-    """Future.cancel() detaches the waiter: removed from the FIFO, the
-    next message going to the next waiter."""
-    try:
-        st.fifo.remove(fut)
-    except ValueError:
-        return  # already resolved and popped by the drain
+def _detach_chan(fut: _WaiterFuture) -> None:
+    """Future.cancel() detaches the waiter: its count settles here and
+    the cancelled entry stays for the drain's lazy head-pop — O(1),
+    never a deque scan; the next message goes to the next waiter. The
+    arm is the drain's to drop when the FIFO empties (a wake finding
+    only dead entries), not the detach's."""
+    st = fut._st
     st.wants -= fut.want
     if fut.want > 1:
         st.batches -= 1
-    if not st.fifo:
-        st._disarm()
 
 
 def _settle_channel_now(st: _ChanState, value: _Any) -> None:
@@ -596,7 +606,9 @@ def _enroll_collection(
             st.pool_h._tasks_release(c.tasks)  # best-effort, never raises
         raise
     st.collections.append(c)
-    fut._detach = lambda: _detach_collection(st, c)
+    fut._detach = _detach_collection
+    fut._st = st
+    fut._arg = c
     if c.tasks:
         # the post-arm re-check covers this collection only, and only an
         # arm that (re-)captures needs it: under a standing arm on this
@@ -610,11 +622,12 @@ def _enroll_collection(
     return fut
 
 
-def _detach_collection(st: _PoolState, c: _Collection) -> None:
+def _detach_collection(fut: _WaiterFuture) -> None:
     """Future.cancel() detaches the collection: every member's announce
     un-stores (the one-writer regime restored — each returns to
     blocking-collectible) and the map handle frees up. Never cancels the
     tasks."""
+    st, c = fut._st, fut._arg
     if c.done:
         return
     c.done = True
@@ -643,7 +656,9 @@ def _collect_async_pending(task: _Any) -> _asyncio.Future:
         # old loop's waiters, never this fresh one (the channel's
         # discipline)
         fut = _WaiterFuture()
-        fut._detach = lambda: _detach_single(st, task)
+        fut._detach = _detach_single
+        fut._st = st
+        fut._arg = task
         st.pool_h._singles_add(task, fut)
     except BaseException:
         # best-effort, idempotent (the C caller unwinds the same way)
@@ -652,12 +667,12 @@ def _collect_async_pending(task: _Any) -> _asyncio.Future:
     return fut
 
 
-def _detach_single(st: _PoolState, task: _Any) -> None:
+def _detach_single(fut: _WaiterFuture) -> None:
     """Future.cancel() detaches the waiter: the registry drops the entry,
     clearing the flag and withdrawing the announce, so a later blocking
     collect() works. The sticky arm is the next empty wake's to drop, not
     the detach's."""
-    st.pool_h._singles_remove(task)
+    fut._st.pool_h._singles_remove(fut._arg)
 
 
 def _task_list(tasks: _Any) -> list:
