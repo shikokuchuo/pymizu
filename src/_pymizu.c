@@ -1826,8 +1826,10 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
     }
   }
   int rc = 0;
+  Py_ssize_t ndone = 0;   /* the initialized prefix of plans[] */
   for (Py_ssize_t i = 0; rc == 0 && i < nl; i++) {
     PyObject *batch = form1 ? PyList_GET_ITEM(a2, i) : a1;
+    ndone = i + 1;
     if (mapres_classify(batch, &plans[i]) == 0) {
       sz += mapres_leaf_size(batch, &plans[i]);
       continue;
@@ -1885,7 +1887,9 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
       }
     }
   }
-  for (Py_ssize_t i = 0; i < nl; i++)
+  /* a mid-list exit leaves later entries untouched: the initialized
+     prefix only */
+  for (Py_ssize_t i = 0; i < ndone; i++)
     if (plans[i].kind == 1) Py_XDECREF(plans[i].pickled);
   if (plans != splans) PyMem_Free(plans);
   return rc;

@@ -566,6 +566,11 @@ def sum_dict(d):
     return float(d["a"].sum() + d["b"].sum())
 
 
+def gen_result(i):
+    """A generator result past element 0: its batch cannot publish."""
+    return 0 if i == 0 else (x for x in [])
+
+
 def mul_add(a, b, c=0):
     """A multi-positional-arg callable (starmap tests)."""
     return a * b + c
