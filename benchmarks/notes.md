@@ -1310,7 +1310,7 @@ map rows unsupported.)
 
 Status: report-only run plus the table refresh; no code change.
 
-## 2026-11-08 — Linux baseline and the linux-perf pass [(pymizu 3f1619a; libmizu a1bdffc)]
+## 2026-11-08 — Linux baseline and the linux-perf pass [(pymizu 3f1619a; libmizu 48fe302)]
 
 First full-suite read on a Linux host (Linux 7.0 x86_64, i7-1165G7
 4C/8T, 15 GB, THP=madvise, intel_pstate powersave / EPP
