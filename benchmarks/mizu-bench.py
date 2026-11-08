@@ -3,7 +3,9 @@ mizu's dev/bench/mizu-mirai.R (without the mirai/nanonext comparison rows).
 Prints each number as it lands and a summary table at the end; asserts
 nothing.
 
-  1. sequential round-trip  const task, 1 worker: submit + collect loop
+  1. sequential round-trip  const task, 1 worker: submit + collect loop;
+                            a spin-mode channel row and a spec-submit row
+                            (the interop task path) alongside
   2. pipelined throughput   const task, 1 worker: fire n, collect n;
                             channel and pool each carry a batched row
   3. payload round-trip     identity task on float64 vectors of 8 KB /
@@ -176,6 +178,20 @@ def seq_channel(ch):
 with_channel(ECHO_PEER, seq_channel, capacity=1024)
 
 
+def seq_channel_spin(ch):
+    warmup(lambda: (ch.send(1), ch.recv(timeout=30)))
+
+    def rep():
+        for _ in range(nc):
+            ch.send(1)
+            ch.recv(timeout=30)
+
+    note_us("sequential rt", "pymizu channel spin", nc, rep, "us/rt")
+
+
+with_channel(ECHO_PEER, seq_channel_spin, capacity=1024, spin=True)
+
+
 def seq_pool(p):
     warmup(lambda: p.submit(const).collect(timeout=30))
 
@@ -187,6 +203,22 @@ def seq_pool(p):
 
 
 with_pool(1, seq_pool)
+
+
+def seq_pool_spec(p):
+    # a pymizu.call spec stages the interop task stream — the same worker
+    # decode path an R host's tasks take
+    spec = pymizu.call("benchmarks.tasks.const")
+    warmup(lambda: p.submit(spec).collect(timeout=30))
+
+    def rep():
+        for _ in range(n):
+            p.submit(spec).collect(timeout=30)
+
+    note_us("sequential rt", "pymizu pool spec", n, rep)
+
+
+with_pool(1, seq_pool_spec)
 
 # 2. pipelined throughput -----------------------------------------------------
 
