@@ -536,6 +536,76 @@ def test_recv_batch_async_quantum():
         peer.destroy()
 
 
+def test_iter_batches_async():
+    # the async batch iterator yields the burst lists and ends on CLOSED
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            peer.send_batch(["a", "b", "c"])
+            peer._close_signal()
+            got = []
+            async for batch in host.iter_batches_async():
+                got.append(batch)
+            assert got == [["a", "b", "c"]]
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async_empty_on_close():
+    # a close with nothing pending ends the iteration immediately
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            peer._close_signal()
+            async for batch in host.iter_batches_async():
+                pytest.fail(f"unexpected batch: {batch}")
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async_foreign_payload_reentry():
+    # a decline ends the iteration; re-entering on the same channel
+    # resumes with the message after the (consumed) declined one
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            peer.send("a")
+            _pymizu._channel_send_raw(peer._h, b"R")
+            peer.send("c")
+            peer._close_signal()
+            got = []
+            with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
+                async for batch in host.iter_batches_async():
+                    got.append(batch)
+            assert got == [["a"]]
+            async for batch in host.iter_batches_async():
+                got.append(batch)
+            assert got == [["a"], ["c"]]
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async_validates_n(ch):
+    # n < 1 surfaces from the underlying verb on first iteration
+    async def main():
+        with pytest.raises(ValueError, match="at least 1"):
+            await anext(ch.iter_batches_async(0))
+
+    asyncio.run(main())
+
+
 def test_close_settles_pending_recv(ch):
     # a completed close settles pending recv futures with CLOSED
     async def main():

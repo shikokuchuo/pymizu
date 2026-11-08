@@ -441,6 +441,51 @@ class Channel:
                 return
             yield x
 
+    async def iter_batches_async(self, n: int = 256) -> _Any:
+        """Iterate over received batches until CLOSED or PEER_GONE.
+
+        The batch form of the async channel iterator: each yield is a
+        list of up to ``n`` payloads, awaited through
+        [`recv_batch_async()`](`pymizu.Channel.recv_batch_async`) — the
+        high-throughput receive form, one Future per burst. Between
+        iterations nothing is armed; the next iteration re-arms, and the
+        arm's synchronous drain picks up whatever arrived meanwhile, so
+        nothing is lost.
+
+        Parameters
+        ----------
+        n
+            The maximum batch size; must be at least 1.
+
+        A declined foreign payload (see
+        [`recv_async()`](`pymizu.Channel.recv_async`)) propagates out of
+        the iteration and ends it, so a try/except inside the loop body
+        cannot catch it. Wrap the whole loop and re-enter on the same
+        channel to skip the message.
+
+        Examples
+        --------
+        ```{python}
+        import pymizu
+
+        with pymizu.Channel.create('''
+        import pymizu
+        for _ in range(3):
+            ch.send(ch.recv())
+        ''') as ch:
+            ch.send_batch([1, 2, 3])
+            batches = []
+            async for batch in ch.iter_batches_async():
+                batches.append(batch)
+        [x for batch in batches for x in batch]
+        ```
+        """
+        while True:
+            batch = await self.recv_batch_async(n)
+            if isinstance(batch, Sentinel):  # CLOSED / PEER_GONE
+                return
+            yield batch
+
     def recv_batch(
         self, n: int = 256, timeout: float | None = None
     ) -> list[_Any] | Sentinel:
@@ -597,6 +642,46 @@ class Channel:
             if x is CLOSED or x is PEER_GONE:
                 return
             yield x
+
+    def iter_batches(self, n: int = 256) -> _Iterator[list[_Any]]:
+        """Iterate over received batches until CLOSED or PEER_GONE.
+
+        The batch form of the channel iterator: each yield is a list of
+        up to ``n`` payloads — the high-throughput receive form. Blocks
+        indefinitely between batches (``recv_batch()`` with no timeout);
+        use [`recv_batch()`](`pymizu.Channel.recv_batch`) directly when
+        a bound is needed.
+
+        Parameters
+        ----------
+        n
+            The maximum batch size; must be at least 1.
+
+        A declined foreign payload (see
+        [`recv_batch()`](`pymizu.Channel.recv_batch`)) propagates out of
+        the iteration and ends it; re-enter on the same channel to skip
+        the message and continue.
+
+        Examples
+        --------
+        ```{python}
+        import pymizu
+
+        with pymizu.Channel.create('''
+        import pymizu
+        for _ in range(3):
+            ch.send(ch.recv())
+        ''') as ch:
+            ch.send_batch([1, 2, 3])
+            batches = list(ch.iter_batches())
+        [x for batch in batches for x in batch]
+        ```
+        """
+        while True:
+            batch = self.recv_batch(n)
+            if isinstance(batch, Sentinel):  # CLOSED / PEER_GONE
+                return
+            yield batch
 
 
 def _launch_workers(

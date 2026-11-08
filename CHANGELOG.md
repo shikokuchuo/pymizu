@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Channel.recv_batch_async()`: receive a burst of messages as one list
   on one `asyncio.Future` — the async counterpart of `recv_batch()`.
+- `Channel.iter_batches()` and `Channel.iter_batches_async()`: iterate
+  over received batches until the channel closes — the batch forms of
+  the channel iterators.
 
 ### Changed
 
