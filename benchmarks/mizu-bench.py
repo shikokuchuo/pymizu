@@ -176,6 +176,38 @@ def seq_channel(ch):
 with_channel(ECHO_PEER, seq_channel, capacity=1024)
 
 
+def seq_channel_codec_list(ch):
+    # small flat containers ride the compact codec: one fused count/write
+    # walk per send is the staging cost this row watches
+    payload = [1, "alpha", 2.5, None, True, b"\x00\xff"]
+    warmup(lambda: (ch.send(payload), ch.recv(timeout=30)))
+
+    def rep():
+        for _ in range(nc):
+            ch.send(payload)
+            ch.recv(timeout=30)
+
+    note_us("sequential rt", "pymizu channel (codec list)", nc, rep, "us/rt")
+
+
+with_channel(ECHO_PEER, seq_channel_codec_list, capacity=1024)
+
+
+def seq_channel_codec_dict(ch):
+    payload = {"a": 1, "b": "x", "c": 2.5, "d": None}
+    warmup(lambda: (ch.send(payload), ch.recv(timeout=30)))
+
+    def rep():
+        for _ in range(nc):
+            ch.send(payload)
+            ch.recv(timeout=30)
+
+    note_us("sequential rt", "pymizu channel (codec dict)", nc, rep, "us/rt")
+
+
+with_channel(ECHO_PEER, seq_channel_codec_dict, capacity=1024)
+
+
 def seq_pool(p):
     warmup(lambda: p.submit(const).collect(timeout=30))
 
@@ -983,6 +1015,107 @@ while (TRUE) {
             h.destroy()
     finally:
         ch.close(timeout=10)
+
+# 8b. frame resend: the cached stage construction -----------------------------
+
+print("\n== 8b. frame resend (same-language, 1-col 800 KB frame) ==")
+
+try:
+    import pyarrow as pa
+except ImportError:
+    pa = None
+
+if pa is None:
+    print("  pyarrow not available: skipped")
+else:
+    from pymizu import _pymizu
+
+    n = 60
+    tbl = pa.table(
+        {"x": pa.array([k * 0.5 for k in range(100000)], type=pa.float64())}
+    )
+    h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    p.ready_set()
+    assert h.ready_wait(10)
+    try:
+        f0 = pymizu.Frame.from_arrow(tbl)  # heap-backed
+
+        def rep_heap():
+            for _ in range(n):
+                h.send(f0)
+                p.recv(timeout=30)
+
+        warmup(rep_heap, n=2)
+        note_us("frame resend", "heap-backed", n, rep_heap, "us/send")
+
+        h.send(f0)
+        f1 = p.recv(30)  # region-backed: the borrow skips a mapping per send
+
+        def rep_region():
+            for _ in range(n):
+                h.send(f1)
+                p.recv(timeout=30)
+
+        warmup(rep_region, n=2)
+        note_us("frame resend", "region-backed", n, rep_region, "us/send")
+    finally:
+        p.destroy()
+        h.destroy()
+
+# 8c. view Arrow re-export: the clean-verdict memo ----------------------------
+
+print("\n== 8c. view Arrow re-export (validity memo) ==")
+
+if pa is None:
+    print("  pyarrow not available: skipped")
+else:
+    from pymizu import _pymizu
+
+    m = 400
+
+    def mapview_reexport(p):
+        out = p.map(
+            identity,
+            range(1000000),
+            template=np.empty(1, dtype=np.int64),
+            collect="view",
+        ).collect()
+
+        def rep():
+            for _ in range(m):
+                pa.array(out.base)
+
+        warmup(rep, n=1)
+        note_us("view arrow export", "map int64 clean", m, rep, "us/export")
+
+    with_pool(1, mapview_reexport)
+
+    # the _ShmView half over a {0, 0} region (the conversion tier's):
+    # uint64 crosses as a converted f64 copy with no validity stamp
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
+    p.ready_set()
+    assert h.ready_wait(10)
+    try:
+        h.send(np.arange(1000000, dtype=np.uint64))
+        v = p.recv(30).base  # the _ShmView under the numpy wrap
+
+        def rep():
+            for _ in range(m):
+                pa.array(v)
+
+        warmup(rep, n=1)
+        note_us(
+            "view arrow export",
+            "f64 clean (converted)",
+            m,
+            rep,
+            "us/export",
+        )
+    finally:
+        p.destroy()
+        h.destroy()
 
 # 9. event-driven consumers (asyncio, notify endpoints) -----------------------
 

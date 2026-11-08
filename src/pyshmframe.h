@@ -26,6 +26,8 @@ typedef struct {
   int str_form;         /* PC_STR/PC_DICT: 1 utf8, 2 large_utf8, 3 view */
 } ixs_pcol;
 
+enum { IXS_COLS_STASH = 8 };   /* the stack plan array's column budget */
+
 typedef struct {
   ArrowArrayStream *st;
   PyObject *cap;
@@ -35,6 +37,11 @@ typedef struct {
                           pair), never pulled or released */
   ixs_hold hold;
   ixs_pcol *cols;
+  ixs_pcol cols_stash[IXS_COLS_STASH];  /* the stack plan array: cols
+                          points here while ncols fits, ixs_free freeing
+                          only the heap form */
+  const ArrowArray *batch1;  /* the one-batch open's pointer array (nb
+                          == 1 rides the struct, *keep1 stays NULL) */
   int ncols;
   int single;
   mizu_arrow *ar;      /* the open core handle while the emit writers run

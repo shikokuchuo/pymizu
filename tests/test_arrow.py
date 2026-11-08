@@ -801,6 +801,34 @@ def test_export_types(echo):
         )
 
 
+def test_export_double_clean_and_na():
+    # re-exports of a {0, 0} region: the clean verdict memoizes (a later
+    # export skips the sentinel scan); an NA vector rebuilds its bitmap
+    # per export — both stay exact. The conversion tier produces the
+    # {0, 0} state Python-side (identity buffers stamp known-NA-free)
+    h, p = foreign_pair()
+    try:
+        h.send(np.arange(100000, dtype=np.uint64))  # a clean f64 copy
+        view = _exporter(p.recv(timeout=5))
+        first = pa.array(view)
+        second = pa.array(view)
+        assert first.null_count == 0 and second.null_count == 0
+        assert first.equals(second)
+
+        b = np.arange(100000, dtype=np.uint64)
+        b[::7] = 2**63  # converts to NA_real_
+        with pytest.warns(RuntimeWarning, match="convert to NA"):
+            h.send(b)
+        view = _exporter(p.recv(timeout=5))
+        first = pa.array(view)
+        second = pa.array(view)
+        assert first.null_count == second.null_count == 14286
+        assert first.equals(second)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_export_lifetime(echo):
     # the export holds its own mapping and its own zc loan: +1 on the
     # region refcount, back to baseline after the consumer releases
@@ -1146,6 +1174,34 @@ def test_mapview_export_na(pool):
         assert arr.to_pylist() == [
             None if v % 3 == 0 else v for v in range(30)
         ]
+
+
+def test_mapview_export_double_clean_and_na(pool):
+    # the clean verdict memoizes per view: re-exports stay exact, and an
+    # NA area rebuilds its bitmap per export
+    out = pool.map(
+        scalar_double,
+        list(range(100)),
+        template=np.empty(1),
+        collect="view",
+    ).collect()
+    view = _mapview(out)
+    first = pa.array(view)
+    second = pa.array(view)
+    assert first.null_count == second.null_count == 0
+    assert first.equals(second)
+
+    out = pool.map(
+        na_int,
+        list(range(30)),
+        template=np.empty(1, dtype=np.int32),
+        collect="view",
+    ).collect()
+    view = _mapview(out)
+    first = pa.array(view)
+    second = pa.array(view)
+    assert first.null_count == second.null_count == 10
+    assert first.equals(second)
 
 
 def test_mapview_export_m2_flat(pool):

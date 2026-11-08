@@ -34,7 +34,12 @@ from tests.helpers import (
 
 import pymizu
 from pymizu import _pymizu
-from pymizu._pymizu import _frame_rebuild, _read_stream, _task_frame
+from pymizu._pymizu import (
+    _codec_stream,
+    _frame_rebuild,
+    _read_stream,
+    _task_frame,
+)
 
 
 @pytest.fixture
@@ -642,6 +647,89 @@ def test_read_stream_codec_corrupt_rows():
         _read_stream(b"Pa" + bytes([14, 2]) + (0).to_bytes(8, "little"))
     with pytest.raises(pymizu.MizuError, match="corrupt"):
         _read_stream(b"Pa" + bytes([10, 0]) + (0).to_bytes(4, "little"))
+
+
+# -- the compact codec's writer bytes (the _codec_stream pin) ----------------
+
+
+def test_codec_stream_scalars():
+    # the exact byte contract: version-mixed pools parse across builds
+    assert _codec_stream(None) == b"Pn"
+    assert _codec_stream(True) == b"Pb\x01"
+    assert _codec_stream(False) == b"Pb\x00"
+    assert _codec_stream(7) == b"Pi" + (7).to_bytes(8, "little")
+    assert _codec_stream(-2) == b"Pi" + (-2).to_bytes(8, "little", signed=True)
+    assert _codec_stream(1.5) == b"Pf\x00\x00\x00\x00\x00\x00\xf8?"
+    assert _codec_stream("hé") == (
+        b"Ps" + (3).to_bytes(4, "little") + "hé".encode()
+    )
+    assert _codec_stream(b"\x00\xff") == (
+        b"Py" + (2).to_bytes(4, "little") + b"\x00\xff"
+    )
+
+
+def test_codec_stream_containers():
+    assert _codec_stream([]) == b"Pl" + (0).to_bytes(4, "little")
+    assert _codec_stream([None, None]) == (
+        b"Pl" + (2).to_bytes(4, "little") + b"nn"
+    )
+    assert _codec_stream((1, "a")) == (
+        b"Pt"
+        + (2).to_bytes(4, "little")
+        + b"i"
+        + (1).to_bytes(8, "little")
+        + b"s"
+        + (1).to_bytes(4, "little")
+        + b"a"
+    )
+    assert _codec_stream({"k": True, "j": 2}) == (
+        b"Pd"
+        + (2).to_bytes(4, "little")
+        + b"s"
+        + (1).to_bytes(4, "little")
+        + b"k"
+        + b"b\x01"
+        + b"s"
+        + (1).to_bytes(4, "little")
+        + b"j"
+        + b"i"
+        + (2).to_bytes(8, "little")
+    )
+    # the cap is inclusive: 64 elements ride, and the writer round-trips
+    assert _codec_stream([0] * 64) == (
+        b"Pl"
+        + (64).to_bytes(4, "little")
+        + (b"i" + (0).to_bytes(8, "little")) * 64
+    )
+    assert _read_stream(_codec_stream([1, "a", 2.5, None, True])) == (
+        [1, "a", 2.5, None, True]
+    )
+    value = {"a": 1, "b": "x", "c": 2.5, "d": None, "e": True, "f": b"\x00"}
+    assert _read_stream(_codec_stream(value)) == value
+
+
+def test_codec_stream_declines():
+    # a value outside the subset declines: the send path pickles
+    assert _codec_stream(2**63) is None  # an int past int64
+    assert _codec_stream("\ud800") is None  # a lone surrogate
+    assert _codec_stream([0] * 65) is None  # past the 64-element cap
+    assert _codec_stream({i: i for i in range(65)}) is None
+    assert _codec_stream({1}) is None  # a set has no codec row
+    assert _codec_stream(object()) is None
+    assert _codec_stream([[]]) is None  # no nested containers
+    assert _codec_stream(bytearray(1)) is None  # not an exact codec type
+
+
+def test_codec_stream_spill():
+    # past the verb's scratch budget: the exact count + write-only re-walk
+    s = "x" * 5000
+    assert _codec_stream([s]) == (
+        b"Pl"
+        + (1).to_bytes(4, "little")
+        + b"s"
+        + (5000).to_bytes(4, "little")
+        + b"x" * 5000
+    )
 
 
 def test_read_stream_task_frame_bad_leaves():

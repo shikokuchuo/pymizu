@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster repeated sends of the same `pymizu.Frame` between Python
+  processes.
+- Faster repeated Arrow exports of a received view or a view-collected
+  `Pool.map()` result (e.g. `pa.array(view)`).
+- Faster sends of small list, tuple, and dict payloads between Python
+  processes.
 - Faster repeated `Pool.submit()` of the same callable, and faster
   `pymizu.call()` spec tasks. Replacing a function in an already-imported
   module no longer affects workers that have already run it: restart
@@ -45,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a corrupt stream sent to a Python peer when a list, tuple, or
+  dict contained a `str` or `bytes` item larger than 4 GiB; the payload
+  now falls back to pickle and arrives intact.
 - Fixed a `KeyError` when a worker or collector without numpy received a
   complex map `x` or template from an R host; it now raises an
   informative error.
