@@ -1486,19 +1486,32 @@ static int shape_difftime(const attr_ent *cls, int nent, int type) {
 /* The DimArray type from sys.modules only (the fast gates' probe:
    pymizu._dimarray imports numpy, and the import stays deferred — a
    DimArray instance cannot exist before its module is imported, so a
-   miss means "no DimArray", never an import). */
+   miss means "no DimArray", never an import). The miss re-probes (the
+   read side's dimarray_type() can bring the module into sys.modules
+   mid-session, so the verdict cannot latch), but costs no KeyError
+   set/clear: an interned key and a non-raising lookup. */
 static PyTypeObject *dimarray_type_soft(void) {
   static PyTypeObject *t;
+  static PyObject *key;
   static int probed;
   if (probed) return t;
+  if (key == NULL) {
+    key = PyUnicode_InternFromString("pymizu._dimarray");
+    if (key == NULL) {
+      PyErr_Clear();
+      return NULL;
+    }
+  }
   PyObject *mods = PyImport_GetModuleDict();
-  PyObject *mod = PyMapping_GetItemString(mods, "pymizu._dimarray");
+  PyObject *mod = PyDict_GetItemWithError(mods, key);   /* borrowed */
   if (mod == NULL) {
-    PyErr_Clear();
+    if (PyErr_Occurred()) PyErr_Clear();
     return NULL;
   }
   probed = 1;
+  Py_INCREF(mod);   /* owned across the attr fetch (PEP 562 __getattr__) */
   PyObject *o = PyObject_GetAttrString(mod, "DimArray");
+  Py_DECREF(mod);
   if (o == NULL || !PyType_Check(o)) {
     Py_XDECREF(o);
     PyErr_Clear();
