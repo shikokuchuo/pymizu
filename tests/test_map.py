@@ -422,6 +422,20 @@ def test_map_seed_stdlib_derivation_unchanged(pool):
     ]
 
 
+def test_map_seed_stdlib_derivation_bytes_offset(pool):
+    # golden constants pin the bytes-seed and offset forms of the
+    # per-element derivation (the int-seed pin's companion)
+    out = pool.map(rand_elt, list(range(6)), seed=(b"k", 3)).collect()
+    assert out == [
+        0.9865397489245024,
+        0.13299068052672336,
+        0.4075993215607393,
+        0.9860956112658753,
+        0.5069493658271963,
+        0.6359661557337403,
+    ]
+
+
 def test_current_rng_outside_seeded_element(pool):
     # None in the submitter, in an ordinary task, and in an unseeded map
     assert pymizu.current_rng() is None

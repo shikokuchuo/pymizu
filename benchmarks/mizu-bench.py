@@ -426,6 +426,15 @@ def map_overhead(p):
         lambda: [p.map(plus_one, xs, seed=42).collect() for _ in range(k)],
         "us/elt",
     )
+    # streaming: x crosses to workers in window slices, one chunk task
+    # each — the per-element cost of the chunk's local-index loop
+    note_us(
+        "map trivial f",
+        "pymizu stream",
+        k * n,
+        lambda: [p.map(plus_one, xs, stream=True).collect() for _ in range(k)],
+        "us/elt",
+    )
     # prepared: stage once, run many — per-run cost is submit + collect,
     # and back-to-back runs hit the workers' cached map contexts
     pm = p.map_prepare(plus_one, xs)
@@ -1043,6 +1052,36 @@ def recv_async_channel(ch):
 
 
 with_channel(BATCH_PEER, recv_async_channel)
+
+
+def cancel_async_channel(ch):
+    # cancelled waiters behind a live head: the detach cost alone —
+    # tail-first cancels are the deque removal's O(fifo) case, making
+    # the rep quadratic in the tail
+    w = 1000
+    c = 5  # reps per measurement: cancels total c * w
+
+    async def rep():
+        for _ in range(c):
+            head = ch.recv_async()
+            futs = [ch.recv_async() for _ in range(w)]
+            for f in reversed(futs):
+                f.cancel()
+            ch.send(1)
+            assert (await head) == 1
+            # the cancelled tail is reclaimed by the next drains
+
+    asyncio.run(rep())  # warm-up
+    note_rate(
+        "event-driven",
+        "channel recv_async cancel",
+        c * w,
+        lambda: asyncio.run(rep()),
+        "cancel/s",
+    )
+
+
+with_channel(ECHO_PEER, cancel_async_channel, capacity=1024)
 
 
 def collect_async_pool(p):

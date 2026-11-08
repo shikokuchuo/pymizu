@@ -110,6 +110,36 @@ def test_stream_seed_offset(pool):
     assert whole[5:] == tail
 
 
+def test_stream_seed_stdlib_derivation_unchanged(pool):
+    # golden constants pin the streaming path's per-element derivation:
+    # the chunk task iterates its slice locally but must draw the global
+    # element streams
+    out = pool.map(rand_elt, list(range(8)), seed=42, stream=True).collect()
+    assert out == [
+        0.42631878050691485,
+        0.5101559966523063,
+        0.7226535016557073,
+        0.3758578598845185,
+        0.9932845075369727,
+        0.0010374564127637598,
+        0.31869129001288354,
+        0.5307534666462098,
+    ]
+    out = pool.map(
+        rand_elt, list(range(8)), seed=7, stream=True, n_chunks=3
+    ).collect()
+    assert out == [
+        0.18570296311477785,
+        0.3783754197842246,
+        0.5036891239768222,
+        0.19824744208991685,
+        0.5853290291919642,
+        0.09631858408016059,
+        0.07998944419316434,
+        0.44819228926317056,
+    ]
+
+
 def test_stream_seed_wire_offset_gate():
     # the streaming spec map's R-worker gate: chunk bases compose the
     # element offsets in R doubles, so offset + (n - 1) must stay within
