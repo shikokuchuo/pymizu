@@ -38,9 +38,7 @@ probes and A/B isolations stay in the log.
 | row | best | measured |
 |---|---|---|
 | sequential rt, channel | 0.3 us/rt | 2026-10-03 |
-| sequential rt, channel spin | 0.4 us/rt | 2026-11-08 |
 | sequential rt, pool | 0.7 us/task | 2026-09-28 |
-| sequential rt, pool spec | 0.8 us/task | 2026-11-08 |
 | pipelined, channel | 4.68M rt/s | 2026-10-03 |
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
@@ -1445,9 +1443,10 @@ name decode), the interrupt-check hook throttled to 1 ms per thread,
 stack-resident map-result leaf plans, and the task frame's buffer views
 carried open from the size pass into the write pass (one GetBuffer per
 leaf; the write-pass re-export decline is gone by construction — P-17's
-rollback assertion retires with its trigger). Two new suite rows:
-sequential rt pool spec (the interop task path) and channel spin. A/B
-against b8fd68f; finer values from best-of-5 probes:
+rollback assertion retires with its trigger). A/B against b8fd68f;
+finer values from best-of-5 probes (the spec and spin rows are
+probe-only — brief suite rows added for this read were dropped as
+confusing to consumers):
 
 | row | before | after |
 |---|---|---|
@@ -1468,7 +1467,6 @@ executor 9b row ("task handle already collected" — a pre-existing
 submit/drain race from #31's fused re-check, not this phase); the 9a
 rows were captured ahead of it. Best-known swaps: pipelined pool batch
 3.89M, payload 8 KB 2.1, fan-out 296.4k, plan k = 16 147.8, executor
-sync 4.5, collect_all_async 3.35M, 64 waiters 3.18M; the two new rows
-enter the table (channel spin 0.4, pool spec 0.8).
+sync 4.5, collect_all_async 3.35M, 64 waiters 3.18M.
 
 Status: full suite 1113 pass, 1 skip; ruff + pyrefly clean.
