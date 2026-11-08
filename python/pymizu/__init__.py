@@ -1071,11 +1071,12 @@ class Pool:
         a writable copy.
 
         A callable that crosses by reference is resolved once per worker
-        process and then cached: rebinding the attribute in an
-        already-imported module does not reach a running worker. Restart
-        workers with [`retire()`](`pymizu.Pool.retire`) /
-        [`spawn_workers()`](`pymizu.Pool.spawn_workers`) to pick up a
-        rebind, or install cloudpickle so callables cross by value.
+        process and then cached: replacing the function in an
+        already-imported module does not affect a worker that has
+        already run it. Restart workers with
+        [`retire()`](`pymizu.Pool.retire`) /
+        [`spawn_workers()`](`pymizu.Pool.spawn_workers`), or install
+        cloudpickle to send callables by value.
 
         With a [`call`](`pymizu.call`) spec as ``fn`` (no ``*args`` or
         ``**kwargs``, since the spec carries them), the task crosses in a

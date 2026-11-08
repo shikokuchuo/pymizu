@@ -16,13 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Faster repeated `Pool.submit()` of the same callable: workers resolve a
-  by-reference function once and cache it. A rebound module attribute
-  reaches only fresh workers (`retire()` / `spawn_workers()`); submitting
-  with cloudpickle installed keeps by-value semantics.
-- Faster `spin=True` channel waits, which no longer round-trip the GIL on
-  every spin iteration.
-- Faster `Pool.map()` result publishing on runs claiming few morsels.
+- Faster repeated `Pool.submit()` of the same callable, and faster
+  `pymizu.call()` spec tasks. Replacing a function in an already-imported
+  module no longer affects workers that have already run it: restart
+  with `retire()` / `spawn_workers()`, or install cloudpickle to send
+  callables by value.
+- Faster `spin=True` channel waits.
+- Faster `Pool.map()` result publishing on smaller runs.
 - Faster `Pool.submit()` of tasks with buffer-protocol arguments, such as
   numpy arrays.
 - `PoolExecutor` submits are faster in synchronous use, particularly
