@@ -2,7 +2,7 @@
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L510-L512)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L629-L631)
 
 ``` python
 Channel.__exit__(*exc)

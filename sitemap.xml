@@ -115,6 +115,18 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://shikokuchuo.net/pymizu/reference/Channel.iter_batches.html</loc>
+    <lastmod>2026-11-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://shikokuchuo.net/pymizu/reference/Channel.iter_batches_async.html</loc>
+    <lastmod>2026-11-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Channel.recv.html</loc>
     <lastmod>2026-11-08</lastmod>
     <changefreq>monthly</changefreq>
@@ -128,6 +140,12 @@
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/reference/Channel.recv_batch.html</loc>
+    <lastmod>2026-11-08</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://shikokuchuo.net/pymizu/reference/Channel.recv_batch_async.html</loc>
     <lastmod>2026-11-08</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
@@ -545,6 +563,12 @@
     <lastmod>2026-11-08</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://shikokuchuo.net/pymizu/changelog.html</loc>
+    <lastmod>2026-11-08</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.6</priority>
   </url>
   <url>
     <loc>https://shikokuchuo.net/pymizu/citation.html</loc>

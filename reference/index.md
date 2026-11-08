@@ -32,8 +32,14 @@ Receive the next value as an `asyncio.Future`.
 [Channel.\_\_aiter\_\_()](Channel.__aiter__.md#pymizu.Channel.__aiter__)  
 Iterate over received payloads until CLOSED or PEER_GONE.
 
+[Channel.iter_batches_async()](Channel.iter_batches_async.md#pymizu.Channel.iter_batches_async)  
+Iterate over received batches until CLOSED or PEER_GONE.
+
 [Channel.recv_batch()](Channel.recv_batch.md#pymizu.Channel.recv_batch)  
 Receive up to `n` values in one call.
+
+[Channel.recv_batch_async()](Channel.recv_batch_async.md#pymizu.Channel.recv_batch_async)  
+Receive up to `n` values as one list on an `asyncio.Future`.
 
 [Channel.close()](Channel.close.md#pymizu.Channel.close)  
 Close the channel in an orderly way.
@@ -53,6 +59,9 @@ A read-only snapshot of the channel's state (dict).
 
 [Channel.\_\_iter\_\_()](Channel.__iter__.md#pymizu.Channel.__iter__)  
 Iterate over received payloads until CLOSED or PEER_GONE.
+
+[Channel.iter_batches()](Channel.iter_batches.md#pymizu.Channel.iter_batches)  
+Iterate over received batches until CLOSED or PEER_GONE.
 
 ## Task pools
 

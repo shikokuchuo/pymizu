@@ -4,7 +4,7 @@ Submit `fn(*args, **kwargs)` as a task; return a Task handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L861-L938)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1020-L1097)
 
 ``` python
 Pool.submit(

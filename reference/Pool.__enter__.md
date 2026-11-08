@@ -2,7 +2,7 @@
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1511-L1512)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1670-L1671)
 
 ``` python
 Pool.__enter__()
