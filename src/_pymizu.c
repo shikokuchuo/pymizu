@@ -1963,6 +1963,19 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
         ref_emit(mizu_py_loan_shm(flo), hdr, payload, inline_max) == 0)
       return 0;
   }
+  if (PyBytes_CheckExact(obj)) {
+    /* the common buffer payload, straight into the raw-tier reservation:
+       skips the buffer negotiation, the subclass/dimarray/temporal probes
+       and the REF .base walk — an exact bytes owns its storage, so it can
+       never be a received view echoing back. A declined reservation falls
+       through to the codec/pickle, as the buffer path's does */
+    Py_buffer v;
+    memset(&v, 0, sizeof(v));
+    v.buf = PyBytes_AS_STRING(obj);
+    v.len = PyBytes_GET_SIZE(obj);
+    if (stage_raw(&v, MIZU_TYPE_RAW, hdr, payload, inline_max, h) == 0)
+      return 0;
+  }
   if (PyObject_CheckBuffer(obj) && !buffer_subclass_reject(obj)) {
     Py_buffer v;
     /* not PyBUF_C_CONTIGUOUS (it implies WRITABLE): a read-only buffer —
