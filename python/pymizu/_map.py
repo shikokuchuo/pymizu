@@ -462,26 +462,44 @@ def _run_batch(
             raise
         return out
 
-    def call_one(j: int) -> None:
-        try:
-            out.append(fn(get(j), *args, **kwargs))
-        except Exception as e:
-            # pyrefly: ignore [missing-attribute]
-            e._pymizu_map_index = j + base
-            raise
-
     seed_bytes, offset = seed_spec
+    # sha256(seed_bytes + key.to_bytes(8, "little")) per element, with the
+    # seed's hash state paid once per batch: h0.copy().update(tail) is the
+    # same digest by construction (the golden-draw tests pin this)
+    h0 = _hashlib.sha256(seed_bytes)
     state = _random.getstate()
     try:
-        for j in range(lo - base, hi - base):
-            i = j + base
-            _elt_key = (seed_bytes, i + offset)
-            _random.seed(
-                _hashlib.sha256(
-                    seed_bytes + (i + offset).to_bytes(8, "little")
-                ).digest()
-            )
-            call_one(j)
+        if not args and not kwargs:
+            # the no-args case skips the call_one closure, as the
+            # unseeded hot path does
+            append = out.append
+            for j in range(lo - base, hi - base):
+                i = j + base
+                key = i + offset
+                _elt_key = (seed_bytes, key)
+                h = h0.copy()
+                h.update(key.to_bytes(8, "little"))
+                _random.seed(h.digest())
+                try:
+                    append(fn(get(j)))
+                except Exception as e:
+                    # pyrefly: ignore [missing-attribute]
+                    e._pymizu_map_index = i
+                    raise
+        else:
+            for j in range(lo - base, hi - base):
+                i = j + base
+                key = i + offset
+                _elt_key = (seed_bytes, key)
+                h = h0.copy()
+                h.update(key.to_bytes(8, "little"))
+                _random.seed(h.digest())
+                try:
+                    out.append(fn(get(j), *args, **kwargs))
+                except Exception as e:
+                    # pyrefly: ignore [missing-attribute]
+                    e._pymizu_map_index = i
+                    raise
     finally:
         _elt_key = _rng_key = None
         _random.setstate(state)
