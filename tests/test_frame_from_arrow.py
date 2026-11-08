@@ -128,6 +128,32 @@ def test_from_arrow_pickle_preserves_nulls():
     assert not any(dbg["adopted"]) and dbg["hold_refs"] is None
 
 
+def test_export_nullfree_scan_memoizes():
+    # a copy-backed frame's first export scans value columns for nulls;
+    # the clean verdict memoizes as known_free, so every later export
+    # (each send re-exports) skips the per-element walk
+    f = pickle.loads(
+        pickle.dumps(
+            pymizu.Frame.from_arrow(
+                pa.table(
+                    {
+                        "x": pa.array(np.arange(1000, dtype=np.float64)),
+                        "i": pa.array(np.arange(1000, dtype=np.int32)),
+                        "y": pa.array([1.5, None] * 500),
+                    }
+                )
+            )
+        )
+    )
+    assert _pymizu._frame_debug(f)["known_free"] == (False, False, False)
+    t = pa.table(f)
+    assert [c.null_count for c in t.columns] == [0, 0, 500]
+    assert _pymizu._frame_debug(f)["known_free"] == (True, True, False)
+    t2 = pa.table(f)
+    assert [c.null_count for c in t2.columns] == [0, 0, 500]
+    assert t2.column("y").slice(0, 3).to_pylist() == [1.5, None, 1.5]
+
+
 def test_from_arrow_mixed_frame():
     # adopted nullable double + copied bool + adopted utf8 with nulls
     t = pa.table(

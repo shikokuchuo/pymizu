@@ -436,8 +436,8 @@ static int64_t fcol_str64_check(fcol *c) {
    region-borrowed DICT) the 0-based codes, built lazily at the export.
    Null counts are never re-walked: a recorded vnulls serves (every bitmap
    producer stores it — the region read, the adoption, the copy builds,
-   the first STR64 check and the scan below). Returns the null count, -1
-   on OOM. */
+   the first STR64 check and the scan below), and the scan's clean verdict
+   memoizes as known_free. Returns the null count, -1 on OOM. */
 static int64_t fcol_ensure_export(fcol *c) {
   int64_t n = c->n, nulls = 0;
   if (c->kind == FCOL_U8) return 0;
@@ -491,6 +491,9 @@ static int64_t fcol_ensure_export(fcol *c) {
     if (!any) {
       free(valid);
       valid = NULL;
+      /* a clean scan's verdict memoizes like the region's {0, -1}: every
+         later export (each send re-exports) skips the per-element walk */
+      c->known_free = 1;
     } else {
       c->valid = valid;
       c->valid_owned = 1;
