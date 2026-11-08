@@ -356,6 +356,286 @@ def test_async_for_reentry_skips_a_foreign_payload():
         peer.destroy()
 
 
+def test_recv_batch_async():
+    # a batch waiter resolves with the burst as one list
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            fut = host.recv_batch_async()
+            peer.send_batch(["a", "b", "c"])  # in the ring before the drain
+            assert await fut == ["a", "b", "c"]
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_fills_n():
+    # the batch resolves with exactly n; the rest keeps its order
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            fut = host.recv_batch_async(4)
+            peer.send_batch(list(range(6)))
+            assert await fut == [0, 1, 2, 3]
+            assert await host.recv_async() == 4
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_mixed_fifo():
+    # single and batch waiters share the FIFO: call order, right arities
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_async()
+            f2 = host.recv_batch_async(2)
+            f3 = host.recv_async()
+            peer.send_batch(["a", "b", "c", "d", "e"])
+            assert await f1 == "a"
+            assert await f2 == ["b", "c"]
+            assert await f3 == "d"
+            assert await host.recv_async() == "e"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_terminal():
+    # data ahead of the close resolves the batch with the list; the next
+    # batch waiter gets the lone CLOSED sentinel as a value
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_batch_async()
+            f2 = host.recv_batch_async()
+            peer.send_batch(["a", "b"])
+            peer._close_signal()
+            assert await f1 == ["a", "b"]
+            assert await f2 is pymizu.CLOSED
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_foreign_payload_resolves_short():
+    # [ok, declined, ok]: the batch resolves short with the prefix; the
+    # waiter reaching the declined message rejects, the next keeps going
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_batch_async()
+            f2 = host.recv_batch_async()
+            f3 = host.recv_batch_async()
+            peer.send("a")
+            _pymizu._channel_send_raw(peer._h, b"R")
+            peer.send("c")
+            assert await f1 == ["a"]
+            with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
+                await f2
+            assert await f3 == ["c"]
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_foreign_payload_at_head():
+    # the declined message at the ring head rejects the batch waiter
+    # whole; the message behind it flows to the next waiter
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            f1 = host.recv_batch_async()
+            f2 = host.recv_async()
+            _pymizu._channel_send_raw(peer._h, b"R")
+            peer.send("c")
+            with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
+                await f1
+            assert await f2 == "c"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_recv_batch_async_validates_n(ch):
+    # n < 1 raises at the call site: nothing enrolled, nothing armed
+    async def main():
+        for bad in (0, -1):
+            with pytest.raises(ValueError, match="at least 1"):
+                ch.recv_batch_async(bad)
+        assert ch._h._aio is None
+        ch.send(1)
+        assert await ch.recv_async() == 1
+
+    asyncio.run(main())
+
+
+def test_recv_batch_async_armed_refuses_blocking_recv(ch):
+    # a blocking recv from another thread while a batch waiter is armed
+    # raises ConcurrentUseError at the call site (the kind-agnostic C
+    # guard the verb relies on)
+    async def main():
+        fut = ch.recv_batch_async()
+        err = []
+
+        def block():
+            try:
+                ch.recv(timeout=1)
+            except pymizu.ConcurrentUseError as e:
+                err.append(e)
+
+        t = threading.Thread(target=block)
+        t.start()
+        t.join()
+        assert len(err) == 1
+        fut.cancel()
+        await asyncio.sleep(0)
+
+    asyncio.run(main())
+
+
+def test_recv_batch_async_quantum():
+    # an n past the drain quantum resolves with exactly one quantum per
+    # pass; the rest follows, and the burst cost one wake (clear-on-send)
+    h = _pymizu._channel_new(4096, 256, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    p.ready_set()
+    assert h.ready_wait(5)
+    host, peer = pymizu.Channel._wrap(h), pymizu.Channel._wrap(p)
+    n = _quantum_n()
+    try:
+
+        async def main():
+            fut = host.recv_batch_async(n + 1000)
+            assert peer.send_batch(list(range(n + 500))) == n + 500
+            assert await fut == list(range(n))
+            assert await host.recv_batch_async(1000) == list(range(n, n + 500))
+            assert peer.info()["notify_sends"] == 1
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_channel_quantum_cap_reschedule():
+    # a decline carrying the pass's work to exactly the quantum skips the
+    # post-burst reschedule, so the loop-top cap reschedules instead —
+    # the tail waiter resolving proves the next pass ran
+    h = _pymizu._channel_new(4096, 256, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    p.ready_set()
+    assert h.ready_wait(5)
+    host, peer = pymizu.Channel._wrap(h), pymizu.Channel._wrap(p)
+    n = _quantum_n()
+    try:
+
+        async def main():
+            batch = host.recv_batch_async(n - 1)
+            declined = host.recv_async()
+            tail = host.recv_async()
+            assert peer.send_batch(list(range(n - 1))) == n - 1
+            _pymizu._channel_send_raw(peer._h, b"R")
+            peer.send("tail")
+            assert await batch == list(range(n - 1))
+            with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
+                await declined
+            assert await tail == "tail"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async():
+    # the async batch iterator yields the burst lists and ends on CLOSED
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            peer.send_batch(["a", "b", "c"])
+            peer._close_signal()
+            got = []
+            async for batch in host.iter_batches_async():
+                got.append(batch)
+            assert got == [["a", "b", "c"]]
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async_empty_on_close():
+    # a close with nothing pending ends the iteration immediately
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            peer._close_signal()
+            async for batch in host.iter_batches_async():
+                pytest.fail(f"unexpected batch: {batch}")
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async_foreign_payload_reentry():
+    # a decline ends the iteration; re-entering on the same channel
+    # resumes with the message after the (consumed) declined one
+    host, peer = chan_pair()
+    try:
+
+        async def main():
+            peer.send("a")
+            _pymizu._channel_send_raw(peer._h, b"R")
+            peer.send("c")
+            peer._close_signal()
+            got = []
+            with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
+                async for batch in host.iter_batches_async():
+                    got.append(batch)
+            assert got == [["a"]]
+            async for batch in host.iter_batches_async():
+                got.append(batch)
+            assert got == [["a"], ["c"]]
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
+
+
+def test_iter_batches_async_validates_n(ch):
+    # n < 1 surfaces from the underlying verb on first iteration
+    async def main():
+        with pytest.raises(ValueError, match="at least 1"):
+            await anext(ch.iter_batches_async(0))
+
+    asyncio.run(main())
+
+
 def test_close_settles_pending_recv(ch):
     # a completed close settles pending recv futures with CLOSED
     async def main():

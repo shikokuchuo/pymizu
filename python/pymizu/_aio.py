@@ -31,6 +31,7 @@ pymizu`` never pays for it.
 from __future__ import annotations
 
 import asyncio as _asyncio
+import operator as _operator
 import time as _time
 from collections import deque as _deque
 from typing import TYPE_CHECKING as _TYPE_CHECKING
@@ -64,13 +65,17 @@ class _WaiterFuture(_asyncio.Future):
     half (never the task or collection), dropping the per-settle
     done-callback that the add_done_callback form scheduled on every
     resolution. Detach runs on the cancelling thread — the loop's, by
-    asyncio's own thread-confinement discipline."""
+    asyncio's own thread-confinement discipline. ``want`` is the channel
+    waiter's batch size (1 for a single recv); the pool half's futures
+    are built by the C side with CallNoArgs, so the default costs it
+    nothing."""
 
-    __slots__ = ("_detach",)
+    __slots__ = ("_detach", "want")
 
     def __init__(self) -> None:
         super().__init__()
         self._detach: _Any = None
+        self.want = 1
 
     def cancel(self, msg: _Any = None) -> bool:
         detach, self._detach = self._detach, None
@@ -101,14 +106,25 @@ class _ChanState:
     in arrival order. Lives on the C handle's ``_aio`` slot; the notify
     record's drain is ``_drain``. The raw handle is stashed (the drain's
     per-pass verbs skip the facade's attribute walk; _PoolState's pool_h
-    is the mirror)."""
+    is the mirror). ``wants`` sums the FIFO members' batch sizes exactly —
+    every fifo mutation site adjusts it (append/remove, the drain's pops,
+    clear resetting) — so the drain's ask is O(1): a per-pass sum made
+    enrollment O(n·min(n, quantum)). Over-count is the hazard direction
+    (an ask past the live wants over-reads the burst into a popleft that
+    raises, failing every waiter); under-count only shortens a burst.
+    ``batches`` counts the batch waiters (want > 1) under the same
+    discipline, so the distribution can run the index-free one-element-
+    per-pop form when the FIFO is all singles — the common case pays no
+    per-message bookkeeping beyond the counter."""
 
-    __slots__ = ("ch_h", "loop", "fifo", "armed")
+    __slots__ = ("ch_h", "loop", "fifo", "wants", "batches", "armed")
 
     def __init__(self, ch: pymizu.Channel) -> None:
         self.ch_h = ch._h
         self.loop: _asyncio.AbstractEventLoop | None = None
-        self.fifo: _deque[_asyncio.Future] = _deque()
+        self.fifo: _deque[_WaiterFuture] = _deque()
+        self.wants = 0
+        self.batches = 0
         self.armed = False
 
     def _disarm(self) -> None:
@@ -120,14 +136,18 @@ class _ChanState:
         for f in self.fifo:
             _settle(f, exc, exc=True)
         self.fifo.clear()
+        self.wants = 0
+        self.batches = 0
 
     def _drain(self) -> None:
         """One drain pass (synchronous at arm, then one per wake): recv
-        without blocking, resolving the FIFO in arrival order. Ends
-        disarmed (the FIFO emptied) or re-armed — the announce/recheck
-        transplant: a publish racing the re-arm clears the bit and
-        signals, riding the next wake. The receives ride one GIL-held
-        burst verb per pass, not a recv(0) per message."""
+        without blocking, resolving the FIFO in arrival order — a single
+        waiter takes one message, a batch waiter up to its ``want`` as
+        one list (short when the burst runs out, never waiting to fill).
+        Ends disarmed (the FIFO emptied) or re-armed — the
+        announce/recheck transplant: a publish racing the re-arm clears
+        the bit and signals, riding the next wake. The receives ride one
+        GIL-held burst verb per pass, not a recv(0) per message."""
         if not self.armed:
             return
         work = 0
@@ -137,58 +157,105 @@ class _ChanState:
                 while self.fifo and self.fifo[0].done():
                     # a cancelled waiter detaches: the next message goes
                     # to the next waiter
-                    self.fifo.popleft()
+                    w = self.fifo.popleft().want
+                    self.wants -= w
+                    if w > 1:
+                        self.batches -= 1
                 if not self.fifo:
                     self._disarm()
                     return
-                want = min(len(self.fifo), _QUANTUM_N - work)
-                if want <= 0:
+                # the pass's ask: the members' wants total, capped by the
+                # remaining quantum — the cap is also the allocation
+                # bound: _recv_burst(n) preallocates PyList_New(n), so an
+                # uncapped recv_batch_async(10**9) would attempt an 8 GB
+                # allocation; a want past the quantum resolves
+                # quantum-bounded short, per pass
+                cap = _QUANTUM_N - work
+                if cap <= 0:
                     assert self.loop is not None
                     self.loop.call_soon(self._drain)
                     return
+                want = min(cap, self.wants)
                 try:
                     burst = self.ch_h._recv_burst(want)
                 except _ForeignPayloadError as e:
                     # a declined foreign payload: the burst consumed the
                     # slot as its first message, so reject the head
-                    # waiter only — the drain keeps flowing (recv_batch's
-                    # exact semantics, mizu's handler discipline). The
-                    # generic except below stays the fail-all path
+                    # waiter only (a batch waiter at the head rejects
+                    # whole, as recv_batch raises) — the drain keeps
+                    # flowing (recv_batch's exact semantics, mizu's
+                    # handler discipline). The generic except below stays
+                    # the fail-all path
                     fut = self.fifo.popleft()
+                    w = fut.want
+                    self.wants -= w
+                    if w > 1:
+                        self.batches -= 1
                     if not fut.done():
                         fut.set_exception(e)
                     work += 1
                     continue
-                n = 0
-                for x in burst:
-                    if x is _CLOSED or x is _GONE:
-                        for f in self.fifo:
-                            if not f.done():
-                                f.set_result(x)
-                        self.fifo.clear()
-                        self._disarm()
-                        return
-                    fut = self.fifo.popleft()
-                    if not fut.done():
-                        fut.set_result(x)
-                    n += 1
-                work += n
+                if burst and (burst[0] is _CLOSED or burst[0] is _GONE):
+                    # a terminal reports only on an empty read, so the
+                    # burst is exactly [sentinel] — one guarded test up
+                    # front, no per-element is-test, and a batch waiter
+                    # never splits data from a trailing sentinel
+                    _settle_channel_now(self, burst[0])
+                    return
+                nb = len(burst)
+                if not self.batches:
+                    # all singles (wants == len here): the index-free
+                    # form, one element per pop, the counter settled in
+                    # bulk — exactly nb pops happened
+                    for x in burst:
+                        fut = self.fifo.popleft()
+                        if not fut.done():
+                            fut.set_result(x)
+                    self.wants -= nb
+                else:
+                    i = 0
+                    while i < nb:
+                        fut = self.fifo.popleft()
+                        w = fut.want
+                        self.wants -= w
+                        if w > 1:
+                            self.batches -= 1
+                        if fut.done():
+                            continue
+                        if w == 1:
+                            fut.set_result(burst[i])
+                            i += 1
+                        else:
+                            # the slice is short when the burst runs
+                            # out — within contract (>= 1 when the
+                            # waiter is reached, the wants summing
+                            # to the ask)
+                            fut.set_result(burst[i : i + w])
+                            i += w
+                work += nb
                 # the quantum check rides progress only: an empty burst
                 # falls through to the re-arm below, never to a
                 # reschedule — (work & 63) == 0 holds at work == 0, and a
                 # slow empty pass past the deadline would otherwise queue
                 # a bare call_soon drain that bypasses a disarm landing
                 # before it runs (the trampoline's skip is C-side)
-                if n and (
+                # the quantum expression stays inline: this branch fires
+                # per pass, and a helper call showed up at ~70 ns/message
+                # on the one-await-per-message row
+                if nb and (
                     work >= _QUANTUM_N
                     or ((work & 63) == 0 and _time.monotonic() >= deadline)
                 ):
                     assert self.loop is not None
                     self.loop.call_soon(self._drain)
                     return
-                if len(burst) < want:
+                if nb < want:
                     # the ring drained: re-arm, then the availability
-                    # report decides — False stays armed, waiting
+                    # report decides — False stays armed, waiting. A
+                    # burst cut short by a decline past its first message
+                    # lands here too: the re-arm reports data available,
+                    # the loop continues, and the next burst raises the
+                    # decline as its first message
                     if not self.ch_h._notify_rearm():
                         return
         except Exception as e:
@@ -196,12 +263,23 @@ class _ChanState:
             self._disarm()
 
 
-def chan_recv_async(ch: pymizu.Channel) -> _asyncio.Future:
-    """[`Channel.recv_async()`](`pymizu.Channel.recv_async`)'s engine:
-    enqueue one waiter, arm (the first call also registers the watch),
-    and run the synchronous drain — loss-free: data already in the ring
-    resolves from this pass; only genuinely pending entries ride the
-    watch."""
+def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
+    """[`Channel.recv_async()`](`pymizu.Channel.recv_async`)'s and
+    [`Channel.recv_batch_async()`](`pymizu.Channel.recv_batch_async`)'s
+    engine: enqueue one waiter (a batch waiter's ``want`` messages as
+    one list), arm (the first call also registers the watch), and run
+    the synchronous drain — loss-free: data already in the ring resolves
+    from this pass; only genuinely pending entries ride the watch."""
+    if want != 1:
+        # the batch path alone pays validation: recv_async's literal 1
+        # skips it (the codebase's exact-type discipline: bool still
+        # resolves through __index__)
+        if type(want) is not int:
+            want = _operator.index(want)
+        if want < 1:
+            # the sync verb's own text, raised at the call site: inside
+            # the drain's burst it would fail every pending waiter
+            raise ValueError("pymizu: n must be at least 1")
     loop = _asyncio.get_running_loop()
     st = ch._h._aio
     if st is None:
@@ -214,14 +292,23 @@ def chan_recv_async(ch: pymizu.Channel) -> _asyncio.Future:
         st._fail(RuntimeError("pymizu: event loop changed"))
         st.armed = False
     fut = _WaiterFuture()
+    if want > 1:
+        # __init__ already stores 1: singles skip the slot store
+        fut.want = want
     fut._detach = lambda: _detach_chan(st, fut)
     st.fifo.append(fut)
+    st.wants += want
+    if want > 1:
+        st.batches += 1
     if not st.armed:
         try:
             ch._h._notify_arm(loop, st._drain)
         except BaseException:
             # a spin channel, a destroyed handle: the waiter never enrolled
             st.fifo.remove(fut)
+            st.wants -= want
+            if want > 1:
+                st.batches -= 1
             raise
         st.armed = True
         st.loop = loop
@@ -229,13 +316,16 @@ def chan_recv_async(ch: pymizu.Channel) -> _asyncio.Future:
     return fut
 
 
-def _detach_chan(st: _ChanState, fut: _asyncio.Future) -> None:
+def _detach_chan(st: _ChanState, fut: _WaiterFuture) -> None:
     """Future.cancel() detaches the waiter: removed from the FIFO, the
     next message going to the next waiter."""
     try:
         st.fifo.remove(fut)
     except ValueError:
         return  # already resolved and popped by the drain
+    st.wants -= fut.want
+    if fut.want > 1:
+        st.batches -= 1
     if not st.fifo:
         st._disarm()
 
@@ -244,6 +334,8 @@ def _settle_channel_now(st: _ChanState, value: _Any) -> None:
     for f in st.fifo:
         _settle(f, value)
     st.fifo.clear()
+    st.wants = 0
+    st.batches = 0
     st._disarm()
 
 
