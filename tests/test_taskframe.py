@@ -24,6 +24,7 @@ from tests.helpers import (
     is_readonly,
     square,
     sum_dict,
+    sum_list,
     sum_mixed,
     sum_pair,
     sum_pair_flaky,
@@ -178,6 +179,13 @@ def test_size_pass_view_carried_into_write(pool):
 def test_container_with_buffer_leaves(pool):
     out = pool.submit(sum_mixed, [np.arange(4.0), 5]).collect(timeout=5)
     assert out == 11.0
+
+
+def test_many_buffer_leaves(pool):
+    # six buffer leaves: past the stack-seeded view array (4), the frame
+    # plan grows to the heap — values stay exact
+    xs = [np.full(4, float(i)) for i in range(1, 7)]
+    assert pool.submit(sum_list, xs).collect(timeout=5) == 84.0
 
 
 def test_dict_arg_non_str_key_pickles(pool):

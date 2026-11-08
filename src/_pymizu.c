@@ -1213,6 +1213,8 @@ typedef struct {
   Py_ssize_t nviews;
   Py_ssize_t view_next;   /* consumed by the write pass */
   Py_ssize_t views_cap;
+  Py_buffer sviews[4];    /* the stack seed: the common small task stays
+                             malloc-free */
 } frame_plan;
 
 static void frame_plan_clear(frame_plan *fp) {
@@ -1221,7 +1223,7 @@ static void frame_plan_clear(frame_plan *fp) {
   Py_XDECREF(fp->fn_pickled);
   for (Py_ssize_t i = fp->view_next; i < fp->nviews; i++)
     PyBuffer_Release(&fp->views[i]);
-  PyMem_Free(fp->views);
+  if (fp->views != fp->sviews) PyMem_Free(fp->views);
 }
 
 /* Buffer leaf, size pass: the same gate as stage_raw (wire_type_of, the
@@ -1257,8 +1259,15 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
     fp->sz += 10 + (uint64_t) n;
   }
   if (fp->nviews == fp->views_cap) {
-    Py_ssize_t cap = fp->views_cap != 0 ? fp->views_cap * 2 : 4;
-    Py_buffer *nv = PyMem_Realloc(fp->views, (size_t) cap * sizeof *nv);
+    Py_ssize_t cap = fp->views_cap * 2;
+    Py_buffer *nv;
+    if (fp->views == fp->sviews) {
+      nv = PyMem_Malloc((size_t) cap * sizeof *nv);
+      if (nv != NULL)
+        memcpy(nv, fp->sviews, (size_t) fp->nviews * sizeof *nv);
+    } else {
+      nv = PyMem_Realloc(fp->views, (size_t) cap * sizeof *nv);
+    }
     if (nv == NULL) {
       /* a decline, not the task's error: the pickle fallback restages */
       PyBuffer_Release(&v);
@@ -1332,6 +1341,8 @@ static int frame_leaf_size(PyObject *o, frame_plan *fp) {
 static int frame_size(PyObject *frame, frame_plan *fp, uint32_t inline_max,
                       mizu_handle *h) {
   memset(fp, 0, sizeof(*fp));
+  fp->views = fp->sviews;
+  fp->views_cap = (Py_ssize_t) (sizeof fp->sviews / sizeof *fp->sviews);
   fp->sz = 2;   /* magic + task tag */
   fp->inline_max = inline_max;
   fp->churn = mizu_handle_churn(h);

@@ -566,6 +566,11 @@ def sum_dict(d):
     return float(d["a"].sum() + d["b"].sum())
 
 
+def sum_list(xs):
+    """A list of array leaves: the sums, in one task."""
+    return float(sum(x.sum() for x in xs))
+
+
 def gen_result(i):
     """A generator result past element 0: its batch cannot publish."""
     return 0 if i == 0 else (x for x in [])
