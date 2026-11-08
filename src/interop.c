@@ -5883,17 +5883,19 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   mizu_arrow *ar = NULL;
   void *keep1 = NULL, *keep2 = NULL;
   int rc = -1;
-  memset(&x->schema, 0, sizeof(x->schema));
-  if (x->st->get_schema(x->st, &x->schema) != 0) goto out;
-  x->schema_owned = 1;
-  if (x->schema.format == NULL || x->schema.release == NULL ||
-      strcmp(x->schema.format, "+s") != 0)
-    goto out;
+  if (!x->borrowed_hold) {
+    memset(&x->schema, 0, sizeof(x->schema));
+    if (x->st->get_schema(x->st, &x->schema) != 0) goto out;
+    x->schema_owned = 1;
+    if (x->schema.format == NULL || x->schema.release == NULL ||
+        strcmp(x->schema.format, "+s") != 0)
+      goto out;
+  }
   x->ncols = (int) x->schema.n_children;
   if (x->ncols < 1 || x->schema.children == NULL) goto out;
   x->cols = calloc((size_t) x->ncols, sizeof(ixs_pcol));
   if (x->cols == NULL) goto out;
-  if (ixs_pull(x) < 0) goto out;
+  if (!x->borrowed_hold && ixs_pull(x) < 0) goto out;
   /* the real peer caps word: the core stage's conjunction needs it (the
      same-language paths used to carry 0 — the drift dies here) */
   ar = ixs_arrow_open(x, peer_caps, &keep1, &keep2);
@@ -5944,32 +5946,31 @@ out:
 }
 
 /* stage_impl's exact-Frame branch (pyinterop.h). 0 staged, -1 fall back
-   to pickle. */
+   to pickle. The pulled state is the frame's cached construction (built
+   at the first send: the per-send fresh mapping, counted loan and
+   registry round-trip collapse into it); the core open stays per-send —
+   the caps word varies with the peer. */
 int pymizu_frame_stage_mizl(PyObject *obj, mizu_slot_hdr *hdr,
                             uint8_t *payload, uint32_t inline_max,
                             mizu_handle *h, uint32_t peer_caps) {
   if (Py_TYPE(obj) != &MizuFrameType) return -1;
   MizuFrame *f = (MizuFrame *) obj;
-  PyObject *args = PyTuple_New(0);
-  if (args == NULL) {
-    PyErr_Clear();
-    return -1;
-  }
-  PyObject *cap = Frame_arrow_c_stream(f, args, NULL);
-  Py_DECREF(args);
-  if (cap == NULL) {
-    PyErr_Clear();
-    return -1;
-  }
-  ArrowArrayStream *st = (ArrowArrayStream *) PyCapsule_GetPointer(
-    cap, "arrow_array_stream");   /* the Frame's own export's capsule */
   ixs x;
+  ArrowArray one;
   memset(&x, 0, sizeof(x));
-  x.st = st;
-  x.cap = cap;
+  if (frame_stage_fill(f, &x.schema, &one) < 0) {
+    PyErr_Clear();
+    return -1;
+  }
+  x.borrowed_hold = 1;
+  x.hold.arrs = &one;
+  x.hold.nb = 1;
+  x.hold.cap = 1;
+  x.hold.rows = one.length;
   x.row_names = f->row_names;
   x.r_attrs = f->r_attrs;
   int rc = ixs_run_frame_mizl(&x, hdr, payload, inline_max, h, peer_caps);
+  x.hold.arrs = NULL;
   ixs_free(&x);
   return rc;
 }

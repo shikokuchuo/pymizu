@@ -1016,6 +1016,81 @@ while (TRUE) {
     finally:
         ch.close(timeout=10)
 
+# 8b. frame resend: the cached stage construction ------------------------------
+
+print("\n== 8b. frame resend (same-language, 1-col 800 KB frame) ==")
+
+try:
+    import pyarrow as pa
+except ImportError:
+    pa = None
+
+if pa is None:
+    print("  pyarrow not available: skipped")
+else:
+    from pymizu import _pymizu
+
+    n = 60
+    tbl = pa.table(
+        {"x": pa.array([k * 0.5 for k in range(100000)], type=pa.float64())}
+    )
+    h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    p.ready_set()
+    assert h.ready_wait(10)
+    try:
+        f0 = pymizu.Frame.from_arrow(tbl)  # heap-backed
+
+        def rep_heap():
+            for _ in range(n):
+                h.send(f0)
+                p.recv(timeout=30)
+
+        warmup(rep_heap, n=2)
+        note_us("frame resend", "heap-backed", n, rep_heap, "us/send")
+
+        h.send(f0)
+        f1 = p.recv(30)  # region-backed: the borrow skips a mapping per send
+
+        def rep_region():
+            for _ in range(n):
+                h.send(f1)
+                p.recv(timeout=30)
+
+        warmup(rep_region, n=2)
+        note_us("frame resend", "region-backed", n, rep_region, "us/send")
+    finally:
+        p.destroy()
+        h.destroy()
+
+# 8c. view Arrow re-export: the clean-verdict memo -----------------------------
+
+print("\n== 8c. view Arrow re-export (validity memo) ==")
+
+if pa is None:
+    print("  pyarrow not available: skipped")
+else:
+    m = 400
+    h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
+    p, _ = _pymizu._channel_attach(h.token)
+    p.ready_set()
+    assert h.ready_wait(10)
+    try:
+        h.send(np.arange(1000000, dtype=np.int64))  # clean: SHM_VEC
+        v = p.recv(30)
+
+        def rep():
+            for _ in range(m):
+                pa.array(v)
+
+        warmup(rep, n=1)
+        note_us(
+            "view arrow export", "int64 clean", m, rep, "us/export"
+        )
+    finally:
+        p.destroy()
+        h.destroy()
+
 # 9. event-driven consumers (asyncio, notify endpoints) -----------------------
 
 print("\n== 9. event-driven consumers (asyncio) ==")

@@ -233,6 +233,9 @@ typedef struct {
                             decoded (DESIGN.md's Frame immutability
                             invariant: any future Frame mutator must
                             clear it first) */
+  struct frame_stage *stage_exp;  /* the cached stage construction:
+                            interop_frame.c's, built at the first
+                            same-language send, freed at dealloc */
 } MizuFrame;
 
 typedef struct { const int32_t *p; uint64_t n; } i32_span;
@@ -250,10 +253,20 @@ int fcol_fixed_size(int kind);
    the column-body bytes only. */
 uint64_t frame_data_size(const frame_cols *fc);
 
-/* The __arrow_c_stream__ method body: interop.c's same-language MIZL
-   branch drives it directly (pymizu_frame_stage_mizl). */
+/* The __arrow_c_stream__ method body (the public export — always a fresh
+   stream; the same-language MIZL branch rides frame_stage_fill instead). */
 PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
                                PyObject *kw);
+
+/* The cached stage construction: the pulled Arrow state (root schema and
+   one batch, copied into the outs — children and buffers borrowed, owned
+   by the frame) over the frame's own mapping, built at the first call and
+   reused by later same-language sends. The Frame is immutable, so the
+   cache key is the frame itself; the per-send root-blob/tz overrides and
+   the caps word live outside it. 0 ok, -1 with an error set (a complex
+   column, OOM) — the caller clears and declines. */
+int frame_stage_fill(MizuFrame *f, ArrowSchema *schema_out,
+                     ArrowArray *batch_out);
 
 /* Exception stash, the Frame type, and _frame_rebuild — mirroring
    mizu_py_interop_register. */

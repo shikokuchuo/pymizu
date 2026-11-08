@@ -18,6 +18,10 @@
 static PyObject *MizuError;
 static PyObject *frame_rebuild_fn;
 
+/* defined with the stage cache below; Frame_dealloc frees it */
+struct frame_stage;
+static void frame_stage_free(struct frame_stage *se);
+
 // The column block's lifecycle (pyframe.h's) -------------------------------------
 
 void fcol_free(fcol *c) {
@@ -118,6 +122,7 @@ uint64_t frame_data_size(const frame_cols *fc) {
 // Frame methods ---------------------------------------------------------------------
 
 static void Frame_dealloc(MizuFrame *self) {
+  if (self->stage_exp != NULL) frame_stage_free(self->stage_exp);
   Py_CLEAR(self->row_names);
   Py_CLEAR(self->loan);
   Py_CLEAR(self->r_attrs);
@@ -533,6 +538,172 @@ static int64_t fcol_ensure_export(fcol *c) {
 
 // The Frame's Arrow export ------------------------------------------------------------
 
+/* The carve shared by the public export and the stage cache: one block
+   holds every per-column Arrow struct (col_s anchors it; the fmts are 64
+   bytes per column). */
+typedef struct {
+  ArrowSchema *col_s;       /* [ncols] — the carved block's anchor */
+  ArrowSchema **col_s_ptr;  /* [ncols] */
+  ArrowSchema *dict_s;      /* [ncols], DICT columns only */
+  ArrowArray *col_a;        /* [ncols] */
+  ArrowArray **col_a_ptr;   /* [ncols] */
+  ArrowArray *dict_a;       /* [ncols], DICT columns only */
+  const void **bufs;        /* [3 * ncols] */
+  const void **dict_bufs;   /* [3 * ncols] */
+  char (*fmts)[64];         /* [ncols] */
+} frame_arrow_carve;
+
+static size_t frame_arrow_carve_size(int ncols) {
+  return (size_t) ncols *
+    (2 * sizeof(ArrowSchema) + sizeof(ArrowSchema *) +
+     2 * sizeof(ArrowArray) + sizeof(ArrowArray *) + 6 * sizeof(void *) +
+     64);
+}
+
+static void frame_arrow_carve_init(frame_arrow_carve *cv, uint8_t *blk,
+                                   int ncols) {
+  const size_t nn = (size_t) ncols;
+  cv->col_s = (ArrowSchema *) blk;
+  cv->col_s_ptr = (ArrowSchema **) (cv->col_s + nn);
+  cv->dict_s = (ArrowSchema *) (cv->col_s_ptr + nn);
+  cv->col_a = (ArrowArray *) (cv->dict_s + nn);
+  cv->col_a_ptr = (ArrowArray **) (cv->col_a + nn);
+  cv->dict_a = (ArrowArray *) (cv->col_a_ptr + nn);
+  cv->bufs = (const void **) (cv->dict_a + nn);
+  cv->dict_bufs = (const void **) (cv->bufs + 3 * nn);
+  cv->fmts = (char (*)[64]) (cv->dict_bufs + 3 * nn);
+}
+
+/* The root + per-column fill shared by the public export and the stage
+   cache: nulls the fcol_ensure_export counts, delta the rebase for a
+   borrowed column's region pointers (0 reads the frame's own mapping).
+   Releases stay NULL — the serving layer stamps them per handout. */
+static void frame_arrow_fill(const frame_cols *fc, const int64_t *nulls,
+                             ptrdiff_t delta, const frame_arrow_carve *cv,
+                             ArrowSchema *root_s, ArrowArray *root_a,
+                             const void **root_buf) {
+  const int ncols = fc->ncols;
+  /* the root: a struct of ncols children */
+  root_s->format = "+s";
+  root_s->name = "";
+  root_s->flags = 0;
+  root_s->n_children = ncols;
+  root_s->children = cv->col_s_ptr;
+  root_s->release = NULL;
+  root_buf[0] = NULL;
+  root_a->length = fc->nrow;
+  root_a->null_count = 0;
+  root_a->offset = 0;
+  root_a->n_buffers = 1;
+  root_a->buffers = root_buf;
+  root_a->n_children = ncols;
+  root_a->children = cv->col_a_ptr;
+  root_a->release = NULL;
+  for (int i = 0; i < ncols; i++) {
+    fcol *c = &fc->cols[i];
+    ArrowSchema *s = &cv->col_s[i];
+    ArrowArray *a = &cv->col_a[i];
+    cv->col_s_ptr[i] = s;
+    cv->col_a_ptr[i] = a;
+    const void **bufs = &cv->bufs[3 * i];
+    const char *fmt;
+    switch (c->kind) {
+    case FCOL_F64: fmt = "g"; break;
+    case FCOL_I32: fmt = "i"; break;
+    case FCOL_I64: fmt = "l"; break;
+    case FCOL_U64: fmt = "L"; break;
+    case FCOL_U8: fmt = "C"; break;
+    case FCOL_LGL: fmt = "b"; break;
+    case FCOL_STR: fmt = "u"; break;
+    case FCOL_STR64: fmt = "U"; break;
+    case FCOL_DICT: fmt = "i"; break;
+    case FCOL_DATE: fmt = "tdD"; break;
+    case FCOL_TD:
+      fmt = cv->fmts[i];
+      snprintf(cv->fmts[i], 64, "tD%c", c->unit);
+      break;
+    case FCOL_TS:
+      fmt = cv->fmts[i];
+      snprintf(cv->fmts[i], 64, "ts%c:%s", c->unit, c->tz);
+      break;
+    default: fmt = "g"; break;
+    }
+    s->format = fmt;
+    s->name = fc->cname_ptrs[i];
+    s->flags = MIZU_ARROW_FLAG_NULLABLE |
+      (c->kind == FCOL_DICT && c->ordered ?
+       MIZU_ARROW_FLAG_DICTIONARY_ORDERED : 0);
+    s->n_children = 0;
+    s->release = NULL;
+    a->length = c->n;
+    a->null_count = nulls[i];   /* 0 pairs with a NULL bitmap */
+    a->offset = 0;
+    a->buffers = bufs;
+    a->n_children = 0;
+    a->release = NULL;
+    /* a borrowed column's region pointers rebase onto the serving
+       mapping (an owned product — the lazy bitmap, the codes shift, the
+       bit-pack — does not). A remote column borrows its hold's region,
+       not the frame's: no rebase — the fc reference pins the hold
+       through the serving layer's release chain. */
+    const uint8_t *vals = c->values;
+    const uint8_t *vld = c->valid;
+    if (c->borrowed && c->hold == NULL) {
+      vals += delta;
+      if (vld != NULL && !c->valid_owned) vld += delta;
+    }
+    bufs[0] = vld;
+    switch (c->kind) {
+    case FCOL_STR:
+      a->n_buffers = 3;
+      bufs[1] = c->values;
+      bufs[2] = c->bytes;
+      break;
+    case FCOL_STR64: {
+      mizu_mizs_geom g = mizu_mizs_geometry(c->n);
+      a->n_buffers = 3;
+      bufs[0] = vals + g.validity;
+      bufs[1] = vals + g.offsets;
+      bufs[2] = vals + g.data;
+      break;
+    }
+    case FCOL_LGL:
+      a->n_buffers = 2;
+      bufs[1] = c->bits;
+      break;
+    case FCOL_DICT: {
+      a->n_buffers = 2;
+      bufs[1] = c->codes1 ? (const void *) c->codes0 : (const void *) vals;
+      ArrowSchema *ds = &cv->dict_s[i];
+      ArrowArray *da = &cv->dict_a[i];
+      ds->format = "u";
+      ds->name = "";
+      ds->flags = 0;
+      ds->n_children = 0;
+      ds->release = NULL;
+      s->dictionary = ds;
+      const void **dbufs = &cv->dict_bufs[3 * i];
+      dbufs[0] = NULL;
+      dbufs[1] = c->lev_off;
+      dbufs[2] = c->bytes;
+      da->length = c->nlev;
+      da->null_count = 0;
+      da->offset = 0;
+      da->n_buffers = 3;
+      da->buffers = dbufs;
+      da->n_children = 0;
+      da->release = NULL;
+      a->dictionary = da;
+      break;
+    }
+    default:
+      a->n_buffers = 2;
+      bufs[1] = vals;
+      break;
+    }
+  }
+}
+
 /* The exported stream: one struct batch over the column buffers. The
    holder (frame_export) is refcounted between the stream and every
    exported schema/array struct (their release callbacks decref it — pure
@@ -551,18 +722,9 @@ typedef struct frame_export {
   long acq_pid;
   ptrdiff_t acq_delta;      /* its mapping minus the frame's (the rebase) */
   ArrowSchema root_s;
-  ArrowSchema *col_s;         /* [ncols] — the anchor of the one carved
-                                 block holding every array below */
-  ArrowSchema **col_s_ptr;    /* [ncols] */
-  ArrowSchema *dict_s;        /* [ncols], DICT columns only */
   ArrowArray root_a;
-  ArrowArray *col_a;          /* [ncols] */
-  ArrowArray **col_a_ptr;     /* [ncols] */
-  ArrowArray *dict_a;         /* [ncols], DICT columns only */
-  const void **bufs;          /* [3 * ncols] */
-  const void **dict_bufs;     /* [3 * ncols] */
   const void *root_buf[1];
-  char (*fmts)[64];           /* [ncols] */
+  frame_arrow_carve cv;     /* cv.col_s anchors the one carved block */
 } frame_export;
 
 /* The exported capsule holds a bare ArrowArrayStream whose private_data
@@ -583,7 +745,7 @@ static void frame_export_decref(frame_export *ex) {
     mizu_shm_close(ex->acq, 0);
   }
   frame_cols_decref(ex->fc);
-  free(ex->col_s);   /* the carved block's anchor (every per-column array) */
+  free(ex->cv.col_s);   /* the carved block's anchor (every per-column array) */
   free(ex);
 }
 
@@ -798,28 +960,15 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
   }
   /* the per-column structs carved from one block (the ixs_arrow_open
      pattern): col_s the anchor, the release frees it alone */
-  {
-    const size_t nn = (size_t) ncols;
-    uint8_t *blk = calloc(nn, 2 * sizeof(ArrowSchema) +
-                          sizeof(ArrowSchema *) + 2 * sizeof(ArrowArray) +
-                          sizeof(ArrowArray *) + 6 * sizeof(void *) + 64);
-    if (blk == NULL) {
-      free(nulls);
-      frame_export_decref(ex);
-      frame_export_decref(ex);
-      free(st);
-      return PyErr_NoMemory();
-    }
-    ex->col_s = (ArrowSchema *) blk;
-    ex->col_s_ptr = (ArrowSchema **) (ex->col_s + nn);
-    ex->dict_s = (ArrowSchema *) (ex->col_s_ptr + nn);
-    ex->col_a = (ArrowArray *) (ex->dict_s + nn);
-    ex->col_a_ptr = (ArrowArray **) (ex->col_a + nn);
-    ex->dict_a = (ArrowArray *) (ex->col_a_ptr + nn);
-    ex->bufs = (const void **) (ex->dict_a + nn);
-    ex->dict_bufs = (const void **) (ex->bufs + 3 * nn);
-    ex->fmts = (char (*)[64]) (ex->dict_bufs + 3 * nn);
+  uint8_t *blk = calloc(1, frame_arrow_carve_size(ncols));
+  if (blk == NULL) {
+    free(nulls);
+    frame_export_decref(ex);
+    frame_export_decref(ex);
+    free(st);
+    return PyErr_NoMemory();
   }
+  frame_arrow_carve_init(&ex->cv, blk, ncols);
   if (frame_cols_cnames(fc) < 0) {
     free(nulls);
     frame_export_decref(ex);
@@ -827,125 +976,8 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     free(st);
     return PyErr_NoMemory();
   }
-  /* the root: a struct of ncols children */
-  ex->root_s.format = "+s";
-  ex->root_s.name = "";
-  ex->root_s.flags = 0;
-  ex->root_s.n_children = ncols;
-  ex->root_s.children = ex->col_s_ptr;
-  ex->root_s.release = NULL;
-  ex->root_buf[0] = NULL;
-  ex->root_a.length = fc->nrow;
-  ex->root_a.null_count = 0;
-  ex->root_a.offset = 0;
-  ex->root_a.n_buffers = 1;
-  ex->root_a.buffers = ex->root_buf;
-  ex->root_a.n_children = ncols;
-  ex->root_a.children = ex->col_a_ptr;
-  ex->root_a.release = NULL;
-  for (int i = 0; i < ncols; i++) {
-    fcol *c = &fc->cols[i];
-    ArrowSchema *s = &ex->col_s[i];
-    ArrowArray *a = &ex->col_a[i];
-    ex->col_s_ptr[i] = s;
-    ex->col_a_ptr[i] = a;
-    const void **bufs = &ex->bufs[3 * i];
-    const char *fmt;
-    switch (c->kind) {
-    case FCOL_F64: fmt = "g"; break;
-    case FCOL_I32: fmt = "i"; break;
-    case FCOL_I64: fmt = "l"; break;
-    case FCOL_U64: fmt = "L"; break;
-    case FCOL_U8: fmt = "C"; break;
-    case FCOL_LGL: fmt = "b"; break;
-    case FCOL_STR: fmt = "u"; break;
-    case FCOL_STR64: fmt = "U"; break;
-    case FCOL_DICT: fmt = "i"; break;
-    case FCOL_DATE: fmt = "tdD"; break;
-    case FCOL_TD:
-      fmt = ex->fmts[i];
-      snprintf(ex->fmts[i], 64, "tD%c", c->unit);
-      break;
-    case FCOL_TS:
-      fmt = ex->fmts[i];
-      snprintf(ex->fmts[i], 64, "ts%c:%s", c->unit, c->tz);
-      break;
-    default: fmt = "g"; break;
-    }
-    s->format = fmt;
-    s->name = fc->cname_ptrs[i];
-    s->flags = MIZU_ARROW_FLAG_NULLABLE |
-      (c->kind == FCOL_DICT && c->ordered ?
-       MIZU_ARROW_FLAG_DICTIONARY_ORDERED : 0);
-    s->n_children = 0;
-    s->release = NULL;
-    a->length = c->n;
-    a->null_count = nulls[i];   /* 0 pairs with a NULL bitmap */
-    a->offset = 0;
-    a->buffers = bufs;
-    a->n_children = 0;
-    a->release = NULL;
-    /* a borrowed column's region pointers rebase onto this export's own
-       mapping (an owned product — the lazy bitmap, the codes shift, the
-       bit-pack — does not). A remote column borrows its hold's region,
-       not the frame's: no rebase — the export's fc reference pins the
-       hold through the same release chain. */
-    const uint8_t *vals = c->values;
-    const uint8_t *vld = c->valid;
-    if (c->borrowed && c->hold == NULL) {
-      vals += ex->acq_delta;
-      if (vld != NULL && !c->valid_owned) vld += ex->acq_delta;
-    }
-    bufs[0] = vld;
-    switch (c->kind) {
-    case FCOL_STR:
-      a->n_buffers = 3;
-      bufs[1] = c->values;
-      bufs[2] = c->bytes;
-      break;
-    case FCOL_STR64: {
-      mizu_mizs_geom g = mizu_mizs_geometry(c->n);
-      a->n_buffers = 3;
-      bufs[0] = vals + g.validity;
-      bufs[1] = vals + g.offsets;
-      bufs[2] = vals + g.data;
-      break;
-    }
-    case FCOL_LGL:
-      a->n_buffers = 2;
-      bufs[1] = c->bits;
-      break;
-    case FCOL_DICT: {
-      a->n_buffers = 2;
-      bufs[1] = c->codes1 ? (const void *) c->codes0 : (const void *) vals;
-      ArrowSchema *ds = &ex->dict_s[i];
-      ArrowArray *da = &ex->dict_a[i];
-      ds->format = "u";
-      ds->name = "";
-      ds->flags = 0;
-      ds->n_children = 0;
-      ds->release = NULL;
-      s->dictionary = ds;
-      const void **dbufs = &ex->dict_bufs[3 * i];
-      dbufs[0] = NULL;
-      dbufs[1] = c->lev_off;
-      dbufs[2] = c->bytes;
-      da->length = c->nlev;
-      da->null_count = 0;
-      da->offset = 0;
-      da->n_buffers = 3;
-      da->buffers = dbufs;
-      da->n_children = 0;
-      da->release = NULL;
-      a->dictionary = da;
-      break;
-    }
-    default:
-      a->n_buffers = 2;
-      bufs[1] = vals;
-      break;
-    }
-  }
+  frame_arrow_fill(fc, nulls, ex->acq_delta, &ex->cv, &ex->root_s,
+                   &ex->root_a, ex->root_buf);
   free(nulls);
   st->get_schema = fx_get_schema;
   st->get_next = fx_get_next;
@@ -955,14 +987,101 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
   /* the export-provenance record (3.8): what this acquisition hands out,
      so an unmodified round trip of the frame stages as REF */
   if (ex->acq != NULL)
-    pymizu_shmframe_pv_register(ex->acq, ncols, fc->cname_ptrs, ex->col_s,
-                                ex->col_a, ex);
+    pymizu_shmframe_pv_register(ex->acq, ncols, fc->cname_ptrs, ex->cv.col_s,
+                                ex->cv.col_a, ex);
   PyObject *cap = PyCapsule_New(st, "arrow_array_stream", fx_capsule_free);
   if (cap == NULL) {
     fx_stream_release(st);
     free(st);
   }
   return cap;
+}
+
+// The cached stage construction ---------------------------------------------------------
+
+/* The same-language stage's pulled state: the root schema and one batch
+   over the frame's own mapping — no fresh open, counted loan, or
+   provenance record per send. The internal stage borrows the frame's
+   mapping (the frame outlives the synchronous stage), and dropping the
+   registry round-trip is behavior-preserving: same-language sends never
+   consult it, and the foreign front-end registers at its own export.
+   The Frame is immutable, so the construction builds once and dies with
+   it; the per-send root-blob/tz overrides and the caps word live outside
+   it (the core open is per-send). */
+typedef struct frame_stage {
+  frame_cols *fc;         /* pins the columns (and the remote holds) */
+  ArrowSchema root_s;
+  ArrowArray root_a;
+  const void *root_buf[1];
+  frame_arrow_carve cv;   /* cv.col_s anchors the one carved block */
+} frame_stage;
+
+static void frame_stage_free(frame_stage *se) {
+  if (se->fc != NULL) frame_cols_decref(se->fc);
+  free(se->cv.col_s);
+  free(se);
+}
+
+static frame_stage *frame_stage_build(MizuFrame *f) {
+  frame_cols *fc = f->fc;
+  const int ncols = fc->ncols;
+  int64_t *nulls = calloc((size_t) ncols, sizeof(int64_t));
+  frame_stage *se = calloc(1, sizeof(*se));
+  if (nulls == NULL || se == NULL) {
+    free(nulls);
+    free(se);
+    PyErr_NoMemory();
+    return NULL;
+  }
+  for (int i = 0; i < ncols; i++) {
+    if (fc->cols[i].kind == FCOL_C128) {
+      PyErr_Format(MizuError, "pymizu: a complex column has no Arrow "
+                   "type (column '%.*s')",
+                   (int) (fc->name_off[i + 1] - fc->name_off[i]),
+                   fc->names + fc->name_off[i]);
+      goto fail;
+    }
+    int64_t nn = fcol_ensure_export(&fc->cols[i]);
+    if (nn < 0) {
+      if (!PyErr_Occurred()) PyErr_NoMemory();
+      goto fail;
+    }
+    nulls[i] = nn;
+  }
+  {
+    uint8_t *blk = calloc(1, frame_arrow_carve_size(ncols));
+    if (blk == NULL) {
+      PyErr_NoMemory();
+      goto fail;
+    }
+    frame_arrow_carve_init(&se->cv, blk, ncols);
+  }
+  if (frame_cols_cnames(fc) < 0) {
+    PyErr_NoMemory();
+    goto fail;
+  }
+  /* delta 0: the buffers read the frame's own mapping in place */
+  frame_arrow_fill(fc, nulls, 0, &se->cv, &se->root_s, &se->root_a,
+                   se->root_buf);
+  se->fc = fc;
+  atomic_fetch_add_explicit(&fc->refs, 1, memory_order_relaxed);
+  free(nulls);
+  return se;
+fail:
+  free(nulls);
+  frame_stage_free(se);
+  return NULL;
+}
+
+int frame_stage_fill(MizuFrame *f, ArrowSchema *schema_out,
+                     ArrowArray *batch_out) {
+  if (f->stage_exp == NULL) {
+    f->stage_exp = frame_stage_build(f);
+    if (f->stage_exp == NULL) return -1;
+  }
+  *schema_out = f->stage_exp->root_s;
+  *batch_out = f->stage_exp->root_a;
+  return 0;
 }
 
 // The Frame's pickle form -------------------------------------------------------------
@@ -1653,13 +1772,15 @@ static PyObject *Frame_from_arrow(PyObject *Py_UNUSED(cls),
 
 /* The test-only introspection surface (the _ShmView.refcount / .flags
    precedent): per-column adopted / known-free flags, the temporal
-   columns' units, and the shared hold's refcount. */
+   columns' units, the shared hold's refcount, and the stage cache's
+   presence. */
 static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
   if (!PyObject_TypeCheck(arg, &MizuFrameType)) {
     PyErr_SetString(PyExc_TypeError, "pymizu: _frame_debug needs a Frame");
     return NULL;
   }
-  frame_cols *fc = ((MizuFrame *) arg)->fc;
+  MizuFrame *f = (MizuFrame *) arg;
+  frame_cols *fc = f->fc;
   PyObject *adopted = PyTuple_New(fc->ncols);
   PyObject *kfree = PyTuple_New(fc->ncols);
   PyObject *units = PyTuple_New(fc->ncols);
@@ -1704,23 +1825,27 @@ static PyObject *frame_debug(PyObject *Py_UNUSED(m), PyObject *arg) {
       }
     }
   }
+  PyObject *cached = PyBool_FromLong(f->stage_exp != NULL);
   PyObject *out = PyDict_New();
-  if (out == NULL ||
+  if (cached == NULL || out == NULL ||
       PyDict_SetItemString(out, "adopted", adopted) < 0 ||
       PyDict_SetItemString(out, "known_free", kfree) < 0 ||
       PyDict_SetItemString(out, "units", units) < 0 ||
-      PyDict_SetItemString(out, "hold_refs", refs) < 0) {
+      PyDict_SetItemString(out, "hold_refs", refs) < 0 ||
+      PyDict_SetItemString(out, "stage_cached", cached) < 0) {
     Py_XDECREF(out);
     Py_DECREF(adopted);
     Py_DECREF(kfree);
     Py_DECREF(units);
     Py_DECREF(refs);
+    Py_XDECREF(cached);
     return NULL;
   }
   Py_DECREF(adopted);
   Py_DECREF(kfree);
   Py_DECREF(units);
   Py_DECREF(refs);
+  Py_DECREF(cached);
   return out;
 }
 

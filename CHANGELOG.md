@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster repeated sends of the same `pymizu.Frame` between Python
+  processes.
+- Faster repeated Arrow exports of a received view or a view-collected
+  `Pool.map()` result (e.g. `pa.array(view)`).
 - Faster sends of small list, tuple, and dict payloads between Python
   processes.
 - Faster repeated `Pool.submit()` of the same callable, and faster

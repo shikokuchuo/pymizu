@@ -409,6 +409,35 @@ def test_same_language_small_frame_pickles():
     h0.destroy()
 
 
+def test_same_language_stage_cache_resend():
+    # the stage construction caches at the first send: repeated sends of
+    # one Frame — heap-backed or region-backed — ride it, wire-exact
+    h0, p0 = foreign_pair()
+    h0.send(big_table(with_nulls=False).select(["i", "x", "l", "b"]))
+    f = p0.recv(10)
+    h, p = same_pair()
+    assert _pymizu._frame_debug(f)["stage_cached"] is False
+    h.send(f)
+    assert _pymizu._frame_debug(f)["stage_cached"] is True
+    g = p.recv(10)
+    h.send(f)  # the cache's second serve
+    g2 = p.recv(10)
+    for k in ("i", "x", "l", "b"):
+        assert g2.to_dict()[k].tolist() == g.to_dict()[k].tolist()
+    # a region-backed frame re-sent: the same cache over its own mapping
+    # (the borrowed columns read in place)
+    p.send(g)
+    r = h.recv(10)
+    p.send(g)
+    r2 = h.recv(10)
+    for k in ("i", "x", "l", "b"):
+        assert r2.to_dict()[k].tolist() == r.to_dict()[k].tolist()
+    p.destroy()
+    h.destroy()
+    p0.destroy()
+    h0.destroy()
+
+
 def test_same_language_pandas_stays_pandas():
     pd = pytest.importorskip("pandas")
     n = 20000
