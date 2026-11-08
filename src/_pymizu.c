@@ -6427,8 +6427,9 @@ PyDoc_STRVAR(recv_burst_doc,
 The async drain's burst receive: up to n messages in one GIL-held call\n\
 over the core's batch verb with a zero wait — a burst never blocks,\n\
 skipping the per-call GIL drop recv() pays for its indefinite wait. A\n\
-drained ring ends the list early; a terminal state is the list's last\n\
-element. recv_batch's decline semantics exactly: a declined message\n\
+drained ring ends the list early; a terminal state is the list's only\n\
+element: the core reports terminals only through an empty ring, never\n\
+behind data. recv_batch's decline semantics exactly: a declined message\n\
 (ForeignPayloadError) past the first ends the burst early and the slot\n\
 stays, so the next burst raises it as its first message (consuming it).");
 

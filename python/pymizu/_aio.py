@@ -187,11 +187,7 @@ class _ChanState:
                     # burst is exactly [sentinel] — one guarded test up
                     # front, no per-element is-test, and a batch waiter
                     # never splits data from a trailing sentinel
-                    for f in self.fifo:
-                        if not f.done():
-                            f.set_result(burst[0])
-                    self.fifo.clear()
-                    self._disarm()
+                    _settle_channel_now(self, burst[0])
                     return
                 nb = len(burst)
                 i = 0
@@ -215,10 +211,7 @@ class _ChanState:
                 # slow empty pass past the deadline would otherwise queue
                 # a bare call_soon drain that bypasses a disarm landing
                 # before it runs (the trampoline's skip is C-side)
-                if nb and (
-                    work >= _QUANTUM_N
-                    or ((work & 63) == 0 and _time.monotonic() >= deadline)
-                ):
+                if nb and _quantum_hit(work, deadline):
                     assert self.loop is not None
                     self.loop.call_soon(self._drain)
                     return
