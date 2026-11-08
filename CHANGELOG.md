@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster sends of nested list, tuple, or dict payloads to R peers.
 - Faster sends of top-level bool, int, float, and complex scalars to R
   peers.
+- Much faster sends of masked Arrow arrays to R peers (a validity
+  bitmap whose null count is unknown, or with long all-valid or
+  all-null runs), now on par with the unmasked form.
+- Repeated sends of the same `Frame` are much faster when its value
+  columns have no nulls (for example a pickle-rebuilt frame): the
+  Arrow export no longer re-scans every element per send.
+- First reads of large zero-copy task arguments and views are faster
+  on Linux.
 
 ### Fixed
 

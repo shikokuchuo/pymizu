@@ -45,6 +45,12 @@ import subprocess
 import sys
 import time
 
+# OpenBLAS idles its thread pool spinning at 100% CPU, which contends with
+# the measured processes on few-core hosts (the pipelined row swung 31% on
+# a 4C/8T laptop). The suite's numpy use is array plumbing, never BLAS, so
+# one thread costs it nothing; an explicit user setting wins.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import numpy as np
 
 import pymizu
