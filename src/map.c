@@ -602,6 +602,8 @@ typedef struct {
   uint8_t *data;
   Py_ssize_t len;           /* bytes */
   uint32_t tag;
+  signed char na_state;     /* the Arrow export's cached clean verdict:
+                               0 unknown, 1 known NA-free */
   Py_ssize_t shape[1];
   Py_ssize_t strides[1];
 } MizuMapView;
@@ -715,12 +717,18 @@ static PyObject *mapview_arrow_c_array(PyObject *obj, PyObject *args,
   const char *fmt;
   const void *values;
   int64_t null_count = 0;
-  if (mizu_py_arrow_fill((int) v->tag, data, n, /*build_valid=*/1, loan,
+  /* the clean verdict memoizes: the output area is final at collect (one
+     collection per handle), so a re-export skips the sentinel scan — the
+     full saving is INT/INT64/REAL; LGL's scan fuses with the mandatory
+     bit-pack, RAW never scans */
+  const int build_valid = v->na_state != 1;
+  if (mizu_py_arrow_fill((int) v->tag, data, n, build_valid, loan,
                          &fmt, &values, &null_count) < 0) {
     Py_DECREF(scap);
     Py_DECREF(acap);
     return NULL;
   }
+  if (build_valid && null_count == 0) v->na_state = 1;
   buffers[0] = loan->valid;   /* the built bitmap, or NULL when clean */
   buffers[1] = values;
   schema->format = fmt;

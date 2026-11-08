@@ -2684,8 +2684,9 @@ typedef struct {
                              consulted only when loan != NULL */
   int64_t valid_nulls;    /* valid's null count; -1 known-NA-free, 0 with
                              valid NULL: the lazy sentinel scan */
-  signed char na_state;   /* to_numpy's cached verdict: 0 unknown,
-                             1 NA-free, -1 has-NAs (the {0, 0} scan only) */
+  signed char na_state;   /* the cached {0, 0}-scan verdict, shared by
+                             to_numpy and the Arrow export: 0 unknown,
+                             1 NA-free, -1 has-NAs */
   long pid;
   Py_ssize_t shape[1];
   Py_ssize_t strides[1];
@@ -3323,7 +3324,9 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
                            (const uint8_t *) mizu_shm_addr(v->owner->shm));
         null_count = v->valid_nulls;
       } else if (v->valid_nulls == 0) {
-        build_valid = 1;
+        /* the memoized clean verdict skips the sentinel scan on
+           re-exports (the region is final while the view lives) */
+        build_valid = v->na_state != 1;
       }
     } else {
       int64_t voff, vcount;
@@ -3333,7 +3336,7 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
         validity = base + voff;
         null_count = vcount;
       } else if (vcount == 0) {
-        build_valid = 1;
+        build_valid = v->na_state != 1;
       }
     }
   }
@@ -3345,6 +3348,7 @@ static PyObject *view_arrow_c_array(PyObject *obj, PyObject *args,
     Py_DECREF(acap);
     return NULL;
   }
+  if (build_valid && null_count == 0) v->na_state = 1;
   buffers[0] = validity != NULL ? validity : loan->valid;
   buffers[1] = values;
   schema->format = fmt;

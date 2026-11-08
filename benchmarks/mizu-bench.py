@@ -1070,14 +1070,36 @@ print("\n== 8c. view Arrow re-export (validity memo) ==")
 if pa is None:
     print("  pyarrow not available: skipped")
 else:
+    from pymizu import _pymizu
+
     m = 400
-    h = _pymizu._channel_new(1024, 1 << 16, 1 << 24, False, b"")
-    p, _ = _pymizu._channel_attach(h.token)
+
+    def mapview_reexport(p):
+        out = p.map(
+            identity,
+            range(1000000),
+            template=np.empty(1, dtype=np.int64),
+            collect="view",
+        ).collect()
+
+        def rep():
+            for _ in range(m):
+                pa.array(out.base)
+
+        warmup(rep, n=1)
+        note_us("view arrow export", "map int64 clean", m, rep, "us/export")
+
+    with_pool(1, mapview_reexport)
+
+    # the _ShmView half over a {0, 0} region (the conversion tier's):
+    # uint64 crosses as a converted f64 copy with no validity stamp
+    h = _pymizu._channel_new(64, 1024, 1 << 16, False, b"")
+    p, _ = _pymizu._channel_attach(h.token, _ident=(2, 0))
     p.ready_set()
     assert h.ready_wait(10)
     try:
-        h.send(np.arange(1000000, dtype=np.int64))  # clean: SHM_VEC
-        v = p.recv(30)
+        h.send(np.arange(1000000, dtype=np.uint64))
+        v = p.recv(30).base  # the _ShmView under the numpy wrap
 
         def rep():
             for _ in range(m):
@@ -1085,7 +1107,8 @@ else:
 
         warmup(rep, n=1)
         note_us(
-            "view arrow export", "int64 clean", m, rep, "us/export"
+            "view arrow export", "f64 clean (converted)", m, rep,
+            "us/export",
         )
     finally:
         p.destroy()
