@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="11fbecacca191c8633b742608e8d6ede5fbb65be"  # libmizu: masked-convert coalescing, count fusion, view prefault
+PIN="d2d5bc1fecc53dedff657b84abfb87d9c27dc2c5"  # libmizu: batch collect_terminal, spill large slot
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
