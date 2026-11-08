@@ -4,7 +4,7 @@ Cumulative per-worker and per-submitter counters.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1649-L1655)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1657-L1663)
 
 ``` python
 Pool.stats()
