@@ -7772,17 +7772,126 @@ static PyObject *Pool_pump_singles(MizuPool *self, PyObject *arg) {
   if (aio_cache_init() < 0) return NULL;
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
-  Py_ssize_t settled = 0, i = 0;
-  while (i < self->n_waiters && settled < max) {
+  const Py_ssize_t nw = self->n_waiters;
+  if (nw == 0 || max <= 0)
+    return Py_BuildValue("(nn)", (Py_ssize_t) 0, nw);
+
+  /* Probe-select up to max terminal entries, claim them in one core
+     batch collect, then settle their futures descending (a swap-removal
+     never re-shifts an unprocessed index). A word the reaper takes back
+     to RUNNING skips the claim and keeps waiting. */
+  enum { STACK_N = 64 };
+  Py_ssize_t stack_sel[STACK_N];
+  mizu_task stack_words[STACK_N];
+  void *stack_vals[STACK_N];
+  PyObject *stack_errs[STACK_N];
+  Py_ssize_t *sel = stack_sel;
+  mizu_task *words = stack_words;
+  void **vals = stack_vals;
+  PyObject **errs = stack_errs;
+  const Py_ssize_t cap = nw < max ? nw : max;
+  if (cap > STACK_N) {
+    sel = PyMem_Malloc((size_t) cap * sizeof(*sel));
+    words = PyMem_Malloc((size_t) cap * sizeof(*words));
+    vals = PyMem_Calloc((size_t) cap, sizeof(*vals));
+    errs = PyMem_Calloc((size_t) cap, sizeof(*errs));
+    if (sel == NULL || words == NULL || vals == NULL || errs == NULL) {
+      PyMem_Free(sel);
+      PyMem_Free(words);
+      PyMem_Free(vals);
+      PyMem_Free(errs);
+      return PyErr_NoMemory();
+    }
+  } else {
+    memset(vals, 0, sizeof(stack_vals));
+    memset(errs, 0, sizeof(stack_errs));
+  }
+  Py_ssize_t k = 0;
+  for (Py_ssize_t i = 0; i < nw && k < cap; i++) {
     mizu_task t = { self->waiters[i].word };
     const int tst = mizu_pool_task_state(p, &t);
-    if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) {
-      i++;
-      continue;
-    }
-    if (waiters_settle_one(self, p, i) < 0) return NULL;
-    settled++;               /* entry i was removed: the swap re-checks */
+    if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) continue;
+    sel[k] = i;
+    words[k] = t;
+    k++;
   }
+
+  /* the claim phase: a per-item failure ends the batch at that index
+     (its Python error fetched before any further Python call) and parks
+     the exception in errs; the batch resumes past it */
+  for (Py_ssize_t base = 0; base < k;) {
+    size_t count = 0, fail = 0;
+    mizu_status st = mizu_pool_collect_terminal(p, words + base,
+                                                (size_t) (k - base),
+                                                vals + base, &count, &fail);
+    if (st == MIZU_OK) break;
+    (void) pool_raise(p);
+    PyObject *et, *ev, *tb;
+    PyErr_Fetch(&et, &ev, &tb);
+    PyErr_NormalizeException(&et, &ev, &tb);
+    Py_XDECREF(tb);
+    if (ev != NULL) {
+      errs[base + (Py_ssize_t) fail] = ev;
+      Py_XDECREF(et);
+    } else {
+      errs[base + (Py_ssize_t) fail] = (PyObject *) et;
+    }
+    base += (Py_ssize_t) fail + 1;
+  }
+
+  Py_ssize_t settled = 0, rc = 0;
+  for (Py_ssize_t j = k - 1; j >= 0; j--) {
+    PyObject *v, *exc = NULL;
+    if (vals[j] != NULL) {
+      v = (PyObject *) vals[j];
+      vals[j] = NULL;
+    } else if (errs[j] != NULL) {
+      v = NULL;
+      exc = errs[j];
+      errs[j] = NULL;
+    } else {
+      continue;   /* taken back to RUNNING: keeps waiting */
+    }
+    MizuAsyncWaiter *w = &self->waiters[sel[j]];
+    PyObject *fut = w->future;
+    Py_INCREF(fut);          /* outlives the unlink below */
+    w->task->async_pending = 0;
+    waiters_remove(self, sel[j]);
+    if (v != NULL) {
+      rc = aio_settle(fut, v);
+    } else {
+      PyObject *cargs[2] = { fut, exc };
+      PyObject *r = PyObject_Vectorcall(aio_set_exception_fn, cargs, 2,
+                                        NULL);
+      Py_DECREF(exc);
+      Py_XDECREF(r);
+      if (r != NULL) {
+        rc = 0;
+      } else if (PyErr_ExceptionMatches(PyExc_RuntimeError)) {
+        PyErr_Clear();       /* a closed loop: unnotifyable either way */
+        rc = 0;
+      } else {
+        rc = -1;
+      }
+    }
+    Py_DECREF(fut);
+    if (rc < 0) break;
+    settled++;
+  }
+  /* a mid-phase abort leaves later claims unreported: their entries
+     stay enrolled and settle with the stale-word error on a later pass
+     (the drain itself has failed by then) */
+  for (Py_ssize_t j = 0; j < k; j++) {
+    Py_XDECREF((PyObject *) vals[j]);
+    Py_XDECREF(errs[j]);
+  }
+  if (cap > STACK_N) {
+    PyMem_Free(sel);
+    PyMem_Free(words);
+    PyMem_Free(vals);
+    PyMem_Free(errs);
+  }
+  if (rc < 0) return NULL;
   return Py_BuildValue("(nn)", settled, self->n_waiters);
 }
 
@@ -7962,10 +8071,11 @@ static PyObject *Pool_exec_submit(MizuPool *self, PyObject *args,
 
 PyDoc_STRVAR(pool_tasks_collect_terminal_doc,
 "_tasks_collect_terminal(tasks) -> list of (index, value, is_exc)\n\n\
-The executor drain's fused scan: for every terminal task in the snapshot,\n\
-collect at 0 (never parks) and report (index, value-or-exception,\n\
-is_exc). A collect failure (a stale word) reports the exception as the\n\
-value — the drain's per-task discipline, never aborting the pass.\n\n");
+The executor drain's fused scan: the core's batch collect claims every\n\
+terminal task in one pass (never parks), reporting (index,\n\
+value-or-exception, is_exc) per claim. A per-item failure (a stale\n\
+word) reports the exception as the value — the drain's per-task\n\
+discipline, never aborting the pass.\n\n");
 
 static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
                                              PyObject *arg) {
@@ -7983,14 +8093,43 @@ static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
     PyMem_Free(ts);
     return NULL;
   }
-  for (size_t i = 0; i < n; i++) {
-    const int tst = mizu_pool_task_state(p, &ts[i]);
-    if (tst == MIZU_RS_PENDING || tst == MIZU_RS_RUNNING) continue;
-    void *v = NULL;
-    mizu_status st = mizu_pool_collect(p, &ts[i], &v, 0);
-    PyObject *val;
-    int is_exc = 0;
-    if (st == MIZU_OK) {
+  void **vals = PyMem_Calloc(n, sizeof(void *));
+  if (vals == NULL) {
+    PyMem_Free(ts);
+    Py_DECREF(out);
+    return PyErr_NoMemory();
+  }
+  /* The core's batch collect claims every terminal task in one pass; a
+     per-item failure ends the batch at that index (a read hook's Python
+     error is fetched before any further Python call) and the drain's
+     per-task discipline settles it as an exception row, then the batch
+     resumes past it. */
+  PyObject *err_val = NULL;
+  size_t base = 0;
+  while (base < n) {
+    size_t count = 0, fail = 0;
+    mizu_status st = mizu_pool_collect_terminal(p, ts + base, n - base,
+                                                vals + base, &count, &fail);
+    const size_t stop = st == MIZU_OK ? n - base : fail;
+    if (st != MIZU_OK) {
+      (void) pool_raise(p);
+      PyObject *et, *ev, *tb;
+      PyErr_Fetch(&et, &ev, &tb);
+      PyErr_NormalizeException(&et, &ev, &tb);
+      Py_XDECREF(tb);
+      if (ev != NULL) {
+        err_val = ev;
+        Py_XDECREF(et);
+      } else {
+        err_val = et;   /* the exception class; Fetch guarantees it */
+      }
+    }
+    size_t i = 0;
+    for (i = 0; i < stop; i++) {
+      void *v = vals[base + i];
+      if (v == NULL) continue;
+      PyObject *val;
+      int is_exc = 0;
       if (Py_TYPE(v) == &MizuCaughtType) {
         val = ((MizuCaught *) v)->exc;
         Py_INCREF(val);
@@ -7999,35 +8138,36 @@ static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
       } else {
         val = (PyObject *) v;
       }
-    } else {
-      if (st == MIZU_TIMEOUT)  /* the state read raced a slot transition */
-        PyErr_SetString(MizuError,
-                        "pymizu: internal: terminal task collect timed out");
-      else
-        pool_raise(p);
-      PyObject *et, *ev, *tb;
-      PyErr_Fetch(&et, &ev, &tb);
-      PyErr_NormalizeException(&et, &ev, &tb);
-      Py_XDECREF(tb);
-      if (ev != NULL) {
-        val = ev;
-        Py_XDECREF(et);
-      } else {
-        val = et;   /* the exception class; Fetch guarantees it */
+      vals[base + i] = NULL;   /* consumed into the row */
+      PyObject *row =
+        Py_BuildValue("(nNi)", (Py_ssize_t)(base + i), val, is_exc);
+      if (row == NULL || PyList_Append(out, row) < 0) {
+        Py_XDECREF(row);
+        goto fail_rows;
       }
-      is_exc = 1;
+      Py_DECREF(row);
     }
-    PyObject *row = Py_BuildValue("(nNi)", (Py_ssize_t) i, val, is_exc);
+    if (st == MIZU_OK) break;
+    PyObject *row =
+      Py_BuildValue("(nNi)", (Py_ssize_t)(base + fail), err_val, 1);
+    if (row != NULL) err_val = NULL;   /* the row stole it */
     if (row == NULL || PyList_Append(out, row) < 0) {
       Py_XDECREF(row);
-      PyMem_Free(ts);
-      Py_DECREF(out);
-      return NULL;
+      goto fail_rows;
     }
     Py_DECREF(row);
+    base += fail + 1;
   }
+  PyMem_Free(vals);
   PyMem_Free(ts);
   return out;
+fail_rows:
+  Py_XDECREF(err_val);
+  for (size_t j = 0; j < n; j++) Py_XDECREF((PyObject *) vals[j]);
+  PyMem_Free(vals);
+  PyMem_Free(ts);
+  Py_DECREF(out);
+  return NULL;
 }
 
 // Pool verbs ---------------------------------------------------------------------

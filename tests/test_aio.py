@@ -558,7 +558,7 @@ def test_recv_batch_async_validates_n(ch):
     asyncio.run(main())
 
 
-def test_recv_batch_async_index_n(ch):
+def test_recv_batch_async_index_n():
     # n ducks like the sync verb's: anything __index__-able
     class Index:
         def __init__(self, n):
@@ -567,13 +567,19 @@ def test_recv_batch_async_index_n(ch):
         def __index__(self):
             return self.n
 
-    async def main():
-        fut = ch.recv_batch_async(Index(2))
-        ch.send_batch(["a", "b", "c"])
-        assert await fut == ["a", "b"]
-        assert await ch.recv_async() == "c"
+    host, peer = chan_pair()
+    try:
 
-    asyncio.run(main())
+        async def main():
+            fut = host.recv_batch_async(Index(2))
+            peer.send_batch(["a", "b", "c"])  # in the ring before the drain
+            assert await fut == ["a", "b"]
+            assert await host.recv_async() == "c"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
 
 
 def test_recv_batch_async_on_destroyed_rolls_back(ch):
@@ -998,6 +1004,91 @@ def test_single_cancel_at_settle_detaches_late(pool):
         await asyncio.sleep(0.05)
         assert fut.cancelled()
         assert task.collect(timeout=5) == 0.2
+
+    asyncio.run(main())
+
+
+def test_pump_singles_stale_word_rejects(pool):
+    # a waiter whose task was claimed elsewhere: the batch claim's
+    # per-item failure settles the future with the claim error, and the
+    # batch resumes past it
+    async def main():
+        blockers = [pool.submit(sleep_ident, 1) for _ in range(2)]
+        tasks = [pool.submit(square, i) for i in range(3)]
+        futs = []
+        for t in tasks:
+            fut = asyncio.get_running_loop().create_future()
+            pool._h._singles_add(t, fut)
+            futs.append(fut)
+        for b in blockers:
+            b.collect(timeout=5)
+        deadline = time.monotonic() + 5
+        while not all(pool._h._tasks_terminal(tasks)):
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        assert pool._h._tasks_collect_terminal([tasks[1]]) == [(0, 1, 0)]
+        assert pool._h._pump_singles(10) == (3, 0)
+        assert await futs[0] == 0
+        assert await futs[2] == 4
+        with pytest.raises(pymizu.MizuError, match="already collected"):
+            await futs[1]
+
+    asyncio.run(main())
+
+
+def test_pump_singles_closed_loop_rejects():
+    # a waiter whose future's loop closed before the settle: the
+    # RuntimeError is absorbed and the batch settles past it
+    p = pymizu.Pool.create(1)
+    try:
+        task = p.submit(sleep_ident, 1)
+
+        async def enroll():
+            fut = asyncio.get_running_loop().create_future()
+            p._h._singles_add(task, fut)
+            fut.add_done_callback(lambda f: None)  # a callback forces the
+            return fut  # call_soon that fails
+
+        fut = asyncio.run(enroll())  # its loop closes at run's exit
+        deadline = time.monotonic() + 5
+        while not p._h._tasks_terminal([task])[0]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        assert p._h._tasks_collect_terminal([task]) == [(0, 1, 0)]
+        assert p._h._pump_singles(10) == (1, 0)
+        if fut.done():
+            fut.exception()  # retrieve: no never-retrieved warning
+    finally:
+        p.destroy()
+
+
+def test_pump_singles_cancelled_future_aborts(pool):
+    # a waiter cancelled without detaching, settled through the claim
+    # error row: the set_exception failure aborts the pass; entries
+    # past it stay enrolled and settle with the stale-word error later
+    async def main():
+        blockers = [pool.submit(sleep_ident, 1) for _ in range(2)]
+        tasks = [pool.submit(square, i) for i in range(3)]
+        futs = []
+        for t in tasks:
+            fut = asyncio.get_running_loop().create_future()
+            pool._h._singles_add(t, fut)
+            futs.append(fut)
+        for b in blockers:
+            b.collect(timeout=5)
+        deadline = time.monotonic() + 5
+        while not all(pool._h._tasks_terminal(tasks)):
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        assert pool._h._tasks_collect_terminal([tasks[1]]) == [(0, 1, 0)]
+        futs[1].cancel()
+        with pytest.raises(asyncio.InvalidStateError):
+            pool._h._pump_singles(10)
+        assert await futs[2] == 4
+        assert not futs[0].done()
+        assert pool._h._pump_singles(10) == (1, 0)
+        with pytest.raises(pymizu.MizuError, match="already collected"):
+            await futs[0]
 
     asyncio.run(main())
 

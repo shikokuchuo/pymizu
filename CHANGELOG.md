@@ -8,44 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Channel.recv_batch_async()`: receive a burst of messages as one list
-  on one `asyncio.Future` — the async counterpart of `recv_batch()`.
-- `Channel.iter_batches()` and `Channel.iter_batches_async()`: iterate
-  over received batches until the channel closes — the batch forms of
-  the channel iterators.
+- Batch reception on channels: `Channel.recv_batch_async()` receives a
+  burst of messages as one list on one `asyncio.Future`, and
+  `Channel.iter_batches()` / `Channel.iter_batches_async()` iterate over
+  received batches until the channel closes.
 
 ### Changed
 
-- Faster repeated sends of the same `pymizu.Frame` between Python
-  processes.
+- Much faster frame relay: sends of a frame larger than 64 MB no
+  longer create a fresh shared-memory region per send.
+- Faster repeated sends of the same `Frame` — much faster when its
+  columns have no nulls.
 - Faster repeated Arrow exports of a received view or a view-collected
   `Pool.map()` result (e.g. `pa.array(view)`).
 - Faster sends of small list, tuple, and dict payloads between Python
   processes.
-- Faster repeated `Pool.submit()` of the same callable, and faster
-  `pymizu.call()` spec tasks. Replacing a function in an already-imported
+- Faster `Pool.submit()`: repeated submits of the same callable,
+  `pymizu.call()` spec tasks, and tasks with buffer-protocol arguments
+  such as numpy arrays. Replacing a function in an already-imported
   module no longer affects workers that have already run it: restart
   with `retire()` / `spawn_workers()`, or install cloudpickle to send
   callables by value.
+- Faster `Pool.map()`: per-element dispatch (particularly with no extra
+  arguments), result publishing on smaller runs, and collection of
+  numpy-scalar results, which no longer pass through pickle.
+- Faster `PoolExecutor` submission and resolution of large bursts of
+  outstanding futures.
+- `Task.collect_async()` and `await task` are much faster for tasks
+  that finish between awaits.
+- Faster sends to R peers of top-level scalars, nested list, tuple, or
+  dict payloads, and int64 numpy arrays; much faster sends of nullable
+  Arrow arrays.
 - Faster `spin=True` channel waits.
-- Faster `Pool.map()` result publishing on smaller runs.
-- Faster `Pool.submit()` of tasks with buffer-protocol arguments, such as
-  numpy arrays.
-- `PoolExecutor` submits are faster in synchronous use, particularly
-  with many outstanding futures.
-- `Task.collect_async()` and `await task` are much faster for tasks that
-  finish between awaits.
-- Faster `Pool.map()` per-element dispatch, particularly on calls with
-  no extra arguments.
-- Faster `Pool.map()` collection when the function returns numpy
-  scalars, or tuples of them: results no longer pass through pickle.
-- Faster sends of int64 numpy arrays to R peers.
-- Faster sends of nested list, tuple, or dict payloads to R peers.
-- Faster sends of top-level bool, int, float, and complex scalars to R
-  peers.
-- Much faster sends of nullable Arrow arrays to R peers.
-- Much faster repeated sends of the same `Frame` when its columns have
-  no nulls.
 - Faster first reads of large zero-copy task arguments and views on
   Linux.
 
