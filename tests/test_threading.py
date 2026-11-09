@@ -230,6 +230,8 @@ def test_pool_concurrent_collects_raise():
         with pytest.raises(pymizu.ConcurrentUseError):
             pool.collect_any([t], 0.1)
         with pytest.raises(pymizu.ConcurrentUseError):
+            pool.collect_all([t], 0.1)
+        with pytest.raises(pymizu.ConcurrentUseError):
             pool.stop(0.1)
         # a zero-timeout poll never parks: unguarded by design (the
         # executor's drain settles with collect(0) alongside an outside
