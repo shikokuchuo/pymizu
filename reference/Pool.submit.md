@@ -4,7 +4,7 @@ Submit `fn(*args, **kwargs)` as a task; return a Task handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1020-L1105)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1020-L1102)
 
 ``` python
 Pool.submit(
@@ -56,7 +56,7 @@ Another submit-family verb is in flight on this handle from a second thread: a p
 
 A buffer-protocol argument (for example a numpy array) larger than 32 KB crosses as a read-only view over shared pages, not a writable copy.
 
-A callable that crosses by reference is resolved once per worker process and then cached: replacing the function in an already-imported module does not affect a worker that has already run it. Restart workers with [`retire()`](../reference/Pool.retire.md#pymizu.Pool.retire) / [`spawn_workers()`](../reference/Pool.spawn_workers.md#pymizu.Pool.spawn_workers), or install cloudpickle to send callables by value.
+A callable that crosses by reference is resolved per task off the worker's imported modules: replacing the function in an already-imported module is picked up on the next submission. Install cloudpickle to send callables by value.
 
 With a [`call`](../reference/call.md#pymizu.call) spec as `fn` (no `*args` or `**kwargs`, since the spec carries them), the task crosses in a language-neutral format. This is how you drive a pool of another language's workers, spawned with [`r_launcher()`](../reference/r_launcher.md#pymizu.r_launcher). On a foreign pool a plain callable raises an error naming [call](../reference/call.md#pymizu.call).
 
