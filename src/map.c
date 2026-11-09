@@ -14,6 +14,7 @@
    runner payloads carry it, so a prior run's straggler fails its
    first-call CAS against the re-armed word. */
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -153,15 +154,51 @@ capsule pins the region: its destructor unlinks (the GC backstop);\n\
 _map_close unlinks explicitly. The capsule must outlive all runner\n\
 completion — workers attach by name.");
 
-static PyObject *py_map_stage(PyObject *Py_UNUSED(module), PyObject *args) {
+static PyObject *py_map_stage(PyObject *Py_UNUSED(module),
+                              PyObject *const *args, Py_ssize_t nargs) {
   Py_buffer desc, xbuf, tbuf;
   unsigned long long n_ll, ms_ll;
   PyObject *x_obj, *t_obj;
   int have_x, have_t, convert;
   unsigned int lang;
-  if (!PyArg_ParseTuple(args, "y*OKKOiI:_map_stage", &desc, &x_obj, &n_ll,
-                        &ms_ll, &t_obj, &convert, &lang))
+  if (nargs != 7) {
+    PyErr_Format(PyExc_TypeError,
+                 "_map_stage() takes exactly 7 arguments (%zd given)", nargs);
     return NULL;
+  }
+  /* y*OKKOiI by hand (PyArg's own getters, so the conversion errors
+     match): buffer, objects, ULL masks, int range, uint mask */
+  if (PyObject_GetBuffer(args[0], &desc, PyBUF_SIMPLE) < 0) return NULL;
+  x_obj = args[1];
+  n_ll = PyLong_AsUnsignedLongLongMask(args[2]);
+  if (n_ll == (unsigned long long) (long long) -1 && PyErr_Occurred())
+    goto fail_desc_only;
+  ms_ll = PyLong_AsUnsignedLongLongMask(args[3]);
+  if (ms_ll == (unsigned long long) (long long) -1 && PyErr_Occurred())
+    goto fail_desc_only;
+  t_obj = args[4];
+  {
+    long c = PyLong_AsLong(args[5]);
+    if (c == -1 && PyErr_Occurred()) goto fail_desc_only;
+    if (c > INT_MAX) {
+      PyErr_SetString(PyExc_OverflowError,
+                      "signed integer is greater than maximum");
+      goto fail_desc_only;
+    }
+    if (c < INT_MIN) {
+      PyErr_SetString(PyExc_OverflowError,
+                      "signed integer is less than minimum");
+      goto fail_desc_only;
+    }
+    convert = (int) c;
+  }
+  lang = (unsigned int) PyLong_AsUnsignedLongMask(args[6]);
+  if (PyErr_Occurred()) goto fail_desc_only;
+  goto desc_ok;
+fail_desc_only:
+  PyBuffer_Release(&desc);
+  return NULL;
+desc_ok:;
   if (n_ll < 1 || n_ll > ((uint64_t) 1 << 48)) {
     PyBuffer_Release(&desc);
     PyErr_SetString(MizuErr, "pymizu: invalid map length");
@@ -543,11 +580,20 @@ Template-path batch write: values[j] lands at element lo + j's disjoint\n\
 output-area slice. The C batch loop's counterpart for the Python (seeded)\n\
 fallback. A mismatched value raises with the element index attached.");
 
-static PyObject *py_map_write(PyObject *Py_UNUSED(module), PyObject *args) {
+static PyObject *py_map_write(PyObject *Py_UNUSED(module),
+                              PyObject *const *args, Py_ssize_t nargs) {
   PyObject *caps, *vals;
   unsigned long long lo_ll;
-  if (!PyArg_ParseTuple(args, "OKO:_map_write", &caps, &lo_ll, &vals))
+  if (nargs != 3) {
+    PyErr_Format(PyExc_TypeError,
+                 "_map_write() takes exactly 3 arguments (%zd given)", nargs);
     return NULL;
+  }
+  caps = args[0];
+  lo_ll = PyLong_AsUnsignedLongLongMask(args[1]);
+  if (lo_ll == (unsigned long long) (long long) -1 && PyErr_Occurred())
+    return NULL;
+  vals = args[2];
   mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (mh->h.out_type == 0) {
@@ -811,11 +857,21 @@ fresh region; _map_reset's return afterwards) — a stale straggler's\n\
 first-call CAS fails against the re-armed word. Atomics only, no park:\n\
 the GIL is held throughout.");
 
-static PyObject *py_map_next(PyObject *Py_UNUSED(module), PyObject *args) {
+static PyObject *py_map_next(PyObject *Py_UNUSED(module),
+                             PyObject *const *args, Py_ssize_t nargs) {
   PyObject *caps, *sig_caps;
   uint32_t r, gen;
-  if (!PyArg_ParseTuple(args, "OOII:_map_next", &caps, &sig_caps, &r, &gen))
+  if (nargs != 4) {
+    PyErr_Format(PyExc_TypeError,
+                 "_map_next() takes exactly 4 arguments (%zd given)", nargs);
     return NULL;
+  }
+  caps = args[0];
+  sig_caps = args[1];
+  r = (uint32_t) PyLong_AsUnsignedLongMask(args[2]);
+  if (PyErr_Occurred()) return NULL;
+  gen = (uint32_t) PyLong_AsUnsignedLongMask(args[3]);
+  if (PyErr_Occurred()) return NULL;
   mizu_pymap *mh = pymap_get(caps);
   if (mh == NULL) return NULL;
   if (r >= mh->h.claim_n) {
@@ -1110,13 +1166,15 @@ static PyObject *py_map_probe_x(PyObject *Py_UNUSED(module), PyObject *args) {
 // Registration -----------------------------------------------------------------
 
 static PyMethodDef pymap_methods[] = {
-  {"_map_stage", (PyCFunction) py_map_stage, METH_VARARGS, map_stage_doc},
+  {"_map_stage", (PyCFunction)(void (*)(void)) py_map_stage, METH_FASTCALL,
+   map_stage_doc},
   {"_map_close", (PyCFunction) py_map_close, METH_O, map_close_doc},
   {"_map_open", (PyCFunction) py_map_open, METH_O, map_open_doc},
   {"_map_header", (PyCFunction) py_map_header, METH_O, map_header_doc},
   {"_map_desc", (PyCFunction) py_map_desc, METH_O, map_desc_doc},
   {"_map_x_view", (PyCFunction) py_map_x_view, METH_O, map_x_view_doc},
-  {"_map_next", (PyCFunction) py_map_next, METH_VARARGS, map_next_doc},
+  {"_map_next", (PyCFunction)(void (*)(void)) py_map_next, METH_FASTCALL,
+   map_next_doc},
   {"_map_abandon", (PyCFunction) py_map_abandon, METH_VARARGS,
    map_abandon_doc},
   {"_map_cancel_set", (PyCFunction) py_map_cancel_set, METH_O,
@@ -1128,7 +1186,8 @@ static PyMethodDef pymap_methods[] = {
   {"_map_lost", (PyCFunction) py_map_lost, METH_VARARGS, map_lost_doc},
   {"_map_probe_x", (PyCFunction) py_map_probe_x, METH_VARARGS,
    map_probe_x_doc},
-  {"_map_write", (PyCFunction) py_map_write, METH_VARARGS, map_write_doc},
+  {"_map_write", (PyCFunction)(void (*)(void)) py_map_write, METH_FASTCALL,
+   map_write_doc},
   {"_map_gather", (PyCFunction) py_map_gather, METH_O, map_gather_doc},
   {"_map_gather_view", (PyCFunction) py_map_gather_view, METH_O,
    map_gather_view_doc},
