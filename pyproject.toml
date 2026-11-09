@@ -98,15 +98,26 @@ test-command = "python {project}/tools/smoke_wheel.py"
 # segment through this variable; the Linux build runs in a container,
 # which sees only the host variables listed here.
 environment-pass = ["SETUPTOOLS_SCM_OVERRIDES_FOR_PYMIZU"]
+# The same flags setup.py pins in extra_compile_args (env CFLAGS/LDFLAGS
+# append after the image's sysconfig defaults, so the pin wins either
+# way); --strip-all keeps the dynamic symbols and drops the rest.
+environment = { CFLAGS = "-O3 -DNDEBUG -fvisibility=hidden -flto", LDFLAGS = "-flto -Wl,--strip-all" }
+
+[tool.cibuildwheel.macos]
+# See the linux table. ld64's -S/-x are the `strip -Sx` pair (debug and
+# local symbols; globals stay).
+environment = { CFLAGS = "-O3 -DNDEBUG -fvisibility=hidden -flto", LDFLAGS = "-flto -Wl,-S -Wl,-x" }
 
 # The parker's __ulock_wait opcode (UL_COMPARE_AND_WAIT_SHARED) needs
 # macOS 10.15. cibuildwheel's own default is 10.13 for cp310-cp313 on
 # x86_64, which would tag those wheels installable on systems where the
 # opcode fails and the park loop spins. Scoped to x86_64: arm64's floor
 # is 11.0 already, and a lower value there only draws a bump warning.
+# An override replaces keys wholesale, so this environment restates the
+# macOS table above.
 [[tool.cibuildwheel.overrides]]
 select = "*-macosx_x86_64"
-environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15", CFLAGS = "-O3 -DNDEBUG -fvisibility=hidden -flto", LDFLAGS = "-flto -Wl,-S -Wl,-x" }
 
 [tool.cibuildwheel.windows]
 # setup.py forces clang-cl (MSVC C11 atomics unsupported); LLVM is

@@ -32,9 +32,12 @@ class build_ext_mizu(build_ext):
             # force clang-cl (MSVC C11 atomics unsupported). initialize()
             # sets compiler.cc from the Visual Studio environment, and
             # compile() initializes only once, so the replacement sticks.
-            # /GL (whole-program optimization) is cl.exe-specific.
+            # /GL (whole-program optimization) is cl.exe-specific: thin LTO
+            # comes from /clang:-flto=thin instead, whose bitcode link.exe
+            # cannot consume — link with lld-link (ships next to clang-cl).
             self.compiler.initialize(self.plat_name)
             self.compiler.cc = _find_on_path("clang-cl.exe")
+            self.compiler.linker = _find_on_path("lld-link.exe")
             self.compiler.compile_options = [
                 o for o in self.compiler.compile_options if o != "/GL"
             ]
@@ -46,12 +49,29 @@ core_sources = sorted(glob.glob("src/vendor/libmizu/*.c"))
 ext_modules = [
     Extension(
         "pymizu._pymizu",
-        sources=["src/_pymizu.c", "src/map.c", "src/interop.c",
-                 "src/interop_frame.c", "src/shmframe.c",
-                 "src/layout.c"] + core_sources,
+        sources=[
+            "src/_pymizu.c",
+            "src/map.c",
+            "src/interop.c",
+            "src/interop_frame.c",
+            "src/shmframe.c",
+            "src/layout.c",
+        ]
+        + core_sources,
         include_dirs=["src/vendor/libmizu"],
-        extra_compile_args=[] if os.name == "nt" else ["-std=c11", "-pthread"],
-        extra_link_args=[] if os.name == "nt" else ["-pthread"],
+        extra_compile_args=(
+            ["/clang:-O3", "/clang:-flto=thin"]
+            if os.name == "nt"
+            else [
+                "-std=c11",
+                "-pthread",
+                "-O3",
+                "-DNDEBUG",
+                "-fvisibility=hidden",
+                "-flto",
+            ]
+        ),
+        extra_link_args=[] if os.name == "nt" else ["-pthread", "-flto"],
     )
 ]
 
