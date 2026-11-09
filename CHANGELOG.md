@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a rare `PoolExecutor` future failing with "task handle already
+  collected" when a task finished as it was submitted.
 - Fixed a corrupt stream sent to a Python peer when a list, tuple, or
   dict contained a `str` or `bytes` item larger than 4 GiB; the payload
   now falls back to pickle and arrives intact.
