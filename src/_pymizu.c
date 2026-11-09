@@ -6551,7 +6551,13 @@ static void fast_kw_native_unknown(PyObject *const *args, Py_ssize_t nargs,
   const Py_ssize_t nkwargs = PyTuple_GET_SIZE(kwnames);
   for (Py_ssize_t j = 0; j < nkwargs; j++) {
     PyObject *name = PyTuple_GET_ITEM(kwnames, j);
-    if (PyDict_SetItem(kwargs, name, kwstack[j]) < 0) goto done;
+    /* an exact str copy keeps a subclass's __hash__/__eq__ out of the fallback */
+    PyObject *key = PyUnicode_FromObject(name);
+    if (key == NULL || PyDict_SetItem(kwargs, key, kwstack[j]) < 0) {
+      Py_XDECREF(key);
+      goto done;
+    }
+    Py_DECREF(key);
   }
   char fmt[224];
   if (min == 0)
@@ -6590,7 +6596,7 @@ static int fast_kw_parse(PyObject *const *args, Py_ssize_t nargs,
                          PyObject *const *kw, Py_ssize_t min,
                          Py_ssize_t max, PyObject **slots) {
   const Py_ssize_t nkwargs = kwnames != NULL ? PyTuple_GET_SIZE(kwnames) : 0;
-  PyObject *const *kwstack = args + nargs;
+  PyObject *const *kwstack = nkwargs != 0 ? args + nargs : NULL;
   if (nargs + nkwargs > max) {
     PyErr_Format(PyExc_TypeError,
                  "%.200s() takes at most %zd %sargument%s (%zd given)",

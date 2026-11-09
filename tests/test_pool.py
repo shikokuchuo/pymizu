@@ -85,6 +85,20 @@ def test_pool_unknown_keyword_matches_pyarg(pool):
         pool._h.submit(payload=pow, timeou=1)
     assert str(exc.value) == expected
 
+    class Keyword(str):
+        hashes = 0
+
+        def __hash__(self):
+            type(self).hashes += 1
+            if type(self).hashes > 1:
+                raise RuntimeError("keyword rehashed")
+            return super().__hash__()
+
+    with pytest.raises(TypeError) as exc:
+        pool._h.submit(payload=pow, **{Keyword("timeou"): 1})
+    assert str(exc.value) == expected
+    assert Keyword.hashes == 1
+
 
 def test_submit_on_destroyed_pool(pool):
     pool.destroy()

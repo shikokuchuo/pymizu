@@ -1437,6 +1437,34 @@ def test_map_stage_geometry_gates():
         stage(desc, None, 4, 1, 42, False, 1)
 
 
+def test_map_integer_argument_type_errors():
+    stage = pymizu._pymizu._map_stage
+    for args, expected in [
+        (
+            (b"", None, 1.0, 1, None, False, 1),
+            "_map_stage() argument 3 must be int, not float",
+        ),
+        (
+            (b"", None, 1, "x", None, False, 1),
+            "_map_stage() argument 4 must be int, not str",
+        ),
+    ]:
+        with pytest.raises(TypeError) as exc:
+            stage(*args)
+        assert str(exc.value) == expected
+    with pytest.raises(TypeError) as exc:
+        pymizu._pymizu._map_write(None, "x", [])
+    assert str(exc.value) == "_map_write() argument 2 must be int, not str"
+
+    class BadIndex:
+        def __index__(self):
+            raise TypeError("custom index failure")
+
+    with pytest.raises(TypeError) as exc:
+        stage(b"", None, BadIndex(), 1, None, False, 1)
+    assert str(exc.value) == "custom index failure"
+
+
 def test_map_stage_conversion_warning_as_error():
     # the fused convert completes before the warning raises, so a
     # warn-as-error leaves no half-written region behind

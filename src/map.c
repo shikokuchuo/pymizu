@@ -81,6 +81,18 @@ static mizu_pymap *pymap_get(PyObject *caps) {
   return mh;
 }
 
+/* PyArg's "K" type error, without replacing errors from a real __index__. */
+static unsigned long long pymap_K(PyObject *arg, const char *fname, int pos) {
+  unsigned long long out = PyLong_AsUnsignedLongLongMask(arg);
+  if (out == (unsigned long long) (long long) -1 &&
+      PyErr_ExceptionMatches(PyExc_TypeError) && !PyIndex_Check(arg)) {
+    PyErr_Clear();
+    PyErr_Format(PyExc_TypeError, "%.200s() argument %d must be int, not %.50s",
+                 fname, pos, Py_TYPE(arg)->tp_name);
+  }
+  return out;
+}
+
 static int pymap_ordinal_check(mizu_pymap *mh, uint32_t r) {
   if (r >= mh->h.claim_n) {
     PyErr_SetString(MizuErr, "pymizu: runner ordinal out of range");
@@ -166,14 +178,14 @@ static PyObject *py_map_stage(PyObject *Py_UNUSED(module),
                  "_map_stage() takes exactly 7 arguments (%zd given)", nargs);
     return NULL;
   }
-  /* y*OKKOiI by hand (PyArg's own getters, so the conversion errors
-     match): buffer, objects, ULL masks, int range, uint mask */
+  /* y*OKKOiI by hand: PyArg's getters and K type error, so its conversion
+     errors match. */
   if (PyObject_GetBuffer(args[0], &desc, PyBUF_SIMPLE) < 0) return NULL;
   x_obj = args[1];
-  n_ll = PyLong_AsUnsignedLongLongMask(args[2]);
+  n_ll = pymap_K(args[2], "_map_stage", 3);
   if (n_ll == (unsigned long long) (long long) -1 && PyErr_Occurred())
     goto fail_desc_only;
-  ms_ll = PyLong_AsUnsignedLongLongMask(args[3]);
+  ms_ll = pymap_K(args[3], "_map_stage", 4);
   if (ms_ll == (unsigned long long) (long long) -1 && PyErr_Occurred())
     goto fail_desc_only;
   t_obj = args[4];
@@ -590,7 +602,7 @@ static PyObject *py_map_write(PyObject *Py_UNUSED(module),
     return NULL;
   }
   caps = args[0];
-  lo_ll = PyLong_AsUnsignedLongLongMask(args[1]);
+  lo_ll = pymap_K(args[1], "_map_write", 2);
   if (lo_ll == (unsigned long long) (long long) -1 && PyErr_Occurred())
     return NULL;
   vals = args[2];

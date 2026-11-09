@@ -1731,3 +1731,30 @@ Best-known swaps: sequential rt pool 0.7 -> 0.6, payload 8,000 B
 
 Status: full suite 1129 pass, 1 skip (crosslang legs included); ruff
 + pyrefly clean.
+
+## 2026-11-09 — 1-D interop NumPy shape allocation [(scalar shape vs one-tuple)]
+
+`ixr_np_alloc` passes `dims[0]` directly to `np.empty` for 1-D reads instead
+of building a one-element shape tuple; matrices and higher-rank arrays keep
+the tuple form.
+
+Focused `_read_stream` micro over foreign 'I' vectors (values, dtypes and
+shapes checked before timing; GC disabled; best of 5 per process). Six A/B
+pairs: three A -> B followed by three B -> A. A is the parser-fix build
+before the shape trim, B the same build plus the trim. A/B columns are the
+median of the six per-process bests; change is the median within-pair ratio.
+
+| row | A ns/read | B ns/read | change |
+|---|---:|---:|---:|
+| realv[0] | 149.6 | 133.7 | -10.6% |
+| realv[3] | 145.7 | 131.7 | -8.6% |
+| realv[1000] | 252.5 | 234.1 | -4.5% |
+| intv[1000] | 428.1 | 413.5 | -3.1% |
+
+The saving is about 14-18 ns/read, consistent with removing one tuple
+allocation. The last intv pair was an outlier (-17.5%; the other five were
+-2.0% to -4.5%), hence the median within-pair summary. No best-known swaps
+(these are isolated micro rows).
+
+Status: full suite 1132 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.

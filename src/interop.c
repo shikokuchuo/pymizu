@@ -749,9 +749,10 @@ static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
                               int fortran) {
   PyObject *empty = mizu_py_numpy_empty();
   if (empty == NULL) return NULL;
-  PyObject *shape = PyTuple_New(nd);
+  /* a 1-D shape is the scalar itself, saving the one-tuple */
+  PyObject *shape = nd == 1 ? PyLong_FromSsize_t(dims[0]) : PyTuple_New(nd);
   PyObject *arr = NULL;
-  if (shape != NULL) {
+  if (shape != NULL && nd != 1) {
     for (int i = 0; i < nd; i++) {
       PyObject *d = PyLong_FromSsize_t(dims[i]);
       if (d == NULL) {
