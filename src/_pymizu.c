@@ -117,11 +117,9 @@ static PyObject *mizu_py_str_module;      /* __module__ */
 static PyObject *mizu_py_str_qualname;    /* __qualname__ */
 static PyObject *mizu_py_str_base;        /* base */
 PyObject *mizu_py_str_dtype;              /* dtype */
-PyObject *mizu_py_str_order;              /* order */
 PyObject *mizu_py_str_fortran;            /* F */
 PyObject *mizu_py_str_str;                /* str */
 PyObject *mizu_py_str_view;               /* view */
-PyObject *mizu_py_str_int64;              /* int64 */
 PyObject *mizu_py_str_empty;              /* empty */
 static PyObject *mizu_py_str_timeout;     /* timeout */
 static PyObject *mizu_py_str_payload;     /* payload */
@@ -141,10 +139,6 @@ PyObject *mizu_py_dt_complex128;
 PyObject *mizu_py_dt_uint8;
 PyObject *mizu_py_dt_uint64;
 PyObject *mizu_py_dt_bool;
-
-/* kwnames tuples for np.empty(shape, dtype=...) / (..., order="F"). */
-PyObject *mizu_py_kwt_dtype;
-PyObject *mizu_py_kwt_dtype_order;
 
 /* numpy, probed lazily on the first raw-vector read: the module, or Py_None
    when absent. Never a build-time dependency. */
@@ -2484,7 +2478,7 @@ static int py_stage(void *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 
 // Reading ------------------------------------------------------------------------
 
-static PyObject *numpy_empty(void) {
+PyObject *mizu_py_numpy_empty(void) {
   static PyObject *empty_fn;   /* np.empty, resolved on first read */
   if (empty_fn == NULL) {
     PyObject *np = numpy_module();
@@ -2499,7 +2493,7 @@ static PyObject *numpy_empty(void) {
    an init-cached str); the caller fills, releases, and keeps the array.
    NULL with an exception. */
 static PyObject *numpy_sink(PyObject *dt, size_t n, Py_buffer *out) {
-  PyObject *empty = numpy_empty();
+  PyObject *empty = mizu_py_numpy_empty();
   if (empty == NULL) return NULL;
   PyObject *len = PyLong_FromSize_t(n);
   if (len == NULL) {
@@ -6540,6 +6534,50 @@ static int timeout_ms_of(PyObject *arg, double *out) {
   return 0;
 }
 
+/* The cold unknown-keyword half: the running CPython's own tuple parser
+   supplies its version-specific text, including 3.13+'s suggestions. */
+static void fast_kw_native_unknown(PyObject *const *args, Py_ssize_t nargs,
+                                   PyObject *kwnames, const char *fname,
+                                   PyObject *const *kw, Py_ssize_t min,
+                                   Py_ssize_t max) {
+  PyObject *tuple = PyTuple_New(nargs);
+  PyObject *kwargs = PyDict_New();
+  if (tuple == NULL || kwargs == NULL) goto done;
+  for (Py_ssize_t i = 0; i < nargs; i++) {
+    Py_INCREF(args[i]);
+    PyTuple_SET_ITEM(tuple, i, args[i]);
+  }
+  PyObject *const *kwstack = args + nargs;
+  const Py_ssize_t nkwargs = PyTuple_GET_SIZE(kwnames);
+  for (Py_ssize_t j = 0; j < nkwargs; j++) {
+    PyObject *name = PyTuple_GET_ITEM(kwnames, j);
+    if (PyDict_SetItem(kwargs, name, kwstack[j]) < 0) goto done;
+  }
+  char fmt[224];
+  if (min == 0)
+    snprintf(fmt, sizeof fmt, "|%s:%.200s", max == 2 ? "OO" : "O", fname);
+  else if (min == max)
+    snprintf(fmt, sizeof fmt, "%s:%.200s", max == 2 ? "OO" : "O", fname);
+  else
+    snprintf(fmt, sizeof fmt, "O|O:%.200s", fname);
+  char *kwlist[3] = {NULL, NULL, NULL};
+  for (Py_ssize_t i = 0; i < max; i++) {
+    const char *name = PyUnicode_AsUTF8(kw[i]);
+    if (name == NULL) goto done;
+    kwlist[i] = (char *) name;
+  }
+  PyObject *out[2] = {NULL, NULL};
+  int rc = max == 1 ?
+    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &out[0]) :
+    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &out[0], &out[1]);
+  if (rc)
+    PyErr_SetString(PyExc_SystemError,
+                    "pymizu: native keyword parser accepted an unknown keyword");
+done:
+  Py_XDECREF(kwargs);
+  Py_XDECREF(tuple);
+}
+
 /* The METH_FASTCALL|METH_KEYWORDS parse for the hot verbs' formats (1-2
    plain "O" slots, keyword names interned at init): CPython's
    vgetargskeywordsfast_impl specialized — its TypeError text reproduced
@@ -6610,9 +6648,7 @@ static int fast_kw_parse(PyObject *const *args, Py_ssize_t nargs,
     for (Py_ssize_t i = 0; i < max && !known; i++)
       known = name == kw[i] || PyUnicode_Compare(name, kw[i]) == 0;
     if (!known) {
-      PyErr_Format(PyExc_TypeError,
-                   "%.200s() got an unexpected keyword argument '%S'",
-                   fname, name);
+      fast_kw_native_unknown(args, nargs, kwnames, fname, kw, min, max);
       return 0;
     }
   }
@@ -10919,11 +10955,9 @@ PyInit__pymizu(void)
   mizu_py_str_qualname = PyUnicode_InternFromString("__qualname__");
   mizu_py_str_base = PyUnicode_InternFromString("base");
   mizu_py_str_dtype = PyUnicode_InternFromString("dtype");
-  mizu_py_str_order = PyUnicode_InternFromString("order");
   mizu_py_str_fortran = PyUnicode_InternFromString("F");
   mizu_py_str_str = PyUnicode_InternFromString("str");
   mizu_py_str_view = PyUnicode_InternFromString("view");
-  mizu_py_str_int64 = PyUnicode_InternFromString("int64");
   mizu_py_str_empty = PyUnicode_InternFromString("empty");
   mizu_py_str_timeout = PyUnicode_InternFromString("timeout");
   mizu_py_str_payload = PyUnicode_InternFromString("payload");
@@ -10938,24 +10972,20 @@ PyInit__pymizu(void)
   mizu_py_dt_uint8 = PyUnicode_FromString("uint8");
   mizu_py_dt_uint64 = PyUnicode_FromString("uint64");
   mizu_py_dt_bool = PyUnicode_FromString("bool");
-  mizu_py_kwt_dtype = PyTuple_Pack(1, mizu_py_str_dtype);
-  mizu_py_kwt_dtype_order =
-    PyTuple_Pack(2, mizu_py_str_dtype, mizu_py_str_order);
   if (mizu_py_str_arrow_c_array == NULL ||
       mizu_py_str_arrow_c_stream == NULL ||
       mizu_py_str_module == NULL || mizu_py_str_qualname == NULL ||
       mizu_py_str_base == NULL || mizu_py_str_dtype == NULL ||
-      mizu_py_str_order == NULL || mizu_py_str_fortran == NULL ||
+      mizu_py_str_fortran == NULL ||
       mizu_py_str_str == NULL || mizu_py_str_view == NULL ||
-      mizu_py_str_int64 == NULL || mizu_py_str_empty == NULL ||
+      mizu_py_str_empty == NULL ||
       mizu_py_str_timeout == NULL || mizu_py_str_payload == NULL ||
       mizu_py_str_payloads == NULL || mizu_py_str_tasks == NULL ||
       mizu_py_str_slots == NULL || mizu_py_str_n == NULL ||
       mizu_py_dt_float64 == NULL || mizu_py_dt_int32 == NULL ||
       mizu_py_dt_int64 == NULL || mizu_py_dt_complex128 == NULL ||
       mizu_py_dt_uint8 == NULL || mizu_py_dt_uint64 == NULL ||
-      mizu_py_dt_bool == NULL || mizu_py_kwt_dtype == NULL ||
-      mizu_py_kwt_dtype_order == NULL)
+      mizu_py_dt_bool == NULL)
     return NULL;
 
   PyObject *m = PyModule_Create(&pymizu_module);

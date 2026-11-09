@@ -237,6 +237,19 @@ def test_channel_verb_argument_validation(echo):
     assert echo.alive() is False
 
 
+def test_channel_unknown_keyword_matches_pyarg(echo):
+    if sys.version_info >= (3, 13):
+        expected = (
+            "recv_batch() got an unexpected keyword argument 'timeou'. "
+            "Did you mean 'timeout'?"
+        )
+    else:
+        expected = "'timeou' is an invalid keyword argument for recv_batch()"
+    with pytest.raises(TypeError) as exc:
+        echo._h.recv_batch(timeou=1)
+    assert str(exc.value) == expected
+
+
 def test_send_error_shim():
     # the peer shim's err stream: an unprintable exception still frames
     ch = pymizu.Channel.create("import time; time.sleep(5)")

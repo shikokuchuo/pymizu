@@ -729,19 +729,6 @@ extras:
 
 // The builder -----------------------------------------------------------------------
 
-/* np.empty, resolved on the first vector read (mirrors _pymizu.c's
-   numpy_empty). */
-static PyObject *ixr_np_empty(void) {
-  static PyObject *empty_fn;
-  if (empty_fn == NULL) {
-    PyObject *np = mizu_py_numpy_module();
-    if (np == NULL) return NULL;
-    empty_fn = PyObject_GetAttr(np, mizu_py_str_empty);
-    if (empty_fn == NULL) return NULL;
-  }
-  return Py_NewRef(empty_fn);
-}
-
 /* The init-cached dtype str for the hot set (identity by name prefix; the
    callers' literals are fixed). NULL for the temporal forms — those read
    paths convert anyway, so they build the str per call. */
@@ -756,11 +743,11 @@ static PyObject *ixr_dt_cached(const char *dt) {
   return NULL;
 }
 
-/* np.empty(dims, dtype=dt[, order="F"]); NULL with an exception set. */
+/* np.empty(dims, dt[, "F"]); NULL with an exception set. */
 /* Every caller has already gated on numpy's presence. */
 static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
                               int fortran) {
-  PyObject *empty = ixr_np_empty();
+  PyObject *empty = mizu_py_numpy_empty();
   if (empty == NULL) return NULL;
   PyObject *shape = PyTuple_New(nd);
   PyObject *arr = NULL;
@@ -781,11 +768,8 @@ static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
     dts_owned = 1;
   }
   if (shape != NULL && dts != NULL) {
-    /* the dtype (and order) keyword values follow the positional */
     PyObject *stack[3] = {shape, dts, mizu_py_str_fortran};
-    arr = PyObject_Vectorcall(empty, stack, 1,
-                              fortran ? mizu_py_kwt_dtype_order
-                                      : mizu_py_kwt_dtype);
+    arr = PyObject_Vectorcall(empty, stack, fortran ? 3 : 2, NULL);
   }
   if (dts_owned) Py_XDECREF(dts);
   Py_XDECREF(shape);

@@ -73,6 +73,19 @@ def test_submit_argument_validation(pool):
     assert t.collect(timeout=5) == 1
 
 
+def test_pool_unknown_keyword_matches_pyarg(pool):
+    if sys.version_info >= (3, 13):
+        expected = (
+            "submit() got an unexpected keyword argument 'timeou'. "
+            "Did you mean 'timeout'?"
+        )
+    else:
+        expected = "'timeou' is an invalid keyword argument for submit()"
+    with pytest.raises(TypeError) as exc:
+        pool._h.submit(payload=pow, timeou=1)
+    assert str(exc.value) == expected
+
+
 def test_submit_on_destroyed_pool(pool):
     pool.destroy()
     with pytest.raises(ValueError, match="pool handle is closed"):
