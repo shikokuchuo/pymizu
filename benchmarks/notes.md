@@ -1758,3 +1758,37 @@ allocation. The last intv pair was an outlier (-17.5%; the other five were
 
 Status: full suite 1132 pass, 1 skip (crosslang legs included); ruff
 + pyrefly clean.
+
+## 2026-11-09 — Hybrid FASTCALL keyword parsing [(native fallback vs hand match)]
+
+A (`c961d58`) hand-matched keyword names. B binds calls without keywords
+directly and routes every keyword-bearing call through
+`PyArg_ParseTupleAndKeywords`, retaining exact-Unicode normalization when
+reconstructing kwargs.
+
+Four A/B pairs alternating A -> B and B -> A; best of 5 per process, GC
+disabled. A/B columns are the median per-process bests; change is the median
+within-pair ratio. The pool rows are submit + collect round trips against one
+real worker, with collect positional in both rows. The other rows poll an
+empty channel or a pending task.
+
+| call | A ns/call | B ns/call | change |
+|---|---:|---:|---:|
+| recv positional | 48.0 | 46.5 | -3.1% |
+| recv keyword | 52.5 | 154.8 | +195.3% |
+| recv_batch positional | 61.8 | 61.8 | +0.2% |
+| recv_batch keyword | 68.8 | 180.8 | +163.0% |
+| Task.collect positional | 47.6 | 48.9 | +2.3% |
+| Task.collect keyword | 53.5 | 152.5 | +186.5% |
+| Pool.submit+collect positional | 570.2 | 568.5 | -2.0% |
+| Pool.submit+collect keyword | 571.3 | 694.6 | +24.1% |
+
+Positional differences are run-to-run noise (the last pool positional pair
+was +19.8%; the other three were -4.4% to -0.5%). The native keyword fallback
+costs about 100-112 ns per direct boundary call and 123 ns in the pool round
+trip. This trades keyword-call speed for native binding and error semantics
+while retaining the positional FASTCALL gain. No best-known swaps (these are
+isolated micro rows).
+
+Status: full suite 1132 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.

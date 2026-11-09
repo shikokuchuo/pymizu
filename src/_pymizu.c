@@ -6534,14 +6534,15 @@ static int timeout_ms_of(PyObject *arg, double *out) {
   return 0;
 }
 
-/* The cold unknown-keyword half: the running CPython's own tuple parser
-   supplies its version-specific text, including 3.13+'s suggestions. */
-static void fast_kw_native_unknown(PyObject *const *args, Py_ssize_t nargs,
-                                   PyObject *kwnames, const char *fname,
-                                   PyObject *const *kw, Py_ssize_t min,
-                                   Py_ssize_t max) {
+/* The keyword-bearing half: the running CPython's own tuple parser owns
+   binding and version-specific errors, including 3.13+'s suggestions. */
+static int fast_kw_native(PyObject *const *args, Py_ssize_t nargs,
+                          PyObject *kwnames, const char *fname,
+                          PyObject *const *kw, Py_ssize_t min,
+                          Py_ssize_t max, PyObject **slots) {
   PyObject *tuple = PyTuple_New(nargs);
   PyObject *kwargs = PyDict_New();
+  int rc = 0;
   if (tuple == NULL || kwargs == NULL) goto done;
   for (Py_ssize_t i = 0; i < nargs; i++) {
     Py_INCREF(args[i]);
@@ -6571,93 +6572,44 @@ static void fast_kw_native_unknown(PyObject *const *args, Py_ssize_t nargs,
     const char *name = PyUnicode_AsUTF8(kw[i]);
     if (name == NULL) goto done;
     kwlist[i] = (char *) name;
+    slots[i] = NULL;
   }
-  PyObject *out[2] = {NULL, NULL};
-  int rc = max == 1 ?
-    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &out[0]) :
-    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &out[0], &out[1]);
-  if (rc)
-    PyErr_SetString(PyExc_SystemError,
-                    "pymizu: native keyword parser accepted an unknown keyword");
+  rc = max == 1 ?
+    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &slots[0]) :
+    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &slots[0], &slots[1]);
 done:
   Py_XDECREF(kwargs);
   Py_XDECREF(tuple);
+  return rc;
 }
 
 /* The METH_FASTCALL|METH_KEYWORDS parse for the hot verbs' formats (1-2
-   plain "O" slots, keyword names interned at init): CPython's
-   vgetargskeywordsfast_impl specialized — its TypeError text reproduced
-   exactly, and interned kwnames resolve by identity. `kw` holds the
-   interned name per slot, `min` the required count, `max` == the slot
-   count. On success slots are filled with borrowed references (unfilled
-   optionals NULL). 1 ok, 0 with a TypeError set. */
+   plain "O" slots, keyword names interned at init). Calls without keywords
+   bind directly; keyword calls delegate to CPython's native parser. `kw`
+   holds the interned name per slot, `min` the required count, `max` the slot
+   count. On success slots hold borrowed references (unfilled optionals
+   NULL). 1 ok, 0 with an exception set. */
 static int fast_kw_parse(PyObject *const *args, Py_ssize_t nargs,
                          PyObject *kwnames, const char *fname,
                          PyObject *const *kw, Py_ssize_t min,
                          Py_ssize_t max, PyObject **slots) {
   const Py_ssize_t nkwargs = kwnames != NULL ? PyTuple_GET_SIZE(kwnames) : 0;
-  PyObject *const *kwstack = nkwargs != 0 ? args + nargs : NULL;
-  if (nargs + nkwargs > max) {
+  if (nkwargs != 0)
+    return fast_kw_native(args, nargs, kwnames, fname, kw, min, max, slots);
+  if (nargs > max) {
     PyErr_Format(PyExc_TypeError,
-                 "%.200s() takes at most %zd %sargument%s (%zd given)",
-                 fname, max, nargs == 0 ? "keyword " : "",
-                 max == 1 ? "" : "s", nargs + nkwargs);
+                 "%.200s() takes at most %zd argument%s (%zd given)",
+                 fname, max, max == 1 ? "" : "s", nargs);
     return 0;
   }
-  Py_ssize_t left = nkwargs;
-  for (Py_ssize_t i = 0; i < max; i++) {
-    PyObject *cur = NULL;
-    if (i < nargs) {
-      cur = args[i];
-    } else {
-      for (Py_ssize_t j = 0; j < nkwargs; j++) {
-        PyObject *name = PyTuple_GET_ITEM(kwnames, j);
-        if (name == kw[i] ||
-            (PyUnicode_Check(name) &&
-             PyUnicode_Compare(name, kw[i]) == 0)) {
-          cur = kwstack[j];
-          left--;
-          break;
-        }
-      }
-    }
-    slots[i] = cur;
-    if (cur == NULL && i < min) {
-      PyErr_Format(PyExc_TypeError,
-                   "%.200s() missing required argument '%U' (pos %zd)",
-                   fname, kw[i], i + 1);
-      return 0;
-    }
+  if (nargs < min) {
+    PyErr_Format(PyExc_TypeError,
+                 "%.200s() missing required argument '%U' (pos %zd)",
+                 fname, kw[nargs], nargs + 1);
+    return 0;
   }
-  if (left == 0) return 1;
-  /* a keyword repeating a positionally-filled slot */
-  for (Py_ssize_t i = 0; i < nargs; i++) {
-    for (Py_ssize_t j = 0; j < nkwargs; j++) {
-      PyObject *name = PyTuple_GET_ITEM(kwnames, j);
-      if (name == kw[i] ||
-          (PyUnicode_Check(name) && PyUnicode_Compare(name, kw[i]) == 0)) {
-        PyErr_Format(PyExc_TypeError,
-                     "argument for %.200s() given by name ('%U') "
-                     "and position (%zd)", fname, kw[i], i + 1);
-        return 0;
-      }
-    }
-  }
-  /* anything left is unexpected (PyUnicode_Compare never matched it) */
-  for (Py_ssize_t j = 0; j < nkwargs; j++) {
-    PyObject *name = PyTuple_GET_ITEM(kwnames, j);
-    if (!PyUnicode_Check(name)) {
-      PyErr_SetString(PyExc_TypeError, "keywords must be strings");
-      return 0;
-    }
-    int known = 0;
-    for (Py_ssize_t i = 0; i < max && !known; i++)
-      known = name == kw[i] || PyUnicode_Compare(name, kw[i]) == 0;
-    if (!known) {
-      fast_kw_native_unknown(args, nargs, kwnames, fname, kw, min, max);
-      return 0;
-    }
-  }
+  for (Py_ssize_t i = 0; i < max; i++)
+    slots[i] = i < nargs ? args[i] : NULL;
   return 1;
 }
 

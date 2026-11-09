@@ -73,7 +73,7 @@ def test_submit_argument_validation(pool):
     assert t.collect(timeout=5) == 1
 
 
-def test_pool_unknown_keyword_matches_pyarg(pool):
+def test_pool_keyword_handling_matches_pyarg(pool):
     if sys.version_info >= (3, 13):
         expected = (
             "submit() got an unexpected keyword argument 'timeou'. "
@@ -97,6 +97,11 @@ def test_pool_unknown_keyword_matches_pyarg(pool):
     with pytest.raises(TypeError) as exc:
         pool._h.submit(payload=pow, **{Keyword("timeou"): 1})
     assert str(exc.value) == expected
+    assert Keyword.hashes == 1
+
+    Keyword.hashes = 0
+    task = pool.submit(pow, 2, 3)
+    assert task.collect(**{Keyword("timeout"): 5}) == 8
     assert Keyword.hashes == 1
 
 
