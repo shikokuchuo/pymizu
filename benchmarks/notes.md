@@ -1594,3 +1594,16 @@ ahead, the controls inside their bands. Best-known swap: pool
 collect_all_async 3.67M -> 3.79M.
 
 Status: full suite 1125 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-09 — PoolExecutor collect race fix [(697ed01)]
+
+Fix for the row-9b flake recorded in the phase-5 entry above ("task
+handle already collected"): a terminal-at-submit task no longer enters
+the executor's outstanding set, so no drain pass can claim its slot
+ahead of submit's inline collect. Stress gate: the 9b workload looped
+480 rounds (2x the pre-fix ~1/240 failure rate), zero failures. Row 9b
+on the fixed build, one full suite run: 500 / 1k / 2k / 4k at 75.2 /
+78.1 / 80.7 / 82.2k tasks/s, executor sync 5.5 us/task — inside the
+phase-5 bands. No best-known swaps.
+
+Status: full suite 1130 pass, 1 skip; ruff + pyrefly clean.

@@ -78,6 +78,24 @@ def test_burst_resolves_all(pool):
         }
 
 
+def test_submit_from_many_threads(pool):
+    # the concurrent.futures contract: submit() is thread-safe — the
+    # executor's one lock serializes the pool handle's single-producer
+    # injection ring (unserialized, the core's producer guard raises)
+    threads, per = 4, 50
+    with pymizu.PoolExecutor(pool) as ex:
+
+        def burst(base):
+            return [ex.submit(square, base + i) for i in range(per)]
+
+        with concurrent.futures.ThreadPoolExecutor(threads) as tp:
+            bases = (base * per for base in range(threads))
+            futs = [f for batch in tp.map(burst, bases) for f in batch]
+        assert {f.result(timeout=10) for f in futs} == {
+            i * i for i in range(threads * per)
+        }
+
+
 def test_future_timeout(pool):
     with pymizu.PoolExecutor(pool) as ex:
         fut = ex.submit(sleep_ident, 0.5)
@@ -278,10 +296,48 @@ def test_submit_terminal_skips_the_drain_pass(pool, monkeypatch):
         assert drains == []
 
 
+def test_terminal_submit_never_enters_outstanding(pool, monkeypatch):
+    # the outstanding set is the drain's claim domain: a terminal-at-submit
+    # task never enters it, so no drain pass can claim the slot ahead of
+    # submit's inline collect (the collect race's invariant)
+    from pymizu import _pymizu
+
+    claimed = []
+
+    def pending_submit(fn, args, kwargs):
+        task, _ = ex._pool_h._exec_submit(
+            _pymizu._task_frame(fn, args, kwargs), None
+        )
+        return task, None  # route onto the _scan fallback
+
+    def terminal_scan(tasks):
+        deadline = time.monotonic() + 5
+        while not ex._pool_h._tasks_terminal(tasks)[0]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        # _cond is a Condition (RLock): this in-hold scan may re-enter it
+        ex._drain()  # a drain pass now must not find the task
+        return [True] * len(tasks)
+
+    with pymizu.PoolExecutor(pool) as ex:
+        orig_collect = ex._collect_terminal
+
+        def recording_collect(tasks):
+            claimed.extend(tasks)
+            return orig_collect(tasks)
+
+        monkeypatch.setattr(ex, "_exec_submit", pending_submit)
+        monkeypatch.setattr(ex, "_collect_terminal", recording_collect)
+        monkeypatch.setattr(ex, "_scan", terminal_scan)
+        fut = ex.submit(square, 6)
+        assert fut.result(timeout=5) == 36
+        assert fut._task not in claimed
+
+
 def test_submit_recheck_losing_to_fail_all(pool, monkeypatch):
-    # a fail-all landing between the insert and the re-check: the
-    # submit's resolve skips the already-failed future (the pop finds
-    # nothing) rather than resolving it a second time
+    # a fail-all landing during the re-check cannot touch the
+    # not-yet-outstanding future: it resolves with its own outcome (the
+    # task did complete), and the next submit raises the broken error
     from pymizu import _pymizu
 
     err = pymizu.MizuError("infrastructure failure")
@@ -293,6 +349,11 @@ def test_submit_recheck_losing_to_fail_all(pool, monkeypatch):
         return task, None
 
     def failing_scan(tasks):
+        deadline = time.monotonic() + 5
+        while not ex._pool_h._tasks_terminal(tasks)[0]:
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        # _cond is a Condition (RLock): this in-hold scan may re-enter it
         ex._fail_all(err)
         return [True] * len(tasks)
 
@@ -300,8 +361,9 @@ def test_submit_recheck_losing_to_fail_all(pool, monkeypatch):
         monkeypatch.setattr(ex, "_exec_submit", pending_submit)
         monkeypatch.setattr(ex, "_scan", failing_scan)
         fut = ex.submit(square, 2)
+        assert fut.result(timeout=5) == 4
         with pytest.raises(pymizu.MizuError) as exc_info:
-            fut.result(timeout=5)
+            ex.submit(square, 2)
         assert exc_info.value is err
 
 
