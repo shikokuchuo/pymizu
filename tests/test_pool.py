@@ -582,6 +582,18 @@ def test_collect_all(pool):
     assert pool.collect_all(tasks, timeout=10) == [2**i for i in range(6)]
 
 
+@pytest.mark.parametrize("n", [16, 17])
+def test_collect_any_all_storage_boundary(pool, n):
+    tasks = [pool.submit(len, [i]) for i in range(n)]
+    assert pool.collect_all(tasks, timeout=10) == [1] * n
+    tasks = [pool.submit(len, [i]) for i in range(n)]
+    idx, value = pool.collect_any(tasks, timeout=10)
+    assert value == 1
+    for i, task in enumerate(tasks):
+        if i != idx:
+            assert task.collect(timeout=10) == 1
+
+
 def test_collect_all_error_index(pool):
     tasks = [pool.submit(len, [i]) for i in range(3)]
     tasks.append(pool.submit(len, 5))
@@ -617,6 +629,24 @@ def test_collect_any_all_validate_tasks(pool):
         pool.collect_all([t1], timeout=0)
     assert t2.collect(timeout=5) == 2
     pa.destroy()
+
+
+@pytest.mark.parametrize("n", [16, 17])
+def test_collect_any_all_storage_boundary_errors(pool, n):
+    pa = pymizu.Pool.attach(pool.token)
+    try:
+        tasks = [pool.submit(len, [i]) for i in range(n - 1)]
+        for verb in (pool.collect_any, pool.collect_all):
+            with pytest.raises(TypeError, match="not a task handle"):
+                verb([*tasks, 1], timeout=0)
+        other = pa.submit(len, [1])
+        for verb in (pool.collect_any, pool.collect_all):
+            with pytest.raises(ValueError, match="same pool handle"):
+                verb([*tasks, other], timeout=0)
+        assert pool.collect_all(tasks, timeout=10) == [1] * (n - 1)
+        assert other.collect(timeout=10) == 1
+    finally:
+        pa.destroy()
 
 
 def test_collect_any_cancelled_index(pool):

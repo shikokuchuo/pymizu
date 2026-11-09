@@ -952,6 +952,20 @@ def test_tasks_enroll_validates_pool_membership(pool):
         other.destroy()
 
 
+def test_tasks_enroll_stale_task_rolls_back():
+    pool = pymizu.Pool.create(1, max_submitters=1, result_slots=2)
+    try:
+        stale = pool.submit(square, 1)
+        assert stale.collect(timeout=5) == 1
+        tasks = [pool.submit(square, i) for i in (2, 3)]  # reincarnate slot 0
+        for _ in range(2):
+            with pytest.raises(pymizu.MizuError, match="already collected"):
+                pool._h._tasks_enroll([stale])
+        assert [t.collect(timeout=5) for t in tasks] == [4, 9]
+    finally:
+        pool.stop()
+
+
 def test_pool_destroy_settles():
     p = pymizu.Pool.create(1)
 
