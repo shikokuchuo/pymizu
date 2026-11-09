@@ -82,7 +82,7 @@ probes and A/B isolations stay in the log.
 | event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
 | event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
 | event-driven, pool collect_async | 1.65M tasks/s | 2026-11-08 |
-| event-driven, pool collect_all_async | 3.67M tasks/s | 2026-11-08 |
+| event-driven, pool collect_all_async | 3.79M tasks/s | 2026-11-09 |
 | event-driven, pool 64 waiters | 3.44M tasks/s | 2026-11-08 |
 | executor outstanding 500 / 1,000 / 2,000 / 4,000 | 80.6k / 79.7k / 82.1k / 83.2k tasks/s | 2026-11-08 |
 | executor sync | 4.5 us/task | 2026-11-08 |
@@ -1556,3 +1556,41 @@ best-known swaps.
 
 Status: full suite 1118 pass, 1 skip; ruff + pyrefly clean. libmizu
 unit/ext/integration tiers pass, ASan+UBSan clean; exports 203 symbols.
+
+## 2026-11-09 — phase-5 post-rebase A/B against phase-4 main [(1c3bc43)]
+
+The A/B the phase-5 entry deferred ("the re-baseline predates Phase
+4"): perf/phase-5 rebased onto main (617f68f, phase 4 merged),
+alternating full-suite pairs, branch/main x2. The large-slot win is
+intact on top of the frame-stage cache; the one-computed-col row is
+flat here (its remainder still sits on the R side's older vendored
+core, and today's baseline already runs ahead of the original entry's
+band). One caveat: the first branch leg aborted in row 9b with "task
+handle already collected" — a pre-existing executor race, reproduced
+on main at ~1/240 reps (the plan lives in
+.posit/assistant/plans/2026-11-09-executor-collect-race.md); all legs
+below ran clean on retry.
+
+| row | main (2 runs) | branch (2 runs) |
+|----|----|----|
+| frame 10col relay, Python (flat) | 4,574.6 / 4,963.0 us/send | 1,168.0 / 1,174.3 us/send (~4x) |
+| frame 10col relay, one computed col | 209.4 / 229.0 us/rt | 217.4 / 207.1 us/rt |
+| frame 10col relay, unmodified REF | 5.5 / 5.4 us/rt | 5.5 / 5.5 us/rt |
+| executor outstanding 500 / 1k / 2k / 4k | 79.4 / 77.7 / 79.9 / 81.1k and 76.0 / 75.4 / 78.2 / 76.2k | 77.5 / 78.1 / 81.1 / 83.6k and 80.4 / 81.0 / 81.6 / 83.5k |
+| executor sync | 5.2 / 5.2 us/task | 4.6 / 4.9 us/task |
+| pool collect_async | 1.55M / 1.50M | 1.54M / 1.53M |
+| pool collect_all_async | 3.72M / 3.65M | 3.79M / 3.73M |
+| pool 64 waiters | 3.28M / 3.19M | 3.30M / 3.21M |
+| channel recv_async / cancel | 837k / 1.01M and 809k / 994k | 830k / 891k and 823k / 1.04M |
+| pipelined pool / batch | 1.71M / 3.27M and 1.35M / 3.35M | 1.61M / 3.11M and 1.48M / 3.69M |
+| fan-out x 2000 | 295.7k / 280.6k | 268.3k / 282.0k |
+| codec list / dict rt | 0.5 / 0.6 and 0.6 / 0.7 us/rt | 0.5 / 0.5 and 0.6 / 0.6 us/rt |
+| frame resend, heap / region | 9.7 / 9.3 and 0.5 / 0.5 us/send | 9.6 / 9.7 and 0.5 / 0.5 us/send |
+| view arrow export, map / converted | 11.5 / 10.0 and 11.7 / 9.9 us/export | 11.1 / 10.3 and 11.1 / 10.4 us/export |
+
+Phase 4's rows hold their gains under phase 5 (codec, frame resend,
+view export flat or better), the executor rows run a few percent
+ahead, the controls inside their bands. Best-known swap: pool
+collect_all_async 3.67M -> 3.79M.
+
+Status: full suite 1125 pass, 1 skip; ruff + pyrefly clean.
