@@ -13,7 +13,6 @@ from collections.abc import Callable as _Callable
 from collections.abc import Generator as _Generator
 from collections.abc import Iterable as _Iterable
 from collections.abc import Iterator as _Iterator
-from importlib import metadata as _metadata
 from typing import TYPE_CHECKING
 from typing import Any as _Any
 
@@ -66,11 +65,6 @@ if TYPE_CHECKING:
 
     from pymizu._dimarray import DimArray
     from pymizu._map import Map, PreparedMap
-
-try:
-    __version__ = _metadata.version("pymizu")
-except _metadata.PackageNotFoundError:  # pragma: no cover
-    __version__ = "0.0.0"
 
 _DROP_SOURCE = 0x53  # 'S': UTF-8 source text in the peer's language
 _TOKEN_RE = _re.compile(r"[0-9a-f]+_[0-9a-f]+\Z")
@@ -1858,6 +1852,15 @@ def using_pool(pool: Pool | None) -> _Generator[Pool | None, None, None]:
 
 
 def __getattr__(name: str) -> _Any:
+    if name == "__version__":
+        from importlib import metadata
+
+        try:
+            version = metadata.version("pymizu")
+        except metadata.PackageNotFoundError:  # pragma: no cover
+            version = "0.0.0"
+        globals()[name] = version
+        return version
     # Lazy re-export: pymizu._map try-imports numpy, which stays deferred
     # until the first map call rather than pymizu's own import.
     if name == "Map":
