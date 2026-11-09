@@ -558,7 +558,7 @@ def test_recv_batch_async_validates_n(ch):
     asyncio.run(main())
 
 
-def test_recv_batch_async_index_n(ch):
+def test_recv_batch_async_index_n():
     # n ducks like the sync verb's: anything __index__-able
     class Index:
         def __init__(self, n):
@@ -567,13 +567,19 @@ def test_recv_batch_async_index_n(ch):
         def __index__(self):
             return self.n
 
-    async def main():
-        fut = ch.recv_batch_async(Index(2))
-        ch.send_batch(["a", "b", "c"])
-        assert await fut == ["a", "b"]
-        assert await ch.recv_async() == "c"
+    host, peer = chan_pair()
+    try:
 
-    asyncio.run(main())
+        async def main():
+            fut = host.recv_batch_async(Index(2))
+            peer.send_batch(["a", "b", "c"])  # in the ring before the drain
+            assert await fut == ["a", "b"]
+            assert await host.recv_async() == "c"
+
+        asyncio.run(main())
+    finally:
+        host.destroy()
+        peer.destroy()
 
 
 def test_recv_batch_async_on_destroyed_rolls_back(ch):
