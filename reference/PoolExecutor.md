@@ -4,7 +4,7 @@ A `concurrent.futures.Executor` over a pymizu pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L50-L380)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L50-L375)
 
 ``` python
 PoolExecutor(
@@ -57,7 +57,7 @@ Spawn an owned pool and wrap it.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L134-L156)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L133-L155)
 
 ``` python
 create(
@@ -86,7 +86,7 @@ Shut down the executor.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L246-L274)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L241-L269)
 
 ``` python
 shutdown(
@@ -110,7 +110,7 @@ Schedule `fn(*args, **kwargs)` on the pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L158-L235)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L157-L230)
 
 ``` python
 submit(
