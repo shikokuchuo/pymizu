@@ -197,9 +197,8 @@ class PoolExecutor(_Executor):
                 # the facade path keeps the call-spec and callable gates
                 with self._submits:
                     task = self._pool.submit(fn, *args, **kwargs)
-                # the per-slot NOTIFY announce, then the re-check: a slot
-                # already terminal at this point resolves from the scan
-                # (announce before arming is the parker transplant)
+                # the per-slot NOTIFY announce (announce before the
+                # re-check is the parker transplant), then the scan
                 self._pool_h._task_notify([task], True)
                 terminal = None
             else:
@@ -211,27 +210,26 @@ class PoolExecutor(_Executor):
                 with self._submits:
                     # the fused submit + announce + terminal re-check
                     task, terminal = self._exec_submit(fn, args, kwargs)
+            if terminal is None:
+                # the facade path's re-check, under the same hold: the
+                # terminal verdict is in hand ahead of the insert
+                terminal = self._scan([task])[0]
             future = _TaskFuture(task, self._detach)
-            self._outstanding[future] = task
-        # the re-check covers a publish that beat the announce: resolve
-        # the new task only (a drain pass per submit costs O(outstanding)
-        # per submission); a publish past the announce rides the armed
-        # word's wake instead. Not popped: a fail-all landed in between
-        # and already settled the future
-        if terminal is None:
-            terminal = self._scan([task])[0]
+            if not terminal:
+                # the outstanding set is the drain's claim domain: a
+                # terminal-at-submit task never enters it, so the inline
+                # collect below is its sole executor-side claimant (the
+                # core's collect CAS stays the backstop for outside
+                # claimants)
+                self._outstanding[future] = task
+        # never outstanding: no drain pass can claim the slot first
         if terminal:
-            with self._cond:
-                popped = self._outstanding.pop(future, None) is not None
-            if popped:
-                try:
-                    value = task.collect(0)
-                except Exception as e:
-                    self._resolve(future, exception=e)
-                else:
-                    self._resolve(future, result=value)
-                with self._cond:
-                    self._cond.notify_all()
+            try:
+                value = task.collect(0)
+            except Exception as e:
+                self._resolve(future, exception=e)
+            else:
+                self._resolve(future, result=value)
         return future
 
     def _exec_submit(
