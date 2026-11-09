@@ -4,7 +4,7 @@ Tear down the pool handle immediately, without waiting.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1618-L1638)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1612-L1632)
 
 ``` python
 Pool.destroy()

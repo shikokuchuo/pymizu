@@ -4,7 +4,7 @@ True while the peer process is alive.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L618-L620)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L612-L614)
 
 ``` python
 Channel.alive()

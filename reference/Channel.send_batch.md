@@ -4,7 +4,7 @@ Send several values in one call.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L356-L362)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L350-L356)
 
 ``` python
 Channel.send_batch(xs)

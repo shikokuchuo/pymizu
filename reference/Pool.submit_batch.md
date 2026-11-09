@@ -4,7 +4,7 @@ Submit one task per zero-arg callable in `fns` in one call.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1104-L1138)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1098-L1132)
 
 ``` python
 Pool.submit_batch(

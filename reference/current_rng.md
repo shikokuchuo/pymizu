@@ -4,7 +4,7 @@ The current element's own numpy Generator, inside a seeded map.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1757-L1788)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1751-L1782)
 
 ``` python
 current_rng()
