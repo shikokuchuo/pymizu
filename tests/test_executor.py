@@ -315,6 +315,7 @@ def test_terminal_submit_never_enters_outstanding(pool, monkeypatch):
         while not ex._pool_h._tasks_terminal(tasks)[0]:
             assert time.monotonic() < deadline
             time.sleep(0.001)
+        # _cond is a Condition (RLock): this in-hold scan may re-enter it
         ex._drain()  # a drain pass now must not find the task
         return [True] * len(tasks)
 
@@ -352,6 +353,7 @@ def test_submit_recheck_losing_to_fail_all(pool, monkeypatch):
         while not ex._pool_h._tasks_terminal(tasks)[0]:
             assert time.monotonic() < deadline
             time.sleep(0.001)
+        # _cond is a Condition (RLock): this in-hold scan may re-enter it
         ex._fail_all(err)
         return [True] * len(tasks)
 
