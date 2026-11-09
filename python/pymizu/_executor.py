@@ -105,14 +105,13 @@ class PoolExecutor(_Executor):
         # facade's attribute walk
         self._pool_h = pool._h
         self._stop_pool = stop_pool
+        # the one lock: serializes the core submits (a pool handle's
+        # injection ring is single-producer) and guards the outstanding
+        # set. The drain never submits — its scan's atomic loads and
+        # terminal collects need no lock: the binding declares the split
+        # waiter, so a collect hands its releases to the submitting
+        # thread instead of touching the free list
         self._cond = _threading.Condition()
-        # one lock serializing the core submits: a pool handle's
-        # injection ring is single-producer, so concurrent submitters
-        # serialize (the drain never touches it — the scan's atomic
-        # loads and the terminal collects need no lock: the binding
-        # declares the split waiter, so a collect hands its releases to
-        # the submitting thread instead of touching the free list)
-        self._submits = _threading.Lock()
         # serializes overlapping drains (the listener callback and the
         # submit-time re-check): the skipped one is covered by the
         # running one's re-check pass
@@ -195,8 +194,7 @@ class PoolExecutor(_Executor):
                 self._armed = True
             if type(fn) is _pkg.call or not callable(fn):
                 # the facade path keeps the call-spec and callable gates
-                with self._submits:
-                    task = self._pool.submit(fn, *args, **kwargs)
+                task = self._pool.submit(fn, *args, **kwargs)
                 # the per-slot NOTIFY announce (announce before the
                 # re-check is the parker transplant), then the scan
                 self._pool_h._task_notify([task], True)
@@ -207,9 +205,8 @@ class PoolExecutor(_Executor):
                     if ident is not None:
                         _pkg._check_native(ident, "Pool.submit")
                         self._native = True
-                with self._submits:
-                    # the fused submit + announce + terminal re-check
-                    task, terminal = self._exec_submit(fn, args, kwargs)
+                # the fused submit + announce + terminal re-check
+                task, terminal = self._exec_submit(fn, args, kwargs)
             if terminal is None:
                 # the facade path's re-check, under the same hold: the
                 # terminal verdict is in hand ahead of the insert

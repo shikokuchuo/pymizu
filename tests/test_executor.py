@@ -78,6 +78,24 @@ def test_burst_resolves_all(pool):
         }
 
 
+def test_submit_from_many_threads(pool):
+    # the concurrent.futures contract: submit() is thread-safe — the
+    # executor's one lock serializes the pool handle's single-producer
+    # injection ring (unserialized, the core's producer guard raises)
+    threads, per = 4, 50
+    with pymizu.PoolExecutor(pool) as ex:
+
+        def burst(base):
+            return [ex.submit(square, base + i) for i in range(per)]
+
+        with concurrent.futures.ThreadPoolExecutor(threads) as tp:
+            bases = (base * per for base in range(threads))
+            futs = [f for batch in tp.map(burst, bases) for f in batch]
+        assert {f.result(timeout=10) for f in futs} == {
+            i * i for i in range(threads * per)
+        }
+
+
 def test_future_timeout(pool):
     with pymizu.PoolExecutor(pool) as ex:
         fut = ex.submit(sleep_ident, 0.5)
