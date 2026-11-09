@@ -42,7 +42,7 @@ probes and A/B isolations stay in the log.
 | pipelined, channel | 4.68M rt/s | 2026-10-03 |
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
-| pipelined, pool batch | 4.09M tasks/s | 2026-11-08 |
+| pipelined, pool batch | 4.15M tasks/s | 2026-11-09 |
 | payload 8,000 B | 2.1 us/task | 2026-11-08 |
 | payload 800,000 B | 55.4 us/task | 2026-11-08 |
 | payload 8,000,000 B | 101.7 us/task | 2026-11-08 |
@@ -54,7 +54,7 @@ probes and A/B isolations stay in the log.
 | map trivial f, stream | 0.17 us/elt | 2026-11-08 |
 | map trivial f, prepared | 0.05 us/elt | 2026-11-06 |
 | map winsum x 2000 | 715.0k tasks/s | 2026-11-08 |
-| map winsum x 20000 | 759.3k tasks/s | 2026-11-06 |
+| map winsum x 20000 | 783.1k tasks/s | 2026-11-09 |
 | map skewed f x 4000 | 5.1 ms wall | 2026-11-08 |
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
@@ -82,8 +82,8 @@ probes and A/B isolations stay in the log.
 | event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
 | event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
 | event-driven, pool collect_async | 1.65M tasks/s | 2026-11-08 |
-| event-driven, pool collect_all_async | 3.79M tasks/s | 2026-11-09 |
-| event-driven, pool 64 waiters | 3.44M tasks/s | 2026-11-08 |
+| event-driven, pool collect_all_async | 3.85M tasks/s | 2026-11-09 |
+| event-driven, pool 64 waiters | 3.61M tasks/s | 2026-11-09 |
 | executor outstanding 500 / 1,000 / 2,000 / 4,000 | 80.6k / 79.7k / 82.1k / 83.2k tasks/s | 2026-11-08 |
 | executor sync | 4.5 us/task | 2026-11-08 |
 
@@ -1607,3 +1607,48 @@ on the fixed build, one full suite run: 500 / 1k / 2k / 4k at 75.2 /
 phase-5 bands. No best-known swaps.
 
 Status: full suite 1130 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-09 — Build flags: -O3 pin, LTO, hidden visibility (perf/build-flags)
+
+Phase 1 of the 2026-11-09 performance adoption plan: setup.py pins
+-O3 -DNDEBUG -fvisibility=hidden -flto on POSIX (/clang:-O3
+/clang:-flto=thin, linked with lld-link, on Windows) and cibuildwheel
+restates the flags plus link-time symbol stripping for the release
+wheels. The extension's export surface drops 310 -> 1
+(PyInit__pymizu) and the .so 631K -> 605K. Homebrew Python already
+compiled with -O3, so the local delta is LTO + visibility; the -O3
+pin removes dependence on each CI image's sysconfig defaults.
+
+Clean back-to-back A/B, old flags / new flags on an idle machine (an
+earlier baseline, contaminated by an overlapping compile, was
+discarded). The two builds are within run-to-run noise on essentially
+every row; several rate rows land a few percent above the best-known
+table on BOTH builds (today's machine runs hot). Payload 800,000 B
+read ~6% slower on the new build in the first two pairs (+3.7, +3.6
+us); a third pair ran 60.0 / 61.7 us (+1.7 us), the old build having
+drifted up from ~56 to 60 on its own — three pairs, direction
+consistent but the gap sits inside the row's own drift, so it is
+recorded as machine noise, not an LTO regression.
+
+Results (old / new, one suite each):
+
+| row | old flags | new flags |
+|---|---|---|
+| sequential rt, channel / pool | 0.4 / 0.6 us | 0.4 / 0.7 us |
+| codec list / dict rt | 0.5 / 0.6 us | 0.5 / 0.6 us |
+| pipelined, pool / batch | 1.84M / 4.08M | 1.96M / 4.15M |
+| payload 8k / 800k / 8M | 2.0 / 56.1 / 104.2 us | 2.4 / 59.7 / 102.2 us |
+| map winsum x 2000 / x 20000 | 609k / 766k | 700k / 783k |
+| fan-out x 2000 | 297.2k | 275.0k |
+| pool collect_async / collect_all_async | 1.60M / 3.81M | 1.58M / 3.85M |
+| pool 64 waiters | 3.44M | 3.61M |
+| channel armed / recv_async | 2.64M / 848k | 2.62M / 853k |
+| executor 500 / 1k / 2k / 4k | 79.2 / 80.9 / 79.4 / 82.3k | 82.3 / 76.1 / 79.6 / 81.8k |
+| executor sync | 4.3 us | 4.8 us |
+
+Best-known swaps from the new-flags run: pipelined pool batch 4.09M ->
+4.15M, map winsum x 20000 759.3k -> 783.1k, pool collect_all_async
+3.79M -> 3.85M, pool 64 waiters 3.44M -> 3.61M.
+
+Status: full suite 1130 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.
