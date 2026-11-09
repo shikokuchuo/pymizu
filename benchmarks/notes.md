@@ -1823,3 +1823,16 @@ rows).
 
 Status: full suite 1136 pass, 1 skip (crosslang legs included); ruff
 + pyrefly clean.
+
+## 2026-11-09 — Phase 4a lazy package version [(2d9c9a5 A/B)]
+
+A eagerly imported `importlib.metadata` and resolved `pymizu.__version__`;
+B resolves it on first access and caches the value in the module globals.
+Five isolated `-X importtime` runs per build, with the first cold run
+excluded from the summary: median cumulative `import pymizu` time fell
+from 31.1 ms to 21.2 ms (about 32%). The metadata import is absent from B's
+import trace; version lookup and the existing public-API tests are unchanged.
+No best-known swaps (import time is an isolated gate row).
+
+Status: full suite 1137 pass, 1 skip (crosslang legs included); ruff format,
+ruff check and pyrefly clean.

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster `import pymizu`: package version metadata is now loaded only when
+  `pymizu.__version__` is accessed.
 - Faster sends, receives, and pool task round-trips across the board:
   wheels (and source builds) now compile with `-O3` and link-time
   optimization (thin LTO on Windows), and the extension no longer
