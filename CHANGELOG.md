@@ -29,10 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   processes.
 - Faster `Pool.submit()`: repeated submits of the same callable,
   `pymizu.call()` spec tasks, and tasks with buffer-protocol arguments
-  such as numpy arrays. Replacing a function in an already-imported
-  module no longer affects workers that have already run it: restart
-  with `retire()` / `spawn_workers()`, or install cloudpickle to send
-  callables by value.
+  such as numpy arrays.
+- Faster task-fn resolution on workers, notably on a module's first use
+  per worker.
 - Faster `Pool.map()`: per-element dispatch (particularly with no extra
   arguments), result publishing on smaller runs, and collection of
   numpy-scalar results, which no longer pass through pickle.

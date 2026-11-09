@@ -367,7 +367,9 @@ finalizer — short-circuits to the released-pool answer instead).
   the private read (`pool_entry_bytes` resolves INLINE/RAWVEC/STR1/
   SHM_RAW first; byte-3 misroute guard; an R-magic private frame gets
   the neutral err stream), and `pymizu_ix_task_run` (interop.c)
-  decodes straight off the cursor: importlib resolution + vectorcall,
+  decodes straight off the cursor: sys.modules-first resolution
+  (`PyImport_GetModule`, the import machinery only on a first-ever
+  import) + vectorcall,
   or the ast split (`pymizu._exec_source`) with args bound in a fresh
   namespace (`_1`, `_2`, ... for positional). The task stream's
   submitter identity keys the publish formats: foreign → the err
