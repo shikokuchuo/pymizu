@@ -4716,15 +4716,26 @@ static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
   return frame_read_flat(p, end, ctx);
 }
 
-/* A by-reference fn: import the module (sys.modules-cached), then walk
-   the qualname attribute path. A resolution failure (a missing module on
-   the worker) raises normally — inside py_exec's read_impl call it
-   becomes the task's ERR envelope via the publish_exc discipline. */
-static PyObject *fn_resolve_uncached(PyObject *mod, PyObject *qual) {
-  const char *name = PyUnicode_AsUTF8(mod);
-  if (name == NULL) return NULL;
-  PyObject *obj = PyImport_ImportModule(name);
-  if (obj == NULL) return NULL;
+/* A by-reference fn: resolve the module through sys.modules first, the
+   import machinery only on a first-ever import, then walk the qualname
+   attribute path. Resolution is fresh per task, so a callable replaced in
+   an already-imported module is picked up on the next submission. A
+   resolution failure (a missing module on the worker) raises normally —
+   inside py_exec's read_impl call it becomes the task's ERR envelope via
+   the publish_exc discipline. */
+static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
+  PyObject *obj = PyImport_GetModule(mod);  /* new ref; NULL, no error, on miss */
+  if (obj == Py_None) {                     /* None sentinel: a miss — the */
+    Py_DECREF(obj);                         /* machinery raises its proper */
+    obj = NULL;                             /* "import halted" ImportError */
+  }
+  if (obj == NULL) {
+    if (PyErr_Occurred()) return NULL;
+    const char *name = PyUnicode_AsUTF8(mod);
+    if (name == NULL) return NULL;
+    obj = PyImport_ImportModule(name);      /* first-ever import: full machinery */
+    if (obj == NULL) return NULL;
+  }
   Py_ssize_t qi = 0, qn = PyUnicode_GetLength(qual);
   if (qn < 0) {
     Py_DECREF(obj);
@@ -4747,46 +4758,6 @@ static PyObject *fn_resolve_uncached(PyObject *mod, PyObject *qual) {
     qi = dot + 1;
   }
   return obj;
-}
-
-/* The resolution cache: (mod, qual) -> fn, success-only, cleared whole at
-   the cap. Every key is an importable module attribute (the fn_ref_parts
-   gate), and a worker only executes tasks, so serving a stale object
-   needs a mid-process rebind — not picked up (escape hatches: retire() /
-   spawn_workers, or cloudpickle, whose kind 1 bypasses the cache).
-   GIL-serialized by the decode path; a cache bookkeeping failure never
-   fails the resolved task. */
-#define MIZU_FN_CACHE_MAX 64
-static PyObject *mizu_fn_cache;
-
-static PyObject *fn_resolve(PyObject *mod, PyObject *qual) {
-  PyObject *key = PyTuple_Pack(2, mod, qual);
-  if (key == NULL) return NULL;
-  if (mizu_fn_cache != NULL) {
-    PyObject *hit = PyDict_GetItemWithError(mizu_fn_cache, key);
-    if (hit != NULL) {
-      Py_INCREF(hit);
-      Py_DECREF(key);
-      return hit;
-    }
-    if (PyErr_Occurred()) {
-      Py_DECREF(key);
-      return NULL;
-    }
-  }
-  PyObject *fn = fn_resolve_uncached(mod, qual);
-  if (fn != NULL) {
-    if (mizu_fn_cache == NULL) mizu_fn_cache = PyDict_New();
-    if (mizu_fn_cache == NULL) {
-      PyErr_Clear();
-    } else {
-      if (PyDict_Size(mizu_fn_cache) >= MIZU_FN_CACHE_MAX)
-        PyDict_Clear(mizu_fn_cache);
-      if (PyDict_SetItem(mizu_fn_cache, key, fn) < 0) PyErr_Clear();
-    }
-  }
-  Py_DECREF(key);
-  return fn;
 }
 
 /* The task frame: fn kind byte (0 by reference, 1 pickled), the args

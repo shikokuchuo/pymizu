@@ -16,6 +16,7 @@ from functools import partial
 import numpy as np
 import pytest
 import tests.helpers as helpers
+import tests.helpers_late as helpers_late
 from tests.helpers import (
     BufferFailAfterFirst,
     array_sum,
@@ -101,20 +102,9 @@ def test_fn_without_module_or_qualname_pickles(pool):
     assert pool.submit(noqual, 1).collect(timeout=5) == 3
 
 
-def test_fn_cache_clear_on_full():
-    # 70 distinct by-reference callables: past the cache cap (64) the
-    # worker's resolution cache clears whole and re-caches — results stay
-    # exact. One worker, so every resolution lands in one cache.
-    with pymizu.Pool.create(1) as p:
-        tasks = [
-            p.submit(getattr(helpers, f"cache_evict_{i}")) for i in range(70)
-        ]
-        assert [t.collect(timeout=15) for t in tasks] == list(range(70))
-
-
-def test_fn_cache_serves_stale_rebind(monkeypatch):
-    # the worker's resolution cache serves the first-seen object: a
-    # mid-process rebind is not picked up (documented on Pool.submit)
+def test_fn_resolve_picks_up_rebind(monkeypatch):
+    # resolution is fresh per task off the worker's imported modules: a
+    # mid-process rebind is picked up on the next submission
     fn = helpers.identity
     h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
     try:
@@ -126,7 +116,7 @@ def test_fn_cache_serves_stale_rebind(monkeypatch):
         p = pymizu.Pool._wrap(h)
         assert p.submit(fn, 1).collect(timeout=10) == 1
         monkeypatch.setattr(helpers, "identity", lambda x: "rebound")
-        assert p.submit(fn, 2).collect(timeout=10) == 2
+        assert p.submit(fn, 2).collect(timeout=10) == "rebound"
         p.stop()
         loop.join(timeout=10)
         wk.destroy()
@@ -134,9 +124,16 @@ def test_fn_cache_serves_stale_rebind(monkeypatch):
         h.destroy()
 
 
-def test_fn_cache_miss_then_success(monkeypatch):
-    # the resolution cache stores successes only: a task whose module is
-    # not yet importable errors, then resolves once it is
+def test_fn_resolve_first_import():
+    # the miss tier: a callable from a module a fresh worker has not yet
+    # imported resolves through the full import machinery
+    with pymizu.Pool.create(1) as p:
+        assert p.submit(helpers_late.forty_two).collect(timeout=10) == 42
+
+
+def test_fn_resolve_miss_then_success(monkeypatch):
+    # a task whose module is not yet importable errors off the miss
+    # tier's ImportError, then resolves via sys.modules once it is
     mod = types.ModuleType("dynmod_phase3")
 
     def late():

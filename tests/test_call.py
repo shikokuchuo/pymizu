@@ -97,21 +97,9 @@ def test_spec_tasks_run_same_language():
             p.submit(pymizu.call("math.sqrt", 16), 1)
 
 
-def test_spec_fn_cache_clear_on_full():
-    # the interop task path's name cache, past its clear-on-full cap (64):
-    # one worker, so every resolution lands in one cache — results stay
-    # exact
-    with pymizu.Pool.create(1) as p:
-        tasks = [
-            p.submit(pymizu.call(f"tests.helpers.cache_evict_{i}"))
-            for i in range(70)
-        ]
-        assert [t.collect(timeout=15) for t in tasks] == list(range(70))
-
-
-def test_spec_fn_cache_serves_stale_rebind(monkeypatch):
-    # the name cache's staleness discipline is the by-ref fn cache's
-    # (documented on Pool.submit): a mid-process rebind is not picked up
+def test_spec_fn_resolve_picks_up_rebind(monkeypatch):
+    # spec name resolution is fresh per task off the worker's imported
+    # modules: a mid-process rebind is picked up on the next submission
     h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
     try:
         wk = _pymizu._pool_worker_join(h.token, 0)
@@ -134,7 +122,7 @@ def test_spec_fn_cache_serves_stale_rebind(monkeypatch):
             p.submit(pymizu.call("tests.helpers.identity", 2)).collect(
                 timeout=10
             )
-            == 2
+            == "rebound"
         )
         p.stop()
         loop.join(timeout=10)
@@ -143,9 +131,9 @@ def test_spec_fn_cache_serves_stale_rebind(monkeypatch):
         h.destroy()
 
 
-def test_spec_fn_cache_miss_then_success(monkeypatch):
-    # the name cache stores successes only: a spec task whose attribute
-    # does not yet exist errors, then resolves once it does
+def test_spec_fn_resolve_miss_then_success(monkeypatch):
+    # a spec task whose attribute does not yet exist errors, then
+    # resolves once it does (resolution is fresh per task)
     h = _pymizu._pool_new(1, 8, 64, 64, 64, 512)
     try:
         wk = _pymizu._pool_worker_join(h.token, 0)

@@ -1652,3 +1652,34 @@ Best-known swaps from the new-flags run: pipelined pool batch 4.09M ->
 
 Status: full suite 1130 pass, 1 skip (crosslang legs included); ruff
 + pyrefly clean.
+
+## 2026-11-09 — task-fn resolution through sys.modules; the fn caches dropped [(fn-resolve-sysmodules vs 77975ce)]
+
+A/B probe for the fn-resolve change (PyImport_GetModule first, import
+machinery only on a first-ever import; both per-worker fn caches
+removed). Sequential pool round-trips on a spawned worker (the suite's
+seq_pool shape), best-of-5 reps per process, three alternating pairs;
+mins across the three runs per build. Two extra 70-fn round-robin rows
+isolate the miss path: 70 distinct fns past the baseline caches' 64-entry
+clear-on-full cap, so every baseline resolve pays the import wrapper
+while the branch pays only the sys.modules lookup.
+
+Results (baseline main / branch):
+
+| row | 77975ce | branch |
+|---|---|---|
+| pool rt (probe) | 0.707 us/task | 0.771 us/task |
+| pool spec rt (probe) | 0.931 us/task | 1.021 us/task |
+| pool rt, 70 fns (probe) | 0.904 us/task | 0.794 us/task |
+| pool spec rt, 70 fns (probe) | 1.426 us/task | 1.044 us/task |
+
+The repeat-heavy rows move within their bands (the cache hit's ~0.04 us
+becomes the sys.modules lookup's ~0.05-0.08 us; the +0.06-0.09 us read
+sits inside the rows' own run-to-run drift — Phase 3 measured the same
+row at 0.796/0.856 before and 0.648/0.692 after in one session). The
+distinct-fn rows carry the win: -12% and -27%, the removed import
+wrapper on what were cache-thrashed misses. First-use-per-module on a
+cold worker improves by the same mechanism and is not separately
+probed. No best-known swaps (probe rows stay in the log).
+
+Status: full suite 1129 pass, 1 skip; ruff + pyrefly clean.
