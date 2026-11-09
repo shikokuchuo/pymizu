@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wheels (and source builds) now compile with `-O3` and link-time
   optimization (thin LTO on Windows), and the extension no longer
   exports internal symbols.
+- Faster pool and channel operations: task submit and collect,
+  `Pool.map()`, `PoolExecutor` submission, channel receives, and
+  receiving pickled or numpy-vector payloads.
 - Much faster frame relay: sends of a frame larger than 64 MB no
   longer create a fresh shared-memory region per send.
 - Faster repeated sends of the same `Frame` — much faster when its

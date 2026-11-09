@@ -28,6 +28,7 @@
 PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #define PyFunction_CheckExact(op) Py_IS_TYPE((op), &PyFunction_Type)
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -100,6 +101,7 @@ static PyObject *mizu_traceback_fmt;
 /* pickle, or cloudpickle when installed (used transparently — its output is
    a standard protocol stream). Resolved at module init; protocol pinned to 4. */
 static PyObject *mizu_dumps, *mizu_loads;
+static PyObject *mizu_pickle_proto;   /* PyLong(4): the pinned protocol arg */
 
 /* The Arrow producer dunder names, interned at module init (pyinterop.h
    externs them for interop.c): the foreign send path's probes look the
@@ -107,10 +109,62 @@ static PyObject *mizu_dumps, *mizu_loads;
 PyObject *mizu_py_str_arrow_c_array;
 PyObject *mizu_py_str_arrow_c_stream;
 
+/* Attribute and verb keyword names, interned at module init (the shared
+   half is externed through pyinterop.h). The keyword names serve the
+   METH_FASTCALL verbs' hand-rolled parse (identity compare ahead of the
+   Unicode one, the kwnames contract's interned-name fast case). */
+static PyObject *mizu_py_str_module;      /* __module__ */
+static PyObject *mizu_py_str_qualname;    /* __qualname__ */
+static PyObject *mizu_py_str_base;        /* base */
+PyObject *mizu_py_str_dtype;              /* dtype */
+PyObject *mizu_py_str_fortran;            /* F */
+PyObject *mizu_py_str_str;                /* str */
+PyObject *mizu_py_str_view;               /* view */
+PyObject *mizu_py_str_empty;              /* empty */
+static PyObject *mizu_py_str_timeout;     /* timeout */
+static PyObject *mizu_py_str_payload;     /* payload */
+static PyObject *mizu_py_str_payloads;    /* payloads */
+static PyObject *mizu_py_str_tasks;       /* tasks */
+static PyObject *mizu_py_str_slots;       /* slots */
+static PyObject *mizu_py_str_n;           /* n */
+
+/* The hot numpy dtype names as long-lived str objects: np.empty /
+   np.frombuffer get them by vectorcall, no per-call str construction.
+   The temporal forms ("datetime64[us]", ...) are built per call — those
+   reads convert anyway. */
+PyObject *mizu_py_dt_float64;
+PyObject *mizu_py_dt_int32;
+PyObject *mizu_py_dt_int64;
+PyObject *mizu_py_dt_complex128;
+PyObject *mizu_py_dt_uint8;
+PyObject *mizu_py_dt_uint64;
+PyObject *mizu_py_dt_bool;
+
 /* numpy, probed lazily on the first raw-vector read: the module, or Py_None
    when absent. Never a build-time dependency. */
 static PyObject *mizu_numpy;
 static int mizu_numpy_probed;
+
+/* dumps/loads by vectorcall: no args tuple, the protocol arg the cached
+   PyLong(4). loads off a C buffer passes a memoryview, not a "y#" bytes
+   copy — the slot outlives the call (consumer-done ordering). */
+static PyObject *pickle_dumps(PyObject *obj) {
+  PyObject *a[2] = {obj, mizu_pickle_proto};
+  return PyObject_Vectorcall(mizu_dumps, a, 2, NULL);
+}
+
+static PyObject *pickle_loads(PyObject *buf) {
+  PyObject *a[1] = {buf};
+  return PyObject_Vectorcall(mizu_loads, a, 1, NULL);
+}
+
+static PyObject *pickle_loads_mv(const char *src, Py_ssize_t n) {
+  PyObject *mv = PyMemoryView_FromMemory((char *) src, n, PyBUF_READ);
+  if (mv == NULL) return NULL;
+  PyObject *out = pickle_loads(mv);
+  Py_DECREF(mv);
+  return out;
+}
 
 // Sentinels ----------------------------------------------------------------------
 
@@ -1293,18 +1347,19 @@ static int stage_scalar_fast(PyObject *obj, mizu_slot_hdr *hdr,
    referenceable (no error set). */
 static int fn_ref_parts(PyObject *fn, PyObject **mod_out, PyObject **qual_out) {
   if (!PyFunction_CheckExact(fn) && !PyCFunction_CheckExact(fn)) return -1;
-  PyObject *mod = PyObject_GetAttrString(fn, "__module__");
-  PyObject *qual = PyObject_GetAttrString(fn, "__qualname__");
+  PyObject *mod = NULL, *qual = NULL;
+  int mrc = mizu_py_get_optional_attr(fn, mizu_py_str_module, &mod);
+  int qrc = mizu_py_get_optional_attr(fn, mizu_py_str_qualname, &qual);
+  if (mrc <= 0 || qrc <= 0) {
+    Py_XDECREF(mod);
+    Py_XDECREF(qual);
+    PyErr_Clear();   /* an absent attr or a probe error declines alike */
+    return -1;
+  }
   /* the fetches cannot fail on the exact types: the getsets always supply
      both (the type's own name is __module__'s fallback, and __qualname__
      rejects deletion and non-string assignment) — a failure would be a
      CPython change, not user input; decline as today */
-  if (mod == NULL || qual == NULL) {
-    Py_XDECREF(mod);
-    Py_XDECREF(qual);
-    PyErr_Clear();
-    return -1;
-  }
   int ok = PyUnicode_CheckExact(mod) && PyUnicode_CheckExact(qual);
   if (ok) {
     const char *m = PyUnicode_AsUTF8(mod);
@@ -1482,7 +1537,7 @@ static int frame_size(PyObject *frame, frame_plan *fp, uint32_t inline_max,
     codec_scalar_size(fp->fn_qual, &fp->sz);
   } else {
     fp->fn_kind = 1;
-    fp->fn_pickled = PyObject_CallFunction(mizu_dumps, "Oi", fn, 4);
+    fp->fn_pickled = pickle_dumps(fn);
     if (fp->fn_pickled == NULL) return 1;
     fp->sz += 6 + (uint64_t) PyBytes_GET_SIZE(fp->fn_pickled);
   }
@@ -1971,7 +2026,7 @@ static int stage_map_result(PyObject *frame, int form1, mizu_slot_hdr *hdr,
       continue;
     }
     plans[i].kind = 1;
-    plans[i].pickled = PyObject_CallFunction(mizu_dumps, "Oi", batch, 4);
+    plans[i].pickled = pickle_dumps(batch);
     if (plans[i].pickled == NULL) rc = 1;
     else sz += mapres_leaf_size(batch, &plans[i]);
   }
@@ -2227,7 +2282,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
       /* the fallback pickles the plain form: a pickled _MapResult would
          not reconstruct on the submitter (the type is not importable
          there) */
-      PyObject *stream = PyObject_CallFunction(mizu_dumps, "Oi", plain, 4);
+      PyObject *stream = pickle_dumps(plain);
       if (owned) Py_DECREF(plain);
       if (stream == NULL) return 1;
       int brc = stage_bytes((const uint8_t *) PyBytes_AS_STRING(stream),
@@ -2311,8 +2366,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                                    PyTuple_GET_ITEM(obj, 1),
                                    PyTuple_GET_ITEM(obj, 2));
     if (plain == NULL) return 1;
-    PyObject *stream =
-      PyObject_CallFunction(mizu_dumps, "Oi", plain, 4);
+    PyObject *stream = pickle_dumps(plain);
     Py_DECREF(plain);
     if (stream == NULL) return 1;
     int rc = stage_bytes((const uint8_t *) PyBytes_AS_STRING(stream),
@@ -2332,8 +2386,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     return 0;
   int crc = stage_codec(obj, hdr, payload, inline_max, h);
   if (crc >= 0) return crc;
-  PyObject *stream =
-    PyObject_CallFunction(mizu_dumps, "Oi", obj, 4);   /* protocol pinned */
+  PyObject *stream = pickle_dumps(obj);
   if (stream == NULL) return 1;
   int rc = stage_bytes((const uint8_t *) PyBytes_AS_STRING(stream),
                        (size_t) PyBytes_GET_SIZE(stream),
@@ -2425,24 +2478,31 @@ static int py_stage(void *obj, mizu_slot_hdr *hdr, uint8_t *payload,
 
 // Reading ------------------------------------------------------------------------
 
-static PyObject *numpy_empty(void) {
+PyObject *mizu_py_numpy_empty(void) {
   static PyObject *empty_fn;   /* np.empty, resolved on first read */
   if (empty_fn == NULL) {
     PyObject *np = numpy_module();
     if (np == NULL) return NULL;
-    empty_fn = PyObject_GetAttrString(np, "empty");
+    empty_fn = PyObject_GetAttr(np, mizu_py_str_empty);
     if (empty_fn == NULL) return NULL;
   }
   return Py_NewRef(empty_fn);
 }
 
-/* np.empty(n, dt) with its writable buffer in hand (the dtype positional);
-   the caller fills, releases, and keeps the array. NULL with an
-   exception. */
-static PyObject *numpy_sink(const char *dt, size_t n, Py_buffer *out) {
-  PyObject *empty = numpy_empty();
+/* np.empty(n, dt) with its writable buffer in hand (the dtype positional,
+   an init-cached str); the caller fills, releases, and keeps the array.
+   NULL with an exception. */
+static PyObject *numpy_sink(PyObject *dt, size_t n, Py_buffer *out) {
+  PyObject *empty = mizu_py_numpy_empty();
   if (empty == NULL) return NULL;
-  PyObject *arr = PyObject_CallFunction(empty, "ns", (Py_ssize_t) n, dt);
+  PyObject *len = PyLong_FromSize_t(n);
+  if (len == NULL) {
+    Py_DECREF(empty);
+    return NULL;
+  }
+  PyObject *a[2] = {len, dt};
+  PyObject *arr = PyObject_Vectorcall(empty, a, 2, NULL);
+  Py_DECREF(len);
   Py_DECREF(empty);
   if (arr == NULL) return NULL;
   if (PyObject_GetBuffer(arr, out, PyBUF_ND | PyBUF_WRITABLE) < 0) {
@@ -2481,14 +2541,15 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type,
     int conv = 0;
     if (type == MIZU_TYPE_LGL) conv = 1;
     else if (type == MIZU_TYPE_INT && foreign) conv = 2;
-    const char *dt;
+    PyObject *dt;
     switch (type) {
-    case MIZU_TYPE_REAL: dt = "float64"; break;
+    case MIZU_TYPE_REAL: dt = mizu_py_dt_float64; break;
     case MIZU_TYPE_INT:
-    case MIZU_TYPE_LGL: dt = conv == 1 ? "bool" : "int32"; break;
-    case MIZU_TYPE_INT64: dt = "int64"; break;
-    case MIZU_TYPE_CPLX: dt = "complex128"; break;
-    case MIZU_TYPE_RAW: dt = "uint8"; break;
+    case MIZU_TYPE_LGL:
+      dt = conv == 1 ? mizu_py_dt_bool : mizu_py_dt_int32; break;
+    case MIZU_TYPE_INT64: dt = mizu_py_dt_int64; break;
+    case MIZU_TYPE_CPLX: dt = mizu_py_dt_complex128; break;
+    case MIZU_TYPE_RAW: dt = mizu_py_dt_uint8; break;
     default:
       PyErr_Format(MizuError, "pymizu: unknown wire type %d", type);
       return NULL;
@@ -2524,7 +2585,7 @@ static PyObject *read_raw(const uint8_t *src, uint32_t len, int type,
       PyBuffer_Release(&v);
       if (!na) return arr;
       Py_buffer fv;
-      PyObject *f64 = numpy_sink("float64", nelts, &fv);
+      PyObject *f64 = numpy_sink(mizu_py_dt_float64, nelts, &fv);
       if (f64 == NULL) {
         Py_DECREF(arr);
         return NULL;
@@ -2853,10 +2914,11 @@ static MizuShmView *view_behind(PyObject *obj) {
   PyObject *cur = Py_NewRef(obj);
   for (int hop = 0; hop < 8; hop++) {
     if (Py_TYPE(cur) == &MizuShmViewType) return (MizuShmView *) cur;
-    PyObject *base = PyObject_GetAttrString(cur, "base");
+    PyObject *base = NULL;
+    int brc = mizu_py_get_optional_attr(cur, mizu_py_str_base, &base);
     Py_DECREF(cur);
-    if (base == NULL) {
-      PyErr_Clear();
+    if (brc <= 0) {
+      PyErr_Clear();   /* an absent .base or a probe error ends the walk */
       return NULL;
     }
     if (base == Py_None) {
@@ -3404,7 +3466,7 @@ static PyObject *view_lgl_to_numpy(MizuShmView *v, int64_t n) {
     return view_to_object((PyObject *) v, v->type);
   }
   Py_buffer bv;
-  PyObject *arr = numpy_sink("bool", (size_t) n, &bv);
+  PyObject *arr = numpy_sink(mizu_py_dt_bool, (size_t) n, &bv);
   if (arr == NULL) return NULL;
   const int32_t *s32 = (const int32_t *) v->data;
   uint8_t *d = (uint8_t *) bv.buf;
@@ -3451,7 +3513,7 @@ static PyObject *view_int_to_numpy(MizuShmView *v, int64_t n) {
     }
   }
   Py_buffer fv;
-  PyObject *arr = numpy_sink("float64", (size_t) n, &fv);
+  PyObject *arr = numpy_sink(mizu_py_dt_float64, (size_t) n, &fv);
   if (arr == NULL) return NULL;
   const int32_t *s32 = (const int32_t *) v->data;
   double *fd = (double *) fv.buf;
@@ -3947,14 +4009,14 @@ static PyObject *view_to_object(PyObject *view, int type) {
   static PyObject *frombuffer_fn;   /* np.frombuffer, resolved on first wrap */
   PyObject *np = numpy_module();
   if (np != NULL) {
-    const char *dt;
+    PyObject *dt;
     switch (type) {
-    case MIZU_TYPE_REAL: dt = "float64"; break;
+    case MIZU_TYPE_REAL: dt = mizu_py_dt_float64; break;
     case MIZU_TYPE_INT:
-    case MIZU_TYPE_LGL: dt = "int32"; break;
-    case MIZU_TYPE_INT64: dt = "int64"; break;
-    case MIZU_TYPE_CPLX: dt = "complex128"; break;
-    case MIZU_TYPE_RAW: dt = "uint8"; break;
+    case MIZU_TYPE_LGL: dt = mizu_py_dt_int32; break;
+    case MIZU_TYPE_INT64: dt = mizu_py_dt_int64; break;
+    case MIZU_TYPE_CPLX: dt = mizu_py_dt_complex128; break;
+    case MIZU_TYPE_RAW: dt = mizu_py_dt_uint8; break;
     default:
       PyErr_Format(MizuError, "pymizu: unknown wire type %d", type);
       Py_DECREF(view);
@@ -3966,7 +4028,8 @@ static PyObject *view_to_object(PyObject *view, int type) {
     }
     if (frombuffer_fn != NULL) {
       /* the dtype positional: no tuple/kwargs temporaries */
-      PyObject *arr = PyObject_CallFunction(frombuffer_fn, "Os", view, dt);
+      PyObject *a[2] = {view, dt};
+      PyObject *arr = PyObject_Vectorcall(frombuffer_fn, a, 2, NULL);
       if (arr != NULL) {
         Py_DECREF(view);
         return arr;
@@ -4786,8 +4849,7 @@ static PyObject *frame_read_task(const uint8_t **p, const uint8_t *end,
       Py_DECREF(b);
       return NULL;
     }
-    fn = PyObject_CallFunction(mizu_loads, "y#", PyBytes_AS_STRING(b),
-                               PyBytes_GET_SIZE(b));
+    fn = pickle_loads(b);   /* already a bytes: no "y#" copy */
     Py_DECREF(b);
   } else {
     return NULL;
@@ -4961,8 +5023,7 @@ static PyObject *mapres_read_leaf(const uint8_t **p, const uint8_t *end) {
     if ((size_t) (end - *p) < 8) return NULL;
     uint64_t n = codec_get64(p);
     if (n > (uint64_t) (end - *p)) return NULL;
-    PyObject *r = PyObject_CallFunction(mizu_loads, "y#", (const char *) *p,
-                                        (Py_ssize_t) n);
+    PyObject *r = pickle_loads_mv((const char *) *p, (Py_ssize_t) n);
     if (r != NULL) *p += n;
     return r;
   }
@@ -5112,8 +5173,7 @@ static PyObject *read_stream(const uint8_t *src, size_t n,
   }
   switch (src[0]) {
   case 0x80:
-    return PyObject_CallFunction(mizu_loads, "y#", (const char *) src,
-                                 (Py_ssize_t) n);
+    return pickle_loads_mv((const char *) src, (Py_ssize_t) n);
   case MIZU_PYMIZU_CODEC_MAGIC:
     return codec_read(src, n, ctx);
   case MIZU_INTEROP_MAGIC:
@@ -5678,7 +5738,7 @@ static int publish_exc(mizu_result_sink *sink, uint64_t sub_ident) {
     PyObject *cand = eidx != NULL ? PyTuple_Pack(4, tname, msg, tbs, eidx)
                                   : PyTuple_Pack(3, tname, msg, tbs);
     if (cand == NULL) goto infra;
-    PyObject *s = PyObject_CallFunction(mizu_dumps, "Oi", cand, 4);
+    PyObject *s = pickle_dumps(cand);
     if (s == NULL) {
       Py_DECREF(cand);
       goto infra;
@@ -6474,6 +6534,85 @@ static int timeout_ms_of(PyObject *arg, double *out) {
   return 0;
 }
 
+/* The keyword-bearing half: the running CPython's own tuple parser owns
+   binding and version-specific errors, including 3.13+'s suggestions. */
+static int fast_kw_native(PyObject *const *args, Py_ssize_t nargs,
+                          PyObject *kwnames, const char *fname,
+                          PyObject *const *kw, Py_ssize_t min,
+                          Py_ssize_t max, PyObject **slots) {
+  PyObject *tuple = PyTuple_New(nargs);
+  PyObject *kwargs = PyDict_New();
+  int rc = 0;
+  if (tuple == NULL || kwargs == NULL) goto done;
+  for (Py_ssize_t i = 0; i < nargs; i++) {
+    Py_INCREF(args[i]);
+    PyTuple_SET_ITEM(tuple, i, args[i]);
+  }
+  PyObject *const *kwstack = args + nargs;
+  const Py_ssize_t nkwargs = PyTuple_GET_SIZE(kwnames);
+  for (Py_ssize_t j = 0; j < nkwargs; j++) {
+    PyObject *name = PyTuple_GET_ITEM(kwnames, j);
+    /* an exact str copy keeps a subclass's __hash__/__eq__ out of the fallback */
+    PyObject *key = PyUnicode_FromObject(name);
+    if (key == NULL || PyDict_SetItem(kwargs, key, kwstack[j]) < 0) {
+      Py_XDECREF(key);
+      goto done;
+    }
+    Py_DECREF(key);
+  }
+  char fmt[224];
+  if (min == 0)
+    snprintf(fmt, sizeof fmt, "|%s:%.200s", max == 2 ? "OO" : "O", fname);
+  else if (min == max)
+    snprintf(fmt, sizeof fmt, "%s:%.200s", max == 2 ? "OO" : "O", fname);
+  else
+    snprintf(fmt, sizeof fmt, "O|O:%.200s", fname);
+  char *kwlist[3] = {NULL, NULL, NULL};
+  for (Py_ssize_t i = 0; i < max; i++) {
+    const char *name = PyUnicode_AsUTF8(kw[i]);
+    if (name == NULL) goto done;
+    kwlist[i] = (char *) name;
+    slots[i] = NULL;
+  }
+  rc = max == 1 ?
+    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &slots[0]) :
+    PyArg_ParseTupleAndKeywords(tuple, kwargs, fmt, kwlist, &slots[0], &slots[1]);
+done:
+  Py_XDECREF(kwargs);
+  Py_XDECREF(tuple);
+  return rc;
+}
+
+/* The METH_FASTCALL|METH_KEYWORDS parse for the hot verbs' formats (1-2
+   plain "O" slots, keyword names interned at init). Calls without keywords
+   bind directly; keyword calls delegate to CPython's native parser. `kw`
+   holds the interned name per slot, `min` the required count, `max` the slot
+   count. On success slots hold borrowed references (unfilled optionals
+   NULL). 1 ok, 0 with an exception set. */
+static int fast_kw_parse(PyObject *const *args, Py_ssize_t nargs,
+                         PyObject *kwnames, const char *fname,
+                         PyObject *const *kw, Py_ssize_t min,
+                         Py_ssize_t max, PyObject **slots) {
+  const Py_ssize_t nkwargs = kwnames != NULL ? PyTuple_GET_SIZE(kwnames) : 0;
+  if (nkwargs != 0)
+    return fast_kw_native(args, nargs, kwnames, fname, kw, min, max, slots);
+  if (nargs > max) {
+    PyErr_Format(PyExc_TypeError,
+                 "%.200s() takes at most %zd argument%s (%zd given)",
+                 fname, max, max == 1 ? "" : "s", nargs);
+    return 0;
+  }
+  if (nargs < min) {
+    PyErr_Format(PyExc_TypeError,
+                 "%.200s() missing required argument '%U' (pos %zd)",
+                 fname, kw[nargs], nargs + 1);
+    return 0;
+  }
+  for (Py_ssize_t i = 0; i < max; i++)
+    slots[i] = i < nargs ? args[i] : NULL;
+  return 1;
+}
+
 static MizuChannel *chan_wrap(mizu_channel *c, MizuViewCache *vc) {
   MizuChannel *self = (MizuChannel *) MizuChannelType.tp_alloc(&MizuChannelType, 0);
   if (self == NULL) return NULL;
@@ -6597,12 +6736,13 @@ Return the next message, waiting up to `timeout` seconds (None waits\n\
 indefinitely, 0 polls). A terminal state is reported only once the ring\n\
 is drained. Ctrl-C stays responsive during the wait.");
 
-static PyObject *Channel_recv(MizuChannel *self, PyObject *args,
-                              PyObject *kw) {
-  static char *kwlist[] = {"timeout", NULL};
-  PyObject *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:recv", kwlist, &tmo))
+static PyObject *Channel_recv(MizuChannel *self, PyObject *const *args,
+                              Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[1] = {mizu_py_str_timeout};
+  PyObject *slots[1];
+  if (!fast_kw_parse(args, nargs, kwnames, "recv", kw, 0, 1, slots))
     return NULL;
+  PyObject *tmo = slots[0] != NULL ? slots[0] : Py_None;
   mizu_channel *c = chan_get(self);
   if (c == NULL) return NULL;
   double ms;
@@ -6723,14 +6863,30 @@ already-published messages without waiting further. A batch that reaches\n\
 a message it cannot read returns what it has; the failure surfaces on\n\
 the next receive.");
 
-static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *args,
-                                    PyObject *kw) {
-  static char *kwlist[] = {"n", "timeout", NULL};
-  int n = 256;
-  PyObject *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "|iO:recv_batch", kwlist,
-                                   &n, &tmo))
+static PyObject *Channel_recv_batch(MizuChannel *self, PyObject *const *args,
+                                    Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[2] = {mizu_py_str_n, mizu_py_str_timeout};
+  PyObject *slots[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "recv_batch", kw, 0, 2, slots))
     return NULL;
+  int n = 256;
+  if (slots[0] != NULL) {
+    /* PyArg's "i" unit: the same overflow text */
+    long ln = PyLong_AsLong(slots[0]);
+    if (ln == -1 && PyErr_Occurred()) return NULL;
+    if (ln > INT_MAX) {
+      PyErr_SetString(PyExc_OverflowError,
+                      "signed integer is greater than maximum");
+      return NULL;
+    }
+    if (ln < INT_MIN) {
+      PyErr_SetString(PyExc_OverflowError,
+                      "signed integer is less than minimum");
+      return NULL;
+    }
+    n = (int) ln;
+  }
+  PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   if (n < 1) {
     PyErr_SetString(PyExc_ValueError, "pymizu: n must be at least 1");
     return NULL;
@@ -6802,12 +6958,13 @@ peer's close or its death. On rendezvous all resources are released and\n\
 the handle is dead (closing again is a no-op). On timeout the handle\n\
 stays usable and the rendezvous is retried at destroy.");
 
-static PyObject *Channel_close(MizuChannel *self, PyObject *args,
-                               PyObject *kw) {
-  static char *kwlist[] = {"timeout", NULL};
-  PyObject *tmo = NULL;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:close", kwlist, &tmo))
+static PyObject *Channel_close(MizuChannel *self, PyObject *const *args,
+                               Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[1] = {mizu_py_str_timeout};
+  PyObject *slots[1];
+  if (!fast_kw_parse(args, nargs, kwnames, "close", kw, 0, 1, slots))
     return NULL;
+  PyObject *tmo = slots[0];
   if (self->core == NULL || self->self_pid != mizu_self_pid()) {
     /* idempotent; a forked child's copy never touches the shared region */
     self->core = NULL;
@@ -7150,11 +7307,11 @@ static PyMethodDef Channel_methods[] = {
   {"_send_error", (PyCFunction) Channel_send_error, METH_O, send_error_doc},
   {"send_batch", (PyCFunction) Channel_send_batch, METH_O, send_batch_doc},
   {"recv", (PyCFunction)(void (*)(void)) Channel_recv,
-   METH_VARARGS | METH_KEYWORDS, recv_doc},
+   METH_FASTCALL | METH_KEYWORDS, recv_doc},
   {"recv_batch", (PyCFunction)(void (*)(void)) Channel_recv_batch,
-   METH_VARARGS | METH_KEYWORDS, recv_batch_doc},
+   METH_FASTCALL | METH_KEYWORDS, recv_batch_doc},
   {"close", (PyCFunction)(void (*)(void)) Channel_close,
-   METH_VARARGS | METH_KEYWORDS, close_doc},
+   METH_FASTCALL | METH_KEYWORDS, close_doc},
   {"close_signal", (PyCFunction) Channel_close_signal, METH_NOARGS,
    close_signal_doc},
   {"destroy", (PyCFunction) Channel_destroy, METH_NOARGS, destroy_doc},
@@ -7977,13 +8134,14 @@ allocations). The bool is the re-check's verdict: a task already\n\
 terminal at this point resolves at the call site. Same error taxonomy\n\
 as submit().\n\n");
 
-static PyObject *Pool_exec_submit(MizuPool *self, PyObject *args,
-                                  PyObject *kw) {
-  static char *kwlist[] = {"payload", "timeout", NULL};
-  PyObject *payload, *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:_exec_submit", kwlist,
-                                   &payload, &tmo))
+static PyObject *Pool_exec_submit(MizuPool *self, PyObject *const *args,
+                                  Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[2] = {mizu_py_str_payload, mizu_py_str_timeout};
+  PyObject *slots[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "_exec_submit", kw, 1, 2, slots))
     return NULL;
+  PyObject *payload = slots[0];
+  PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   double ms;
@@ -8154,13 +8312,15 @@ pymizu.SlotsExhaustedError / pymizu.StoppedError on the fatal outcomes.");
    submit, MIZU_ENTRY_RUNNER for a map runner — a doorbell help beat
    re-homes a runner onto the helper's own deque instead of executing a
    join ticket nested). */
-static PyObject *pool_submit_impl(MizuPool *self, PyObject *args,
-                                  PyObject *kw, uint16_t flags) {
-  static char *kwlist[] = {"payload", "timeout", NULL};
-  PyObject *payload, *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:submit", kwlist, &payload,
-                                   &tmo))
+static PyObject *pool_submit_impl(MizuPool *self, PyObject *const *args,
+                                  Py_ssize_t nargs, PyObject *kwnames,
+                                  uint16_t flags) {
+  PyObject *kw[2] = {mizu_py_str_payload, mizu_py_str_timeout};
+  PyObject *slots[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "submit", kw, 1, 2, slots))
     return NULL;
+  PyObject *payload = slots[0];
+  PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   double ms;
@@ -8195,8 +8355,9 @@ static PyObject *pool_submit_impl(MizuPool *self, PyObject *args,
   return NULL;
 }
 
-static PyObject *Pool_submit(MizuPool *self, PyObject *args, PyObject *kw) {
-  return pool_submit_impl(self, args, kw, 0);
+static PyObject *Pool_submit(MizuPool *self, PyObject *const *args,
+                             Py_ssize_t nargs, PyObject *kwnames) {
+  return pool_submit_impl(self, args, nargs, kwnames, 0);
 }
 
 PyDoc_STRVAR(pool_worker_ident_doc,
@@ -8243,13 +8404,14 @@ handles stay valid and collectible; the fatal outcomes still raise. A\n\
 mid-batch failure raises with an `accepted` attribute holding the\n\
 handles already submitted.");
 
-static PyObject *Pool_submit_batch(MizuPool *self, PyObject *args,
-                                   PyObject *kw) {
-  static char *kwlist[] = {"payloads", "timeout", NULL};
-  PyObject *seq, *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:submit_batch", kwlist,
-                                   &seq, &tmo))
+static PyObject *Pool_submit_batch(MizuPool *self, PyObject *const *args,
+                                   Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[2] = {mizu_py_str_payloads, mizu_py_str_timeout};
+  PyObject *slots[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "submit_batch", kw, 1, 2, slots))
     return NULL;
+  PyObject *seq = slots[0];
+  PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   double ms;
@@ -8367,13 +8529,14 @@ break to the earliest position). A non-OK outcome raises with an `index`\n\
 attribute. pymizu.TIMEOUT on expiry; the reported handle is consumed, the\n\
 rest stay collectible.");
 
-static PyObject *Pool_collect_any(MizuPool *self, PyObject *args,
-                                  PyObject *kw) {
-  static char *kwlist[] = {"tasks", "timeout", NULL};
-  PyObject *seq, *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:collect_any", kwlist,
-                                   &seq, &tmo))
+static PyObject *Pool_collect_any(MizuPool *self, PyObject *const *args,
+                                  Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[2] = {mizu_py_str_tasks, mizu_py_str_timeout};
+  PyObject *slots[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "collect_any", kw, 1, 2, slots))
     return NULL;
+  PyObject *seq = slots[0];
+  PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   mizu_task *ts;
@@ -8436,13 +8599,14 @@ of it included, stays collectible. A result that fails to read raises\n\
 with `index` and a `values` attribute carrying the consumed prefix.\n\
 pymizu.TIMEOUT consumes nothing.");
 
-static PyObject *Pool_collect_all(MizuPool *self, PyObject *args,
-                                  PyObject *kw) {
-  static char *kwlist[] = {"tasks", "timeout", NULL};
-  PyObject *seq, *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|O:collect_all", kwlist,
-                                   &seq, &tmo))
+static PyObject *Pool_collect_all(MizuPool *self, PyObject *const *args,
+                                  Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[2] = {mizu_py_str_tasks, mizu_py_str_timeout};
+  PyObject *slots[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "collect_all", kw, 1, 2, slots))
     return NULL;
+  PyObject *seq = slots[0];
+  PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
   mizu_task *ts;
@@ -8533,13 +8697,14 @@ PyDoc_STRVAR(pool_ready_wait_doc,
 The startup / elastic-spawn rendezvous: wait up to `timeout` seconds for\n\
 the given worker slots to join. False on expiry. Controller only.");
 
-static PyObject *Pool_ready_wait(MizuPool *self, PyObject *args,
-                                 PyObject *kw) {
-  static char *kwlist[] = {"slots", "timeout", NULL};
-  PyObject *seq, *tmo;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "OO:ready_wait", kwlist,
-                                   &seq, &tmo))
+static PyObject *Pool_ready_wait(MizuPool *self, PyObject *const *args,
+                                 Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[2] = {mizu_py_str_slots, mizu_py_str_timeout};
+  PyObject *pa[2];
+  if (!fast_kw_parse(args, nargs, kwnames, "ready_wait", kw, 2, 2, pa))
     return NULL;
+  PyObject *seq = pa[0];
+  PyObject *tmo = pa[1];
   mizu_pool *p = pool_get(self);
   if (p == NULL) return NULL;
   if (self->role != MIZU_ROLE_CONTROLLER) {
@@ -8630,11 +8795,13 @@ pymizu.CancelledError), then wait up to `timeout` seconds for clean worker\n\
 exits and unlink. False on expiry — the workers still exit on their own.\n\
 Idempotent; the handle is dead afterwards.");
 
-static PyObject *Pool_stop(MizuPool *self, PyObject *args, PyObject *kw) {
-  static char *kwlist[] = {"timeout", NULL};
-  PyObject *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:stop", kwlist, &tmo))
+static PyObject *Pool_stop(MizuPool *self, PyObject *const *args,
+                           Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[1] = {mizu_py_str_timeout};
+  PyObject *slots[1];
+  if (!fast_kw_parse(args, nargs, kwnames, "stop", kw, 0, 1, slots))
     return NULL;
+  PyObject *tmo = slots[0] != NULL ? slots[0] : Py_None;
   if (self->core == NULL) Py_RETURN_TRUE;    /* idempotent */
   if (self->self_pid != mizu_self_pid()) {
     self->core = NULL;
@@ -9261,9 +9428,9 @@ A map runner's submit: submit plus the MIZU_ENTRY_RUNNER wire flag, so a\n\
 doorbell help beat re-homes it onto the helper's own deque instead of\n\
 executing a join ticket nested. Same error taxonomy as submit().");
 
-static PyObject *Pool_submit_runner(MizuPool *self, PyObject *args,
-                                    PyObject *kw) {
-  return pool_submit_impl(self, args, kw, MIZU_ENTRY_RUNNER);
+static PyObject *Pool_submit_runner(MizuPool *self, PyObject *const *args,
+                                    Py_ssize_t nargs, PyObject *kwnames) {
+  return pool_submit_impl(self, args, nargs, kwnames, MIZU_ENTRY_RUNNER);
 }
 
 PyDoc_STRVAR(pool_notify_arm_doc,
@@ -9490,20 +9657,20 @@ static int Pool_aio_set(MizuPool *self, PyObject *v,
 
 static PyMethodDef Pool_methods[] = {
   {"submit", (PyCFunction)(void (*)(void)) Pool_submit,
-   METH_VARARGS | METH_KEYWORDS, pool_submit_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_submit_doc},
   {"submit_batch", (PyCFunction)(void (*)(void)) Pool_submit_batch,
-   METH_VARARGS | METH_KEYWORDS, pool_submit_batch_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_submit_batch_doc},
   {"_worker_ident", (PyCFunction) Pool_worker_ident, METH_NOARGS,
    pool_worker_ident_doc},
   {"collect_any", (PyCFunction)(void (*)(void)) Pool_collect_any,
-   METH_VARARGS | METH_KEYWORDS, pool_collect_any_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_collect_any_doc},
   {"collect_all", (PyCFunction)(void (*)(void)) Pool_collect_all,
-   METH_VARARGS | METH_KEYWORDS, pool_collect_all_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_collect_all_doc},
   {"ready_wait", (PyCFunction)(void (*)(void)) Pool_ready_wait,
-   METH_VARARGS | METH_KEYWORDS, pool_ready_wait_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_ready_wait_doc},
   {"retire", (PyCFunction) Pool_retire, METH_O, pool_retire_doc},
   {"stop", (PyCFunction)(void (*)(void)) Pool_stop,
-   METH_VARARGS | METH_KEYWORDS, pool_stop_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_stop_doc},
   {"destroy", (PyCFunction) Pool_destroy, METH_NOARGS, pool_destroy_doc},
   {"run", (PyCFunction) Pool_run, METH_NOARGS, pool_run_doc},
   {"leave", (PyCFunction) Pool_leave, METH_NOARGS, pool_leave_doc},
@@ -9517,7 +9684,7 @@ static PyMethodDef Pool_methods[] = {
   {"_help_once", (PyCFunction) Pool_help_once, METH_NOARGS,
    pool_help_once_doc},
   {"_submit_runner", (PyCFunction)(void (*)(void)) Pool_submit_runner,
-   METH_VARARGS | METH_KEYWORDS, pool_submit_runner_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_submit_runner_doc},
   {"_exec_fail", (PyCFunction) Pool_exec_fail, METH_O, pool_exec_fail_doc},
   {"_notify_arm", (PyCFunction) Pool_notify_arm, METH_VARARGS,
    pool_notify_arm_doc},
@@ -9544,7 +9711,7 @@ static PyMethodDef Pool_methods[] = {
   {"_singles_fail", (PyCFunction) Pool_singles_fail, METH_O,
    pool_singles_fail_doc},
   {"_exec_submit", (PyCFunction)(void (*)(void)) Pool_exec_submit,
-   METH_VARARGS | METH_KEYWORDS, pool_exec_submit_doc},
+   METH_FASTCALL | METH_KEYWORDS, pool_exec_submit_doc},
   {"_tasks_collect_terminal", (PyCFunction) Pool_tasks_collect_terminal,
    METH_O, pool_tasks_collect_terminal_doc},
   {NULL, NULL, 0, NULL}
@@ -9585,11 +9752,13 @@ pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, and a\n\
 lost result as pymizu.TaskLostError. Returns pymizu.TIMEOUT on expiry.\n\
 A task is collected exactly once.");
 
-static PyObject *Task_collect(MizuTask *self, PyObject *args, PyObject *kw) {
-  static char *kwlist[] = {"timeout", NULL};
-  PyObject *tmo = Py_None;
-  if (!PyArg_ParseTupleAndKeywords(args, kw, "|O:collect", kwlist, &tmo))
+static PyObject *Task_collect(MizuTask *self, PyObject *const *args,
+                              Py_ssize_t nargs, PyObject *kwnames) {
+  PyObject *kw[1] = {mizu_py_str_timeout};
+  PyObject *slots[1];
+  if (!fast_kw_parse(args, nargs, kwnames, "collect", kw, 0, 1, slots))
     return NULL;
+  PyObject *tmo = slots[0] != NULL ? slots[0] : Py_None;
   MizuPool *pool;
   mizu_task t = task_get(self, &pool);
   if (pool == NULL) return NULL;
@@ -9844,7 +10013,7 @@ static PyObject *Task_async_set(MizuTask *self, PyObject *arg) {
 
 static PyMethodDef Task_methods[] = {
   {"collect", (PyCFunction)(void (*)(void)) Task_collect,
-   METH_VARARGS | METH_KEYWORDS, task_collect_doc},
+   METH_FASTCALL | METH_KEYWORDS, task_collect_doc},
   {"cancel", (PyCFunction) Task_cancel, METH_NOARGS, task_cancel_doc},
   {"collect_async", (PyCFunction) Task_collect_async, METH_NOARGS,
    task_collect_async_doc},
@@ -10734,12 +10903,47 @@ PyInit__pymizu(void)
   mizu_loads = PyObject_GetAttrString(pickler, "loads");
   Py_DECREF(pickler);
   if (mizu_dumps == NULL || mizu_loads == NULL) return NULL;
+  mizu_pickle_proto = PyLong_FromLong(4);
+  if (mizu_pickle_proto == NULL) return NULL;
 
   mizu_py_str_arrow_c_array = PyUnicode_InternFromString("__arrow_c_array__");
   mizu_py_str_arrow_c_stream =
     PyUnicode_InternFromString("__arrow_c_stream__");
+  mizu_py_str_module = PyUnicode_InternFromString("__module__");
+  mizu_py_str_qualname = PyUnicode_InternFromString("__qualname__");
+  mizu_py_str_base = PyUnicode_InternFromString("base");
+  mizu_py_str_dtype = PyUnicode_InternFromString("dtype");
+  mizu_py_str_fortran = PyUnicode_InternFromString("F");
+  mizu_py_str_str = PyUnicode_InternFromString("str");
+  mizu_py_str_view = PyUnicode_InternFromString("view");
+  mizu_py_str_empty = PyUnicode_InternFromString("empty");
+  mizu_py_str_timeout = PyUnicode_InternFromString("timeout");
+  mizu_py_str_payload = PyUnicode_InternFromString("payload");
+  mizu_py_str_payloads = PyUnicode_InternFromString("payloads");
+  mizu_py_str_tasks = PyUnicode_InternFromString("tasks");
+  mizu_py_str_slots = PyUnicode_InternFromString("slots");
+  mizu_py_str_n = PyUnicode_InternFromString("n");
+  mizu_py_dt_float64 = PyUnicode_FromString("float64");
+  mizu_py_dt_int32 = PyUnicode_FromString("int32");
+  mizu_py_dt_int64 = PyUnicode_FromString("int64");
+  mizu_py_dt_complex128 = PyUnicode_FromString("complex128");
+  mizu_py_dt_uint8 = PyUnicode_FromString("uint8");
+  mizu_py_dt_uint64 = PyUnicode_FromString("uint64");
+  mizu_py_dt_bool = PyUnicode_FromString("bool");
   if (mizu_py_str_arrow_c_array == NULL ||
-      mizu_py_str_arrow_c_stream == NULL)
+      mizu_py_str_arrow_c_stream == NULL ||
+      mizu_py_str_module == NULL || mizu_py_str_qualname == NULL ||
+      mizu_py_str_base == NULL || mizu_py_str_dtype == NULL ||
+      mizu_py_str_fortran == NULL ||
+      mizu_py_str_str == NULL || mizu_py_str_view == NULL ||
+      mizu_py_str_empty == NULL ||
+      mizu_py_str_timeout == NULL || mizu_py_str_payload == NULL ||
+      mizu_py_str_payloads == NULL || mizu_py_str_tasks == NULL ||
+      mizu_py_str_slots == NULL || mizu_py_str_n == NULL ||
+      mizu_py_dt_float64 == NULL || mizu_py_dt_int32 == NULL ||
+      mizu_py_dt_int64 == NULL || mizu_py_dt_complex128 == NULL ||
+      mizu_py_dt_uint8 == NULL || mizu_py_dt_uint64 == NULL ||
+      mizu_py_dt_bool == NULL)
     return NULL;
 
   PyObject *m = PyModule_Create(&pymizu_module);

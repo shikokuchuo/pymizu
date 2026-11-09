@@ -72,6 +72,22 @@ static inline int mizu_py_get_optional_attr(PyObject *obj, PyObject *name,
 extern PyObject *mizu_py_str_arrow_c_array;
 extern PyObject *mizu_py_str_arrow_c_stream;
 
+/* More init-time names shared with interop.c / this header's inlines: the
+   numpy probes ("dtype", "str", "view", "empty"), the Fortran-order value,
+   and the hot dtype strs (temporal forms are built per call). */
+extern PyObject *mizu_py_str_dtype;
+extern PyObject *mizu_py_str_fortran;
+extern PyObject *mizu_py_str_str;
+extern PyObject *mizu_py_str_view;
+extern PyObject *mizu_py_str_empty;
+extern PyObject *mizu_py_dt_float64;
+extern PyObject *mizu_py_dt_int32;
+extern PyObject *mizu_py_dt_int64;
+extern PyObject *mizu_py_dt_complex128;
+extern PyObject *mizu_py_dt_uint8;
+extern PyObject *mizu_py_dt_uint64;
+extern PyObject *mizu_py_dt_bool;
+
 // The Arrow export (shared by _pymizu.c's views and map.c's _MapOutView) -------
 
 /* The export holds its own mapping and its own zc loan: mizu_shm_open_view
@@ -161,6 +177,7 @@ int mizu_py_stage_bytes(const uint8_t *src, size_t n, mizu_slot_hdr *hdr,
 uint8_t *mizu_py_stage_reserve(size_t n, mizu_slot_hdr *hdr,
                                uint8_t *payload, mizu_handle *h);
 PyObject *mizu_py_numpy_module(void);   /* the module, Py_None, or NULL+err */
+PyObject *mizu_py_numpy_empty(void);    /* cached np.empty, a new reference */
 int mizu_py_buffer_subclass_reject(PyObject *obj);
 /* 1 exact ndarray, 2 a numpy scalar, 0 neither. */
 int mizu_py_np_kind(PyObject *obj);
@@ -219,7 +236,13 @@ static inline double mizu_py_difftime_scale(int unit) {
    array is past 1-D (its own decline). */
 static inline int mizu_py_temporal_counts(PyObject *obj, PyObject **view,
                                           Py_buffer *bv) {
-  *view = PyObject_CallMethod(obj, "view", "s", "int64");
+  PyObject *vm = PyObject_GetAttr(obj, mizu_py_str_view);
+  *view = NULL;
+  if (vm != NULL) {
+    PyObject *a[1] = {mizu_py_dt_int64};
+    *view = PyObject_Vectorcall(vm, a, 1, NULL);
+    Py_DECREF(vm);
+  }
   if (*view == NULL ||
       PyObject_GetBuffer(*view, bv, PyBUF_ND | PyBUF_FORMAT) != 0) {
     PyErr_Clear();

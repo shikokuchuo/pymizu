@@ -729,15 +729,30 @@ extras:
 
 // The builder -----------------------------------------------------------------------
 
-/* np.empty(dims, dtype=dt[, order="F"]); NULL with an exception set. */
+/* The init-cached dtype str for the hot set (identity by name prefix; the
+   callers' literals are fixed). NULL for the temporal forms — those read
+   paths convert anyway, so they build the str per call. */
+static PyObject *ixr_dt_cached(const char *dt) {
+  switch (dt[0]) {
+  case 'f': return mizu_py_dt_float64;
+  case 'b': return mizu_py_dt_bool;
+  case 'c': return mizu_py_dt_complex128;
+  case 'i': return dt[3] == '3' ? mizu_py_dt_int32 : mizu_py_dt_int64;
+  case 'u': return dt[4] == '8' ? mizu_py_dt_uint8 : mizu_py_dt_uint64;
+  }
+  return NULL;
+}
+
+/* np.empty(dims, dt[, "F"]); NULL with an exception set. */
 /* Every caller has already gated on numpy's presence. */
 static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
                               int fortran) {
-  PyObject *empty = PyObject_GetAttrString(mizu_py_numpy_module(), "empty");
+  PyObject *empty = mizu_py_numpy_empty();
   if (empty == NULL) return NULL;
-  PyObject *shape = PyTuple_New(nd);
+  /* a 1-D shape is the scalar itself, saving the one-tuple */
+  PyObject *shape = nd == 1 ? PyLong_FromSsize_t(dims[0]) : PyTuple_New(nd);
   PyObject *arr = NULL;
-  if (shape != NULL) {
+  if (shape != NULL && nd != 1) {
     for (int i = 0; i < nd; i++) {
       PyObject *d = PyLong_FromSsize_t(dims[i]);
       if (d == NULL) {
@@ -747,30 +762,18 @@ static PyObject *ixr_np_alloc(const Py_ssize_t *dims, int nd, const char *dt,
       PyTuple_SET_ITEM(shape, i, d);
     }
   }
-  PyObject *dts = shape != NULL ? PyUnicode_FromString(dt) : NULL;
-  PyObject *kw = PyDict_New();
-  PyObject *ord = NULL;
-  if (kw != NULL && dts != NULL &&
-      PyDict_SetItemString(kw, "dtype", dts) == 0) {
-    if (fortran) {
-      ord = PyUnicode_FromString("F");
-      if (ord == NULL || PyDict_SetItemString(kw, "order", ord) < 0)
-        Py_CLEAR(kw);
-    }
-  } else {
-    Py_CLEAR(kw);
+  PyObject *dts = ixr_dt_cached(dt);
+  int dts_owned = 0;
+  if (dts == NULL && shape != NULL) {
+    dts = PyUnicode_FromString(dt);
+    dts_owned = 1;
   }
-  Py_XDECREF(dts);
-  Py_XDECREF(ord);
-  if (kw != NULL) {
-    PyObject *args = PyTuple_Pack(1, shape);
-    if (args != NULL) {
-      arr = PyObject_Call(empty, args, kw);
-      Py_DECREF(args);
-    }
+  if (shape != NULL && dts != NULL) {
+    PyObject *stack[3] = {shape, dts, mizu_py_str_fortran};
+    arr = PyObject_Vectorcall(empty, stack, fortran ? 3 : 2, NULL);
   }
+  if (dts_owned) Py_XDECREF(dts);
   Py_XDECREF(shape);
-  Py_XDECREF(kw);
   Py_DECREF(empty);
   return arr;
 }
@@ -4804,8 +4807,9 @@ static int temporal_unit(const char *s, size_t n) {
 int mizu_py_np_temporal_unit(PyObject *obj, int *unit, int *delta) {
   if (mizu_py_np_kind(obj) == 0) return 0;
   int out = 0;
-  PyObject *dt = PyObject_GetAttrString(obj, "dtype");
-  PyObject *ds = dt != NULL ? PyObject_GetAttrString(dt, "str") : NULL;
+  PyObject *dt = NULL, *ds = NULL;
+  if (mizu_py_get_optional_attr(obj, mizu_py_str_dtype, &dt) == 1 && dt != NULL)
+    (void) mizu_py_get_optional_attr(dt, mizu_py_str_str, &ds);
   if (ds != NULL && PyUnicode_Check(ds)) {
     const char *s = PyUnicode_AsUTF8(ds);
     if (s != NULL) {

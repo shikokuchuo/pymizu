@@ -38,12 +38,12 @@ probes and A/B isolations stay in the log.
 | row | best | measured |
 |---|---|---|
 | sequential rt, channel | 0.3 us/rt | 2026-10-03 |
-| sequential rt, pool | 0.7 us/task | 2026-09-28 |
+| sequential rt, pool | 0.6 us/task | 2026-11-09 |
 | pipelined, channel | 4.68M rt/s | 2026-10-03 |
 | pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
 | pipelined, pool batch | 4.15M tasks/s | 2026-11-09 |
-| payload 8,000 B | 2.1 us/task | 2026-11-08 |
+| payload 8,000 B | 2.0 us/task | 2026-11-09 |
 | payload 800,000 B | 55.4 us/task | 2026-11-08 |
 | payload 8,000,000 B | 101.7 us/task | 2026-11-08 |
 | fan-out x 2000, 4 workers | 296.4k tasks/s | 2026-11-08 |
@@ -53,7 +53,7 @@ probes and A/B isolations stay in the log.
 | map trivial f, seed | 1.7 us/elt | 2026-11-06 |
 | map trivial f, stream | 0.17 us/elt | 2026-11-08 |
 | map trivial f, prepared | 0.05 us/elt | 2026-11-06 |
-| map winsum x 2000 | 715.0k tasks/s | 2026-11-08 |
+| map winsum x 2000 | 747.0k tasks/s | 2026-11-09 |
 | map winsum x 20000 | 783.1k tasks/s | 2026-11-09 |
 | map skewed f x 4000 | 5.1 ms wall | 2026-11-08 |
 | stage memcpy | 100.5 us/send | 2026-08-30 |
@@ -81,11 +81,11 @@ probes and A/B isolations stay in the log.
 | event-driven, channel armed | 2.67M rt/s | 2026-11-08 |
 | event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
 | event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
-| event-driven, pool collect_async | 1.65M tasks/s | 2026-11-08 |
+| event-driven, pool collect_async | 1.74M tasks/s | 2026-11-09 |
 | event-driven, pool collect_all_async | 3.85M tasks/s | 2026-11-09 |
 | event-driven, pool 64 waiters | 3.61M tasks/s | 2026-11-09 |
 | executor outstanding 500 / 1,000 / 2,000 / 4,000 | 80.6k / 79.7k / 82.1k / 83.2k tasks/s | 2026-11-08 |
-| executor sync | 4.5 us/task | 2026-11-08 |
+| executor sync | 3.9 us/task | 2026-11-09 |
 
 ## Run log
 
@@ -1683,3 +1683,112 @@ cold worker improves by the same mechanism and is not separately
 probed. No best-known swaps (probe rows stay in the log).
 
 Status: full suite 1129 pass, 1 skip; ruff + pyrefly clean.
+
+## 2026-11-09 — C boundary layer: METH_FASTCALL verbs, copy-free pickle, cached numpy calls [(perf-phase2 vs 37c83bd)]
+
+Performance review phase 2: the headline verbs
+(`Channel.recv`/`recv_batch`/`close`, `Pool.submit`/`submit_batch`/
+`collect_any`/`collect_all`/`ready_wait`/`stop`, `Task.collect`,
+`_exec_submit`/`_submit_runner`, `_map_stage`/`_map_next`/`_map_write`)
+moved from `PyArg_ParseTupleAndKeywords` to `METH_FASTCALL` with a
+hand-rolled check reproducing CPython's TypeError text (verified
+byte-identical on a 40-case probe); pickle `dumps`/`loads` vectorcall
+with a cached `PyLong(4)` and `loads` reads a memoryview over the slot
+instead of a `"y#"` bytes copy; `np.empty`/`np.frombuffer` vectorcall
+with init-cached dtype strings; the remaining hot attribute probes
+interned (`__module__`, `__qualname__`, `base`, `dtype`, `str`,
+`view`).
+
+Two back-to-back suite A/B pairs (baseline = a worktree build of
+37c83bd; rows drift between sessions, within-pair reads only), the
+consistent movers:
+
+| row | 37c83bd | branch | chg |
+|---|---|---|---|
+| sequential rt, pool | 0.7 / 0.7 us/task | 0.6 / 0.6 | +14% |
+| pipelined, pool | 1.81M / 1.80M tasks/s | 2.44M / 2.44M | +35% |
+| payload 8,000 B | 2.2 / 2.3 us/task | 2.2 / 2.0 | +13% (pair 2) |
+| map winsum x 2000 | 638k / 690k tasks/s | 727k / 747k | +8-14% |
+| frame strcol relay, unmodified REF | 3,456 / 3,390 us/rt | 2,562 / 2,623 | +23-26% |
+| event-driven, pool collect_async | 1.58M / 1.56M tasks/s | 1.74M / 1.69M | +9-11% |
+| executor sync | 4.6 / 4.8 us/task | 3.9 / 3.9 | +15-19% |
+
+Boundary micro (timeit, polls with no wait, best-of-3): recv(0) 50.5 ->
+38.2 ns, recv_batch(1, 0) 67.3 -> 53.7 ns, collect(0) 49.9 -> 38.6 ns,
+collect_any 80.3 -> 61.8 ns, collect_all 92.7 -> 74.3 ns (-20-24% per
+call). Pickle round-trip micro (set / 300-dict list, in-process pair):
+within ~1%, pickle cost dominating as expected.
+
+The suite's pipelined pool batch row read -21% / -18% on both pairs;
+an isolated alternating A/B of the row's shape (six reps) put both
+builds at ~2.0M tasks/s with the baseline spiking 2.5M on one rep —
+run-to-run noise, not a regression (the baseline's own two suite runs
+moved 3.23M -> 2.94M).
+
+Best-known swaps: sequential rt pool 0.7 -> 0.6, payload 8,000 B
+2.1 -> 2.0, map winsum x 2000 715.0k -> 747.0k, pool collect_async
+1.65M -> 1.74M, executor sync 4.5 -> 3.9.
+
+Status: full suite 1129 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.
+
+## 2026-11-09 — 1-D interop NumPy shape allocation [(scalar shape vs one-tuple)]
+
+`ixr_np_alloc` passes `dims[0]` directly to `np.empty` for 1-D reads instead
+of building a one-element shape tuple; matrices and higher-rank arrays keep
+the tuple form.
+
+Focused `_read_stream` micro over foreign 'I' vectors (values, dtypes and
+shapes checked before timing; GC disabled; best of 5 per process). Six A/B
+pairs: three A -> B followed by three B -> A. A is the parser-fix build
+before the shape trim, B the same build plus the trim. A/B columns are the
+median of the six per-process bests; change is the median within-pair ratio.
+
+| row | A ns/read | B ns/read | change |
+|---|---:|---:|---:|
+| realv[0] | 149.6 | 133.7 | -10.6% |
+| realv[3] | 145.7 | 131.7 | -8.6% |
+| realv[1000] | 252.5 | 234.1 | -4.5% |
+| intv[1000] | 428.1 | 413.5 | -3.1% |
+
+The saving is about 14-18 ns/read, consistent with removing one tuple
+allocation. The last intv pair was an outlier (-17.5%; the other five were
+-2.0% to -4.5%), hence the median within-pair summary. No best-known swaps
+(these are isolated micro rows).
+
+Status: full suite 1132 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.
+
+## 2026-11-09 — Hybrid FASTCALL keyword parsing [(native fallback vs hand match)]
+
+A (`c961d58`) hand-matched keyword names. B binds calls without keywords
+directly and routes every keyword-bearing call through
+`PyArg_ParseTupleAndKeywords`, retaining exact-Unicode normalization when
+reconstructing kwargs.
+
+Four A/B pairs alternating A -> B and B -> A; best of 5 per process, GC
+disabled. A/B columns are the median per-process bests; change is the median
+within-pair ratio. The pool rows are submit + collect round trips against one
+real worker, with collect positional in both rows. The other rows poll an
+empty channel or a pending task.
+
+| call | A ns/call | B ns/call | change |
+|---|---:|---:|---:|
+| recv positional | 48.0 | 46.5 | -3.1% |
+| recv keyword | 52.5 | 154.8 | +195.3% |
+| recv_batch positional | 61.8 | 61.8 | +0.2% |
+| recv_batch keyword | 68.8 | 180.8 | +163.0% |
+| Task.collect positional | 47.6 | 48.9 | +2.3% |
+| Task.collect keyword | 53.5 | 152.5 | +186.5% |
+| Pool.submit+collect positional | 570.2 | 568.5 | -2.0% |
+| Pool.submit+collect keyword | 571.3 | 694.6 | +24.1% |
+
+Positional differences are run-to-run noise (the last pool positional pair
+was +19.8%; the other three were -4.4% to -0.5%). The native keyword fallback
+costs about 100-112 ns per direct boundary call and 123 ns in the pool round
+trip. This trades keyword-call speed for native binding and error semantics
+while retaining the positional FASTCALL gain. No best-known swaps (these are
+isolated micro rows).
+
+Status: full suite 1132 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.

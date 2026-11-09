@@ -55,7 +55,7 @@ Against `ProcessPoolExecutor` (tasks run in separate processes, with pickled pay
 
 | Benchmark | pymizu | ProcessPoolExecutor | Speedup |
 |----|----|----|----|
-| Trivial task round trip | 0.7 µs | 94.2 µs | 135x |
+| Trivial task round trip | 0.6 µs | 94.2 µs | 157x |
 | Pipelined throughput, 1 worker | 2,390,000 tasks/s | 18,500 tasks/s | 129x |
 | 8 KB vector round trip | 2.4 µs | 100.7 µs | 42x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 2.9 ms | 123 ms | 42x |
@@ -64,7 +64,7 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 
 | Benchmark | pymizu | ThreadPoolExecutor | Speedup |
 |----|----|----|----|
-| Trivial task round trip | 0.7 µs | 9.5 µs | 14x |
+| Trivial task round trip | 0.6 µs | 9.5 µs | 16x |
 | Pipelined throughput, 1 worker | 2,390,000 tasks/s | 405,000 tasks/s | 5.9x |
 | 8 KB vector round trip | 2.4 µs | 9.3 µs | 3.9x |
 | Parallel map of 2,000 ~5 µs tasks, 4 workers | 2.9 ms | 48 ms | 17x |

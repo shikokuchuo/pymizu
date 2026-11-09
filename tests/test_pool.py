@@ -73,6 +73,38 @@ def test_submit_argument_validation(pool):
     assert t.collect(timeout=5) == 1
 
 
+def test_pool_keyword_handling_matches_pyarg(pool):
+    if sys.version_info >= (3, 13):
+        expected = (
+            "submit() got an unexpected keyword argument 'timeou'. "
+            "Did you mean 'timeout'?"
+        )
+    else:
+        expected = "'timeou' is an invalid keyword argument for submit()"
+    with pytest.raises(TypeError) as exc:
+        pool._h.submit(payload=pow, timeou=1)
+    assert str(exc.value) == expected
+
+    class Keyword(str):
+        hashes = 0
+
+        def __hash__(self):
+            type(self).hashes += 1
+            if type(self).hashes > 1:
+                raise RuntimeError("keyword rehashed")
+            return super().__hash__()
+
+    with pytest.raises(TypeError) as exc:
+        pool._h.submit(payload=pow, **{Keyword("timeou"): 1})
+    assert str(exc.value) == expected
+    assert Keyword.hashes == 1
+
+    Keyword.hashes = 0
+    task = pool.submit(pow, 2, 3)
+    assert task.collect(**{Keyword("timeout"): 5}) == 8
+    assert Keyword.hashes == 1
+
+
 def test_submit_on_destroyed_pool(pool):
     pool.destroy()
     with pytest.raises(ValueError, match="pool handle is closed"):
