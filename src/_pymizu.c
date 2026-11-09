@@ -7689,13 +7689,22 @@ static mizu_task task_get(MizuTask *self, MizuPool **pool_out) {
   return t;
 }
 
+typedef struct {
+  mizu_task inline_ts[16];
+  mizu_task *ts;
+  size_t n;
+} MizuTaskArray;
+
+static void tasks_dispose(MizuTaskArray *tasks) {
+  if (tasks->ts != tasks->inline_ts) PyMem_Free(tasks->ts);
+}
+
 /* self (non-NULL): the collect/notify verbs' belong-to-this-pool check,
    folded in here. check_async: the collect verbs' one-consumer-per-result
    refusal — a task with a pending asyncio consumer rejects a blocking
    collect. */
 static MizuPool *tasks_get(MizuPool *self, PyObject *arg,
-                           mizu_task **ts_out, size_t *n_out,
-                           int check_async) {
+                           MizuTaskArray *tasks, int check_async) {
   PyObject *seq = PySequence_Fast(
     arg, "pymizu: tasks must be a non-empty sequence of task handles");
   if (seq == NULL) return NULL;
@@ -7706,12 +7715,16 @@ static MizuPool *tasks_get(MizuPool *self, PyObject *arg,
                     "pymizu: tasks must be a non-empty sequence of task handles");
     return NULL;
   }
-  mizu_task *ts = PyMem_Malloc((size_t) n * sizeof(mizu_task));
-  if (ts == NULL) {
-    Py_DECREF(seq);
-    PyErr_NoMemory();
-    return NULL;
+  tasks->ts = tasks->inline_ts;
+  if ((size_t) n > sizeof(tasks->inline_ts) / sizeof(tasks->inline_ts[0])) {
+    tasks->ts = PyMem_Malloc((size_t) n * sizeof(mizu_task));
+    if (tasks->ts == NULL) {
+      Py_DECREF(seq);
+      PyErr_NoMemory();
+      return NULL;
+    }
   }
+  mizu_task *ts = tasks->ts;
   MizuPool *pool = NULL;
   PyObject **items = PySequence_Fast_ITEMS(seq);
   for (Py_ssize_t i = 0; i < n; i++) {
@@ -7745,16 +7758,15 @@ static MizuPool *tasks_get(MizuPool *self, PyObject *arg,
   }
   Py_DECREF(seq);
   if (self != NULL && pool != self) {
-    PyMem_Free(ts);
+    tasks_dispose(tasks);
     PyErr_SetString(PyExc_ValueError,
                     "pymizu: task handles must belong to this pool handle");
     return NULL;
   }
-  *ts_out = ts;
-  *n_out = (size_t) n;
+  tasks->n = (size_t) n;
   return pool;
 fail:
-  PyMem_Free(ts);
+  tasks_dispose(tasks);
   Py_DECREF(seq);
   return NULL;
 }
@@ -8208,23 +8220,24 @@ discipline, never aborting the pass.\n\n");
 
 static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
                                              PyObject *arg) {
-  mizu_task *ts;
-  size_t n;
-  MizuPool *pool = tasks_get(self, arg, &ts, &n, 0);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(self, arg, &tasks, 0);
   if (pool == NULL) return NULL;
+  mizu_task *ts = tasks.ts;
+  size_t n = tasks.n;
   mizu_pool *p = pool_get(self);
   if (p == NULL) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     return NULL;
   }
   PyObject *out = PyList_New(0);
   if (out == NULL) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     return NULL;
   }
   void **vals = PyMem_Calloc(n, sizeof(void *));
   if (vals == NULL) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     Py_DECREF(out);
     return PyErr_NoMemory();
   }
@@ -8288,13 +8301,13 @@ static PyObject *Pool_tasks_collect_terminal(MizuPool *self,
     base += fail + 1;
   }
   PyMem_Free(vals);
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   return out;
 fail_rows:
   Py_XDECREF(err_val);
   for (size_t j = 0; j < n; j++) Py_XDECREF((PyObject *) vals[j]);
   PyMem_Free(vals);
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   Py_DECREF(out);
   return NULL;
 }
@@ -8539,10 +8552,11 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *const *args,
   PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  mizu_task *ts;
-  size_t n;
-  MizuPool *pool = tasks_get(self, seq, &ts, &n, 1);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(self, seq, &tasks, 1);
   if (pool == NULL) return NULL;
+  mizu_task *ts = tasks.ts;
+  size_t n = tasks.n;
   void *v = NULL;
   size_t idx = 0;
   mizu_status st = MIZU_OK;
@@ -8550,7 +8564,7 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *const *args,
   mizu_pool *p = self->core;
   const int parks = ms != 0;
   if (parks && role_enter(&self->waiter_active, pool_waiter_msg)) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     return NULL;
   }
   /* Sliced like Task_collect: a Pool_destroy breaks the wait out. */
@@ -8566,7 +8580,7 @@ static PyObject *Pool_collect_any(MizuPool *self, PyObject *const *args,
     if (st != MIZU_TIMEOUT || ms >= 0 || self->core == NULL) break;
   }
   if (parks) role_leave(&self->waiter_active);
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   if (err) return NULL;
   if (st == MIZU_TIMEOUT) {
     if (ms < 0) {
@@ -8609,13 +8623,14 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *const *args,
   PyObject *tmo = slots[1] != NULL ? slots[1] : Py_None;
   double ms;
   if (timeout_ms_of(tmo, &ms) < 0) return NULL;
-  mizu_task *ts;
-  size_t n;
-  MizuPool *pool = tasks_get(self, seq, &ts, &n, 1);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(self, seq, &tasks, 1);
   if (pool == NULL) return NULL;
+  mizu_task *ts = tasks.ts;
+  size_t n = tasks.n;
   PyObject *out = PyList_New((Py_ssize_t) n);
   if (out == NULL) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     return NULL;
   }
   size_t err_idx = 0, consumed = 0;
@@ -8624,7 +8639,7 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *const *args,
   mizu_pool *p = self->core;
   const int parks = ms != 0;
   if (parks && role_enter(&self->waiter_active, pool_waiter_msg)) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     Py_DECREF(out);
     return NULL;
   }
@@ -8646,7 +8661,7 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *const *args,
   if (parks) role_leave(&self->waiter_active);
   if (err) {
     if (consumed == 0) {
-      PyMem_Free(ts);
+      tasks_dispose(&tasks);
       Py_DECREF(out);
       return NULL;
     }
@@ -8667,12 +8682,12 @@ static PyObject *Pool_collect_all(MizuPool *self, PyObject *const *args,
       Py_XDECREF(prefix);
       Py_XDECREF(i);
     }
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     Py_DECREF(out);
     PyErr_Restore(et, ev, tb);
     return NULL;
   }
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   if (st == MIZU_TIMEOUT) {
     Py_DECREF(out);
     if (ms < 0) {
@@ -9499,12 +9514,12 @@ static PyObject *Pool_task_notify(MizuPool *self, PyObject *args) {
   int on;
   if (!PyArg_ParseTuple(args, "Oi:_task_notify", &seq, &on))
     return NULL;
-  mizu_task *ts;
-  size_t n;
-  MizuPool *pool = tasks_get(self, seq, &ts, &n, 0);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(self, seq, &tasks, 0);
   if (pool == NULL) return NULL;
-  mizu_status st = mizu_pool_task_notify(self->core, ts, n, on != 0);
-  PyMem_Free(ts);
+  mizu_status st =
+    mizu_pool_task_notify(self->core, tasks.ts, tasks.n, on != 0);
+  tasks_dispose(&tasks);
   if (st != MIZU_OK) return pool_raise(self->core);
   Py_RETURN_NONE;
 }
@@ -9519,24 +9534,24 @@ announced. Announce before arming the submitter word, then re-check.");
 static PyObject *Pool_tasks_enroll(MizuPool *self, PyObject *arg) {
   PyObject *seq = PySequence_Fast(arg, "pymizu: expected a task sequence");
   if (seq == NULL) return NULL;
-  mizu_task *ts;
-  size_t n;
-  MizuPool *pool = tasks_get(self, seq, &ts, &n, 1);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(self, seq, &tasks, 1);
   if (pool == NULL) {
     Py_DECREF(seq);
     return NULL;
   }
   PyObject **items = PySequence_Fast_ITEMS(seq);
-  for (size_t i = 0; i < n; i++) ((MizuTask *) items[i])->async_pending = 1;
-  mizu_status st = mizu_pool_task_notify(self->core, ts, n, 1);
+  for (size_t i = 0; i < tasks.n; i++)
+    ((MizuTask *) items[i])->async_pending = 1;
+  mizu_status st = mizu_pool_task_notify(self->core, tasks.ts, tasks.n, 1);
   if (st != MIZU_OK) {
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = 0; i < tasks.n; i++)
       ((MizuTask *) items[i])->async_pending = 0;
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     Py_DECREF(seq);
     return pool_raise(self->core);
   }
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   Py_DECREF(seq);
   Py_RETURN_NONE;
 }
@@ -9561,16 +9576,16 @@ static PyObject *Pool_tasks_release(MizuPool *self, PyObject *arg) {
     }
     ((MizuTask *) items[i])->async_pending = 0;
   }
-  mizu_task *ts;
-  size_t tn;
-  MizuPool *pool = tasks_get(NULL, seq, &ts, &tn, 0);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(NULL, seq, &tasks, 0);
   if (pool == NULL) {
     PyErr_Clear();  /* closed/destroyed handle: nothing to withdraw from */
     Py_DECREF(seq);
     Py_RETURN_NONE;
   }
-  if (pool == self) mizu_pool_task_notify(self->core, ts, tn, 0);
-  PyMem_Free(ts);
+  if (pool == self)
+    mizu_pool_task_notify(self->core, tasks.ts, tasks.n, 0);
+  tasks_dispose(&tasks);
   Py_DECREF(seq);
   Py_RETURN_NONE;
 }
@@ -9590,27 +9605,27 @@ static PyObject *tasks_terminal_impl(MizuPool *self, PyObject *arg,
   PyObject *seq = as_set ?
     PySequence_Fast(arg, "pymizu: expected a task sequence") : NULL;
   if (as_set && seq == NULL) return NULL;
-  mizu_task *ts;
-  size_t n;
-  MizuPool *pool = tasks_get(self, as_set ? seq : arg, &ts, &n, 0);
+  MizuTaskArray tasks;
+  MizuPool *pool = tasks_get(self, as_set ? seq : arg, &tasks, 0);
   if (pool == NULL) {
     Py_XDECREF(seq);
     return NULL;
   }
   mizu_pool *p = pool_get(self);
   if (p == NULL) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     Py_XDECREF(seq);
     return NULL;
   }
-  PyObject *out = as_set ? PySet_New(NULL) : PyList_New((Py_ssize_t) n);
+  PyObject *out =
+    as_set ? PySet_New(NULL) : PyList_New((Py_ssize_t) tasks.n);
   if (out == NULL) {
-    PyMem_Free(ts);
+    tasks_dispose(&tasks);
     Py_XDECREF(seq);
     return NULL;
   }
-  for (size_t i = 0; i < n; i++) {
-    const int tst = mizu_pool_task_state(p, &ts[i]);
+  for (size_t i = 0; i < tasks.n; i++) {
+    const int tst = mizu_pool_task_state(p, &tasks.ts[i]);
     const int terminal = tst != MIZU_RS_PENDING && tst != MIZU_RS_RUNNING;
     if (as_set) {
       if (terminal &&
@@ -9622,11 +9637,11 @@ static PyObject *tasks_terminal_impl(MizuPool *self, PyObject *arg,
       PyList_SET_ITEM(out, (Py_ssize_t) i, b);
     }
   }
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   Py_XDECREF(seq);
   return out;
 fail:
-  PyMem_Free(ts);
+  tasks_dispose(&tasks);
   Py_XDECREF(seq);
   Py_DECREF(out);
   return NULL;

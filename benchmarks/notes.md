@@ -1792,3 +1792,34 @@ isolated micro rows).
 
 Status: full suite 1132 pass, 1 skip (crosslang legs included); ruff
 + pyrefly clean.
+
+## 2026-11-09 — Phase 3b small-collection stack storage [(retained: 4/16-task win)]
+
+A (`6cb488a`) heap-allocated every `tasks_get` array; B stores up to 16
+`mizu_task` entries inline in the caller, with the heap fallback and one
+conditional cleanup helper shared by all seven callers. The final build keeps
+a local active pointer in the validation loop, avoiding per-element wrapper
+loads on the heap path. Six A/B pairs alternated A -> B and B -> A, best of 5
+per process with GC disabled. Rows are zero-timeout polls over pending tasks;
+values are nanoseconds per call, so lower is better. A/B columns are medians
+of the per-process bests; B/A is the median within-pair ratio.
+
+| row | A ns | B ns | B/A |
+|---|---:|---:|---:|
+| collect_any, 1 task | 74.8 | 72.1 | 0.959 |
+| collect_any, 4 tasks | 80.6 | 75.3 | 0.934 |
+| collect_any, 16 tasks | 101.2 | 96.8 | 0.959 |
+| collect_any, 17 tasks (heap) | 104.2 | 100.0 | 0.955 |
+| collect_all, 1 task | 87.9 | 85.8 | 0.978 |
+| collect_all, 4 tasks | 95.8 | 89.7 | 0.938 |
+| collect_all, 16 tasks | 115.2 | 107.7 | 0.944 |
+| collect_all, 17 tasks (heap) | 115.1 | 112.9 | 0.997 |
+
+The 4- and 16-task wins repeat across the pairs; the one-task `collect_all`
+row is weaker, and the 17-task heap-fallback rows bound the remaining noise.
+Decision: retain on these small-collection results alone; large-batch rows
+are regression checks only. No best-known swaps (these are isolated micro
+rows).
+
+Status: full suite 1136 pass, 1 skip (crosslang legs included); ruff
++ pyrefly clean.
