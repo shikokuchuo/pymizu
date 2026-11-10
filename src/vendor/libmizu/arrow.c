@@ -260,30 +260,36 @@ static void cvt_run(uint8_t *dst, const uint8_t *src, size_t n,
 }
 #undef ARROW_CVT_WIDEN
 
+/* Fill nbytes (a multiple of 4) with an 8-byte pattern, a 4-byte sentinel
+   given doubled. Per-lane stores stay scalar; whole-block copies of the
+   replicated pattern compile to vector stores. */
+static void cvt_fill_pattern(uint8_t *dst, size_t nbytes, uint64_t pat) {
+  uint64_t blk[8];
+  for (int j = 0; j < 8; j++) blk[j] = pat;
+  size_t i = 0;
+  for (; i + 64 <= nbytes; i += 64) memcpy(dst + i, blk, 64);
+  memcpy(dst + i, blk, nbytes - i);
+}
+
 /* Fill n lanes with the wire type's missing sentinel, at the type's
    lane width. */
 static void cvt_fill_na(uint8_t *dst, size_t n, int wire) {
+  uint64_t pat;
   switch (wire) {
   case MIZU_TYPE_REAL:
-    for (size_t i = 0; i < n; i++) mizu_store_na_real(dst + 8 * i);
-    break;
   case MIZU_TYPE_CPLX:   /* NA_complex_: both parts the real sentinel */
-    for (size_t i = 0; i < n; i++) {
-      mizu_store_na_real(dst + 16 * i);
-      mizu_store_na_real(dst + 16 * i + 8);
-    }
+    mizu_store_na_real((uint8_t *) &pat);
+    cvt_fill_pattern(dst, n * (wire == MIZU_TYPE_CPLX ? 16 : 8), pat);
     break;
-  case MIZU_TYPE_INT64: {
-    const int64_t na = MIZU_NA_INT64;   /* reads as NA_integer64_ in R */
-    for (size_t i = 0; i < n; i++) memcpy(dst + 8 * i, &na, 8);
+  case MIZU_TYPE_INT64:   /* reads as NA_integer64_ in R */
+    cvt_fill_pattern(dst, n * 8, (uint64_t) MIZU_NA_INT64);
     break;
-  }
   case MIZU_TYPE_RAW:    /* no sentinel: a zero byte per lane */
     memset(dst, 0, n);
     break;
   default: {
-    const int32_t na = MIZU_NA_INT32;   /* INT and LGL share the sentinel */
-    for (size_t i = 0; i < n; i++) memcpy(dst + 4 * i, &na, 4);
+    const uint32_t na = (uint32_t) MIZU_NA_INT32;   /* INT and LGL share it */
+    cvt_fill_pattern(dst, n * 4, (uint64_t) na << 32 | na);
     break;
   }
   }
@@ -291,7 +297,9 @@ static void cvt_fill_na(uint8_t *dst, size_t n, int wire) {
 
 static void cvt_fill(uint8_t *dst, size_t n, const mizu_cvt_row *row) {
   if (row->cvt >= ARROW_CVT_DATE && row->cvt <= ARROW_CVT_TS_NS) {
-    for (size_t i = 0; i < n; i++) arrow_store_na_r(dst + 8 * i);
+    uint64_t pat;
+    arrow_store_na_r((uint8_t *) &pat);
+    cvt_fill_pattern(dst, n * 8, pat);
   } else {
     cvt_fill_na(dst, n, row->wire);
   }
@@ -307,16 +315,17 @@ static uint64_t arrow_lanes_mask(size_t lanes) {
 static uint64_t bitmap_word(const uint8_t *bm, uint64_t pos, size_t lanes) {
   const uint8_t *p = bm + (pos >> 3);
   unsigned sh = (unsigned) (pos & 7);
-  if (sh == 0 && lanes == 64) {
+  if (lanes == 64) {
     uint64_t w;
     memcpy(&w, p, 8);
-    return w;
+    /* a bit offset spills the last lanes into a ninth byte */
+    return sh == 0 ? w : (w >> sh) | ((uint64_t) p[8] << (64 - sh));
   }
   size_t nbytes = (sh + lanes + 7) >> 3;
   uint64_t lo = 0, hi = 0;
   for (size_t j = 0; j < nbytes; j++) {
     if (j < 8) lo |= (uint64_t) p[j] << (8 * j);
-    else hi = p[j];   /* j == 8: only when sh > 0 and lanes == 64 */
+    else hi = p[j];   /* j == 8: only when sh + lanes > 64 */
   }
   uint64_t w = sh != 0 ? (lo >> sh) | (hi << (64 - sh)) : lo;
   w &= arrow_lanes_mask(lanes);
@@ -324,13 +333,33 @@ static uint64_t bitmap_word(const uint8_t *bm, uint64_t pos, size_t lanes) {
 }
 
 /* A batch's exact null count (Arrow's -1 "not computed" resolved), counted
-   a word at a time. bitmap_word masks the tail and absorbs the bit offset. */
+   a word at a time: bitmap_word (it masks and shifts) for the head lanes up
+   to a byte boundary and for the tail, plain loads between. */
 static int64_t arrow_batch_nulls(const ArrowArray *a) {
   if (a->null_count == 0 || a->buffers[0] == NULL) return 0;
   if (a->null_count > 0) return a->null_count;
   const uint8_t *bm = (const uint8_t *) a->buffers[0];
   int64_t n = 0;
-  for (int64_t k = 0; k < a->length;) {
+  int64_t k = 0;
+  const int64_t head = -a->offset & 7;
+  if (head < a->length) {
+    if (head != 0) {
+      n = head - __builtin_popcountll(
+        bitmap_word(bm, (uint64_t) a->offset, (size_t) head));
+      k = head;
+    }
+    const uint8_t *p = bm + ((a->offset + head) >> 3);
+    const int64_t words = (a->length - head) >> 6;
+    uint64_t ones = 0;
+    for (int64_t j = 0; j < words; j++) {
+      uint64_t w;
+      memcpy(&w, p + 8 * j, 8);
+      ones += (uint64_t) __builtin_popcountll(w);
+    }
+    k += words * 64;
+    n += words * 64 - (int64_t) ones;
+  }
+  for (; k < a->length;) {
     const size_t lanes = a->length - k < 64 ? (size_t) (a->length - k) : 64;
     const uint64_t w = bitmap_word(bm, (uint64_t) (a->offset + k), lanes);
     n += (int64_t) lanes - (int64_t) __builtin_popcountll(w);
@@ -343,9 +372,10 @@ static int64_t arrow_batch_nulls(const ArrowArray *a) {
    run-coalesced — consecutive all-ones words accumulate into one convert,
    consecutive zero words into one sentinel fill. A mixed word converts all
    64 lanes in one pass, then patches its null lanes. A null lane's value is
-   undefined, so whatever it added to cvt_run's warning counts (a genuine
-   int32/int64 sentinel, a uint64 past the int64 range) is subtracted again:
-   the counts cover valid lanes only. off is the bit offset into validity. */
+   undefined, so the warning counts cover valid lanes only: whatever a null
+   lane added in cvt_run (a genuine int32/int64 sentinel, a uint64 past the
+   int64 range) is subtracted again, or a dense word counts its valid lanes
+   itself. off is the bit offset into validity. */
 static void convert_masked(uint8_t *dst, const uint8_t *src,
                            const uint8_t *valid, uint64_t off, size_t n,
                            const mizu_cvt_row *row, mizu_arrow_warn *warn) {
@@ -384,21 +414,60 @@ static void convert_masked(uint8_t *dst, const uint8_t *src,
         cvt_fill(dst + i * wo, run, row);
       i += run;
     } else {
-      cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
       uint64_t nulls = ~w & arrow_lanes_mask(lanes);
+      if (fix == 0) {
+        cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
+      } else if (fix != 3 && __builtin_popcountll(nulls) >= 8) {
+        /* dense: convert uncounted and count the valid lanes, cheaper than
+           uncounting every null lane */
+        cvt_run(dst + i * wo, src + i * wi, lanes, row, NULL);
+        uint64_t c = 0;
+        if (fix == 1) {
+          for (size_t j = 0; j < lanes; j++) {
+            int32_t v;
+            memcpy(&v, src + (i + j) * 4, 4);
+            c += ((w >> j) & 1) & (uint64_t) (v == INT32_MIN);
+          }
+          warn->n_intmin += c;
+        } else {
+          for (size_t j = 0; j < lanes; j++) {
+            int64_t v;
+            memcpy(&v, src + (i + j) * 8, 8);
+            c += ((w >> j) & 1) & (uint64_t) (v == INT64_MIN);
+          }
+          warn->n_int64 += c;
+        }
+      } else {
+        cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
+        for (uint64_t m = nulls; m != 0; m &= m - 1) {
+          const size_t j = i + (size_t) __builtin_ctzll(m);
+          if (fix == 1) {
+            int32_t v;
+            memcpy(&v, src + j * 4, 4);
+            warn->n_intmin -= v == INT32_MIN;
+          } else {
+            int64_t v;
+            memcpy(&v, src + j * 8, 8);
+            if (fix == 2) warn->n_int64 -= v == INT64_MIN;
+            else warn->n_range -= v < 0;
+          }
+        }
+      }
+      if (wo == 4 && __builtin_popcountll(nulls) >= 8) {
+        /* dense 4-byte lanes: a branchless select beats per-null stores */
+        for (size_t j = 0; j < lanes; j++) {
+          uint32_t d;
+          memcpy(&d, dst + (i + j) * 4, 4);
+          const uint32_t m = (uint32_t) 0 - (uint32_t) ((w >> j) & 1);
+          d = (d & m) | (na4 & ~m);
+          memcpy(dst + (i + j) * 4, &d, 4);
+        }
+        i += lanes;
+        continue;
+      }
       while (nulls != 0) {
         const size_t j = i + (size_t) __builtin_ctzll(nulls);
         nulls &= nulls - 1;
-        if (fix == 1) {
-          int32_t v;
-          memcpy(&v, src + j * 4, 4);
-          warn->n_intmin -= v == INT32_MIN;
-        } else if (fix != 0) {
-          int64_t v;
-          memcpy(&v, src + j * 8, 8);
-          if (fix == 2) warn->n_int64 -= v == INT64_MIN;
-          else warn->n_range -= v < 0;
-        }
         if (wo == 8) {
           memcpy(dst + j * 8, &na8, 8);
         } else if (wo == 4) {
@@ -1052,19 +1121,26 @@ static int arrow_levels_check(mizu_arrow *a, int col) {
   return 0;
 }
 
-/* Min/max of n indices from element i, validity ignored. The unsigned
-   64-bit arm reads the bits as int64, so values past INT64_MAX decline as
-   negative. */
+/* Min/max of n >= 1 indices from element i, validity ignored. The
+   reduction stays in the index's own type (widening each lane to int64
+   costs the narrow types their vector lanes). The unsigned 64-bit arm reads
+   the bits as int64, so values past INT64_MAX decline as negative. */
 static void arrow_dict_minmax(const uint8_t *idx, int64_t i, int64_t n,
                               const arrow_pcol *pc, int64_t *lo, int64_t *hi) {
   int64_t mn = INT64_MAX, mx = INT64_MIN;
 #define ARROW_DICT_MINMAX(ST, W)                                               \
-  for (int64_t k = 0; k < n; k++) {                                            \
-    ST v;                                                                      \
-    memcpy(&v, idx + (W) * (i + k), (W));                                      \
-    const int64_t c = (int64_t) v;                                             \
-    if (c < mn) mn = c;                                                        \
-    if (c > mx) mx = c;                                                        \
+  {                                                                            \
+    ST lo_, hi_;                                                               \
+    memcpy(&lo_, idx + (W) * i, (W));                                          \
+    hi_ = lo_;                                                                 \
+    for (int64_t k = 1; k < n; k++) {                                          \
+      ST v;                                                                    \
+      memcpy(&v, idx + (W) * (i + k), (W));                                    \
+      if (v < lo_) lo_ = v;                                                    \
+      if (v > hi_) hi_ = v;                                                    \
+    }                                                                          \
+    mn = (int64_t) lo_;                                                        \
+    mx = (int64_t) hi_;                                                        \
   }                                                                            \
   break;
   switch (pc->idx_w * 2 + (pc->idx_signed != 0)) {
@@ -1082,8 +1158,9 @@ static void arrow_dict_minmax(const uint8_t *idx, int64_t i, int64_t n,
 }
 
 /* Every valid index of one batch inside [0, nlev). A null-free batch is one
-   reduction; otherwise 64 lanes at a time, validity consulted only where a
-   word's unmasked range fails (a null slot's value is undefined). */
+   reduction; otherwise 4096 lanes at a time, narrowing to 64-lane words and
+   then to validity only where the unmasked range fails (a null slot's value
+   is undefined). */
 static int arrow_dict_in_range(const ArrowArray *ba, const arrow_pcol *pc,
                                int64_t nulls) {
   const uint8_t *idx = (const uint8_t *) ba->buffers[1];
@@ -1091,16 +1168,21 @@ static int arrow_dict_in_range(const ArrowArray *ba, const arrow_pcol *pc,
   int64_t lo, hi;
   for (int64_t k = 0; k < ba->length;) {
     const int64_t left = ba->length - k;
-    const int64_t lanes = nulls == 0 || left < 64 ? left : 64;
+    const int64_t lanes = nulls == 0 || left < 4096 ? left : 4096;
     arrow_dict_minmax(idx, ba->offset + k, lanes, pc, &lo, &hi);
     if (lo < 0 || hi >= pc->nlev) {
       if (nulls == 0) return 0;
-      uint64_t w = bitmap_word(valid, (uint64_t) (ba->offset + k),
-                               (size_t) lanes);
-      for (; w != 0; w &= w - 1) {
-        arrow_dict_minmax(idx, ba->offset + k + __builtin_ctzll(w), 1, pc,
-                          &lo, &hi);
-        if (lo < 0 || hi >= pc->nlev) return 0;
+      for (int64_t q = 0; q < lanes; q += 64) {
+        const int64_t l2 = lanes - q < 64 ? lanes - q : 64;
+        arrow_dict_minmax(idx, ba->offset + k + q, l2, pc, &lo, &hi);
+        if (lo >= 0 && hi < pc->nlev) continue;
+        uint64_t w = bitmap_word(valid, (uint64_t) (ba->offset + k + q),
+                                 (size_t) l2);
+        for (; w != 0; w &= w - 1) {
+          arrow_dict_minmax(idx, ba->offset + k + q + __builtin_ctzll(w), 1,
+                            pc, &lo, &hi);
+          if (lo < 0 || hi >= pc->nlev) return 0;
+        }
       }
     }
     k += lanes;
@@ -1444,8 +1526,26 @@ static void arrow_write_ts(uint8_t *dst, const mizu_arrow *a, int col) {
   arrow_write_cvt(dst, a, col, &row, NULL);
 }
 
+/* Clear the null lanes of one validity word (lanes <= 64) at bit position
+   pos of dst, touching only the bytes the lanes cover. */
+static void arrow_bitmap_clear(uint8_t *dst, uint64_t pos, uint64_t nulls,
+                               size_t lanes) {
+  uint8_t *p = dst + (pos >> 3);
+  const unsigned sh = (unsigned) (pos & 7);
+  /* up to 8 bytes from the shifted word, a 9th only when the shift spills */
+  const size_t nbytes = (sh + lanes + 7) >> 3;
+  const uint64_t lo = nulls << sh;
+  for (size_t j = 0; j < nbytes && j < 8; j++)
+    p[j] &= (uint8_t) ~(lo >> (8 * j));
+  if (nbytes == 9) p[8] &= (uint8_t) ~(nulls >> (64 - sh));
+}
+
 /* One leaf's validity bitmap into the section: verbatim for a single
-   offset-0 batch, else memset-present and clear at the null positions. */
+   offset-0 batch, else memset-present and each batch with nulls laid over
+   it. A batch's head lanes clear up to a destination byte boundary; from
+   there its whole bytes are the batch's own, so they store directly (one
+   memcpy when the source is byte-aligned there too, else shifted words),
+   and the tail lanes clear. */
 static void arrow_bitmap_write(uint8_t *dst, mizu_arrow *a, int col,
                                int64_t rows) {
   const size_t nb = ((size_t) rows + 7) / 8;
@@ -1461,11 +1561,34 @@ static void arrow_bitmap_write(uint8_t *dst, mizu_arrow *a, int col,
   for (size_t b = 0; b < a->nb; b++) {
     const ArrowArray *ba = a->batches[b]->children[col];
     if (arrow_nulls(a, col, b) != 0) {
-      for (int64_t k = 0; k < ba->length; k++) {
-        if (!mizu_arrow_valid(ba, k)) {
-          int64_t i = done + k;
-          dst[i >> 3] &= (uint8_t) ~(1u << (i & 7));
+      const uint8_t *valid = (const uint8_t *) ba->buffers[0];
+      int64_t k = -done & 7;
+      if (k > ba->length) k = ba->length;
+      if (k != 0)
+        arrow_bitmap_clear(dst, (uint64_t) done,
+                           arrow_lanes_mask((size_t) k) &
+                           ~bitmap_word(valid, (uint64_t) ba->offset,
+                                        (size_t) k), (size_t) k);
+      uint8_t *p = dst + ((done + k) >> 3);
+      if (((ba->offset + k) & 7) == 0) {
+        const size_t whole = (size_t) (ba->length - k) >> 3;
+        memcpy(p, valid + ((ba->offset + k) >> 3), whole);
+        k += (int64_t) whole * 8;
+      } else {
+        for (; k + 64 <= ba->length; k += 64, p += 8) {
+          const uint64_t w = bitmap_word(valid, (uint64_t) (ba->offset + k),
+                                         64);
+          memcpy(p, &w, 8);
         }
+      }
+      while (k < ba->length) {
+        const size_t lanes = ba->length - k < 64 ?
+          (size_t) (ba->length - k) : 64;
+        arrow_bitmap_clear(dst, (uint64_t) (done + k),
+                           arrow_lanes_mask(lanes) &
+                           ~bitmap_word(valid, (uint64_t) (ba->offset + k),
+                                        lanes), lanes);
+        k += (int64_t) lanes;
       }
     }
     done += ba->length;

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="e3099f2f5a6fdfbef4ee0c20f7e15de9cfd1af70"  # libmizu: Arrow conversion kernels (#5)
+PIN="db2ef3ab81e174487f9dba6353102ca644a7c20f"  # libmizu: Arrow sentinel fills and validity rebuild (#7)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
