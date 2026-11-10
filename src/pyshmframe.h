@@ -18,14 +18,6 @@ typedef struct {
   int64_t rows;
 } ixs_hold;
 
-enum { PC_CVT, PC_STR, PC_DICT, PC_DATE, PC_TS, PC_TD };
-
-typedef struct {
-  int kind;
-  const cvt_row *row;   /* PC_CVT */
-  int str_form;         /* PC_STR/PC_DICT: 1 utf8, 2 large_utf8, 3 view */
-} ixs_pcol;
-
 enum { IXS_COLS_STASH = 8 };   /* the stack plan array's column budget */
 
 typedef struct {
@@ -36,8 +28,8 @@ typedef struct {
   int borrowed_hold;   /* the hold is a borrowed single batch (a capsule
                           pair), never pulled or released */
   ixs_hold hold;
-  ixs_pcol *cols;
-  ixs_pcol cols_stash[IXS_COLS_STASH];  /* the stack plan array: cols
+  mizu_arrow_col *cols;
+  mizu_arrow_col cols_stash[IXS_COLS_STASH];  /* the stack plan array: cols
                           points here while ncols fits, ixs_free freeing
                           only the heap form */
   int ncols;
@@ -46,10 +38,10 @@ typedef struct {
                           (the run functions own) */
   uint32_t caps;       /* the peer's capability mask (frame gate) */
   uint32_t lang;       /* the peer's language (the sentinel warnings gate) */
-  PyObject *row_names; /* a same-language Frame's row_names (borrowed);
-                          NULL writes the automatic c(NA, -n) form */
-  PyObject *r_attrs;   /* a same-language Frame's extended-frame stash
-                          (borrowed); NULL writes the plain dict */
+  PyObject *row_names; /* a Frame's row_names (borrowed); NULL writes the
+                          automatic c(NA, -n) form */
+  PyObject *r_attrs;   /* a Frame's extended-frame stash (borrowed); NULL
+                          writes the plain dict */
   cvt_warn warn;       /* the 'I' frame emit's conversion warnings,
                           raised after the write completes (the MIZL
                           writer keeps its own) */

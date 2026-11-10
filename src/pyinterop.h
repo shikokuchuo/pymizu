@@ -378,6 +378,15 @@ int pymizu_ix_stage_arrow(PyObject *obj, mizu_slot_hdr *hdr,
                           mizu_handle *h, uint32_t peer_lang,
                           uint32_t peer_caps);
 
+/* The foreign exact-Frame branch: the cached Arrow export feeds the core
+   frame writer (region past the zero-copy floor, the 'I' frame form below
+   it). 0 staged, 1 error, -1 use the binding's by-value frame emitter (a
+   complex column or custom root metadata on a copy-tier send). */
+int pymizu_frame_stage_foreign(PyObject *obj, mizu_slot_hdr *hdr,
+                               uint8_t *payload, uint32_t inline_max,
+                               mizu_handle *h, uint32_t peer_lang,
+                               uint32_t peer_caps);
+
 /* The same-language MIZL branch (stage_impl's, ahead of pickle): an exact
    pymizu.Frame past the zero-copy floor stages as one MIZL region
    (container-exact). 0 staged, -1 fall back to pickle (never an error).
