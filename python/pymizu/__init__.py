@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib as _contextlib
 import os as _os
 import re as _re
-import subprocess as _subprocess
 import sys as _sys
 import threading as _threading
 import warnings as _warnings
@@ -17,7 +16,6 @@ from typing import TYPE_CHECKING
 from typing import Any as _Any
 
 from pymizu import _pymizu
-from pymizu._executor import PoolExecutor
 from pymizu._pymizu import (
     CLOSED,
     FULL,
@@ -58,13 +56,16 @@ from pymizu._pymizu import (
 from pymizu._pymizu import (
     prune as _prune,
 )
-from pymizu._r import r_launcher
 
 if TYPE_CHECKING:
+    import subprocess as _subprocess
+
     import numpy as _np
 
     from pymizu._dimarray import DimArray
+    from pymizu._executor import PoolExecutor
     from pymizu._map import Map, PreparedMap
+    from pymizu._r import r_launcher
 
 _DROP_SOURCE = 0x53  # 'S': UTF-8 source text in the peer's language
 _TOKEN_RE = _re.compile(r"[0-9a-f]+_[0-9a-f]+\Z")
@@ -122,6 +123,8 @@ def launcher(
         print(pool.submit(abs, -1).collect())
     ```
     """
+    import subprocess as _subprocess
+
     py = python or _sys.executable
 
     def launch(token: str, slot: int | None = None) -> _subprocess.Popen:
@@ -283,6 +286,8 @@ class Channel:
         except BaseException:
             h.destroy()
             raise
+        import subprocess as _subprocess
+
         ch = cls._wrap(h)
         ch._proc = proc if isinstance(proc, _subprocess.Popen) else None
         return ch
@@ -1871,6 +1876,14 @@ def __getattr__(name: str) -> _Any:
         from pymizu._map import PreparedMap
 
         return PreparedMap
+    if name == "PoolExecutor":
+        from pymizu._executor import PoolExecutor
+
+        return PoolExecutor
+    if name == "r_launcher":
+        from pymizu._r import r_launcher
+
+        return r_launcher
     # pymizu._dimarray imports numpy outright — the same deferral, so a
     # numpy-less `import pymizu` stays clean.
     if name == "DimArray":

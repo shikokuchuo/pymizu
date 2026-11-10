@@ -16,6 +16,7 @@ import pytest
 from tests.helpers import foreign_pair, frames_report
 
 import pymizu
+import pymizu._r
 
 RSCRIPT = shutil.which("Rscript")
 REPO_PY = str(pathlib.Path(pymizu.__file__).resolve().parent.parent)

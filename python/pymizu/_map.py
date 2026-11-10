@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib as _hashlib
 import math as _math
+import pickle as _pickle
 import random as _random
 import time as _time
 from collections.abc import Callable as _Callable
@@ -47,11 +48,6 @@ from typing import NoReturn as _NoReturn
 
 import pymizu
 from pymizu import _LANG_PYTHON, _LANG_R, _get_aio, _pymizu, _split_source
-
-try:
-    import cloudpickle as _pickle
-except ImportError:  # pragma: no cover - environment-dependent
-    import pickle as _pickle
 
 try:
     import numpy as _np
@@ -736,9 +732,8 @@ def _write_desc(
             None if probe is not None else x,
             lang,
         )
-    return _pickle.dumps(
-        (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x),
-        4,
+    return _pymizu._pickle_dumps(
+        (fn, args, kwargs) if probe is not None else (fn, args, kwargs, x)
     )
 
 
@@ -873,8 +868,8 @@ def pool_map(
         and plan.tprobe is None
         and (probe is None or probe[2] <= inline_entry)
     ):
-        cand = _pickle.dumps((fn, plan.args, plan.kwargs, x), 4)
-        worst = _pickle.dumps((_chunk, (cand, n, n, seed_spec), {}), 4)
+        cand = _pymizu._pickle_dumps((fn, plan.args, plan.kwargs, x))
+        worst = _pymizu._pickle_dumps((_chunk, (cand, n, n, seed_spec), {}))
         if len(worst) <= inline_entry:
             blob = cand
 
@@ -1754,7 +1749,7 @@ class Map:
                 self.seed,
             )
             return not self.run.refill(remaining, expired)
-        desc = _pickle.dumps((fn, plan.args, plan.kwargs), 4)
+        desc = _pymizu._pickle_dumps((fn, plan.args, plan.kwargs))
         name, capsule = _pymizu._map_stage(
             desc, None, n, 1, template, plan.convert, plan.lang
         )
@@ -2140,7 +2135,9 @@ class PreparedMap:
         self._n = n
         live, free_rs, inj_cap, _ = self._pool._h._map_caps()
         if plan.stream:
-            self._desc = _pickle.dumps((self._fn, plan.args, plan.kwargs), 4)
+            self._desc = _pymizu._pickle_dumps(
+                (self._fn, plan.args, plan.kwargs)
+            )
             _, self._ranges = _stream_window_params(plan, n, live, free_rs)
             return
         self._desc = _write_desc(

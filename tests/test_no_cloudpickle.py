@@ -2,8 +2,8 @@
 importable references only (cloudpickle lifts that when installed). The
 suite's environment has cloudpickle, so this runs in a subprocess whose
 PYTHONPATH shim makes ``import cloudpickle`` raise ImportError — the
-extension's init then falls back to stock pickle in both the driver and
-its spawned workers (the test_no_numpy.py pattern)."""
+first dump then falls back to stock pickle in both the driver and its
+spawned workers (the test_no_numpy.py pattern)."""
 
 import os
 import pathlib
@@ -37,8 +37,10 @@ def test_submit_without_cloudpickle(tmp_path):
 
         p = pymizu.Pool.create(1)
         try:
-            # an importable reference pickles fine under stock pickle
+            # importable references pickle fine under stock pickle, through
+            # both the task stager and the map descriptor's shared helper
             assert p.submit(identity, 41).collect(timeout=10) == 41
+            assert p.map(identity, [1, 2, 3]).collect(timeout=10) == [1, 2, 3]
             # a closure does not: stock pickle sends by reference only
             try:
                 p.submit(lambda x: x + 1, 1)
