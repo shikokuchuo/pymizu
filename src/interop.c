@@ -3933,6 +3933,11 @@ static PyObject *tree_frame(PyObject *Py_UNUSED(owner), PyObject *loan,
   self->row_names = rownames;
   Py_INCREF(loan);
   self->loan = loan;
+  {
+    mizu_shm *shm = mizu_py_loan_shm(loan);
+    self->loan_root = shm != NULL &&
+      base == (const uint8_t *) mizu_shm_addr(shm);
+  }
   self->r_attrs = r_attrs;
   return (PyObject *) self;
 fail:
@@ -6087,19 +6092,17 @@ static int fc_adopt_gate(ixs *x, int col) {
   Py_UNREACHABLE();   /* the core classify's closed kinds */
 }
 
-/* The copy arm for the cvt-table kinds (bool, narrow ints, uint32/64,
-   half/float — and the adoptable types whose gates failed): one fused
-   masked convert per batch into the owned buffer. */
-static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
-                          int kind, cvt_warn *warn) {
-  int64_t n = x->hold.rows;
-  uint8_t *buf = mizu_py_ix_alloc((uint64_t) n, row->w_out);
-  if (buf == NULL) return -1;
+/* One column's batches through the core's convert, concatenated into the
+   owned buffer. */
+static void fcol_cvt_batches(ixs *x, int col, uint8_t *buf,
+                             const cvt_row *row, cvt_warn *warn) {
   size_t off = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
     const uint8_t *data = (const uint8_t *) a->buffers[1];
-    const uint8_t *valid = (const uint8_t *) a->buffers[0];
+    /* a zero null count makes the bitmap advisory (mizu_arrow_valid) */
+    const uint8_t *valid = a->null_count == 0 ? NULL :
+      (const uint8_t *) a->buffers[0];
     uint64_t aoff = (uint64_t) a->offset;
     size_t alen = (size_t) a->length;
     if (row->cvt == CVT_BIT_LGL) {
@@ -6110,41 +6113,58 @@ static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
     }
     off += alen * row->w_out;
   }
+}
+
+/* The verbatim rows for the date / temporal / dictionary-code arms: run
+   with a NULL warn, the convert skips the genuine-sentinel counting (R's
+   NA warning is not these columns' semantics) and is a memcpy per valid
+   run, the wire type's sentinel at nulls. */
+static const cvt_row FCOL_ROW_I32 = { MIZU_TYPE_INT, CVT_COPY, 4, 4 };
+static const cvt_row FCOL_ROW_I64 = { MIZU_TYPE_INT64, CVT_COPY, 8, 8 };
+
+/* The copy arm for the cvt-table kinds (bool, narrow ints, uint32/64,
+   half/float — and the adoptable types whose gates failed): one fused
+   masked convert per batch into the owned buffer. */
+static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
+                          int kind, cvt_warn *warn) {
+  int64_t n = x->hold.rows;
+  uint8_t *buf = mizu_py_ix_alloc((uint64_t) n, row->w_out);
+  if (buf == NULL) return -1;
+  fcol_cvt_batches(x, col, buf, row, warn);
   c->kind = kind;
   c->n = n;
   c->values = buf;
   return 0;
 }
 
-/* The uint64 copy arm: the identity lanes verbatim, nulls an owned
-   bitmap — no mizu_cvt row applies (pymizu's identity static is never
-   the core's CVT_ROW_I64_V twin, so the masked convert would count the
-   genuine INT64_MIN lanes verbatim uint64 must treat as values), and no
+/* The uint64 copy arm: the identity lanes verbatim (one memcpy per
+   batch), nulls an owned bitmap off the core's validity concat — no
    sentinel form exists (the fill collides with 2^63). */
-static int fcol_build_u64(ixs *x, int col, fcol *c) {
+static int fcol_build_u64(ixs *x, const mizu_arrow *ar, int col, fcol *c) {
   int64_t n = x->hold.rows;
   uint64_t *buf = mizu_py_ix_alloc((uint64_t) n, 8);
   if (buf == NULL) return -1;
-  uint8_t *valid = NULL;
-  int64_t nulls = 0, done = 0;
+  int64_t done = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
+    if (a->length == 0) continue;
     const uint8_t *data = (const uint8_t *) a->buffers[1];
     memcpy(buf + done, data + (size_t) a->offset * 8,
            (size_t) a->length * 8);
-    for (int64_t k = 0; k < a->length; k++) {
-      const int64_t i = done + k;
-      if (mizu_arrow_valid(a, k)) {
-        if (valid != NULL) valid[i >> 3] |= 1 << (i & 7);
-      } else {
-        nulls++;
-        if (bitmap_mark_null(&valid, (uint64_t) n, i) != 0) {
-          free(buf);
-          return -1;
-        }
-      }
-    }
     done += a->length;
+  }
+  uint8_t *valid = NULL;
+  const int64_t nulls = mizu_arrow_col_validity(ar, col, NULL);
+  if (nulls != 0) {
+    valid = mizu_py_bitmap_calloc((uint64_t) n);
+    if (valid == NULL) {
+      free(buf);
+      PyErr_NoMemory();
+      return -1;
+    }
+    (void) mizu_arrow_col_validity(ar, col, valid);
+    /* the owned bitmap's padding bits stay clear */
+    if ((n & 7) != 0) valid[n >> 3] &= (uint8_t) ((1u << (n & 7)) - 1);
   }
   c->kind = FCOL_U64;
   c->n = n;
@@ -6156,10 +6176,14 @@ static int fcol_build_u64(ixs *x, int col, fcol *c) {
   return 0;
 }
 
-/* The string copy: per-batch gather with rebased i32 offsets, a null slot
-   collapsed to a zero-byte span with its bitmap bit clear (the owned
-   invariant); a malformed record degrades to NA, the wire's rule. */
-static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
+/* The string copy. A null-free utf8 column is the core's concat: the
+   offsets rebased, the bytes one memcpy per batch. Otherwise (nulls,
+   large_utf8, string_view, bytes past int32) the per-batch gather with
+   rebased i32 offsets, a null slot collapsed to a zero-byte span with its
+   bitmap bit clear (the owned invariant); a malformed record degrades to
+   NA, the wire's rule. */
+static int fcol_build_str(ixs *x, const mizu_arrow *ar, int col, fcol *c,
+                          char **names) {
   const mizu_arrow_col *pc = &x->cols[col];
   int64_t n = x->hold.rows;
   int32_t *offs = malloc(((size_t) n + 1) * 4);
@@ -6167,7 +6191,14 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
   size_t blen = 0, bcap = 0;
   if (offs == NULL) goto nomem;
   offs[0] = 0;
-  {
+  const int64_t total = mizu_arrow_col_utf8(ar, col, NULL, NULL);
+  if (total >= 0) {
+    bytes = malloc((size_t) total + 1);
+    if (bytes == NULL) goto nomem;
+    (void) mizu_arrow_col_utf8(ar, col, offs, bytes);
+    blen = (size_t) total;
+    c->vnulls = 0;
+  } else {
     int64_t done = 0, nulls = 0;
     for (size_t b = 0; b < x->hold.nb; b++) {
       ArrowArray *a = x->hold.arrs[b].children[col];
@@ -6196,8 +6227,8 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
       done += a->length;
     }
     c->vnulls = nulls;
+    bytes_shrink(&bytes, blen);
   }
-  bytes_shrink(&bytes, blen);
   c->kind = FCOL_STR;
   c->n = n;
   c->values = (uint8_t *) offs;
@@ -6224,38 +6255,42 @@ static int fcol_build_dict(ixs *x, int col, fcol *c, char **names) {
   if (codes == NULL) return -1;
   int idx_w, idx_signed;
   fcol_dict_idx_form(x->schema.children[col]->format, &idx_w, &idx_signed);
-  int64_t done = 0;
-  for (size_t b = 0; b < x->hold.nb; b++) {
-    ArrowArray *a = x->hold.arrs[b].children[col];
-    const uint8_t *idx = (const uint8_t *) a->buffers[1];
-    for (int64_t k = 0; k < a->length; k++) {
-      int32_t v;
-      if (!mizu_arrow_valid(a, k)) {
-        v = MIZU_NA_INT32;
-      } else {
-        int64_t i = a->offset + k, cv;
-        switch (idx_w) {
-        case 1:
-          cv = idx_signed ? (int64_t) ((const int8_t *) idx)[i] :
-            (int64_t) ((const uint8_t *) idx)[i];
-          break;
-        case 2:
-          cv = idx_signed ? (int64_t) ((const int16_t *) idx)[i] :
-            (int64_t) ((const uint16_t *) idx)[i];
-          break;
-        case 4:
-          cv = idx_signed ? (int64_t) ((const int32_t *) idx)[i] :
-            (int64_t) ((const uint32_t *) idx)[i];
-          break;
-        default:
-          cv = ((const int64_t *) idx)[i];
-          break;
+  if (idx_w == 4 && idx_signed) {   /* already the owned layout */
+    fcol_cvt_batches(x, col, (uint8_t *) codes, &FCOL_ROW_I32, NULL);
+  } else {
+    int64_t done = 0;
+    for (size_t b = 0; b < x->hold.nb; b++) {
+      ArrowArray *a = x->hold.arrs[b].children[col];
+      const uint8_t *idx = (const uint8_t *) a->buffers[1];
+      for (int64_t k = 0; k < a->length; k++) {
+        int32_t v;
+        if (!mizu_arrow_valid(a, k)) {
+          v = MIZU_NA_INT32;
+        } else {
+          int64_t i = a->offset + k, cv;
+          switch (idx_w) {
+          case 1:
+            cv = idx_signed ? (int64_t) ((const int8_t *) idx)[i] :
+              (int64_t) ((const uint8_t *) idx)[i];
+            break;
+          case 2:
+            cv = idx_signed ? (int64_t) ((const int16_t *) idx)[i] :
+              (int64_t) ((const uint16_t *) idx)[i];
+            break;
+          case 4:
+            cv = idx_signed ? (int64_t) ((const int32_t *) idx)[i] :
+              (int64_t) ((const uint32_t *) idx)[i];
+            break;
+          default:
+            cv = ((const int64_t *) idx)[i];
+            break;
+          }
+          v = (int32_t) cv;   /* the bounds are the validation pass's */
         }
-        v = (int32_t) cv;   /* the bounds are the validation pass's */
+        codes[done + k] = v;
       }
-      codes[done + k] = v;
+      done += a->length;
     }
-    done += a->length;
   }
   const ArrowArray *d = x->hold.nb != 0 ?
     x->hold.arrs[0].children[col]->dictionary : NULL;
@@ -6304,47 +6339,19 @@ fail:
   return -1;
 }
 
-/* The date copy: i32 days verbatim, NA32 at masked lanes (a hand loop,
-   not the "i" cvt row — the row counts genuine INT32_MIN lanes for R's
-   NA_integer_ warning, which is not a date's semantics). */
+/* The date copy: i32 days verbatim, NA32 at masked lanes. */
 static int fcol_build_date(ixs *x, int col, fcol *c) {
-  int64_t n = x->hold.rows;
-  int32_t *days = mizu_py_ix_alloc((uint64_t) n, 4);
-  if (days == NULL) return -1;
-  int64_t done = 0;
-  for (size_t b = 0; b < x->hold.nb; b++) {
-    ArrowArray *a = x->hold.arrs[b].children[col];
-    const int32_t *src = (const int32_t *) a->buffers[1];
-    for (int64_t k = 0; k < a->length; k++)
-      days[done + k] = mizu_arrow_valid(a, k) ? src[a->offset + k] :
-        MIZU_NA_INT32;
-    done += a->length;
-  }
-  c->kind = FCOL_DATE;
-  c->n = n;
-  c->values = (uint8_t *) days;
-  return 0;
+  return fcol_build_cvt(x, col, c, &FCOL_ROW_I32, FCOL_DATE, NULL);
 }
 
 /* The temporal copy: i64 counts verbatim at the column's unit, masked
    (NaT the INT64 sentinel; the unit rides the column, never a rescale). */
 static int fcol_build_counts(ixs *x, int col, fcol *c) {
   const mizu_arrow_col *pc = &x->cols[col];
-  int64_t n = x->hold.rows;
-  int64_t *counts = mizu_py_ix_alloc((uint64_t) n, 8);
-  if (counts == NULL) return -1;
-  int64_t done = 0;
-  for (size_t b = 0; b < x->hold.nb; b++) {
-    ArrowArray *a = x->hold.arrs[b].children[col];
-    const int64_t *src = (const int64_t *) a->buffers[1];
-    for (int64_t k = 0; k < a->length; k++)
-      counts[done + k] = mizu_arrow_valid(a, k) ? src[a->offset + k] :
-        MIZU_NA_INT64;
-    done += a->length;
-  }
-  c->kind = pc->kind == MIZU_ARROW_TS ? FCOL_TS : FCOL_TD;
-  c->n = n;
-  c->values = (uint8_t *) counts;
+  if (fcol_build_cvt(x, col, c, &FCOL_ROW_I64,
+                     pc->kind == MIZU_ARROW_TS ? FCOL_TS : FCOL_TD,
+                     NULL) != 0)
+    return -1;
   c->unit = x->schema.children[col]->format[2];
   if (pc->kind == MIZU_ARROW_TS) {
     const char *tz = x->schema.children[col]->format + 4;
@@ -6451,6 +6458,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
   char **names = NULL;
   mizu_py_arrow_hold *hold = NULL;
   int *adopt = NULL;
+  mizu_arrow *ar = NULL;   /* open across the column builds (the concats) */
+  void *keep = NULL;
   memset(&x.schema, 0, sizeof(x.schema));
   if (x.st->get_schema(x.st, &x.schema) != 0) {
     const char *e = x.st->get_last_error != NULL ?
@@ -6481,20 +6490,15 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
   }
   /* the classification, batch vetting and dictionary validation are the
      core's (arrow.c); its TLS decline already names the column */
-  {
-    void *keep;
-    mizu_arrow *ar = ixs_arrow_open(&x, 0, &keep);
-    if (ar == NULL) {
-      if (PyErr_Occurred() == NULL)
-        PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",
-                     mizu_last_error_message());
-      goto done;
-    }
-    for (int i = 0; i < x.ncols; i++)
-      mizu_arrow_col_info(ar, i, &x.cols[i]);
-    mizu_arrow_close(ar);
-    free(keep);
+  ar = ixs_arrow_open(&x, 0, &keep);
+  if (ar == NULL) {
+    if (PyErr_Occurred() == NULL)
+      PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",
+                   mizu_last_error_message());
+    goto done;
   }
+  for (int i = 0; i < x.ncols; i++)
+    mizu_arrow_col_info(ar, i, &x.cols[i]);
   names = ixs_names_collect(&x);
   if (names == NULL) goto done;
   /* the dispositions: one struct batch on offset-0 boundaries adopts per
@@ -6545,11 +6549,13 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         switch (pc->kind) {
         case MIZU_ARROW_CVT:
           rc = u64_arrow_format(x.schema.children[i]->format) ?
-            fcol_build_u64(&x, i, c) :
+            fcol_build_u64(&x, ar, i, c) :
             fcol_build_cvt(&x, i, c, pc->row, fcol_of_type(pc->row->wire),
                            &warn);
           break;
-        case MIZU_ARROW_STR: rc = fcol_build_str(&x, i, c, names); break;
+        case MIZU_ARROW_STR:
+          rc = fcol_build_str(&x, ar, i, c, names);
+          break;
         case MIZU_ARROW_DICT: rc = fcol_build_dict(&x, i, c, names); break;
         case MIZU_ARROW_DATE: rc = fcol_build_date(&x, i, c); break;
         default: rc = fcol_build_counts(&x, i, c); break;
@@ -6601,6 +6607,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
 done_hold:
   if (hold != NULL) free(hold);   /* the batch never moved: ixs_free's */
 done:
+  if (ar != NULL) mizu_arrow_close(ar);
+  free(keep);
   free(adopt);
   free(names);
   ixs_free(&x);

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="db2ef3ab81e174487f9dba6353102ca644a7c20f"  # libmizu: Arrow sentinel fills and validity rebuild (#7)
+PIN="36bd425fbdb57a16db4cf12190e3b3db57c2cd9c"  # libmizu: Arrow column validity and utf8 concat exports (#8)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -665,6 +665,18 @@ def frames_report(*frames):
     return out
 
 
+def make_frame(n):
+    """A Frame built on the worker, past the zero-copy floor for a large
+    n: the submitter collects it region-backed."""
+    from pymizu._pymizu import _frame_rebuild
+
+    return _frame_rebuild(
+        ["i", "x"],
+        [("i", list(range(n))), ("g", [k * 0.5 for k in range(n)])],
+        None,
+    )
+
+
 def frame_and_buffer(f, a):
     """A Frame and a buffer argument's arrival forms, with the buffer's
     sum (the one-checkout budget: both copy on the pickle fallback)."""

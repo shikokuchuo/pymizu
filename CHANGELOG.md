@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiving pickled or numpy-vector payloads.
 - Faster `Pool.collect_any()` and `Pool.collect_all()` for collections of
   up to 16 tasks.
+- Faster `Frame.from_arrow()` on chunked or sliced input with date,
+  timestamp, duration, dictionary, uint64 or string columns.
+- Much faster `Pool.submit()` with a received `Frame` as an argument: it
+  now crosses by reference, and a task can take several such frames
+  without falling back to a copy.
 - Much faster frame relay: sends of a frame larger than 64 MB no
   longer create a fresh shared-memory region per send.
 - Faster repeated sends of the same `Frame` — much faster when its
@@ -57,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed sending a `Frame` taken from a list or dict received from an R
+  peer: the peer received the whole container, not the one frame.
 - Fixed `Channel.send()` to an R peer rejecting `pyarrow.RecordBatch`,
   `pyarrow.StructArray`, and nanoarrow struct arrays with `TypeError`.
 - Fixed `Channel.send()` to an R peer rejecting fixed-width Arrow arrays

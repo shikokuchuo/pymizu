@@ -1836,3 +1836,46 @@ No best-known swaps (import time is an isolated gate row).
 
 Status: full suite 1137 pass, 1 skip (crosslang legs included); ruff format,
 ruff check and pyrefly clean.
+
+## 2026-11-10 — `Frame.from_arrow` copy arms onto the core kernels [(2222a31 A/B)]
+
+A builds the copy arms of a chunked or sliced input per row; B runs the
+core's `mizu_cvt_convert` once per batch (date, timestamp / duration,
+int32 dictionary codes) and its validity and null-free utf8 concats
+(uint64, utf8). One-off probe: one 8M-row column in 8 chunks, best of
+7-9, 7-byte strings; an 8-byte `np.copyto` of the same size is 1.0 ms.
+int8 dictionary indices, utf8 with nulls and large_utf8 keep the per-row
+paths.
+
+| column (ms) | A, no nulls | A, 1% nulls | B, no nulls | B, 1% nulls |
+|---|---|---|---|---|
+| float64 (unchanged) | 1.07 | 1.64 | 1.04 | 1.77 |
+| date32 | 0.57 | 2.35 | 0.52 | 1.19 |
+| timestamp[us] | 2.13 | 5.10 | 1.07 | 1.75 |
+| duration[ns] | 2.22 | 5.04 | 1.12 | 1.77 |
+| dictionary, int32 index | 1.05 | 5.31 | 0.94 | 1.74 |
+| uint64 | 4.69 | 12.84 | 0.96 | 0.99 |
+| utf8 | 32.95 | 40.40 | 3.20 | 41.64 |
+
+No best-known swaps (isolated probe rows).
+
+Status: full suite 1148 pass, 1 skip (crosslang legs included).
+
+## 2026-11-10 — Region-backed `Frame` task arguments by name [(2222a31 A/B)]
+
+A stages a region-backed `Frame` argument by rewriting it into a fresh
+region, one per task (a second sends the whole task to pickle); B sends
+the region's name and pins the task's arguments until a worker claims
+it. One-off probe: frames built on a worker and collected, then
+submitted back as arguments to a one-worker pool, best of 15 round
+trips, 2 columns (int32, float64).
+
+| round trip (us) | A, one frame | A, two frames | B, one frame | B, two frames |
+|---|---|---|---|---|
+| 20k rows | 8.4 | 2173 | 3.8 | 5.5 |
+| 2M rows | 424 | 275352 | 4.1 | 6.2 |
+
+No best-known swaps (isolated probe rows).
+
+Status: full suite 1151 pass, 1 skip (crosslang legs included); ruff
+clean.
