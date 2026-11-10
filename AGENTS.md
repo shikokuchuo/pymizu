@@ -202,8 +202,9 @@ finalizer — short-circuits to the released-pool answer instead).
      slice, reshape or dtype view goes by value; writable buffers never
      pay the `.base` walk.
   5. Foreign handles (an R peer), the pinned order ahead of the codec
-     and pickle: the Arrow front-end (`__arrow_c_array__` first, with
-     `__arrow_c_stream__` for struct pairs and stream-only producers),
+     and pickle: the Arrow front-end (`__arrow_c_array__` first, a
+     struct pair crossing as a one-batch frame, then `__arrow_c_stream__`
+     for stream-only producers),
      then the layout tiers past the zc floor
      (`pymizu_stage_layout`, `src/layout.c`): a `list[str | None]` as
      one MIZS region, a buffer (any strides, identity dtypes) or a

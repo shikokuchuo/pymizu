@@ -2212,9 +2212,8 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
        staged at the fast gate above; nested ones still reach the 'I'
        writer through ixw_value */
     if (!arrow_probe_skip(obj)) {
-      int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
-                                             inline_max, h, peer_lang,
-                                             peer_caps);
+      int src = pymizu_ix_stage_arrow(obj, hdr, payload, inline_max, h,
+                                      peer_lang, peer_caps);
       if (src >= 0) return src;
     }
     /* the layout tiers past the zc floor: one layout write into a spill

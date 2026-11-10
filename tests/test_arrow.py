@@ -442,6 +442,36 @@ def test_record_batch_foreign():
         h.destroy()
 
 
+def test_struct_array_foreign():
+    # a struct pair is a one-batch frame, exported once
+    class Counted:
+        def __init__(self, inner):
+            self._inner = inner
+            self.calls = 0
+
+        def __arrow_c_array__(self, requested_schema=None):
+            self.calls += 1
+            return self._inner.__arrow_c_array__(requested_schema)
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            raise AssertionError("the pair path serves a struct")
+
+    h, p = foreign_pair()
+    try:
+        s = pa.StructArray.from_arrays(
+            [pa.array([1, 2, 3], type=pa.int32())], names=["x"]
+        )
+        assert h.send(s) is None
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+        c = Counted(s)
+        assert h.send(c) is None
+        assert c.calls == 1
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_nanoarrow_struct_array_foreign():
     na = pytest.importorskip("nanoarrow")
     h, p = foreign_pair()
@@ -475,8 +505,11 @@ def test_arrow_rejections_foreign():
     with pytest.raises(TypeError, match="raw vectors have no NA"):
         h.send(pa.array([1, None], type=pa.uint8()))
     # nested
-    with pytest.raises(TypeError, match="nested"):
+    with pytest.raises(pymizu.DeclinedError, match="no portable home"):
         h.send(pa.array([[1, 2], [3]]))
+    # a struct with null rows: no frame shape
+    with pytest.raises(pymizu.DeclinedError, match="null struct rows"):
+        h.send(pa.array([{"x": 1}, None]))
     # a time32 column: no portable home
     with pytest.raises(pymizu.DeclinedError, match="no portable home"):
         h.send(pa.table({"t": pa.array([1], type=pa.time32("s"))}))

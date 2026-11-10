@@ -40,8 +40,6 @@ typedef struct {
   ixs_pcol cols_stash[IXS_COLS_STASH];  /* the stack plan array: cols
                           points here while ncols fits, ixs_free freeing
                           only the heap form */
-  const ArrowArray *batch1;  /* the one-batch open's pointer array (nb
-                          == 1 rides the struct, *keep1 stays NULL) */
   int ncols;
   int single;
   mizu_arrow *ar;      /* the open core handle while the emit writers run
