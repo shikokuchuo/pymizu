@@ -6132,35 +6132,34 @@ static int fcol_build_cvt(ixs *x, int col, fcol *c, const cvt_row *row,
   return 0;
 }
 
-/* The uint64 copy arm: the identity lanes verbatim, nulls an owned
-   bitmap — no mizu_cvt row applies (pymizu's identity static is never
-   the core's CVT_ROW_I64_V twin, so the masked convert would count the
-   genuine INT64_MIN lanes verbatim uint64 must treat as values), and no
+/* The uint64 copy arm: the identity lanes verbatim (one memcpy per
+   batch), nulls an owned bitmap off the core's validity concat — no
    sentinel form exists (the fill collides with 2^63). */
-static int fcol_build_u64(ixs *x, int col, fcol *c) {
+static int fcol_build_u64(ixs *x, const mizu_arrow *ar, int col, fcol *c) {
   int64_t n = x->hold.rows;
   uint64_t *buf = mizu_py_ix_alloc((uint64_t) n, 8);
   if (buf == NULL) return -1;
-  uint8_t *valid = NULL;
-  int64_t nulls = 0, done = 0;
+  int64_t done = 0;
   for (size_t b = 0; b < x->hold.nb; b++) {
     ArrowArray *a = x->hold.arrs[b].children[col];
+    if (a->length == 0) continue;
     const uint8_t *data = (const uint8_t *) a->buffers[1];
     memcpy(buf + done, data + (size_t) a->offset * 8,
            (size_t) a->length * 8);
-    for (int64_t k = 0; k < a->length; k++) {
-      const int64_t i = done + k;
-      if (mizu_arrow_valid(a, k)) {
-        if (valid != NULL) valid[i >> 3] |= 1 << (i & 7);
-      } else {
-        nulls++;
-        if (bitmap_mark_null(&valid, (uint64_t) n, i) != 0) {
-          free(buf);
-          return -1;
-        }
-      }
-    }
     done += a->length;
+  }
+  uint8_t *valid = NULL;
+  const int64_t nulls = mizu_arrow_col_validity(ar, col, NULL);
+  if (nulls != 0) {
+    valid = mizu_py_bitmap_calloc((uint64_t) n);
+    if (valid == NULL) {
+      free(buf);
+      PyErr_NoMemory();
+      return -1;
+    }
+    (void) mizu_arrow_col_validity(ar, col, valid);
+    /* the owned bitmap's padding bits stay clear */
+    if ((n & 7) != 0) valid[n >> 3] &= (uint8_t) ((1u << (n & 7)) - 1);
   }
   c->kind = FCOL_U64;
   c->n = n;
@@ -6172,10 +6171,14 @@ static int fcol_build_u64(ixs *x, int col, fcol *c) {
   return 0;
 }
 
-/* The string copy: per-batch gather with rebased i32 offsets, a null slot
-   collapsed to a zero-byte span with its bitmap bit clear (the owned
-   invariant); a malformed record degrades to NA, the wire's rule. */
-static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
+/* The string copy. A null-free utf8 column is the core's concat: the
+   offsets rebased, the bytes one memcpy per batch. Otherwise (nulls,
+   large_utf8, string_view, bytes past int32) the per-batch gather with
+   rebased i32 offsets, a null slot collapsed to a zero-byte span with its
+   bitmap bit clear (the owned invariant); a malformed record degrades to
+   NA, the wire's rule. */
+static int fcol_build_str(ixs *x, const mizu_arrow *ar, int col, fcol *c,
+                          char **names) {
   const mizu_arrow_col *pc = &x->cols[col];
   int64_t n = x->hold.rows;
   int32_t *offs = malloc(((size_t) n + 1) * 4);
@@ -6183,7 +6186,14 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
   size_t blen = 0, bcap = 0;
   if (offs == NULL) goto nomem;
   offs[0] = 0;
-  {
+  const int64_t total = mizu_arrow_col_utf8(ar, col, NULL, NULL);
+  if (total >= 0) {
+    bytes = malloc((size_t) total + 1);
+    if (bytes == NULL) goto nomem;
+    (void) mizu_arrow_col_utf8(ar, col, offs, bytes);
+    blen = (size_t) total;
+    c->vnulls = 0;
+  } else {
     int64_t done = 0, nulls = 0;
     for (size_t b = 0; b < x->hold.nb; b++) {
       ArrowArray *a = x->hold.arrs[b].children[col];
@@ -6212,8 +6222,8 @@ static int fcol_build_str(ixs *x, int col, fcol *c, char **names) {
       done += a->length;
     }
     c->vnulls = nulls;
+    bytes_shrink(&bytes, blen);
   }
-  bytes_shrink(&bytes, blen);
   c->kind = FCOL_STR;
   c->n = n;
   c->values = (uint8_t *) offs;
@@ -6443,6 +6453,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
   char **names = NULL;
   mizu_py_arrow_hold *hold = NULL;
   int *adopt = NULL;
+  mizu_arrow *ar = NULL;   /* open across the column builds (the concats) */
+  void *keep = NULL;
   memset(&x.schema, 0, sizeof(x.schema));
   if (x.st->get_schema(x.st, &x.schema) != 0) {
     const char *e = x.st->get_last_error != NULL ?
@@ -6473,20 +6485,15 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
   }
   /* the classification, batch vetting and dictionary validation are the
      core's (arrow.c); its TLS decline already names the column */
-  {
-    void *keep;
-    mizu_arrow *ar = ixs_arrow_open(&x, 0, &keep);
-    if (ar == NULL) {
-      if (PyErr_Occurred() == NULL)
-        PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",
-                     mizu_last_error_message());
-      goto done;
-    }
-    for (int i = 0; i < x.ncols; i++)
-      mizu_arrow_col_info(ar, i, &x.cols[i]);
-    mizu_arrow_close(ar);
-    free(keep);
+  ar = ixs_arrow_open(&x, 0, &keep);
+  if (ar == NULL) {
+    if (PyErr_Occurred() == NULL)
+      PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",
+                   mizu_last_error_message());
+    goto done;
   }
+  for (int i = 0; i < x.ncols; i++)
+    mizu_arrow_col_info(ar, i, &x.cols[i]);
   names = ixs_names_collect(&x);
   if (names == NULL) goto done;
   /* the dispositions: one struct batch on offset-0 boundaries adopts per
@@ -6537,11 +6544,13 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
         switch (pc->kind) {
         case MIZU_ARROW_CVT:
           rc = u64_arrow_format(x.schema.children[i]->format) ?
-            fcol_build_u64(&x, i, c) :
+            fcol_build_u64(&x, ar, i, c) :
             fcol_build_cvt(&x, i, c, pc->row, fcol_of_type(pc->row->wire),
                            &warn);
           break;
-        case MIZU_ARROW_STR: rc = fcol_build_str(&x, i, c, names); break;
+        case MIZU_ARROW_STR:
+          rc = fcol_build_str(&x, ar, i, c, names);
+          break;
         case MIZU_ARROW_DICT: rc = fcol_build_dict(&x, i, c, names); break;
         case MIZU_ARROW_DATE: rc = fcol_build_date(&x, i, c); break;
         default: rc = fcol_build_counts(&x, i, c); break;
@@ -6593,6 +6602,8 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
 done_hold:
   if (hold != NULL) free(hold);   /* the batch never moved: ixs_free's */
 done:
+  if (ar != NULL) mizu_arrow_close(ar);
+  free(keep);
   free(adopt);
   free(names);
   ixs_free(&x);
