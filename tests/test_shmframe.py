@@ -287,6 +287,50 @@ def test_mizl_frame_multibatch_and_sliced():
     h.destroy()
 
 
+def test_mizl_frame_unaligned_batches_and_null_runs():
+    # shifted validity copies across batch boundaries and whole-word fills
+    lengths = (131, 2, 64, 19803)
+    offsets = (3, 6, 5, 11)
+    types = {
+        "i": pa.int32(),
+        "l": pa.int64(),
+        "x": pa.float64(),
+        "b": pa.bool_(),
+        "d": pa.date32(),
+        "t": pa.timestamp("us"),
+    }
+    batches = []
+    for off, n in zip(offsets, lengths, strict=True):
+        cols = {}
+        for name, typ in types.items():
+            vals = [
+                None if name != "i" or k % 7 in (0, 2) else k
+                for k in range(off + n)
+            ]
+            cols[name] = pa.array(vals, type=typ).slice(off, n)
+        batches.append(pa.record_batch(cols))
+    expected = pa.Table.from_batches(batches)
+    reader = pa.RecordBatchReader.from_batches(expected.schema, batches)
+    h, p = foreign_pair(caps=CAPS_R)
+    try:
+        assert h.send(reader) is None
+        f = p.recv(10)
+        out = pa.table(f)
+        for name in expected.column_names:
+            assert (
+                out.column(name).to_pylist()
+                == expected.column(name).to_pylist()
+            )
+        d = f.to_dict()
+        assert np.isnan(d["x"]).all()
+        assert (d["l"] == -(2**63)).all()
+        assert (d["b"] == -(2**31)).all()
+        assert np.isnat(d["d"]).all() and np.isnat(d["t"]).all()
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_mizl_frame_row_names_and_int64():
     h, p = foreign_pair(caps=CAPS_R)
     h.send(big_table(n=20000, with_nulls=False).select(["l"]))

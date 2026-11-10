@@ -321,6 +321,35 @@ def test_uint64_frame_columns_convert_with_a_warning():
     h.destroy()
 
 
+def test_uint64_masked_null_slots_do_not_warn():
+    # warning counts cover valid lanes only, even when a null lane's
+    # undefined value also exceeds int64
+    values = np.ones(64, dtype=np.uint64)
+    values[:3] = [2**63, 2**63, 2**64 - 1]
+    valid = np.ones(64, dtype=np.uint8)
+    valid[1:3] = 0
+    arr = pa.Array.from_buffers(
+        pa.uint64(),
+        64,
+        [
+            pa.py_buffer(np.packbits(valid, bitorder="little").tobytes()),
+            pa.py_buffer(values.tobytes()),
+        ],
+    )
+    h, p = foreign_pair()
+    try:
+        with pytest.warns(
+            RuntimeWarning, match=r"1 uint64 value\(s\) beyond"
+        ) as caught:
+            assert h.send(arr) is None
+        assert len(caught) == 1
+        got = p.recv(5)
+        assert got[:4].tolist() == [-(2**63), -(2**63), -(2**63), 1]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_int32_frame_column_genuine_intmin_warns():
     # a genuine INT32_MIN in a nullable int32 column reads as NA_integer_
     # in R: the frame path now raises the single path's one-warning
@@ -427,6 +456,23 @@ def test_arrow_null_count_unknown(rcheck):
     )
     b = r_case(rcheck, "int5", _PatchedArray(arr, null_count=-1))
     assert list(b) == [10, 20, 30, 40, 50]
+
+
+def test_arrow_null_count_unknown_offset_words():
+    # an offset head, two full validity words, and a shifted 62-lane tail
+    arr = pa.array(
+        [None if i % 11 in (0, 3, 7) else i for i in range(193)],
+        type=pa.int32(),
+    ).slice(3, 190)
+    h, p = foreign_pair()
+    try:
+        assert h.send(_PatchedArray(arr, null_count=-1)) is None
+        got = p.recv(5)
+        expected = [-(2**31) if x is None else x for x in arr.to_pylist()]
+        assert got.tolist() == expected
+    finally:
+        p.destroy()
+        h.destroy()
 
 
 def test_record_batch_foreign():
