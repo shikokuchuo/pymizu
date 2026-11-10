@@ -1836,3 +1836,27 @@ No best-known swaps (import time is an isolated gate row).
 
 Status: full suite 1137 pass, 1 skip (crosslang legs included); ruff format,
 ruff check and pyrefly clean.
+
+## 2026-11-10 — `Frame.from_arrow` copy arms onto the core convert [(2222a31 A/B)]
+
+A builds the date, timestamp / duration and int32 dictionary-code columns
+of a chunked or sliced input with per-row loops; B runs the core's
+`mizu_cvt_convert` once per batch with no warning counts. One-off probe:
+one 8M-row column in 8 chunks, best of 9, against a same-size
+`np.copyto` (4-byte 0.5 ms, 8-byte 1.0 ms). The float64 and int32 rows
+already ran the core convert and bound the noise; int8 dictionary indices
+keep the per-row widen.
+
+| column (ms) | A, no nulls | A, 1% nulls | B, no nulls | B, 1% nulls |
+|---|---|---|---|---|
+| float64 (unchanged) | 1.07 | 1.64 | 1.04 | 1.77 |
+| int32 (unchanged) | 0.88 | 1.46 | 0.94 | 1.54 |
+| date32 | 0.57 | 2.35 | 0.52 | 1.19 |
+| timestamp[us] | 2.13 | 5.10 | 1.07 | 1.75 |
+| duration[ns] | 2.22 | 5.04 | 1.12 | 1.77 |
+| dictionary, int32 index | 1.05 | 5.31 | 0.94 | 1.74 |
+| dictionary, int8 index (unchanged) | 0.66 | 5.21 | 0.69 | 5.38 |
+
+No best-known swaps (isolated probe rows).
+
+Status: full suite 1148 pass, 1 skip (crosslang legs included).

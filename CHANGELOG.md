@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiving pickled or numpy-vector payloads.
 - Faster `Pool.collect_any()` and `Pool.collect_all()` for collections of
   up to 16 tasks.
+- Faster `Frame.from_arrow()` on chunked or sliced input with date,
+  timestamp, duration or dictionary columns.
 - Much faster frame relay: sends of a frame larger than 64 MB no
   longer create a fresh shared-memory region per send.
 - Faster repeated sends of the same `Frame` — much faster when its
