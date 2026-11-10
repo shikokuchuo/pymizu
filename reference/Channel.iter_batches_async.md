@@ -4,7 +4,7 @@ Iterate over received batches until CLOSED or PEER_GONE.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L438-L481)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L443-L486)
 
 ``` python
 Channel.iter_batches_async(n=256)

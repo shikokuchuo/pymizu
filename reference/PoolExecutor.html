@@ -814,6 +814,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <li><a href="#methods" id="toc-methods" class="nav-link" data-scroll-target="#methods">Methods</a>
   <ul class="collapse">
   <li><a href="#create" id="toc-create" class="nav-link" data-scroll-target="#create"><span class="doc-object-name doc-function doc-label doc-label-method">create()</span></a></li>
+  <li><a href="#map" id="toc-map" class="nav-link" data-scroll-target="#map"><span class="doc-object-name doc-function doc-label doc-label-method">map()</span></a></li>
   <li><a href="#shutdown" id="toc-shutdown" class="nav-link" data-scroll-target="#shutdown"><span class="doc-object-name doc-function doc-label doc-label-method">shutdown()</span></a></li>
   <li><a href="#submit" id="toc-submit" class="nav-link" data-scroll-target="#submit"><span class="doc-object-name doc-function doc-label doc-label-method">submit()</span></a></li>
   </ul></li>
@@ -847,7 +848,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L50-L375" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L85-L528" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">PoolExecutor</span>(</span>
@@ -857,7 +858,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p><code>submit()</code> returns a real <code>concurrent.futures.Future</code>: <code>wait</code> / <code>as_completed</code> / <code>result(timeout)</code> / <code>asyncio.wrap_future</code> and the stdlib base <code>Executor.map</code> all work unchanged, so code written against <code>ProcessPoolExecutor</code> drops in. <code>create()</code> spawns an owned pool instead.</p>
+<p><code>submit()</code> returns a real <code>concurrent.futures.Future</code>: <code>wait</code> / <code>as_completed</code> / <code>result(timeout)</code> / <code>asyncio.wrap_future</code> and <code>map</code> with <code>ProcessPoolExecutor</code> chunking all work unchanged, so code written against <code>ProcessPoolExecutor</code> drops in. <code>create()</code> spawns an owned pool instead.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -876,12 +877,12 @@ When True, <a href="../reference/PoolExecutor.html#pymizu.PoolExecutor.shutdown"
 </section>
 <section id="notes" class="level2 doc-notes">
 <h2 class="doc-notes anchored" data-anchor-id="notes">Notes</h2>
-<p><code>submit()</code> (and the stdlib <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> over it) is thread-safe, as the <code>concurrent.futures</code> contract requires: an internal lock serializes the single-producer pool handle. Use this adapter when several threads must submit to one pool. Differences from the stdlib: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a>; <code>Future.running()</code> is always False (futures resolve at completion); cancellation works like <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> and never interrupts a running task; and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An internal failure (for example the wrapped pool is stopped from under the executor) fails every outstanding future, and later submissions raise instead of queueing onto a broken executor. Futures resolve, and <code>add_done_callback</code> callbacks run, on pymizu’s listener thread, the same discipline as the stdlib executors’ management thread: keep callbacks short, and never block one on the pool itself. <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">map</a> is the stdlib base implementation over <code>submit</code>; for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map</code></a> is the faster path.</p>
+<p><code>submit()</code> (and the stdlib <code>map</code> over it) is thread-safe, as the <code>concurrent.futures</code> contract requires: an internal lock serializes the single-producer pool handle. Use this adapter when several threads must submit to one pool. Differences from the stdlib: a task’s failure surfaces as <a href="../reference/TaskError.html#pymizu.TaskError" class="gdls-link gdls-code">pymizu.TaskError</a>; <code>Future.running()</code> is always False (futures resolve at completion); cancellation works like <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task.cancel()</code></a> and never interrupts a running task; and <code>shutdown(cancel_futures=True)</code> cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An internal failure (for example the wrapped pool is stopped from under the executor) fails every outstanding future, and later submissions raise instead of queueing onto a broken executor. Futures resolve, and <code>add_done_callback</code> callbacks run, on pymizu’s listener thread, the same discipline as the stdlib executors’ management thread: keep callbacks short, and never block one on the pool itself. If the result table is full, <code>submit()</code> waits for the executor to collect a result; a submission from a listener-thread done callback instead raises <a href="../reference/SlotsExhaustedError.html#pymizu.SlotsExhaustedError" class="gdls-link gdls-code">SlotsExhaustedError</a>, since waiting there would deadlock the drain. <code>map()</code> honors <code>chunksize</code> and <code>buffersize</code> like <code>ProcessPoolExecutor</code>; for bulk maps, <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link"><code>Pool.map</code></a> remains the faster path.</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
 <p>Use as a drop-in <code>concurrent.futures.Executor</code>:</p>
-<div id="a7a95cd6" class="cell" data-execution_count="1">
+<div id="269bcaee" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">2</span>) <span class="im">as</span> ex:</span>
@@ -908,10 +909,14 @@ When True, <a href="../reference/PoolExecutor.html#pymizu.PoolExecutor.shutdown"
 <td>Spawn an owned pool and wrap it.</td>
 </tr>
 <tr class="even">
+<td><a href="#map" class="doc-function doc-label doc-label-method">map()</a></td>
+<td>Return an iterator applying <code>fn</code> to every zipped input element.</td>
+</tr>
+<tr class="odd">
 <td><a href="#shutdown" class="doc-function doc-label doc-label-method">shutdown()</a></td>
 <td>Shut down the executor.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td><a href="#submit" class="doc-function doc-label doc-label-method">submit()</a></td>
 <td>Schedule <code>fn(*args, **kwargs)</code> on the pool.</td>
 </tr>
@@ -924,7 +929,7 @@ When True, <a href="../reference/PoolExecutor.html#pymizu.PoolExecutor.shutdown"
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L133-L155" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L172-L194" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb4"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">create</span>(</span>
@@ -962,6 +967,63 @@ Forwarded to <a href="../reference/Pool.create.html#pymizu.Pool.create" class="g
 </div>
 </section>
 </section>
+<section id="map" class="level3">
+<h3 class="anchored" data-anchor-id="map"><span class="doc-object-name doc-function doc-label doc-label-method">map()</span></h3>
+<div class="doc-subject">
+<p>Return an iterator applying <code>fn</code> to every zipped input element.</p>
+</div>
+<div class="doc-usage-source">
+<p>Usage</p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L196-L289" target="_blank" rel="noopener">Source</a></p>
+</div>
+<div class="doc-signature doc-function">
+<div class="sourceCode" id="cb5"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">map</span>(</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">fn</span>,</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span><span class="va">iterables</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="va">timeout</span><span class="op">=</span><span class="cn">None</span>,</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="va">chunksize</span><span class="op">=</span><span class="dv">1</span>,</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="va">buffersize</span><span class="op">=</span><span class="cn">None</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+</div>
+<section id="parameters-2" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-2">Parameters</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code><span class="doc-parameter-name">fn</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[…, _Any]</span></code></dt>
+<dd>
+<p>The callable to run.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">iterables</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Any</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">()</span></code></dt>
+<dd>
+<p>One or more iterables, zipped lazily as for the built-in <code>map</code>.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">timeout</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">float | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+<p>One overall deadline for generating the result iterator, in seconds; None means no limit.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">chunksize</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="dv">1</span></span></code></dt>
+<dd>
+<p>Elements per submitted task. Values greater than one use chunk tasks; the default submits one task per element.</p>
+</dd>
+<dt><code><span class="doc-parameter-name">buffersize</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">int | None</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default">None</span></code></dt>
+<dd>
+Maximum submitted tasks whose results have not been yielded. None collects all inputs eagerly; a positive value bounds pending tasks and consumes the input lazily.
+</dd>
+</dl>
+</div>
+</section>
+<section id="returns-1" class="level4 doc-returns">
+<h4 class="doc-returns anchored" data-anchor-id="returns-1">Returns</h4>
+<div class="doc-definition-items">
+<dl>
+<dt><code> <span class="doc-parameter-annotation">An iterator of results in input order. An error in a chunk</span></code></dt>
+<dd>
+discards that chunk’s earlier results, matching <code>ProcessPoolExecutor</code>.
+</dd>
+</dl>
+</div>
+</section>
+</section>
 <section id="shutdown" class="level3">
 <h3 class="anchored" data-anchor-id="shutdown"><span class="doc-object-name doc-function doc-label doc-label-method">shutdown()</span></h3>
 <div class="doc-subject">
@@ -969,17 +1031,17 @@ Forwarded to <a href="../reference/Pool.create.html#pymizu.Pool.create" class="g
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L241-L269" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L391-L420" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
-<div class="sourceCode" id="cb5"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">shutdown</span>(</span>
-<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">wait</span><span class="op">=</span><span class="bn">True</span>,</span>
-<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
-<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="va">cancel_futures</span><span class="op">=</span><span class="bn">False</span>,</span>
-<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb6"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">shutdown</span>(</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">wait</span><span class="op">=</span><span class="bn">True</span>,</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    <span class="va">cancel_futures</span><span class="op">=</span><span class="bn">False</span>,</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
-<section id="parameters-2" class="level4 doc-parameters">
-<h4 class="doc-parameters anchored" data-anchor-id="parameters-2">Parameters</h4>
+<section id="parameters-3" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-3">Parameters</h4>
 <div class="doc-definition-items">
 <dl>
 <dt><code><span class="doc-parameter-name">wait</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">bool</span> <span class="doc-parameter-default-sep op">=</span> <span class="doc-parameter-default"><span class="va">True</span></span></code></dt>
@@ -1001,18 +1063,18 @@ Cancel the not-yet-started futures. Stops the pool only when <code>stop_pool</co
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L157-L230" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L291-L380" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
-<div class="sourceCode" id="cb6"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">submit</span>(</span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">fn</span>,</span>
-<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">/</span>,</span>
-<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span><span class="va">args</span>,</span>
-<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">**</span><span class="va">kwargs</span>,</span>
-<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">submit</span>(</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="va">fn</span>,</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">/</span>,</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span><span class="va">args</span>,</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">**</span><span class="va">kwargs</span>,</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
-<section id="parameters-3" class="level4 doc-parameters">
-<h4 class="doc-parameters anchored" data-anchor-id="parameters-3">Parameters</h4>
+<section id="parameters-4" class="level4 doc-parameters">
+<h4 class="doc-parameters anchored" data-anchor-id="parameters-4">Parameters</h4>
 <div class="doc-definition-items">
 <dl>
 <dt><code><span class="doc-parameter-name">fn</span><span class="doc-parameter-annotation-sep">:</span> <span class="doc-parameter-annotation">_Callable[…, _Any]</span></code></dt>
@@ -1030,8 +1092,8 @@ Keyword arguments for <code>fn</code>.
 </dl>
 </div>
 </section>
-<section id="returns-1" class="level4 doc-returns">
-<h4 class="doc-returns anchored" data-anchor-id="returns-1">Returns</h4>
+<section id="returns-2" class="level4 doc-returns">
+<h4 class="doc-returns anchored" data-anchor-id="returns-2">Returns</h4>
 <div class="doc-definition-items">
 <dl>
 <dt><code> <span class="doc-parameter-annotation">A <code>concurrent.futures.Future</code> resolving with the result.</span></code></dt>

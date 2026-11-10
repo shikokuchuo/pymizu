@@ -4,7 +4,7 @@ A `concurrent.futures.Executor` over a pymizu pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L50-L375)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L85-L528)
 
 ``` python
 PoolExecutor(
@@ -14,7 +14,7 @@ PoolExecutor(
 )
 ```
 
-`submit()` returns a real `concurrent.futures.Future`: `wait` / `as_completed` / `result(timeout)` / `asyncio.wrap_future` and the stdlib base `Executor.map` all work unchanged, so code written against `ProcessPoolExecutor` drops in. `create()` spawns an owned pool instead.
+`submit()` returns a real `concurrent.futures.Future`: `wait` / `as_completed` / `result(timeout)` / `asyncio.wrap_future` and `map` with `ProcessPoolExecutor` chunking all work unchanged, so code written against `ProcessPoolExecutor` drops in. `create()` spawns an owned pool instead.
 
 ## Parameters
 
@@ -26,7 +26,7 @@ When True, [shutdown()](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdow
 
 ## Notes
 
-`submit()` (and the stdlib [map](../reference/Pool.map.md#pymizu.Pool.map) over it) is thread-safe, as the `concurrent.futures` contract requires: an internal lock serializes the single-producer pool handle. Use this adapter when several threads must submit to one pool. Differences from the stdlib: a task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError); `Future.running()` is always False (futures resolve at completion); cancellation works like [`Task.cancel()`](../reference/Task.md#pymizu.Task) and never interrupts a running task; and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An internal failure (for example the wrapped pool is stopped from under the executor) fails every outstanding future, and later submissions raise instead of queueing onto a broken executor. Futures resolve, and `add_done_callback` callbacks run, on pymizu's listener thread, the same discipline as the stdlib executors' management thread: keep callbacks short, and never block one on the pool itself. [map](../reference/Pool.map.md#pymizu.Pool.map) is the stdlib base implementation over `submit`; for bulk maps, [`Pool.map`](../reference/Pool.map.md#pymizu.Pool.map) is the faster path.
+`submit()` (and the stdlib `map` over it) is thread-safe, as the `concurrent.futures` contract requires: an internal lock serializes the single-producer pool handle. Use this adapter when several threads must submit to one pool. Differences from the stdlib: a task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError); `Future.running()` is always False (futures resolve at completion); cancellation works like [`Task.cancel()`](../reference/Task.md#pymizu.Task) and never interrupts a running task; and `shutdown(cancel_futures=True)` cancels every outstanding future, since the pool exposes no queued-versus-running signal (a running task completes, but its result is discarded). An internal failure (for example the wrapped pool is stopped from under the executor) fails every outstanding future, and later submissions raise instead of queueing onto a broken executor. Futures resolve, and `add_done_callback` callbacks run, on pymizu's listener thread, the same discipline as the stdlib executors' management thread: keep callbacks short, and never block one on the pool itself. If the result table is full, `submit()` waits for the executor to collect a result; a submission from a listener-thread done callback instead raises [SlotsExhaustedError](../reference/SlotsExhaustedError.md#pymizu.SlotsExhaustedError), since waiting there would deadlock the drain. `map()` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`; for bulk maps, [`Pool.map`](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path.
 
 ## Examples
 
@@ -45,11 +45,12 @@ results
 
 ## Methods
 
-| Name                    | Description                                 |
-|-------------------------|---------------------------------------------|
-| [create()](#create)     | Spawn an owned pool and wrap it.            |
-| [shutdown()](#shutdown) | Shut down the executor.                     |
-| [submit()](#submit)     | Schedule `fn(*args, **kwargs)` on the pool. |
+| Name | Description |
+|----|----|
+| [create()](#create) | Spawn an owned pool and wrap it. |
+| [map()](#map) | Return an iterator applying `fn` to every zipped input element. |
+| [shutdown()](#shutdown) | Shut down the executor. |
+| [submit()](#submit) | Schedule `fn(*args, **kwargs)` on the pool. |
 
 ### create()
 
@@ -57,7 +58,7 @@ Spawn an owned pool and wrap it.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L133-L155)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L172-L194)
 
 ``` python
 create(
@@ -80,13 +81,53 @@ Forwarded to [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create).
 
 `A PoolExecutor wrapping the spawned pool.`  
 
+### map()
+
+Return an iterator applying `fn` to every zipped input element.
+
+Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L196-L289)
+
+``` python
+map(
+    fn,
+    *iterables,
+    timeout=None,
+    chunksize=1,
+    buffersize=None,
+)
+```
+
+#### Parameters
+
+`fn: _Callable[…, _Any]`  
+The callable to run.
+
+`iterables: _Any = ()`  
+One or more iterables, zipped lazily as for the built-in `map`.
+
+`timeout: float | None = None`  
+One overall deadline for generating the result iterator, in seconds; None means no limit.
+
+`chunksize: int = 1`  
+Elements per submitted task. Values greater than one use chunk tasks; the default submits one task per element.
+
+`buffersize: int | None = None`  
+Maximum submitted tasks whose results have not been yielded. None collects all inputs eagerly; a positive value bounds pending tasks and consumes the input lazily.
+
+#### Returns
+
+`An iterator of results in input order. An error in a chunk`  
+discards that chunk's earlier results, matching `ProcessPoolExecutor`.
+
 ### shutdown()
 
 Shut down the executor.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L241-L269)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L391-L420)
 
 ``` python
 shutdown(
@@ -110,7 +151,7 @@ Schedule `fn(*args, **kwargs)` on the pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L157-L230)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L291-L380)
 
 ``` python
 submit(

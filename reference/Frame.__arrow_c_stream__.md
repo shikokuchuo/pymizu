@@ -4,7 +4,7 @@
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L49)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L50)
 
 ``` python
 Frame.__arrow_c_stream__(requested_schema=None)

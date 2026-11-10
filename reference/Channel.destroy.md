@@ -4,7 +4,7 @@ Tear down the handle immediately, without the close handshake.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L597-L610)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L602-L615)
 
 ``` python
 Channel.destroy()

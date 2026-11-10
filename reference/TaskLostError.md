@@ -4,7 +4,7 @@ The task's payload region vanished or could not be read before any worker ran it
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L91-L93)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L92-L94)
 
 ``` python
 TaskLostError()

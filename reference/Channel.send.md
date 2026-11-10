@@ -4,7 +4,7 @@ Send one value.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L319-L340)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L324-L345)
 
 ``` python
 Channel.send(x)

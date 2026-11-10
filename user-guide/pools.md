@@ -152,7 +152,7 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 
 ## Threading
 
-A pool handle is single-producer: call its submit family (`submit()`, [submit_batch()](../reference/Pool.submit_batch.md#pymizu.Pool.submit_batch), [map()](../reference/Pool.map.md#pymizu.Pool.map)) from one thread only. A second concurrent producer raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the submission queue. The guard is a check, not a lock: it never waits, it reports the mistake. The waiting half (the blocking collects, `ready_wait()`, [stop()](../reference/Pool.stop.md#pymizu.Pool.stop)) likewise belongs to one thread -- which may differ from the producer's -- and a concurrent second wait raises the same error. This is libmizu's threading contract: the shared structures carry no locks by design.
+A pool handle is single-producer: call its submit family (`submit()`, [submit_batch()](../reference/Pool.submit_batch.md#pymizu.Pool.submit_batch), `map()`) from one thread only. A second concurrent producer raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the submission queue. The guard is a check, not a lock: it never waits, it reports the mistake. The waiting half (the blocking collects, `ready_wait()`, [stop()](../reference/Pool.stop.md#pymizu.Pool.stop)) likewise belongs to one thread -- which may differ from the producer's -- and a concurrent second wait raises the same error. This is libmizu's threading contract: the shared structures carry no locks by design.
 
 Three ways to produce from several threads, in rough order of preference:
 
@@ -164,7 +164,7 @@ Avoid `asyncio.to_thread(pool.submit, ...)` from concurrent coroutines: the defa
 
 ## concurrent.futures interop
 
-[pymizu.PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects, and `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged. Futures resolve as results arrive, with no background thread and no polling.
+[pymizu.PoolExecutor](../reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects, and `wait`, `as_completed`, `asyncio.wrap_future`, and chunked `map` all work unchanged. Futures resolve as results arrive, with no background thread and no polling.
 
 ``` python
 with pymizu.PoolExecutor.create(4) as ex:
@@ -176,7 +176,7 @@ result
 
     [1, 2, 4, 8]
 
-Wrap an existing pool with `PoolExecutor(pool)`; its lifetime stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` instead spawns an owned pool that [shutdown](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation behaves like [Task.cancel](../reference/Task.cancel.md#pymizu.Task.cancel). For bulk maps, [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster path: the executor's [map](../reference/Pool.map.md#pymizu.Pool.map) runs one task per element.
+Wrap an existing pool with `PoolExecutor(pool)`; its lifetime stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` instead spawns an owned pool that [shutdown](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation behaves like [Task.cancel](../reference/Task.cancel.md#pymizu.Task.cancel). If the result table is full, `submit` waits for the executor to collect a result instead of raising [SlotsExhaustedError](../reference/SlotsExhaustedError.md#pymizu.SlotsExhaustedError); a submit from a listener-thread done callback still raises rather than deadlocking the drain. The executor's `map` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`; its default remains one task per element, and [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster bulk-map path.
 
 ## Sizing a pool
 

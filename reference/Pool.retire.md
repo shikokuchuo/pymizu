@@ -4,7 +4,7 @@ Ask the worker in `slot` to exit cleanly.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1531-L1536)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1536-L1541)
 
 ``` python
 Pool.retire(slot)

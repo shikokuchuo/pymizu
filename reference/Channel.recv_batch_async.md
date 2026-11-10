@@ -4,7 +4,7 @@ Receive up to `n` values as one list on an `asyncio.Future`.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L492-L564)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L497-L569)
 
 ``` python
 Channel.recv_batch_async(n=256)

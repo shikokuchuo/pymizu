@@ -4,7 +4,7 @@ Use [pool](../reference/Task.pool.md#pymizu.Task.pool) as the default for the wi
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1832-L1851)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1837-L1856)
 
 ``` python
 using_pool(pool)

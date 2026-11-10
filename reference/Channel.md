@@ -4,7 +4,7 @@ A shared-memory channel handle (process-private).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L168-L678)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L171-L683)
 
 ``` python
 Channel()

@@ -4,7 +4,7 @@ A data.frame's Python home: named columns with a row count.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L39-L51)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L40-L52)
 
 ``` python
 Frame()
