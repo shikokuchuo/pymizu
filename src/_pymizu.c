@@ -2211,7 +2211,15 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
        neither dunder, so its probes are skipped. A top-level scalar
        staged at the fast gate above; nested ones still reach the 'I'
        writer through ixw_value */
-    if (!arrow_probe_skip(obj)) {
+    if (Py_TYPE(obj) == &MizuFrameType) {
+      /* an exact Frame's cached Arrow export feeds the same core writer as
+         a pa.Table: region past the floor, the core's 'I' form below it.
+         A complex column or a copy-tier send with custom root metadata
+         falls through to the binding's by-value frame emitter. */
+      int frc = pymizu_frame_stage_foreign(obj, hdr, payload, inline_max, h,
+                                           peer_lang, peer_caps);
+      if (frc >= 0) return frc;
+    } else if (!arrow_probe_skip(obj)) {
       int src = pymizu_ix_stage_arrow(obj, hdr, payload, inline_max, h,
                                       peer_lang, peer_caps);
       if (src >= 0) return src;
@@ -2286,8 +2294,7 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
      (container-exact: it reads back as a region-backed Frame); below the
      floor or on a decline it pickles (3.6). The caps word: same-language
      and 0 (a pool worker, whose ctx carries none) means this build. */
-  const uint32_t mizl_caps = foreign ? peer_caps :
-    peer_caps != 0 ? peer_caps : MIZU_PY_CAPS;
+  const uint32_t mizl_caps = peer_caps != 0 ? peer_caps : MIZU_PY_CAPS;
   if (pymizu_frame_stage_mizl(obj, hdr, payload, inline_max, h,
                               mizl_caps) == 0)
     return 0;

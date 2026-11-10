@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster first reads of large zero-copy task arguments and views on
   Linux.
 - Faster sends to R peers of Arrow string, dictionary, and temporal arrays.
+- Much faster sends of large `Frame` objects to R peers.
 
 ### Fixed
 

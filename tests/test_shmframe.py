@@ -96,6 +96,33 @@ def test_mizl_frame_fixed_width():
     h.destroy()
 
 
+def test_mizl_foreign_frame_from_arrow_matches_table():
+    n = 20000
+    tbl = pa.table(
+        {
+            "x": pa.array(
+                [None if k % 10 == 0 else k * 0.5 for k in range(n)]
+            ),
+            "s": pa.array(
+                [None if k % 10 == 0 else f"s{k % 100}" for k in range(n)]
+            ),
+        }
+    )
+    h0, p0 = foreign_pair(caps=CAPS_R)
+    h1, p1 = foreign_pair(caps=CAPS_R)
+    h0.send(tbl)
+    h1.send(pymizu.Frame.from_arrow(tbl))
+    direct = p0.recv(10)
+    framed = p1.recv(10)
+    assert type(framed.to_dict()["x"].base).__name__ == "_ShmView"
+    assert pa.table(framed).equals(pa.table(direct))
+    assert _pymizu._write_stream(framed) == _pymizu._write_stream(direct)
+    p1.destroy()
+    h1.destroy()
+    p0.destroy()
+    h0.destroy()
+
+
 def test_mizl_frame_nulls_and_validity():
     h, p = foreign_pair(caps=CAPS_R)
     h.send(big_table().select(["i", "x", "l", "b"]))
@@ -375,6 +402,40 @@ def test_same_language_frame_row_names_blob():
     assert got.row_names[:3] == ["r0", "r1", "r2"]
     assert got.to_dict()["i"][n - 1] == n - 1
     assert list(got2.row_names[:3]) == [100, 101, 102]
+    p.destroy()
+    h.destroy()
+
+
+def test_foreign_frame_complex_stays_by_value():
+    n = 4096
+    f = _pymizu._frame_rebuild(
+        ["z", "i"],
+        [("Z", [complex(k, -k) for k in range(n)]), ("i", list(range(n)))],
+        None,
+    )
+    h, p = foreign_pair(caps=CAPS_R)
+    h.send(f)
+    got = p.recv(10)
+    d = got.to_dict()
+    assert type(d["z"].base).__name__ != "_ShmView"
+    assert d["z"][:3].tolist() == [0j, 1 - 1j, 2 - 2j]
+    assert d["i"][:3].tolist() == [0, 1, 2]
+    p.destroy()
+    h.destroy()
+
+
+def test_foreign_frame_row_names_region():
+    n = 20000
+    f = _pymizu._frame_rebuild(
+        ["i", "s"],
+        [("i", list(range(n))), ("s", [f"s{k % 100}" for k in range(n)])],
+        [f"r{k}" for k in range(n)],
+    )
+    h, p = foreign_pair(caps=CAPS_R)
+    h.send(f)
+    got = p.recv(10)
+    assert got.row_names[:3] == ["r0", "r1", "r2"]
+    assert type(got.to_dict()["i"].base).__name__ == "_ShmView"
     p.destroy()
     h.destroy()
 
