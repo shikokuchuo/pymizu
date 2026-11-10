@@ -214,6 +214,37 @@ def test_r_peer_view_relayed_by_reference(r_mizu):
         ch.close()
 
 
+R_NESTED_FRAME = """
+df1 <- data.frame(i = seq_len(50000L), x = runif(50000))
+df2 <- data.frame(i = rev(seq_len(50000L)), x = runif(50000))
+mizu::mizu_send(ch, list(a = df1, b = df2))
+y <- mizu::mizu_recv(ch, timeout = 30)
+mizu::mizu_send(ch, identical(y, df1))
+mizu::mizu_send(ch, df2)
+z <- mizu::mizu_recv(ch, timeout = 30)
+is_view <- .Call(mizu:::mizu_zc_view_check, z$x)
+mizu::mizu_send(ch, c(identical(z, df2), is_view))
+"""
+
+
+def test_r_peer_nested_frame_resent_alone(r_mizu):
+    # a data frame received inside a list shares the list's region: sent
+    # on by itself it crosses by value as that one frame, never as the
+    # region's name (the whole list). A frame that is its region's root
+    # still relays by reference
+    pytest.importorskip("numpy")
+    ch = pymizu.Channel.create(R_NESTED_FRAME, launcher=r_mizu)
+    try:
+        got = ch.recv(30)
+        assert sorted(got) == ["a", "b"]
+        ch.send(got["a"])
+        assert ch.recv(30) is True
+        ch.send(ch.recv(30))
+        assert list(ch.recv(30)) == [True, True]
+    finally:
+        ch.close()
+
+
 R_STR_VIEW = """
 x <- rep(c("hello", NA_character_, "", "héllo ✓", strrep("long ", 2000)),
          length.out = 20000)

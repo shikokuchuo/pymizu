@@ -1690,7 +1690,9 @@ nomem:
    anchor of a region-backed Frame, NULL for anything else. */
 PyObject *mizu_py_frame_loan(PyObject *obj) {
   if (!PyObject_TypeCheck(obj, &MizuFrameType)) return NULL;
-  return ((MizuFrame *) obj)->loan;
+  /* a frame nested in a list tree shares the tree's region: its name is
+     the whole tree's, so it goes by value */
+  return ((MizuFrame *) obj)->loan_root ? ((MizuFrame *) obj)->loan : NULL;
 }
 
 // The from_arrow constructor and the debug surface --------------------------------

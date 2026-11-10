@@ -226,6 +226,9 @@ typedef struct {
   PyObject *row_names;   /* Py_None | list[str] | numpy int32 array */
   PyObject *loan;        /* region-backed: the tree wrap's _ShmLoan anchor
                             (NULL for a copy-backed Frame) */
+  uint8_t loan_root;     /* the frame is its region's root (not an element
+                            of a list tree): it re-sends by the region's
+                            name */
   PyObject *r_attrs;     /* NULL, or the extended frame's (class_tuple,
                             extras) stash: extras a list of (key, bytes)
                             — the extra attributes' raw wire spans,

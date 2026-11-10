@@ -578,8 +578,9 @@ PyObject *pymizu_tree_walk_path_depth(PyObject *owner, PyObject *loan,
                                       const char *path, unsigned depth);
 
 /* The REF staging helper's Frame half: the region loan anchor of a
-   region-backed Frame, NULL for anything else (a copy-backed Frame
-   included). Borrowed reference. */
+   Frame that is its region's root, NULL for anything else (a copy-backed
+   Frame, and a frame nested in a received list tree). Borrowed
+   reference. */
 PyObject *mizu_py_frame_loan(PyObject *obj);
 
 #endif

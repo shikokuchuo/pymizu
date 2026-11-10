@@ -24,6 +24,8 @@ from tests.helpers import (
     frame_and_buffer,
     frames_report,
     is_readonly,
+    make_frame,
+    slow,
     square,
     sum_dict,
     sum_list,
@@ -442,6 +444,54 @@ def test_submit_batch_frame_payload(pool):
     assert backing["i"] != "_ShmView"
     assert math.isnan(head["i"][0]) and head["i"][1:] == [1.0, 2.0]
     assert head["s"] == [None, "s1", "s2"]
+
+
+def test_region_frame_args_cross_by_name(pool):
+    # a region-backed Frame (a collected result) crosses by its region's
+    # name: no staging checkout, so two of them — and a big buffer beside
+    # them, which takes the one checkout — all arrive zero-copy
+    f = pool.submit(make_frame, 20000).collect(timeout=10)
+    g = pool.submit(make_frame, 20000).collect(timeout=10)
+    assert type(f.to_dict()["i"].base).__name__ == "_ShmView"
+    r1, r2 = pool.submit(frames_report, f, g).collect(timeout=10)
+    for backing, head in (r1, r2):
+        assert backing == {"i": "_ShmView", "x": "_ShmView"}
+        assert head == {"i": [0, 1, 2], "x": [0.0, 0.5, 1.0]}
+    a = np.arange(100_000, dtype=np.float64)
+    report, readonly, total = pool.submit(frame_and_buffer, f, a).collect(
+        timeout=10
+    )
+    assert report[0]["i"] == "_ShmView" and readonly
+    assert total == float(a.sum())
+    # nested in containers, and with a stream past the inline budget
+    # (the by-name leaf leaves the stream free to spill)
+    pad = "p" * 100_000
+    out = pool.submit(echo, [f, pad], k={"g": g}).collect(timeout=10)
+    (lst,), kw = out
+    assert lst[1] == pad
+    assert lst[0].to_dict()["i"][:3].tolist() == [0, 1, 2]
+    assert kw["k"]["g"].to_dict()["x"][:3].tolist() == [0.0, 0.5, 1.0]
+
+
+def test_region_frame_arg_outlives_the_submitters_frame():
+    # the submit pins the task's arguments until a worker claims it: the
+    # submitter dropping its Frame while the task is still queued does not
+    # release the region under the name in flight
+    p = pymizu.Pool.create(1)
+    try:
+        f = p.submit(make_frame, 20000).collect(timeout=10)
+        busy_task = p.submit(slow, 0)
+        t = p.submit(frames_report, f)
+        del f
+        gc.collect()
+        busy_task.collect(timeout=10)
+        backing, head = t.collect(timeout=10)[0]
+        assert backing == {"i": "_ShmView", "x": "_ShmView"}
+        assert head == {"i": [0, 1, 2], "x": [0.0, 0.5, 1.0]}
+        # the pool keeps working after the pinned task releases
+        assert p.submit(square, 3).collect(timeout=5) == 9
+    finally:
+        p.stop()
 
 
 def test_vanished_frameref_region_does_not_wedge_pool(pool):

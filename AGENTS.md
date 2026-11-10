@@ -243,7 +243,16 @@ finalizer — short-circuits to the released-pool answer instead).
      a second region-sized leaf sends the whole tuple to pickle. The
      read arm rides `read_shm_vec` (a region-backed Frame, the
      `ctx->gone` discipline); an adopted (from_arrow) Frame needs no
-     special casing.
+     special casing. A region-backed Frame that is its region's root
+     (`mizu_py_frame_loan`; `MizuFrame.loan_root` — a frame nested in a
+     received list tree shares the tree's region and never goes by name,
+     here or at the top-level REF) stages by name instead: the same leaf
+     with aux 0 and the region's own name (the REF read's wrap, no
+     cross-check), REFHELD marked at emit. It takes no checkout, so it
+     spends no `fp->ref` budget and the stream may spill; the stage pins
+     the task tuple (`mizu_stage_pin`, released by `py_drop` at the
+     claim-side release) and stamps no keeperless claim, so the region
+     cannot recycle under a name in flight.
   7. `_MapResult` (the map runner result marker, a tuple subclass built
      only through the `_map_result` / `_batch_result` factories — the
      `_TaskFrame` pattern; the stage hook sits ahead of the foreign
