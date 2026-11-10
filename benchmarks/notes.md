@@ -1836,3 +1836,22 @@ No best-known swaps (import time is an isolated gate row).
 
 Status: full suite 1137 pass, 1 skip (crosslang legs included); ruff format,
 ruff check and pyrefly clean.
+
+## 2026-11-10 — Region-backed `Frame` task arguments by name [(2222a31 A/B)]
+
+A stages a region-backed `Frame` argument by rewriting it into a fresh
+region, one per task (a second sends the whole task to pickle); B sends
+the region's name and pins the task's arguments until a worker claims
+it. One-off probe: frames built on a worker and collected, then
+submitted back as arguments to a one-worker pool, best of 15 round
+trips, 2 columns (int32, float64).
+
+| round trip (us) | A, one frame | A, two frames | B, one frame | B, two frames |
+|---|---|---|---|---|
+| 20k rows | 8.4 | 2173 | 3.8 | 5.5 |
+| 2M rows | 424 | 275352 | 4.1 | 6.2 |
+
+No best-known swaps (isolated probe rows).
+
+Status: full suite 1151 pass, 1 skip (crosslang legs included); ruff
+clean.

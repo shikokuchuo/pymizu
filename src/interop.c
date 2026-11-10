@@ -3933,6 +3933,11 @@ static PyObject *tree_frame(PyObject *Py_UNUSED(owner), PyObject *loan,
   self->row_names = rownames;
   Py_INCREF(loan);
   self->loan = loan;
+  {
+    mizu_shm *shm = mizu_py_loan_shm(loan);
+    self->loan_root = shm != NULL &&
+      base == (const uint8_t *) mizu_shm_addr(shm);
+  }
   self->r_attrs = r_attrs;
   return (PyObject *) self;
 fail:

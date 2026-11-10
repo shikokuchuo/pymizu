@@ -837,7 +837,8 @@ enum {
   PYMIZU_TAG_TASK = 'k',      /* the (fn, args, kwargs) task frame */
   PYMIZU_TAG_BUFFER = 'Y',    /* a buffer-protocol leaf, inline bytes */
   PYMIZU_TAG_BUFREF = 'r',    /* a buffer leaf by reference (SHM_VEC name) */
-  PYMIZU_TAG_FRAMEREF = 'F',  /* a Frame by reference (a MIZL region name) */
+  PYMIZU_TAG_FRAMEREF = 'F',  /* a Frame by reference (a MIZL region name;
+                                 aux 0 names a region already in shm) */
   PYMIZU_TAG_NUMPY = 'a',     /* a numpy scalar / 0-d array: wire type,
                                  form (0 scalar, 1 array), element bytes */
   PYMIZU_TAG_MAPRES = 'm'     /* a map runner result: form, the hist pairs,
@@ -1294,6 +1295,8 @@ typedef struct {
   int churn;              /* snapshot at stage start: the passes agree */
   int ref;                /* a by-reference leaf (BUFREF / FRAMEREF) is
                              planned — one per frame, the single checkout */
+  int named;              /* a by-name FRAMEREF is planned: the stage pins
+                             the task tuple */
   int fn_kind;            /* 0 by reference, 1 pickled */
   PyObject *fn_mod;       /* kind 0 (owned) */
   PyObject *fn_qual;      /* kind 0 (owned) */
@@ -1370,7 +1373,20 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
   return 0;
 }
 
-/* Frame leaf, size pass: a Frame past the zc floor plans a FRAMEREF — one
+/* The region a Frame leaf crosses by name: a region-backed Frame's own
+   (the top-level REF rule), NULL for a copy-backed one. A pure function of
+   the object, so the size and write passes agree. */
+static mizu_shm *frame_named_shm(PyObject *o) {
+  PyObject *flo = mizu_py_frame_loan(o);
+  mizu_shm *shm = flo != NULL ? mizu_py_loan_shm(flo) : NULL;
+  return shm != NULL && shm->name_len > 0 &&
+    shm->name_len < MIZU_NAME_MAX ? shm : NULL;
+}
+
+/* Frame leaf, size pass: a region-backed Frame plans a by-name FRAMEREF —
+   its region's name and nothing else, so it takes no checkout, spends no
+   budget and leaves the stream free to spill. Otherwise:
+   a Frame past the zc floor plans a FRAMEREF — one
    MIZL region written at the write pass, sharing the BUFREF single-checkout
    budget. The gate is frame_data_size's cheap lower bound (the write's own
    floor re-check is authoritative; a decline there abandons to the
@@ -1379,6 +1395,12 @@ static int frame_buf_size(PyObject *o, frame_plan *fp) {
    form, so the whole task tuple pickles (the pre-FRAMEREF behavior).
    0 ok, -1 reject. */
 static int frame_ref_size(PyObject *o, frame_plan *fp) {
+  const mizu_shm *named = frame_named_shm(o);
+  if (named != NULL) {
+    fp->named = 1;
+    fp->sz += 10 + (uint64_t) named->name_len;   /* tag, aux, name_len, name */
+    return 0;
+  }
   const size_t zc_gate = mizu_py_zc_gate(fp->inline_max);
   if (fp->churn ||
       frame_data_size(((MizuFrame *) o)->fc) < (uint64_t) zc_gate)
@@ -1533,6 +1555,19 @@ out:
    special casing, the export pins its columns through the write. */
 static int frame_ref_write(uint8_t **p, PyObject *o, const frame_plan *fp,
                            mizu_handle *h) {
+  mizu_shm *named = frame_named_shm(o);
+  if (named != NULL) {
+    /* by name: the REF emit's mark (the identifier escapes by reference),
+       aux 0 the REF read's wrap — no cross-check, no checkout */
+    atomic_fetch_or_explicit(mizu_zc_flags_(mizu_shm_addr(named)),
+                             MIZU_ZC_FLAG_REFHELD, memory_order_acq_rel);
+    *(*p)++ = PYMIZU_TAG_FRAMEREF;
+    codec_put64(p, 0);
+    *(*p)++ = (uint8_t) named->name_len;
+    memcpy(*p, named->name, named->name_len);
+    *p += named->name_len;
+    return 0;
+  }
   mizu_slot_hdr lhdr;
   uint8_t lname[MIZU_NAME_MAX];
   /* a task frame is same-language by construction: this build's caps is
@@ -1596,9 +1631,9 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
   uint8_t *buf = payload;
   const int spilled = fp.sz > (uint64_t) inline_max;
   if (spilled) {
-    /* no by-reference leaf rides along (frame_size rejects ref + spill):
-       the reservation's single checkout is the stream's own, and the
-       write below is pure byte emission */
+    /* no checkout leaf rides along (frame_size rejects ref + spill; a
+       by-name leaf takes none): the reservation's single checkout is the
+       stream's own, and the write below is pure byte emission */
     buf = mizu_py_stage_reserve((size_t) fp.sz, hdr, payload, h);
     if (buf == NULL) {
       frame_plan_clear(&fp);
@@ -1636,9 +1671,10 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
   if (rc == 0 && !spilled) {
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) (p - buf);
-    /* keeperless even with a by-reference leaf: its zc loan rides the
-       claim-side release machinery, not the keeper-drop reap */
-    hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    /* keeperless even with a checkout leaf: its zc loan rides the
+       claim-side release machinery, not the keeper-drop reap. A by-name
+       leaf's pin is a retain-table entry: no claim */
+    hdr->aux = fp.named ? 0 : MIZU_AUX_F_KEEPERLESS;
   } else if (rc == 0 && (size_t) (p - buf) != (size_t) fp.sz) {
     /* the reservation is stamped with fp.sz up front: a count
        disagreement leaves stale bytes under it — abandon, never publish */
@@ -1651,6 +1687,14 @@ static int stage_task_frame(PyObject *frame, mizu_slot_hdr *hdr,
        re-reserves (its spill_get would orphan the region). A spilled
        stream's reservation is the checkout this releases. */
     mizu_stage_rollback(h);
+  }
+  if (rc == 0 && fp.named) {
+    /* the submit-side handoff (the 'I' ref leaf's): the sender's Frame
+       holds the region's count, so the task tuple stays pinned until the
+       claim-side release — the worker's counted add lands first, and the
+       region never recycles under a name in flight */
+    Py_INCREF(frame);
+    mizu_stage_pin(h, (void *) frame);
   }
   frame_plan_clear(&fp);
   return rc;
@@ -4601,7 +4645,8 @@ static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
     if (name_len == 0 || name_len >= MIZU_NAME_MAX ||
         (size_t) (end - *p) < name_len)
       return NULL;
-    /* a MIZL frame region (the aux carried verbatim from the write): the
+    /* a MIZL frame region (the aux carried verbatim from the write, 0
+       for a by-name leaf: the REF read's wrap, no cross-check): the
        SHM_VEC dispatch wraps it as a region-backed Frame, the vanished-
        region case riding ctx->gone — both the BUFREF discipline */
     PyObject *r = read_shm_vec(*p, name_len, aux, ctx);
