@@ -47,8 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Task.collect_async()` and `await task` are much faster for tasks
   that finish between awaits.
 - Faster sends to R peers of top-level scalars, nested list, tuple, or
-  dict payloads, and int64 numpy arrays; much faster sends of nullable
-  Arrow arrays.
+  dict payloads, and int64 numpy arrays; much faster sends of Arrow
+  columns with scattered nulls and dictionary (factor) columns.
 - Faster `spin=True` channel waits.
 - Faster first reads of large zero-copy task arguments and views on
   Linux.
