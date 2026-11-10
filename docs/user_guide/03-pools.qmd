@@ -193,7 +193,7 @@ Avoid `asyncio.to_thread(pool.submit, ...)` from concurrent coroutines: the defa
 
 ## concurrent.futures interop
 
-`pymizu.PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects, and `wait`, `as_completed`, `asyncio.wrap_future`, and the base `Executor.map` all work unchanged.
+`pymizu.PoolExecutor` adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in: `submit` returns real `concurrent.futures.Future` objects, and `wait`, `as_completed`, `asyncio.wrap_future`, and chunked `map` all work unchanged.
 Futures resolve as results arrive, with no background thread and no polling.
 
 ```{python}
@@ -207,7 +207,8 @@ result
 Wrap an existing pool with `PoolExecutor(pool)`; its lifetime stays with its owner.
 `PoolExecutor.create(workers, **pool_kwargs)` instead spawns an owned pool that `shutdown` stops.
 A task's failure surfaces as `pymizu.TaskError`, and cancellation behaves like `Task.cancel`.
-For bulk maps, `Pool.map` remains the faster path: the executor's `map` runs one task per element.
+If the result table is full, `submit` waits for the executor to collect a result instead of raising `SlotsExhaustedError`; a submit from a listener-thread done callback still raises rather than deadlocking the drain.
+The executor's `map` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`; its default remains one task per element, and `Pool.map` remains the faster bulk-map path.
 
 ## Sizing a pool
 

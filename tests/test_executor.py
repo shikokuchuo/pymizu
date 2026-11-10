@@ -54,6 +54,92 @@ def test_map_multi_iterable(pool):
         assert list(ex.map(operator.mul, [1, 2, 3], [4, 5, 6])) == [4, 10, 18]
 
 
+def test_map_honors_chunksize(pool, monkeypatch):
+    with pymizu.PoolExecutor(pool) as ex:
+        submitted = []
+        submit = ex.submit
+
+        def recording_submit(fn, *args, **kwargs):
+            submitted.append((fn, args))
+            return submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(ex, "submit", recording_submit)
+        assert list(ex.map(square, range(5), chunksize=2)) == [
+            0,
+            1,
+            4,
+            9,
+            16,
+        ]
+        assert len(submitted) == 3
+        submitted.clear()
+        assert list(ex.map(square, range(5))) == [0, 1, 4, 9, 16]
+        assert len(submitted) == 5
+
+
+def test_map_buffering_is_lazy_and_close_cancels(pool, monkeypatch):
+    with pymizu.PoolExecutor(pool) as ex:
+        submitted = []
+        pulled = []
+
+        def fake_submit(fn, *args, **kwargs):
+            future = concurrent.futures.Future()
+            submitted.append(future)
+            return future
+
+        def source():
+            for i in range(10):
+                pulled.append(i)
+                yield i
+
+        monkeypatch.setattr(ex, "submit", fake_submit)
+        results = ex.map(square, source(), chunksize=2, buffersize=2)
+        assert pulled == [0, 1, 2, 3]
+        assert len(submitted) == 2
+        submitted[0].set_result([0, 1])
+        assert next(results) == 0
+        assert pulled == [0, 1, 2, 3, 4, 5]
+        assert len(submitted) == 3
+        results.close()
+        assert submitted[1].cancelled()
+        assert submitted[2].cancelled()
+        assert pulled == [0, 1, 2, 3, 4, 5]
+
+
+def test_map_chunk_error_discards_earlier_chunk_values(pool):
+    with pymizu.PoolExecutor(pool) as ex:
+        results = ex.map(fail_at, range(6), [4] * 6, chunksize=3)
+        assert [next(results) for _ in range(3)] == [0, 1, 2]
+        with pytest.raises(pymizu.TaskError, match="element 4"):
+            next(results)
+
+
+def test_map_validates_chunk_and_buffer_sizes(pool):
+    with pymizu.PoolExecutor(pool) as ex:
+        with pytest.raises(ValueError, match="chunksize"):
+            ex.map(square, [1], chunksize=0)
+        with pytest.raises(TypeError, match="buffersize"):
+            ex.map(square, [1], buffersize=1.5)
+        with pytest.raises(ValueError, match="buffersize"):
+            ex.map(square, [1], buffersize=0)
+
+
+def test_map_timeout_uses_one_deadline():
+    p = pymizu.Pool.create(1)
+    try:
+        with pymizu.PoolExecutor(p) as ex:
+            with pytest.raises(concurrent.futures.TimeoutError):
+                list(ex.map(sleep_ident, [0.2, 0.2], timeout=0.3))
+    finally:
+        p.stop()
+
+
+def test_map_large_default_does_not_exhaust_slots(pool):
+    with pymizu.PoolExecutor(pool) as ex:
+        total = sum(ex.map(square, range(20000)))
+    assert total == sum(i * i for i in range(20000))
+
+
 def test_wait_and_as_completed(pool):
     with pymizu.PoolExecutor(pool) as ex:
         futs = [ex.submit(square, i) for i in range(6)]
@@ -76,6 +162,159 @@ def test_burst_resolves_all(pool):
         assert {f.result(timeout=10) for f in futs} == {
             i * i for i in range(n)
         }
+
+
+def test_full_slot_waits_for_drain_release():
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=1)
+    try:
+        with pymizu.PoolExecutor(p) as ex:
+            first = ex.submit(sleep_ident, 0.2)
+            with concurrent.futures.ThreadPoolExecutor(1) as tp:
+                pending = tp.submit(ex.submit, square, 2)
+                assert first.result(timeout=5) == 0.2
+                second = pending.result(timeout=5)
+                assert second.result(timeout=5) == 4
+    finally:
+        p.stop()
+
+
+def test_full_slot_waits_on_facade_submit():
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=1)
+    try:
+        with pymizu.PoolExecutor(p) as ex:
+            first = ex.submit(pymizu.call("time.sleep", 0.2))
+            with concurrent.futures.ThreadPoolExecutor(1) as tp:
+                pending = tp.submit(ex.submit, pymizu.call("math.sqrt", 81))
+                assert first.result(timeout=5) is None
+                assert pending.result(timeout=5).result(timeout=5) == 9.0
+    finally:
+        p.stop()
+
+
+def test_full_slot_waits_for_cancelled_task_release():
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=2)
+    try:
+        with pymizu.PoolExecutor(p) as ex:
+            blocker = ex.submit(sleep_ident, 0.3)
+            queued = ex.submit(square, 3)
+            deadline = time.monotonic() + 5
+            while p.dump()["workers"][0]["in_flight"] == -1:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            assert queued.cancel()
+            # detach's notify predates this wait; only the bounded retry
+            # observes the worker's CANCEL->FREE skip, which publishes nothing
+            with concurrent.futures.ThreadPoolExecutor(1) as tp:
+                pending = tp.submit(ex.submit, square, 4)
+                assert blocker.result(timeout=5) == 0.3
+                assert pending.result(timeout=5).result(timeout=5) == 16
+    finally:
+        p.stop()
+
+
+def test_full_slot_waits_for_outside_collect_release():
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=1)
+    ex = pymizu.PoolExecutor(p)
+    try:
+        first = ex.submit(sleep_ident, 0.2)
+        with concurrent.futures.ThreadPoolExecutor(1) as tp:
+            pending = tp.submit(ex.submit, square, 2)
+            # an outside collect claims the slot's wake and sends no
+            # executor notification: the bounded retry is the release path
+            assert first._task.collect(timeout=5) == 0.2
+            assert pending.result(timeout=5).result(timeout=5) == 4
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+        p.stop()
+
+
+def test_full_slot_wait_wakes_on_shutdown(monkeypatch):
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=1)
+    ex = pymizu.PoolExecutor(p)
+    first = ex.submit(sleep_ident, 5)
+    attempted = threading.Event()
+    exec_submit = ex._exec_submit
+
+    def second_submit(fn, args, kwargs):
+        attempted.set()
+        return exec_submit(fn, args, kwargs)
+
+    monkeypatch.setattr(ex, "_exec_submit", second_submit)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(1) as tp:
+            pending = tp.submit(ex.submit, square, 2)
+            assert attempted.wait(5)
+            ex.shutdown(wait=False, cancel_futures=True)
+            with pytest.raises(RuntimeError, match="shutdown"):
+                pending.result(timeout=5)
+        assert first.cancelled()
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+        p.stop()
+
+
+def test_full_slot_wait_wakes_on_failure(monkeypatch):
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=1)
+    ex = pymizu.PoolExecutor(p)
+    first = ex.submit(sleep_ident, 5)
+    attempted = threading.Event()
+    exec_submit = ex._exec_submit
+
+    def second_submit(fn, args, kwargs):
+        attempted.set()
+        return exec_submit(fn, args, kwargs)
+
+    monkeypatch.setattr(ex, "_exec_submit", second_submit)
+    err = pymizu.MizuError("infrastructure failure")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(1) as tp:
+            pending = tp.submit(ex.submit, square, 2)
+            assert attempted.wait(5)
+            ex._fail_all(err)
+            with pytest.raises(pymizu.MizuError) as exc_info:
+                pending.result(timeout=5)
+            assert exc_info.value is err
+        with pytest.raises(pymizu.MizuError) as exc_info:
+            first.result(timeout=5)
+        assert exc_info.value is err
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+        p.stop()
+
+
+def test_done_callback_full_slot_submit_raises(monkeypatch):
+    p = pymizu.Pool.create(1, max_submitters=1, result_slots=1)
+    try:
+        ex = pymizu.PoolExecutor(p)
+        first = ex.submit(sleep_ident, 0.2)
+
+        def collect_without_releasing(tasks):
+            if not ex._scan(tasks)[0]:
+                return []
+            return [(0, 0.2, False)]
+
+        monkeypatch.setattr(ex, "_collect_terminal", collect_without_releasing)
+        seen = []
+        called = threading.Event()
+
+        def on_done(future):
+            try:
+                ex.submit(square, 2)
+            except Exception as exc:
+                seen.append(exc)
+                called.set()
+
+        first.add_done_callback(on_done)
+        try:
+            assert called.wait(2)
+            assert len(seen) == 1
+            assert isinstance(seen[0], pymizu.SlotsExhaustedError)
+        finally:
+            # the fake collect deliberately left the sole slot occupied
+            first._task.collect(timeout=5)
+        ex.shutdown()
+    finally:
+        p.stop()
 
 
 def test_submit_from_many_threads(pool):

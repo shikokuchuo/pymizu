@@ -98,8 +98,8 @@ static PyObject *MizuConcurrentUseError;  /* two verbs, one handle role */
    error path is cold; importing it at module init is not). */
 static PyObject *mizu_traceback_fmt;
 
-/* pickle, or cloudpickle when installed (used transparently — its output is
-   a standard protocol stream). Resolved at module init; protocol pinned to 4. */
+/* Stock pickle loads; dumps resolve cloudpickle-first on first use (its
+   output is a standard protocol stream). Protocol pinned to 4. */
 static PyObject *mizu_dumps, *mizu_loads;
 static PyObject *mizu_pickle_proto;   /* PyLong(4): the pinned protocol arg */
 
@@ -149,6 +149,17 @@ static int mizu_numpy_probed;
    PyLong(4). loads off a C buffer passes a memoryview, not a "y#" bytes
    copy — the slot outlives the call (consumer-done ordering). */
 static PyObject *pickle_dumps(PyObject *obj) {
+  if (mizu_dumps == NULL) {
+    PyObject *pickler = PyImport_ImportModule("cloudpickle");
+    if (pickler == NULL) {
+      PyErr_Clear();
+      pickler = PyImport_ImportModule("pickle");
+      if (pickler == NULL) return NULL;
+    }
+    mizu_dumps = PyObject_GetAttrString(pickler, "dumps");
+    Py_DECREF(pickler);
+    if (mizu_dumps == NULL) return NULL;
+  }
   PyObject *a[2] = {obj, mizu_pickle_proto};
   return PyObject_Vectorcall(mizu_dumps, a, 2, NULL);
 }
@@ -10761,6 +10772,16 @@ static PyObject *pymizu_channel_send_raw(PyObject *Py_UNUSED(module),
   return chan_send_pinned(self, b, &hctx->raw_payload, 0);
 }
 
+PyDoc_STRVAR(pickle_dumps_doc,
+"_pickle_dumps(obj) -> bytes\n\n\
+The shared protocol-4 dump policy: cloudpickle when installed, stock\n\
+pickle otherwise, resolved and cached on first use. Facade use only.");
+
+static PyObject *pymizu_pickle_dumps(PyObject *Py_UNUSED(module),
+                                     PyObject *obj) {
+  return pickle_dumps(obj);
+}
+
 static PyMethodDef pymizu_methods[] = {
   {"_channel_new", (PyCFunction)(void (*)(void)) pymizu_channel_new,
    METH_VARARGS | METH_KEYWORDS, channel_new_doc},
@@ -10768,6 +10789,7 @@ static PyMethodDef pymizu_methods[] = {
    METH_VARARGS | METH_KEYWORDS, channel_attach_doc},
   {"_channel_send_raw", (PyCFunction) pymizu_channel_send_raw,
    METH_VARARGS, channel_send_raw_doc},
+  {"_pickle_dumps", pymizu_pickle_dumps, METH_O, pickle_dumps_doc},
   {"_pool_new", (PyCFunction)(void (*)(void)) pymizu_pool_new,
    METH_VARARGS | METH_KEYWORDS, pool_new_doc},
   {"_pool_attach", (PyCFunction) pymizu_pool_attach, METH_O, pool_attach_doc},
@@ -10865,18 +10887,12 @@ PyInit__pymizu(void)
   MizuMapResultType.tp_base = &PyTuple_Type;
   if (PyType_Ready(&MizuMapResultType) < 0) return NULL;
 
-  /* cloudpickle when installed, stock pickle otherwise; both read each
-     other's protocol-4 streams */
-  PyObject *pickler = PyImport_ImportModule("cloudpickle");
-  if (pickler == NULL) {
-    PyErr_Clear();
-    pickler = PyImport_ImportModule("pickle");
-    if (pickler == NULL) return NULL;
-  }
-  mizu_dumps = PyObject_GetAttrString(pickler, "dumps");
+  /* loads are always stock; the cloudpickle-first dump resolves lazily */
+  PyObject *pickler = PyImport_ImportModule("pickle");
+  if (pickler == NULL) return NULL;
   mizu_loads = PyObject_GetAttrString(pickler, "loads");
   Py_DECREF(pickler);
-  if (mizu_dumps == NULL || mizu_loads == NULL) return NULL;
+  if (mizu_loads == NULL) return NULL;
   mizu_pickle_proto = PyLong_FromLong(4);
   if (mizu_pickle_proto == NULL) return NULL;
 

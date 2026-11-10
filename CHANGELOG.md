@@ -15,8 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Faster `import pymizu`: package version metadata is now loaded only when
-  `pymizu.__version__` is accessed.
+- Faster `import pymizu`; optional features now load on first use.
 - Faster sends, receives, and pool task round-trips across the board:
   wheels (and source builds) now compile with `-O3` and link-time
   optimization (thin LTO on Windows), and the extension no longer
@@ -49,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numpy-scalar results, which no longer pass through pickle.
 - Faster `PoolExecutor` submission and resolution of large bursts of
   outstanding futures.
+- `PoolExecutor.map()` now honors `chunksize` and `buffersize` like
+  `ProcessPoolExecutor`, including lazy input consumption and bounded pending
+  tasks when a buffer size is set.
 - `Task.collect_async()` and `await task` are much faster for tasks
   that finish between awaits.
 - Faster sends to R peers of top-level scalars, nested list, tuple, or
@@ -62,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `Pool.stop()` often waiting an extra 50 ms after its workers had
+  exited cleanly.
 - Fixed sending a `Frame` taken from a list or dict received from an R
   peer: the peer received the whole container, not the one frame.
 - Fixed `Channel.send()` to an R peer rejecting `pyarrow.RecordBatch`,
@@ -70,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer than 2^31 - 1 elements.
 - Fixed a rare `PoolExecutor` future failing with "task handle already
   collected" when a task finished as it was submitted.
+- Fixed `PoolExecutor.submit()` and large executor maps raising
+  `SlotsExhaustedError` when the result table filled; user-thread submissions
+  now wait for the executor to free a slot.
 - Fixed a corrupt stream sent to a Python peer when a list, tuple, or
   dict contained a `str` or `bytes` item larger than 4 GiB; the payload
   now falls back to pickle and arrives intact.

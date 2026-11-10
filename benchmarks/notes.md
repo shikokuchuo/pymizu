@@ -1879,3 +1879,28 @@ No best-known swaps (isolated probe rows).
 
 Status: full suite 1151 pass, 1 skip (crosslang legs included); ruff
 clean.
+
+## 2026-11-10 — Phase 2 executor backpressure and chunked map
+
+A invokes `concurrent.futures.Executor.map` (the pre-phase-2 algorithm at
+`7385785`) directly; B uses the new `PoolExecutor.map` override. Both run on
+the new build with 32,768 result slots, so backpressure cannot affect the
+comparison: 20,000 `plus_one` elements, 4 workers, best of 7 after warmup.
+
+| map form | us/element |
+|---|---:|
+| A, eager per-element | 5.133 |
+| B, chunksize=1 | 5.327 |
+| B, chunksize=16 | 1.218 |
+| B, chunksize=64 | 0.480 |
+| B, chunksize=256 | 0.223 |
+| B, chunksize=1024 | 0.118 |
+
+With the default 4,096 result slots, B completes the same 20,000-element map
+at 5.347 us/element with chunksize=1 and 0.232 with chunksize=256; A raises
+`SlotsExhaustedError` at default sizing. The bounded retry also covers slot
+releases with no executor wake (queued cancellation and outside collection).
+No best-known swaps (isolated probe rows).
+
+Status: full suite 1169 pass, 1 skip (crosslang legs included); ruff format,
+ruff check and pyrefly clean.
