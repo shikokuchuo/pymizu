@@ -429,6 +429,89 @@ def test_arrow_null_count_unknown(rcheck):
     assert list(b) == [10, 20, 30, 40, 50]
 
 
+def test_record_batch_foreign():
+    h, p = foreign_pair()
+    try:
+        batch = pa.record_batch(
+            [pa.array([1, 2, 3], type=pa.int32())], names=["x"]
+        )
+        assert h.send(batch) is None
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_record_batch_foreign_region():
+    h, p = foreign_pair(caps=63)
+    try:
+        values = np.arange(100_000, dtype=np.int32)
+        batch = pa.record_batch([pa.array(values)], names=["x"])
+        assert h.send(batch) is None
+        out = p.recv(timeout=5).to_dict()["x"]
+        assert hasattr(out.base, "refcount")
+        np.testing.assert_array_equal(out, values)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_struct_array_foreign():
+    # a struct pair is a one-batch frame, exported once
+    class Counted:
+        def __init__(self, inner):
+            self._inner = inner
+            self.calls = 0
+
+        def __arrow_c_array__(self, requested_schema=None):
+            self.calls += 1
+            return self._inner.__arrow_c_array__(requested_schema)
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            raise AssertionError("the pair path serves a struct")
+
+    h, p = foreign_pair()
+    try:
+        s = pa.StructArray.from_arrays(
+            [pa.array([1, 2, 3], type=pa.int32())], names=["x"]
+        )
+        assert h.send(s) is None
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+        c = Counted(s)
+        assert h.send(c) is None
+        assert c.calls == 1
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_nanoarrow_struct_array_foreign():
+    na = pytest.importorskip("nanoarrow")
+    h, p = foreign_pair()
+    try:
+        batch = pa.record_batch(
+            [pa.array([1, 2, 3], type=pa.int32())], names=["x"]
+        )
+        assert h.send(na.array(batch)) is None
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_uint64_arrow_array_convert_with_a_warning():
+    h, p = foreign_pair()
+    try:
+        a = pa.array([2**63], type=pa.uint64())
+        with pytest.warns(RuntimeWarning, match="beyond"):
+            assert h.send(a) is None
+        assert list(p.recv(timeout=5)) == [-(2**63)]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_arrow_rejections_foreign():
     # the send-time declines on a foreign channel
     h, p = foreign_pair()
@@ -436,8 +519,11 @@ def test_arrow_rejections_foreign():
     with pytest.raises(TypeError, match="raw vectors have no NA"):
         h.send(pa.array([1, None], type=pa.uint8()))
     # nested
-    with pytest.raises(TypeError, match="nested"):
+    with pytest.raises(pymizu.DeclinedError, match="no portable home"):
         h.send(pa.array([[1, 2], [3]]))
+    # a struct with null rows: no frame shape
+    with pytest.raises(pymizu.DeclinedError, match="null struct rows"):
+        h.send(pa.array([{"x": 1}, None]))
     # a time32 column: no portable home
     with pytest.raises(pymizu.DeclinedError, match="no portable home"):
         h.send(pa.table({"t": pa.array([1], type=pa.time32("s"))}))
@@ -573,8 +659,7 @@ def test_arrow_stream_schema_failures():
 
 def test_arrow_array_pair_contract_violations():
     # __arrow_c_array__ must return a (schema, array) capsule pair: the
-    # send fails informatively otherwise, on the first call or on the
-    # stream front-end's re-call (a string array's pair declines there)
+    # send fails informatively otherwise, with one call per send
 
     class BadPair:
         def __init__(self, result):
@@ -603,10 +688,10 @@ def test_arrow_array_pair_contract_violations():
             h.send(BadPair(42))
         with pytest.raises(ValueError, match="PyCapsule"):
             h.send(BadPair((None, None)))
-        with pytest.raises(TypeError, match="capsule pair"):
-            h.send(FlakyPair(42))
-        with pytest.raises(ValueError, match="PyCapsule"):
-            h.send(FlakyPair((None, None)))
+        single = FlakyPair(42)
+        assert h.send(single) is None
+        assert single._calls == 1
+        assert p.recv(5) == ["a"]
         with pytest.raises(RuntimeError, match="boom"):
             h.send(BoomArray())
         # the channel still flows

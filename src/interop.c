@@ -5382,7 +5382,7 @@ static void ixw_value(ixw *w, PyObject *obj) {
   ixw_decline_type(w, obj, "a value of this type has no portable home");
 }
 
-// The Arrow stream front-end ----------------------------------------------------------
+// The Arrow front-end -----------------------------------------------------------------
 
 /* The pulled-batch state (ixs_hold / ixs_pcol / ixs) and the per-batch
    Arrow helpers (mizu_arrow_valid, mizu_arrow_str_at) are the ext tier's
@@ -5499,8 +5499,8 @@ static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep1,
       batches[b] = &wraps[b];
     }
     mizu_arrow *ar = NULL;
-    mizu_status st = mizu_arrow_open(&ar, &root, batches, x->hold.nb,
-                                     peer_caps);
+    mizu_status st = mizu_arrow_open_vector(&ar, &root, batches, x->hold.nb,
+                                            peer_caps);
     if (st != MIZU_OK) {
       free(blk);
       return NULL;
@@ -5508,28 +5508,21 @@ static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep1,
     *keep1 = blk;
     return ar;
   }
-  /* nb == 1 rides the struct's slot and *keep1 stays NULL (the callers'
-     free(NULL) discipline); a larger pull heap-allocates */
-  const ArrowArray **batches = &x->batch1;
-  if (x->hold.nb == 1) {
-    x->batch1 = x->hold.arrs;
-  } else {
-    batches = malloc((x->hold.nb != 0 ? x->hold.nb : 1) *
-                     sizeof(*batches));
-    if (batches == NULL) {
-      PyErr_NoMemory();
-      return NULL;
-    }
-    for (size_t b = 0; b < x->hold.nb; b++) batches[b] = &x->hold.arrs[b];
+  const ArrowArray **batches = malloc((x->hold.nb != 0 ? x->hold.nb : 1) *
+                                      sizeof(*batches));
+  if (batches == NULL) {
+    PyErr_NoMemory();
+    return NULL;
   }
+  for (size_t b = 0; b < x->hold.nb; b++) batches[b] = &x->hold.arrs[b];
   mizu_arrow *ar = NULL;
   mizu_status st = mizu_arrow_open(&ar, &x->schema, batches, x->hold.nb,
                                    peer_caps);
   if (st != MIZU_OK) {
-    if (batches != &x->batch1) free(batches);
+    free(batches);
     return NULL;
   }
-  if (batches != &x->batch1) *keep1 = (void *) batches;
+  *keep1 = (void *) batches;
   return ar;
 }
 
@@ -5576,7 +5569,7 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     PyErr_NoMemory();
     return 1;
   }
-  if (ixs_pull(x) < 0) return 1;
+  if (!x->borrowed_hold && ixs_pull(x) < 0) return 1;
   /* the classification, batch vetting and dictionary validation are the
      core's (arrow.c), the TLS decline re-raised as this front-end's */
   void *keep1, *keep2;
@@ -5764,13 +5757,13 @@ static int ixs_run(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   return ixs_run_single(x, hdr, payload, inline_max, h);
 }
 
-/* An __arrow_c_array__ producer whose format the conversion table
-   declines (a StringArray, DictionaryArray, DateArray, ...): the single
-   path over the capsule pair as one borrowed batch. fn is the front-end's
-   probed bound method, stolen. */
+/* An __arrow_c_array__ producer, the capsule pair as one borrowed batch:
+   a struct pair takes the frame path, every other schema the single
+   path. fn is the front-end's probed bound method, stolen. */
 static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
                                 uint8_t *payload, uint32_t inline_max,
-                                mizu_handle *h, uint32_t peer_caps) {
+                                mizu_handle *h, uint32_t peer_lang,
+                                uint32_t peer_caps) {
   PyObject *pair = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (pair == NULL) return 1;   /* the object claimed the interface */
@@ -5792,40 +5785,52 @@ static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
   memset(&x, 0, sizeof(x));
   x.cap = pair;
   x.caps = peer_caps;
+  x.lang = peer_lang;
+  x.borrowed_hold = 1;
+  ArrowArray one;
+  int rc = 1;
+  /* a consumed or moved struct has release == NULL (the spec's move
+     semantics); the batch vetting is the core writer's */
+  if (schema->release == NULL || array->release == NULL ||
+      schema->format == NULL) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: invalid Arrow C Data Interface export");
+    goto done;
+  }
   memcpy(&x.schema, schema, sizeof(x.schema));
   x.schema.release = NULL;
-  ArrowArray one;
   memcpy(&one, array, sizeof(one));
   one.release = NULL;
-  x.borrowed_hold = 1;
   x.hold.arrs = &one;
   x.hold.nb = 1;
   x.hold.cap = 1;
   x.hold.rows = one.length;
-  int rc = ixs_run_single(&x, hdr, payload, inline_max, h);
-  x.hold.arrs = NULL;
-  /* ixs_free drops the pair, whose capsules release and free the Arrow
-     structs — reading schema->/array->release here would touch freed
-     memory, and the producer's capsule destructors own the release */
+  rc = strcmp(schema->format, "+s") == 0 ?
+    ixs_run_frame(&x, hdr, payload, inline_max, h) :
+    ixs_run_single(&x, hdr, payload, inline_max, h);
+done:
+  /* staging is synchronous: release before dropping the pair, whose owner
+     may keep it alive (the capsule destructor alone would not consume it) */
+  if (schema->release != NULL) schema->release(schema);
+  if (array->release != NULL) array->release(array);
   ixs_free(&x);
   return rc;
 }
 
-int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
-                                 uint8_t *payload, uint32_t inline_max,
-                                 mizu_handle *h, uint32_t peer_lang,
-                                 uint32_t peer_caps) {
+int pymizu_ix_stage_arrow(PyObject *obj, mizu_slot_hdr *hdr,
+                          uint8_t *payload, uint32_t inline_max,
+                          mizu_handle *h, uint32_t peer_lang,
+                          uint32_t peer_caps) {
   if (Py_TYPE(obj) == &MizuFrameType) return -1;   /* the writer's case */
   PyObject *fn = NULL;
-  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_stream, &fn);
+  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
   if (prc < 0) return 1;
-  if (fn == NULL) {
-    /* not a stream producer: an array-only one takes the pair path */
-    prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
-    if (prc < 0) return 1;
-    if (fn == NULL) return -1;
-    return ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h, peer_caps);
-  }
+  if (fn != NULL)
+    return ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h, peer_lang,
+                                peer_caps);
+  prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_stream, &fn);
+  if (prc < 0) return 1;
+  if (fn == NULL) return -1;
   PyObject *cap = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (cap == NULL) {

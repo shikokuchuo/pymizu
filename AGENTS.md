@@ -202,8 +202,10 @@ finalizer — short-circuits to the released-pool answer instead).
      slice, reshape or dtype view goes by value; writable buffers never
      pay the `.base` walk.
   5. Foreign handles (an R peer), the pinned order ahead of the codec
-     and pickle: the Arrow front-ends (`__arrow_c_array__`, then
-     `__arrow_c_stream__`), then the layout tiers past the zc floor
+     and pickle: the Arrow front-end (`__arrow_c_array__` first, a
+     struct pair crossing as a one-batch frame, then `__arrow_c_stream__`
+     for stream-only producers),
+     then the layout tiers past the zc floor
      (`pymizu_stage_layout`, `src/layout.c`): a `list[str | None]` as
      one MIZS region, a buffer (any strides, identity dtypes) or a
      temporal array as one MIZH region plus the attrs blob (`dim`,
@@ -301,13 +303,15 @@ finalizer — short-circuits to the released-pool answer instead).
   the mapping is cached — MIZH header validation runs per read. An
   evicted owner's mapping closes when its last view is gone.
 - The Arrow → MIZL frame writer is the vendored core's `arrow.c`
-  (`mizu_arrow_open` / `_remote` / `_root_blob` / `_tz` / `_stage`, the
-  `mizu_cvt_*` kernels): pymizu keeps only the stream pull (`ixs_pull`),
+  (`mizu_arrow_open` / `_open_vector` / `_remote` / `_root_blob` / `_tz` /
+  `_stage`, the `mizu_cvt_*` kernels): pymizu keeps only the stream pull
+  (`ixs_pull`),
   the tier-attempt predicate, the provenance registry and the REF
   emits. Both frame paths — the foreign `__arrow_c_stream__` front-end
   and the same-language exact-`Frame` branch — classify/vet through
   `mizu_arrow_open`; the non-struct `single` path wraps itself as a
-  one-column `+s` struct so the core serves it too. The core's
+  one-column `+s` struct and opens through `mizu_arrow_open_vector`, which
+  leaves off the frame's automatic-row.names bound. The core's
   `mizu_arrow` borrows the ArrowArray structs AND the `batches` pointer
   array — both must outlive the handle until `mizu_arrow_close`
   (`ixs_arrow_open`'s keep out-params). The capability conjunction and

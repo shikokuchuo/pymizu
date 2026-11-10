@@ -816,96 +816,6 @@ static int stage_convert_buffer(const Py_buffer *v, mizu_slot_hdr *hdr,
                        hdr, payload, inline_max, h, peer_lang);
 }
 
-/* The Arrow import front-end. Validate before touching a buffer (all
-   O(1), once per stage), then feed the data buffer to the conversion
-   pass. Returns 0 staged, 1 error, -1 not an Arrow producer. */
-static int stage_arrow_capsules(const ArrowSchema *schema, ArrowArray *array,
-                                mizu_slot_hdr *hdr, uint8_t *payload,
-                                uint32_t inline_max, mizu_handle *h,
-                                uint32_t peer_lang) {
-  /* a consumed or moved struct has release == NULL (the spec's move
-     semantics); a NULL bitmap is conformant only with no nulls */
-  if (schema->release == NULL || array->release == NULL ||
-      schema->format == NULL || array->length < 0 || array->offset < 0 ||
-      array->null_count < -1 || array->null_count > array->length ||
-      array->n_buffers < 2 || array->buffers == NULL ||
-      (array->buffers[1] == NULL && array->length != 0) ||
-      (array->buffers[0] == NULL && array->null_count > 0)) {
-    PyErr_SetString(PyExc_TypeError,
-                    "pymizu: invalid Arrow C Data Interface export");
-    return 1;
-  }
-  if (schema->n_children != 0 || array->n_children != 0) {
-    PyErr_SetString(PyExc_TypeError,
-                    "pymizu: nested Arrow types cannot cross");
-    return 1;
-  }
-  if (schema->dictionary != NULL) return -1;   /* the stream front-end
-                                                  writes the factor shape */
-  const cvt_row *row = mizu_cvt_for_arrow(schema->format);
-  if (row == NULL) return -1;   /* strings, temporals: the front-end's */
-  /* a zero-length array short-circuits without touching the buffers:
-     they may all be NULL, and memcpy(dst, NULL, 0) is UB */
-  if (array->length == 0)
-    return stage_convert(NULL, 0, row, NULL, 0, hdr, payload, inline_max, h,
-                         peer_lang);
-  /* the fast path iff there is no bitmap to read: the spec allows
-     null_count == -1 ("not yet computed") with a non-NULL bitmap, and a
-     NULL bitmap only when the count is 0, so key on the pointer */
-  const uint8_t *valid = (const uint8_t *) array->buffers[0];
-  if (valid != NULL && array->null_count == 0) valid = NULL;
-  if (valid != NULL && row->wire == MIZU_TYPE_RAW) {
-    PyErr_SetString(PyExc_TypeError,
-                    "pymizu: Arrow nulls cannot cross in a uint8 array "
-                    "(R raw vectors have no NA)");
-    return 1;
-  }
-  const uint8_t *data = (const uint8_t *) array->buffers[1];
-  uint64_t off = (uint64_t) array->offset;
-  size_t nelts = (size_t) array->length;
-  if (row->cvt == CVT_BIT_LGL)
-    return stage_convert(data, nelts, row, valid, off, hdr, payload,
-                         inline_max, h, peer_lang);
-  return stage_convert(data + off * row->w_in, nelts, row, valid, off,
-                       hdr, payload, inline_max, h, peer_lang);
-}
-
-static int stage_arrow(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
-                       uint32_t inline_max, mizu_handle *h,
-                       uint32_t peer_lang) {
-  PyObject *fn = NULL;
-  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
-  if (prc < 0) return 1;
-  if (fn == NULL) return -1;   /* a stream-only producer: the front-end's case */
-  PyObject *pair = PyObject_CallNoArgs(fn);
-  Py_DECREF(fn);
-  if (pair == NULL) return 1;   /* the object claimed the interface */
-  if (!PyTuple_Check(pair) || PyTuple_GET_SIZE(pair) != 2) {
-    Py_DECREF(pair);
-    PyErr_SetString(PyExc_TypeError, "pymizu: __arrow_c_array__ must return "
-                    "a (schema, array) capsule pair");
-    return 1;
-  }
-  /* PyCapsule_GetPointer rejects misnamed capsules by the API */
-  ArrowSchema *schema = (ArrowSchema *) PyCapsule_GetPointer(
-    PyTuple_GET_ITEM(pair, 0), "arrow_schema");
-  ArrowArray *array = (ArrowArray *) PyCapsule_GetPointer(
-    PyTuple_GET_ITEM(pair, 1), "arrow_array");
-  if (schema == NULL || array == NULL) {
-    Py_DECREF(pair);
-    return 1;
-  }
-  int rc = stage_arrow_capsules(schema, array, hdr, payload, inline_max, h,
-                                peer_lang);
-  /* staging is synchronous — nothing aliases the producer's buffers:
-     release the imported structs immediately (the capsules own the
-     struct memory; release frees the producer's private resources) */
-  if (schema->release != NULL) schema->release(schema);
-  if (array->release != NULL) array->release(array);
-  Py_DECREF(pair);
-  return rc;
-}
-
 // Fast-path codec --------------------------------------------------------------
 
 /* The compact codec: the hot subset (bool, int, float, str, bytes, and one
@@ -2295,18 +2205,15 @@ static int stage_impl(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
     return mrc;
   }
   if (foreign) {
-    /* the pinned foreign order: stage_arrow (__arrow_c_array__), the
-       stream front-end (__arrow_c_stream__), then the 'I' writer —
-       whose decline is the send-time DeclinedError. An exact builtin
-       provably carries neither dunder, so its probes are skipped. A
-       top-level scalar staged at the fast gate above; nested ones still
-       reach the 'I' writer through ixw_value */
+    /* the pinned foreign order: the Arrow front-end (__arrow_c_array__,
+       then __arrow_c_stream__), then the 'I' writer — whose decline is
+       the send-time DeclinedError. An exact builtin provably carries
+       neither dunder, so its probes are skipped. A top-level scalar
+       staged at the fast gate above; nested ones still reach the 'I'
+       writer through ixw_value */
     if (!arrow_probe_skip(obj)) {
-      int arc = stage_arrow(obj, hdr, payload, inline_max, h, peer_lang);
-      if (arc >= 0) return arc;
-      int src = pymizu_ix_stage_arrow_stream(obj, hdr, payload,
-                                             inline_max, h, peer_lang,
-                                             peer_caps);
+      int src = pymizu_ix_stage_arrow(obj, hdr, payload, inline_max, h,
+                                      peer_lang, peer_caps);
       if (src >= 0) return src;
     }
     /* the layout tiers past the zc floor: one layout write into a spill
