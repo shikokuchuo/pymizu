@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed `Channel.send()` to an R peer rejecting `pyarrow.RecordBatch`,
   `pyarrow.StructArray`, and nanoarrow struct arrays with `TypeError`.
+- Fixed `Channel.send()` to an R peer rejecting fixed-width Arrow arrays
+  longer than 2^31 - 1 elements.
 - Fixed a rare `PoolExecutor` future failing with "task handle already
   collected" when a task finished as it was submitted.
 - Fixed a corrupt stream sent to a Python peer when a list, tuple, or

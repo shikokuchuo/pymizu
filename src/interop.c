@@ -5499,8 +5499,8 @@ static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep1,
       batches[b] = &wraps[b];
     }
     mizu_arrow *ar = NULL;
-    mizu_status st = mizu_arrow_open(&ar, &root, batches, x->hold.nb,
-                                     peer_caps);
+    mizu_status st = mizu_arrow_open_vector(&ar, &root, batches, x->hold.nb,
+                                            peer_caps);
     if (st != MIZU_OK) {
       free(blk);
       return NULL;

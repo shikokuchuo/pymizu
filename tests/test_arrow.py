@@ -442,6 +442,20 @@ def test_record_batch_foreign():
         h.destroy()
 
 
+def test_record_batch_foreign_region():
+    h, p = foreign_pair(caps=63)
+    try:
+        values = np.arange(100_000, dtype=np.int32)
+        batch = pa.record_batch([pa.array(values)], names=["x"])
+        assert h.send(batch) is None
+        out = p.recv(timeout=5).to_dict()["x"]
+        assert hasattr(out.base, "refcount")
+        np.testing.assert_array_equal(out, values)
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_struct_array_foreign():
     # a struct pair is a one-batch frame, exported once
     class Counted:
