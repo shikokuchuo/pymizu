@@ -2,7 +2,7 @@
 
 PoolExecutor maps submit/shutdown onto a pymizu Pool and resolves real
 concurrent.futures.Future objects, so wait / as_completed / wrap_future
-and the stdlib base Executor.map (over submit) work unchanged. There is
+and a ProcessPoolExecutor-style chunked map work unchanged. There is
 no drain thread: the pool's notify endpoint wakes a scan (the core's
 edge-triggered signal rides the death-listener machinery), and
 concurrent.futures.Future.set_result — thread-safe by design, it is how
@@ -12,10 +12,16 @@ callback. Cancellation is advisory, mirroring Task.cancel.
 
 from __future__ import annotations
 
+import operator as _operator
 import threading as _threading
+import time as _time
+import weakref as _weakref
+from collections import deque as _deque
 from collections.abc import Callable as _Callable
 from concurrent.futures import Executor as _Executor
 from concurrent.futures import Future as _Future
+from functools import partial as _partial
+from itertools import islice as _islice
 from typing import TYPE_CHECKING
 from typing import Any as _Any
 
@@ -26,6 +32,35 @@ if TYPE_CHECKING:
     import pymizu
 
 _MISSING = object()
+_SLOT_RETRY_SECONDS = 0.01
+
+
+def _process_chunk(fn, chunk):
+    return [fn(*args) for args in chunk]
+
+
+def _batched(iterable, n):
+    it = iter(iterable)
+    while batch := tuple(_islice(it, n)):
+        yield batch
+
+
+def _result_or_cancel(fut, timeout=None):
+    try:
+        try:
+            return fut.result(timeout)
+        finally:
+            fut.cancel()
+    finally:
+        del fut
+
+
+def _chain_from_iterable_of_lists(iterable):
+    # unlike chain.from_iterable, do not retain each yielded result
+    for element in iterable:
+        element.reverse()
+        while element:
+            yield element.pop()
 
 
 class _TaskFuture(_Future):
@@ -51,8 +86,8 @@ class PoolExecutor(_Executor):
     """A `concurrent.futures.Executor` over a pymizu pool.
 
     `submit()` returns a real `concurrent.futures.Future`: `wait` /
-    `as_completed` / `result(timeout)` / `asyncio.wrap_future` and the
-    stdlib base `Executor.map` all work unchanged, so code written
+    `as_completed` / `result(timeout)` / `asyncio.wrap_future` and `map`
+    with `ProcessPoolExecutor` chunking all work unchanged, so code written
     against `ProcessPoolExecutor` drops in. `create()` spawns an owned
     pool instead.
 
@@ -80,9 +115,12 @@ class PoolExecutor(_Executor):
     submissions raise instead of queueing onto a broken executor. Futures
     resolve, and `add_done_callback` callbacks run, on pymizu's listener
     thread, the same discipline as the stdlib executors' management thread:
-    keep callbacks short, and never block one on the pool itself. `map` is the
-    stdlib base implementation over `submit`; for bulk maps,
-    [`Pool.map`](`pymizu.Pool.map`) is the faster path.
+    keep callbacks short, and never block one on the pool itself. If the
+    result table is full, `submit()` waits for the executor to collect a
+    result; a submission from a listener-thread done callback instead raises
+    `SlotsExhaustedError`, since waiting there would deadlock the drain.
+    `map()` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`;
+    for bulk maps, [`Pool.map`](`pymizu.Pool.map`) remains the faster path.
 
     Examples
     --------
@@ -116,6 +154,7 @@ class PoolExecutor(_Executor):
         # submit-time re-check): the skipped one is covered by the
         # running one's re-check pass
         self._draining = _threading.Lock()
+        self._drain_state = _threading.local()
         self._outstanding: dict[_TaskFuture, _pymizu._Task] = {}
         self._armed = False
         self._shutdown = False
@@ -154,6 +193,101 @@ class PoolExecutor(_Executor):
             pymizu.Pool.create(n_workers, **pool_kwargs), stop_pool=True
         )
 
+    def map(
+        self,
+        fn: _Callable[..., _Any],
+        *iterables: _Any,
+        timeout: float | None = None,
+        chunksize: int = 1,
+        buffersize: int | None = None,
+    ) -> _Any:
+        """Return an iterator applying `fn` to every zipped input element.
+
+        Parameters
+        ----------
+        fn
+            The callable to run.
+        iterables
+            One or more iterables, zipped lazily as for the built-in `map`.
+        timeout
+            One overall deadline for generating the result iterator, in
+            seconds; None means no limit.
+        chunksize
+            Elements per submitted task. Values greater than one use chunk
+            tasks; the default submits one task per element.
+        buffersize
+            Maximum submitted tasks whose results have not been yielded. None
+            collects all inputs eagerly; a positive value bounds pending tasks
+            and consumes the input lazily.
+
+        Returns
+        -------
+            An iterator of results in input order. An error in a chunk
+            discards that chunk's earlier results, matching
+            `ProcessPoolExecutor`.
+        """
+        if chunksize < 1:
+            raise ValueError("chunksize must be >= 1.")
+        chunksize = _operator.index(chunksize)
+        if buffersize is not None and not isinstance(buffersize, int):
+            raise TypeError("buffersize must be an integer or None")
+        if buffersize is not None and buffersize < 1:
+            raise ValueError("buffersize must be None or > 0")
+        if timeout is not None:
+            end_time = timeout + _time.monotonic()
+
+        zipped_iterables = zip(*iterables, strict=False)
+        chunked = chunksize > 1 and type(fn) is not _pkg.call and callable(fn)
+        if chunked:
+            zipped_iterables = zip(
+                _batched(zipped_iterables, chunksize), strict=False
+            )
+            submit_fn = _partial(_process_chunk, fn)
+        else:
+            submit_fn = fn
+        fs: _Any
+        if buffersize:
+            fs = _deque(
+                self.submit(submit_fn, *args)
+                for args in _islice(zipped_iterables, buffersize)
+            )
+        else:
+            fs = [self.submit(submit_fn, *args) for args in zipped_iterables]
+
+        # do not keep the executor alive through the result closure
+        executor_weakref = _weakref.ref(self)
+
+        def result_iterator():
+            try:
+                fs.reverse()
+                while fs:
+                    if (
+                        buffersize
+                        and (executor := executor_weakref())
+                        and (args := next(zipped_iterables, None))
+                    ):
+                        # buffersize selects the deque above
+                        # pyrefly: ignore [missing-attribute]
+                        fs.appendleft(executor.submit(submit_fn, *args))
+                    future = fs.pop()
+                    try:
+                        if timeout is None:
+                            yield _result_or_cancel(future)
+                        else:
+                            yield _result_or_cancel(
+                                future, end_time - _time.monotonic()
+                            )
+                    finally:
+                        del future
+            finally:
+                for future in fs:
+                    future.cancel()
+
+        results = result_iterator()
+        if chunked:
+            return _chain_from_iterable_of_lists(results)
+        return results
+
     def submit(
         self, fn: _Callable[..., _Any], /, *args: _Any, **kwargs: _Any
     ) -> _Future:
@@ -181,32 +315,44 @@ class PoolExecutor(_Executor):
             outstanding future failed with it).
         """
         with self._cond:
-            if self._shutdown:
-                raise RuntimeError(
-                    "cannot schedule new futures after shutdown"
-                )
-            if self._broken is not None:
-                raise self._broken
-            if not self._armed:
-                # a NULL loop: the drain runs directly on the listener
-                # thread (set_result is thread-safe by design)
-                self._pool_h._notify_arm(None, self._drain)
-                self._armed = True
+            while True:
+                if self._shutdown:
+                    raise RuntimeError(
+                        "cannot schedule new futures after shutdown"
+                    )
+                if self._broken is not None:
+                    raise self._broken
+                if not self._armed:
+                    # a NULL loop: the drain runs directly on the listener
+                    # thread (set_result is thread-safe by design)
+                    self._pool_h._notify_arm(None, self._drain)
+                    self._armed = True
+                try:
+                    if type(fn) is _pkg.call or not callable(fn):
+                        # keep the facade's call-spec and callable gates
+                        task = self._pool.submit(fn, *args, **kwargs)
+                        terminal = None
+                    else:
+                        if not self._native:
+                            ident = self._pool_h._worker_ident()
+                            if ident is not None:
+                                _pkg._check_native(ident, "Pool.submit")
+                                self._native = True
+                        # the fused submit + announce + terminal re-check
+                        task, terminal = self._exec_submit(fn, args, kwargs)
+                except _pkg.SlotsExhaustedError:
+                    # only the result table is retried: MIZU_FULL is the
+                    # injection ring, whose wait belongs to the core. The
+                    # listener must never wait for its own next drain.
+                    if getattr(self._drain_state, "active", False):
+                        raise
+                    self._cond.wait(_SLOT_RETRY_SECONDS)
+                    continue
+                break
             if type(fn) is _pkg.call or not callable(fn):
-                # the facade path keeps the call-spec and callable gates
-                task = self._pool.submit(fn, *args, **kwargs)
                 # the per-slot NOTIFY announce (announce before the
                 # re-check is the parker transplant), then the scan
                 self._pool_h._task_notify([task], True)
-                terminal = None
-            else:
-                if not self._native:
-                    ident = self._pool_h._worker_ident()
-                    if ident is not None:
-                        _pkg._check_native(ident, "Pool.submit")
-                        self._native = True
-                # the fused submit + announce + terminal re-check
-                task, terminal = self._exec_submit(fn, args, kwargs)
             if terminal is None:
                 # the facade path's re-check, under the same hold: the
                 # terminal verdict is in hand ahead of the insert
@@ -224,8 +370,12 @@ class PoolExecutor(_Executor):
             try:
                 value = task.collect(0)
             except Exception as e:
+                with self._cond:
+                    self._cond.notify_all()
                 self._resolve(future, exception=e)
             else:
+                with self._cond:
+                    self._cond.notify_all()
                 self._resolve(future, result=value)
         return future
 
@@ -253,6 +403,7 @@ class PoolExecutor(_Executor):
         """
         with self._cond:
             self._shutdown = True
+            self._cond.notify_all()
             futures = list(self._outstanding) if cancel_futures else []
         # outside the condition: cancel() detaches through it
         for future in futures:
@@ -304,6 +455,7 @@ class PoolExecutor(_Executor):
         transplant)."""
         if not self._draining.acquire(blocking=False):
             return  # the running drain's re-check covers this call
+        self._drain_state.active = True
         try:
             while True:
                 try:
@@ -340,6 +492,7 @@ class PoolExecutor(_Executor):
                 else:
                     return
         finally:
+            self._drain_state.active = False
             self._draining.release()
 
     def _resolve(

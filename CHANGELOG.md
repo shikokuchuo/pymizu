@@ -48,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numpy-scalar results, which no longer pass through pickle.
 - Faster `PoolExecutor` submission and resolution of large bursts of
   outstanding futures.
+- `PoolExecutor.map()` now honors `chunksize` and `buffersize` like
+  `ProcessPoolExecutor`, including lazy input consumption and bounded pending
+  tasks when a buffer size is set.
 - `Task.collect_async()` and `await task` are much faster for tasks
   that finish between awaits.
 - Faster sends to R peers of top-level scalars, nested list, tuple, or
@@ -71,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer than 2^31 - 1 elements.
 - Fixed a rare `PoolExecutor` future failing with "task handle already
   collected" when a task finished as it was submitted.
+- Fixed `PoolExecutor.submit()` and large executor maps raising
+  `SlotsExhaustedError` when the result table filled; user-thread submissions
+  now wait for the executor to free a slot.
 - Fixed a corrupt stream sent to a Python peer when a list, tuple, or
   dict contained a `str` or `bytes` item larger than 4 GiB; the payload
   now falls back to pickle and arrives intact.
