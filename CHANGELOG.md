@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `Pool.stop()` often waiting an extra 50 ms after its workers had
+  exited cleanly.
 - Fixed sending a `Frame` taken from a list or dict received from an R
   peer: the peer received the whole container, not the one frame.
 - Fixed `Channel.send()` to an R peer rejecting `pyarrow.RecordBatch`,
