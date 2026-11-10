@@ -5382,7 +5382,7 @@ static void ixw_value(ixw *w, PyObject *obj) {
   ixw_decline_type(w, obj, "a value of this type has no portable home");
 }
 
-// The Arrow stream front-end ----------------------------------------------------------
+// The Arrow front-end -----------------------------------------------------------------
 
 /* The pulled-batch state (ixs_hold / ixs_pcol / ixs) and the per-batch
    Arrow helpers (mizu_arrow_valid, mizu_arrow_str_at) are the ext tier's
@@ -5764,13 +5764,13 @@ static int ixs_run(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   return ixs_run_single(x, hdr, payload, inline_max, h);
 }
 
-/* An __arrow_c_array__ producer whose format the conversion table
-   declines (a StringArray, DictionaryArray, DateArray, ...): the single
-   path over the capsule pair as one borrowed batch. fn is the front-end's
-   probed bound method, stolen. */
+/* An __arrow_c_array__ producer: a struct pair declines to the stream
+   front-end; every other schema takes the single path as one borrowed
+   batch. fn is the front-end's probed bound method, stolen. */
 static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
                                 uint8_t *payload, uint32_t inline_max,
-                                mizu_handle *h, uint32_t peer_caps) {
+                                mizu_handle *h, uint32_t peer_lang,
+                                uint32_t peer_caps) {
   PyObject *pair = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (pair == NULL) return 1;   /* the object claimed the interface */
@@ -5792,21 +5792,57 @@ static int ixs_stage_arrow_pair(PyObject *fn, mizu_slot_hdr *hdr,
   memset(&x, 0, sizeof(x));
   x.cap = pair;
   x.caps = peer_caps;
+  x.lang = peer_lang;
+  x.borrowed_hold = 1;
+  ArrowArray one;
+  int rc = 1;
+  /* a consumed or moved struct has release == NULL (the spec's move
+     semantics); the remaining batch vetting is the core writer's */
+  if (schema->release == NULL || array->release == NULL ||
+      schema->format == NULL || array->length < 0 || array->offset < 0 ||
+      array->null_count < -1 || array->null_count > array->length) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: invalid Arrow C Data Interface export");
+    goto done;
+  }
+  if (strcmp(schema->format, "+s") == 0) {
+    rc = -1;
+    goto done;
+  }
+  if (array->n_buffers < 2 || array->buffers == NULL ||
+      (array->buffers[1] == NULL && array->length != 0) ||
+      (array->buffers[0] == NULL && array->null_count > 0)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: invalid Arrow C Data Interface export");
+    goto done;
+  }
+  if (schema->n_children != 0 || array->n_children != 0) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: nested Arrow types cannot cross");
+    goto done;
+  }
+  const cvt_row *row = mizu_cvt_for_arrow(schema->format);
+  if (row != NULL && row->wire == MIZU_TYPE_RAW &&
+      array->buffers[0] != NULL && array->null_count != 0) {
+    PyErr_SetString(PyExc_TypeError,
+                    "pymizu: Arrow nulls cannot cross in a uint8 array "
+                    "(R raw vectors have no NA)");
+    goto done;
+  }
   memcpy(&x.schema, schema, sizeof(x.schema));
   x.schema.release = NULL;
-  ArrowArray one;
   memcpy(&one, array, sizeof(one));
   one.release = NULL;
-  x.borrowed_hold = 1;
   x.hold.arrs = &one;
   x.hold.nb = 1;
   x.hold.cap = 1;
   x.hold.rows = one.length;
-  int rc = ixs_run_single(&x, hdr, payload, inline_max, h);
-  x.hold.arrs = NULL;
-  /* ixs_free drops the pair, whose capsules release and free the Arrow
-     structs — reading schema->/array->release here would touch freed
-     memory, and the producer's capsule destructors own the release */
+  rc = ixs_run_single(&x, hdr, payload, inline_max, h);
+done:
+  /* staging is synchronous: release before dropping the pair, whose owner
+     may keep it alive (the capsule destructor alone would not consume it) */
+  if (schema->release != NULL) schema->release(schema);
+  if (array->release != NULL) array->release(array);
   ixs_free(&x);
   return rc;
 }
@@ -5817,15 +5853,17 @@ int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint32_t peer_caps) {
   if (Py_TYPE(obj) == &MizuFrameType) return -1;   /* the writer's case */
   PyObject *fn = NULL;
-  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_stream, &fn);
+  int prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
   if (prc < 0) return 1;
-  if (fn == NULL) {
-    /* not a stream producer: an array-only one takes the pair path */
-    prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_array, &fn);
-    if (prc < 0) return 1;
-    if (fn == NULL) return -1;
-    return ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h, peer_caps);
+  if (fn != NULL) {
+    int rc = ixs_stage_arrow_pair(fn, hdr, payload, inline_max, h,
+                                  peer_lang, peer_caps);
+    if (rc >= 0) return rc;
   }
+  fn = NULL;
+  prc = mizu_py_get_optional_attr(obj, mizu_py_str_arrow_c_stream, &fn);
+  if (prc < 0) return 1;
+  if (fn == NULL) return -1;
   PyObject *cap = PyObject_CallNoArgs(fn);
   Py_DECREF(fn);
   if (cap == NULL) {

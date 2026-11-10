@@ -429,6 +429,45 @@ def test_arrow_null_count_unknown(rcheck):
     assert list(b) == [10, 20, 30, 40, 50]
 
 
+def test_record_batch_foreign():
+    h, p = foreign_pair()
+    try:
+        batch = pa.record_batch(
+            [pa.array([1, 2, 3], type=pa.int32())], names=["x"]
+        )
+        assert h.send(batch) is None
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_nanoarrow_struct_array_foreign():
+    na = pytest.importorskip("nanoarrow")
+    h, p = foreign_pair()
+    try:
+        batch = pa.record_batch(
+            [pa.array([1, 2, 3], type=pa.int32())], names=["x"]
+        )
+        assert h.send(na.array(batch)) is None
+        assert p.recv(timeout=5).to_dict()["x"].tolist() == [1, 2, 3]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
+def test_uint64_arrow_array_convert_with_a_warning():
+    h, p = foreign_pair()
+    try:
+        a = pa.array([2**63], type=pa.uint64())
+        with pytest.warns(RuntimeWarning, match="beyond"):
+            assert h.send(a) is None
+        assert list(p.recv(timeout=5)) == [-(2**63)]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_arrow_rejections_foreign():
     # the send-time declines on a foreign channel
     h, p = foreign_pair()
@@ -573,8 +612,7 @@ def test_arrow_stream_schema_failures():
 
 def test_arrow_array_pair_contract_violations():
     # __arrow_c_array__ must return a (schema, array) capsule pair: the
-    # send fails informatively otherwise, on the first call or on the
-    # stream front-end's re-call (a string array's pair declines there)
+    # send fails informatively otherwise, with one call per send
 
     class BadPair:
         def __init__(self, result):
@@ -603,10 +641,10 @@ def test_arrow_array_pair_contract_violations():
             h.send(BadPair(42))
         with pytest.raises(ValueError, match="PyCapsule"):
             h.send(BadPair((None, None)))
-        with pytest.raises(TypeError, match="capsule pair"):
-            h.send(FlakyPair(42))
-        with pytest.raises(ValueError, match="PyCapsule"):
-            h.send(FlakyPair((None, None)))
+        single = FlakyPair(42)
+        assert h.send(single) is None
+        assert single._calls == 1
+        assert p.recv(5) == ["a"]
         with pytest.raises(RuntimeError, match="boom"):
             h.send(BoomArray())
         # the channel still flows

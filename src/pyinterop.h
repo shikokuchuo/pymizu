@@ -365,13 +365,14 @@ PyObject *pymizu_ix_write_runner_stream(PyObject *name, int64_t gen_field,
 PyObject *pymizu_ix_runner_run(const uint8_t *src, size_t n,
                                uint64_t *ident_out);
 
-/* The __arrow_c_stream__ front-end (foreign handles only): struct schemas
-   write the frame shape, non-struct the bare-bytes tiers / 0x0b / the
-   temporal and factor shapes; past the zero-copy floor a frame the peer's
-   capability mask admits stages as one MIZL region (or REF on an
-   unmodified round trip). peer_lang gates the conversion warnings' two
-   R-semantics sentinel counts. 0 staged, 1 error (DeclinedError for a
-   value without a portable home), -1 not a stream producer. */
+/* The Arrow front-end (foreign handles only): __arrow_c_array__ first,
+   with struct pairs and stream-only producers continuing through
+   __arrow_c_stream__. Struct schemas write the frame shape, non-struct the
+   bare-bytes tiers / 0x0b / the temporal and factor shapes; past the
+   zero-copy floor a frame the peer's capability mask admits stages as one
+   MIZL region (or REF on an unmodified round trip). peer_lang gates the
+   conversion warnings' two R-semantics sentinel counts. 0 staged, 1 error
+   (DeclinedError for a value without a portable home), -1 not a producer. */
 int pymizu_ix_stage_arrow_stream(PyObject *obj, mizu_slot_hdr *hdr,
                                  uint8_t *payload, uint32_t inline_max,
                                  mizu_handle *h, uint32_t peer_lang,
