@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="5d8734c80641321bfc8d509e5b67130918cdb716"  # libmizu: bare Arrow vector open
+PIN="e3099f2f5a6fdfbef4ee0c20f7e15de9cfd1af70"  # libmizu: Arrow conversion kernels (#5)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
