@@ -41,6 +41,14 @@ jobs:
           pip install build
           python -m build --sdist
           pip wheel --no-deps dist/*.tar.gz
+      # The sdist ships the tests too: run them without checkout-only files.
+      - name: Test the unpacked sdist
+        run: |
+          pip install pymizu-*.whl pytest numpy pyarrow polars pandas duckdb cloudpickle
+          mkdir sdist-test
+          tar -xzf dist/*.tar.gz -C sdist-test --strip-components=1
+          cd sdist-test
+          python -m pytest tests/
 
   build:
     strategy:

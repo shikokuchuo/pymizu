@@ -3,6 +3,7 @@
 import pathlib
 import re
 
+import pytest
 from packaging.version import Version
 
 import pymizu
@@ -79,6 +80,9 @@ def test_public_api():
     }
 
 
+@pytest.mark.skipif(
+    not DOCS.is_file(), reason="docs configuration is checkout-only"
+)
 def test_public_api_matches_docs_reference():
     # every export has an entry on the reference page; the docs build
     # catches the reverse (an entry naming something that no longer
