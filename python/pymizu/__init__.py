@@ -1856,6 +1856,19 @@ def using_pool(pool: Pool | None) -> _Generator[Pool | None, None, None]:
         set_default_pool(prev)
 
 
+# Lazy re-exports: pymizu._map try-imports numpy, which stays deferred
+# until the first map call rather than pymizu's own import;
+# pymizu._dimarray imports numpy outright — the same deferral, so a
+# numpy-less `import pymizu` stays clean.
+_LAZY = {
+    "Map": "pymizu._map",
+    "PreparedMap": "pymizu._map",
+    "PoolExecutor": "pymizu._executor",
+    "r_launcher": "pymizu._r",
+    "DimArray": "pymizu._dimarray",
+}
+
+
 def __getattr__(name: str) -> _Any:
     if name == "__version__":
         from importlib import metadata
@@ -1866,30 +1879,11 @@ def __getattr__(name: str) -> _Any:
             version = "0.0.0"
         globals()[name] = version
         return version
-    # Lazy re-export: pymizu._map try-imports numpy, which stays deferred
-    # until the first map call rather than pymizu's own import.
-    if name == "Map":
-        from pymizu._map import Map
+    module = _LAZY.get(name)
+    if module is not None:
+        from importlib import import_module
 
-        return Map
-    if name == "PreparedMap":
-        from pymizu._map import PreparedMap
-
-        return PreparedMap
-    if name == "PoolExecutor":
-        from pymizu._executor import PoolExecutor
-
-        return PoolExecutor
-    if name == "r_launcher":
-        from pymizu._r import r_launcher
-
-        return r_launcher
-    # pymizu._dimarray imports numpy outright — the same deferral, so a
-    # numpy-less `import pymizu` stays clean.
-    if name == "DimArray":
-        from pymizu._dimarray import DimArray
-
-        return DimArray
+        return getattr(import_module(module), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

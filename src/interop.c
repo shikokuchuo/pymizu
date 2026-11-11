@@ -3188,9 +3188,9 @@ static int ref_path_step(const char **p, int64_t *idx) {
 }
 
 /* The path half of a remote leaf's resolve: each intermediate a bare VEC
-   leaf, the terminal entry handed out with its tree — pymizu_tree_walk_
-   path's discipline, describing rather than wrapping. 0 ok, -1 corrupt. */
-static int tree_ref_path(const uint8_t *base, size_t size, const char *path,
+   leaf, the terminal entry handed out with its tree — describing rather
+   than wrapping (pymizu_tree_walk_path_depth wraps). 0 ok, -1 corrupt. */
+int pymizu_tree_ref_path(const uint8_t *base, size_t size, const char *path,
                          const uint8_t **out_base, size_t *out_size,
                          int64_t *out_idx, mizu_mizl_entry *ent) {
   const char *p = path;
@@ -3338,7 +3338,7 @@ static int tree_column_remote(const uint8_t *base, const mizu_mizl_entry *e,
       ref.valid[1] = 0;
     }
   } else {
-    if (tree_ref_path(rbase, rsize, brack, &fbase, &fsize, &fidx,
+    if (pymizu_tree_ref_path(rbase, rsize, brack, &fbase, &fsize, &fidx,
                       &ref) != 0)
       goto corrupt_release;
     const int32_t rtag = ref.sexptype & ~(int32_t) MIZU_MIZL_S4;
@@ -4019,37 +4019,17 @@ PyObject *pymizu_tree_wrap(PyObject *owner, PyObject *loan,
 PyObject *pymizu_tree_walk_path_depth(PyObject *owner, PyObject *loan,
                                       const uint8_t *base, size_t size,
                                       const char *path, unsigned depth) {
-  const char *p = path;
-  if (*p++ != '[') goto corrupt;
-  const uint8_t *cur = base;
-  size_t cursz = size;
-  for (;;) {
-    int64_t idx;
-    if (ref_path_step(&p, &idx) != 0) goto corrupt;
-    if (*p == ']') {
-      if (p[1] != '\0') goto corrupt;
-      return tree_element(owner, loan, cur, cursz, idx, depth);
-    }
-    if (*p != ',') goto corrupt;
-    p++;
-    mizu_mizl_entry e;
-    if (mizu_mizl_elem(cur, cursz, idx, &e) != 0) goto corrupt;
-    if ((e.sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
-        e.attrs_size != 0)
-      goto corrupt;
-    cur += e.data_offset;
-    cursz = (size_t) e.data_size;
+  const uint8_t *cur;
+  size_t cursz;
+  int64_t idx;
+  mizu_mizl_entry e;
+  if (pymizu_tree_ref_path(base, size, path, &cur, &cursz, &idx, &e) != 0) {
+    PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
+    return NULL;
   }
-corrupt:
-  PyErr_SetString(MizuError, "pymizu: corrupt payload slot");
-  return NULL;
+  return tree_element(owner, loan, cur, cursz, idx, depth);
 }
 
-PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
-                                const uint8_t *base, size_t size,
-                                const char *path) {
-  return pymizu_tree_walk_path_depth(owner, loan, base, size, path, 0);
-}
 
 // The Frame's wire form (writer) ----------------------------------------------------
 
@@ -5571,12 +5551,6 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     ixs_decline("a zero-column Arrow frame has no portable home");
     return 1;
   }
-  x->cols = x->ncols <= IXS_COLS_STASH ? x->cols_stash :
-    calloc((size_t) x->ncols, sizeof(mizu_arrow_col));
-  if (x->cols == NULL) {
-    PyErr_NoMemory();
-    return 1;
-  }
   if (!x->borrowed_hold && ixs_pull(x) < 0) return 1;
   /* the classification, batch vetting and dictionary validation are the
      core's (arrow.c), the TLS decline re-raised as this front-end's */
@@ -5586,12 +5560,9 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
     return 1;
   }
-  x->ar = ar;
   int rc = 1;
   char **names = NULL;
   uint8_t *blob = NULL;
-  for (int i = 0; i < x->ncols; i++)
-    mizu_arrow_col_info(ar, i, &x->cols[i]);
   if (x->r_attrs != NULL ||
       (x->row_names != NULL && x->row_names != Py_None)) {
     /* an exact Frame's custom root metadata rides the region too. The
@@ -5703,7 +5674,6 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
     return 1;
   }
-  x->ar = ar;
   for (int i = 0; i < x->ncols; i++)
     mizu_arrow_col_info(ar, i, &x->cols[i]);
   int rc = 1;
@@ -5917,20 +5887,11 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   mizu_arrow *ar = NULL;
   void *keep = NULL;
   int rc = -1;
-  if (!x->borrowed_hold) {
-    memset(&x->schema, 0, sizeof(x->schema));
-    if (x->st->get_schema(x->st, &x->schema) != 0) goto out;
-    x->schema_owned = 1;
-    if (x->schema.format == NULL || x->schema.release == NULL ||
-        strcmp(x->schema.format, "+s") != 0)
-      goto out;
-  }
   x->ncols = (int) x->schema.n_children;
   if (x->ncols < 1 || x->schema.children == NULL) goto out;
   x->cols = x->ncols <= IXS_COLS_STASH ? x->cols_stash :
     calloc((size_t) x->ncols, sizeof(mizu_arrow_col));
   if (x->cols == NULL) goto out;
-  if (!x->borrowed_hold && ixs_pull(x) < 0) goto out;
   /* the real peer caps word: the core stage's conjunction needs it (the
      same-language paths used to carry 0 — the drift dies here) */
   ar = ixs_arrow_open(x, peer_caps, &keep);
@@ -6635,6 +6596,22 @@ static void ixw_stream(ixw *w, PyObject *obj) {
 
 static void ixw_raise(ixw *w);
 
+/* One bytes-returning writer's arguments, replayed by its size and write
+   passes: form 0 the value stream (obj), 1 the task stream, 2 the map
+   descriptor (obj the x). */
+typedef struct {
+  int form;
+  PyObject *obj;
+  const char *code;
+  Py_ssize_t code_n;
+  int kind;
+  PyObject *args, *kwargs;
+  uint32_t target;
+  uint64_t ident;
+} ixw_job;
+
+static PyObject *ixw_bytes(ixw *w, const ixw_job *j, uint32_t warn_lang);
+
 /* The two-pass task walk off the spec's components: the header fields,
    then the code string, the positional list and the named dict —
    elements through the generic writer, never an intermediate object. */
@@ -6885,35 +6862,10 @@ PyObject *pymizu_ix_write_task_stream(PyObject *code, long kind,
   memcpy(w.root, "args", 5);
   w.refs = 1;              /* the hook mode: markers and REF leaves emit */
   w.caps = MIZU_PY_CAPS;   /* this build's word, as the corpus hook's */
-  ixw_task(&w, code_s, code_n, (int) kind, args, kwargs, target, ident);
-  if (w.decline) {
-    ixw_raise(&w);
-    return NULL;
-  }
-  size_t n = w.total;
-  uint8_t *buf = malloc(n != 0 ? n : 1);
-  if (buf == NULL) return PyErr_NoMemory();
-  ixw w2;
-  memcpy(&w2, &w, sizeof(w2));
-  w2.dst = buf;
-  w2.total = 0;
-  w2.decline = 0;
-  w2.limit = n;
-  memset(&w2.warn, 0, sizeof(w2.warn));
-  ixw_task(&w2, code_s, code_n, (int) kind, args, kwargs, target, ident);
-  if (w2.decline || w2.total != n) {
-    free(buf);
-    PyErr_SetString(MizuError, "pymizu: interop write mismatch");
-    return NULL;
-  }
-  if (mizu_py_cvt_warn(&w2.warn, target) != 0) {
-    free(buf);
-    return NULL;
-  }
-  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
-                                            (Py_ssize_t) n);
-  free(buf);
-  return out;
+  const ixw_job job = { .form = 1, .code = code_s, .code_n = code_n,
+                        .kind = (int) kind, .args = args, .kwargs = kwargs,
+                        .target = target, .ident = ident };
+  return ixw_bytes(&w, &job, target);
 }
 
 // The task stream decode (Phase 4) ---------------------------------------------
@@ -7241,6 +7193,52 @@ static void ixw_map_desc(ixw *w, const char *code, Py_ssize_t code_n,
   w->depth--;
 }
 
+static void ixw_job_run(ixw *w, const ixw_job *j) {
+  if (j->form == 1)
+    ixw_task(w, j->code, j->code_n, j->kind, j->args, j->kwargs, j->target,
+             j->ident);
+  else if (j->form == 2)
+    ixw_map_desc(w, j->code, j->code_n, j->kind, j->args, j->kwargs, j->obj,
+                 j->target, j->ident);
+  else
+    ixw_stream(w, j->obj);
+}
+
+/* The size pass over the prepared writer, then the write pass into an
+   exact buffer, as bytes; the conversion warnings raise after the write
+   completes. */
+static PyObject *ixw_bytes(ixw *w, const ixw_job *j, uint32_t warn_lang) {
+  ixw_job_run(w, j);
+  if (w->decline) {
+    ixw_raise(w);
+    return NULL;
+  }
+  size_t n = w->total;
+  uint8_t *buf = malloc(n != 0 ? n : 1);
+  if (buf == NULL) return PyErr_NoMemory();
+  ixw w2;
+  memcpy(&w2, w, sizeof(w2));
+  w2.dst = buf;
+  w2.total = 0;
+  w2.decline = 0;
+  w2.limit = n;
+  memset(&w2.warn, 0, sizeof(w2.warn));
+  ixw_job_run(&w2, j);
+  if (w2.decline || w2.total != n) {
+    free(buf);
+    PyErr_SetString(MizuError, "pymizu: interop write mismatch");
+    return NULL;
+  }
+  if (mizu_py_cvt_warn(&w2.warn, warn_lang) != 0) {
+    free(buf);
+    return NULL;
+  }
+  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
+                                            (Py_ssize_t) n);
+  free(buf);
+  return out;
+}
+
 /* The descriptor write as bytes: code/kind/args/kwargs the spec's
    components, x the list-x or None (the raw section's case), target the
    pool word's language byte. */
@@ -7270,32 +7268,11 @@ PyObject *pymizu_ix_write_map_desc(PyObject *code, long kind,
   memset(&w, 0, sizeof(w));
   memcpy(w.root, "args", 5);
   w.caps = MIZU_PY_CAPS;   /* this build's word, as the corpus hook's */
-  ixw_map_desc(&w, code_s, code_n, (int) kind, args, kwargs, x, target,
-               MIZU_PY_IDENT);
-  if (w.decline) {
-    ixw_raise(&w);
-    return NULL;
-  }
-  size_t n = w.total;
-  uint8_t *buf = malloc(n != 0 ? n : 1);
-  if (buf == NULL) return PyErr_NoMemory();
-  ixw w2;
-  memcpy(&w2, &w, sizeof(w2));
-  w2.dst = buf;
-  w2.total = 0;
-  w2.decline = 0;
-  w2.limit = n;
-  memset(&w2.warn, 0, sizeof(w2.warn));
-  ixw_map_desc(&w2, code_s, code_n, (int) kind, args, kwargs, x, target,
-               MIZU_PY_IDENT);
-  if (mizu_py_cvt_warn(&w2.warn, target) != 0) {
-    free(buf);
-    return NULL;
-  }
-  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
-                                            (Py_ssize_t) n);
-  free(buf);
-  return out;
+  const ixw_job job = { .form = 2, .obj = x, .code = code_s,
+                        .code_n = code_n, .kind = (int) kind, .args = args,
+                        .kwargs = kwargs, .target = target,
+                        .ident = MIZU_PY_IDENT };
+  return ixw_bytes(&w, &job, target);
 }
 
 /* The kind-2 (runner) task stream off the _RunnerFrame's fields: the
@@ -7660,35 +7637,8 @@ PyObject *pymizu_ix_write_stream(PyObject *obj) {
   memset(&w, 0, sizeof(w));
   memcpy(w.root, "x", 2);
   w.caps = MIZU_PY_CAPS;   /* the corpus hook: this build's full word */
-  ixw_stream(&w, obj);
-  if (w.decline) {
-    ixw_raise(&w);
-    return NULL;
-  }
-  size_t n = w.total;
-  uint8_t *buf = malloc(n != 0 ? n : 1);
-  if (buf == NULL) return PyErr_NoMemory();
-  ixw w2;
-  memcpy(&w2, &w, sizeof(w2));
-  w2.dst = buf;
-  w2.total = 0;
-  w2.decline = 0;
-  w2.limit = n;
-  memset(&w2.warn, 0, sizeof(w2.warn));
-  ixw_stream(&w2, obj);
-  if (w2.decline || w2.total != n) {
-    free(buf);
-    PyErr_SetString(MizuError, "pymizu: interop write mismatch");
-    return NULL;
-  }
-  if (mizu_py_cvt_warn(&w2.warn, MIZU_LANG_R) != 0) {
-    free(buf);
-    return NULL;
-  }
-  PyObject *out = PyBytes_FromStringAndSize((const char *) buf,
-                                            (Py_ssize_t) n);
-  free(buf);
-  return out;
+  const ixw_job job = { .form = 0, .obj = obj };
+  return ixw_bytes(&w, &job, MIZU_LANG_R);
 }
 
 /* Module init: the shared exceptions, the Frame half (interop_frame.c's

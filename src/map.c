@@ -1218,12 +1218,5 @@ int mizu_py_map_register(PyObject *m, PyObject *mizu_error,
     Py_DECREF(&MizuMapViewType);
     return -1;
   }
-  for (PyMethodDef *def = pymap_methods; def->ml_name != NULL; def++) {
-    PyObject *fn = PyCFunction_New(def, NULL);
-    if (fn == NULL || PyModule_AddObject(m, def->ml_name, fn) < 0) {
-      Py_XDECREF(fn);
-      return -1;
-    }
-  }
-  return 0;
+  return PyModule_AddFunctions(m, pymap_methods);
 }

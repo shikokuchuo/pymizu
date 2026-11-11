@@ -3941,10 +3941,6 @@ PyObject *mizu_py_view_borrow_remote(mizu_shm *hold, uint8_t *values,
   return out;
 }
 
-PyObject *mizu_py_loan_new(PyObject *owner_obj) {
-  return loan_new((MizuShmOwner *) owner_obj);
-}
-
 mizu_shm *mizu_py_loan_shm(PyObject *loan) {
   MizuShmLoan *l = (MizuShmLoan *) loan;
   return l->owner != NULL ? l->owner->shm : NULL;
@@ -4251,7 +4247,7 @@ int mizu_py_view_ref_probe(PyObject *obj, mizu_shm **out_shm,
 
 /* The terminal leaf's descriptor for a remote-leaf (tag 33) validation:
    a bare name off the root header, a path off the walked directory entry
-   (tree_ref_path's discipline). 0 ok, -1 corrupt. */
+   (pymizu_tree_ref_path's walk). 0 ok, -1 corrupt. */
 typedef struct {
   int64_t length;
   int64_t attrs_size;
@@ -4302,42 +4298,18 @@ static int leaf_descriptor(MizuShmOwner *owner, const char *path,
   const size_t size = mizu_shm_size(owner->shm);
   if (path == NULL) return root_descriptor(base, size, d);
   if (size < MIZU_HEADER_SIZE) return -1;
-  const char *p = path;
-  if (*p++ != '[') return -1;
-  const uint8_t *cur = base;
-  size_t cursz = size;
-  for (;;) {
-    if (*p < '1' || *p > '9') return -1;
-    uint64_t v = (uint64_t) (*p++ - '0');
-    while (*p >= '0' && *p <= '9') {
-      const uint64_t dv = (uint64_t) (*p - '0');
-      if (v > (uint64_t) INT64_MAX / 10 ||
-          (v == (uint64_t) INT64_MAX / 10 &&
-           dv > (uint64_t) INT64_MAX % 10))
-        return -1;
-      v = v * 10 + dv;
-      p++;
-    }
-    const int64_t idx = (int64_t) v - 1;
-    mizu_mizl_entry e;
-    if (mizu_mizl_elem(cur, cursz, idx, &e) != 0) return -1;
-    if (*p == ']') {
-      if (p[1] != '\0') return -1;
-      const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
-      d->length = e.length;
-      d->attrs_size = e.attrs_size;
-      d->na_free = e.valid[0] == 0 && e.valid[1] == -1 &&
-        (mizu_type_elt_size(tag) != 0 || tag == PYMIZU_MIZL_TAG_REF);
-      return 0;
-    }
-    if (*p != ',') return -1;
-    p++;
-    if ((e.sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
-        e.attrs_size != 0)
-      return -1;
-    cur += e.data_offset;
-    cursz = (size_t) e.data_size;
-  }
+  const uint8_t *cur;
+  size_t cursz;
+  int64_t idx;
+  mizu_mizl_entry e;
+  if (pymizu_tree_ref_path(base, size, path, &cur, &cursz, &idx, &e) != 0)
+    return -1;
+  const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
+  d->length = e.length;
+  d->attrs_size = e.attrs_size;
+  d->na_free = e.valid[0] == 0 && e.valid[1] == -1 &&
+    (mizu_type_elt_size(tag) != 0 || tag == PYMIZU_MIZL_TAG_REF);
+  return 0;
 }
 
 /* layout.c's remote-leaf (tag 33) write resolves the referenced column's
@@ -9022,36 +8994,44 @@ A read-only debugging snapshot of the whole pool region, one level deeper\n\
 than info(): per-slot registry detail, every occupied result slot, and\n\
 the handle-local machinery under `local`. States can move mid-fill.");
 
-static PyObject *dump_worker(const mizu_pool_dump *d, uint32_t i) {
+/* One worker row. brief is stats()'s projection: the counters plus the
+   derived deque depth, without the dump's park and deque internals. */
+static PyObject *dump_worker(const mizu_pool_dump *d, uint32_t i,
+                             int brief) {
   const mizu_worker_stat *w = &d->workers[i];
   PyObject *r = PyDict_New();
   if (r == NULL) return NULL;
   int s = w->status, ps = w->park_state;
+  const int64_t dep = w->deque_bottom - w->deque_top;
   if (dict_set(r, "slot", i) < 0 ||
       dict_set_str(r, "status",
                    s >= 0 && s < 5 ? wk_states[s] : "unknown") < 0 ||
       dict_set_sll(r, "pid", (long long) w->pid) < 0 ||
-      dict_set_str(r, "park_state",
-                   ps >= 0 && ps < 4 ?
-                   (const char *[]) {"running", "idle", "parked",
-                                     "waking"}[ps] : "unknown") < 0 ||
-      dict_set(r, "parked", (unsigned long long)
-               ((d->info.parked_mask >> i) & 1)) < 0 ||
-      dict_set_sll(r, "top", (long long) w->deque_top) < 0 ||
-      dict_set_sll(r, "bottom", (long long) w->deque_bottom) < 0 ||
-      dict_set_sll(r, "in_flight", (long long) w->in_flight_rs) < 0 ||
+      (!brief &&
+       (dict_set_str(r, "park_state",
+                     ps >= 0 && ps < 4 ?
+                     (const char *[]) {"running", "idle", "parked",
+                                       "waking"}[ps] : "unknown") < 0 ||
+        dict_set(r, "parked", (unsigned long long)
+                 ((d->info.parked_mask >> i) & 1)) < 0 ||
+        dict_set_sll(r, "top", (long long) w->deque_top) < 0 ||
+        dict_set_sll(r, "bottom", (long long) w->deque_bottom) < 0 ||
+        dict_set_sll(r, "in_flight", (long long) w->in_flight_rs) < 0)) ||
       dict_set(r, "tasks", (unsigned long long) w->tasks) < 0 ||
       dict_set(r, "steals", (unsigned long long) w->steals) < 0 ||
       dict_set(r, "injections", (unsigned long long) w->injections) < 0 ||
       dict_set(r, "parks", (unsigned long long) w->parks) < 0 ||
-      dict_set(r, "helps", (unsigned long long) w->helps) < 0) {
+      dict_set(r, "helps", (unsigned long long) w->helps) < 0 ||
+      (brief &&
+       dict_set(r, "deque", (unsigned long long) (dep > 0 ? dep : 0)) < 0)) {
     Py_DECREF(r);
     return NULL;
   }
   return r;
 }
 
-static PyObject *dump_submitter(const mizu_pool_dump *d, uint32_t j) {
+static PyObject *dump_submitter(const mizu_pool_dump *d, uint32_t j,
+                                int brief) {
   const mizu_sub_stat *s = &d->submitters[j];
   PyObject *r = PyDict_New();
   if (r == NULL) return NULL;
@@ -9060,17 +9040,19 @@ static PyObject *dump_submitter(const mizu_pool_dump *d, uint32_t j) {
       dict_set_str(r, "status",
                    st >= 0 && st < 3 ? sub_states[st] : "unknown") < 0 ||
       dict_set_sll(r, "pid", (long long) s->pid) < 0 ||
-      dict_set(r, "rs_start", s->rs_start) < 0 ||
-      dict_set(r, "rs_count", s->rs_count) < 0 ||
+      (!brief &&
+       (dict_set(r, "rs_start", s->rs_start) < 0 ||
+        dict_set(r, "rs_count", s->rs_count) < 0)) ||
       dict_set(r, "queued",
                (unsigned long long) (s->injected - s->claimed)) < 0 ||
       dict_set(r, "injected", (unsigned long long) s->injected) < 0 ||
       dict_set(r, "claimed", (unsigned long long) s->claimed) < 0 ||
       dict_set(r, "spills", (unsigned long long) s->spills) < 0 ||
       dict_set(r, "spill_reuse", (unsigned long long) s->spill_reuse) < 0 ||
-      dict_set(r, "ready", (unsigned long long) (s->ready != 0)) < 0 ||
-      dict_set(r, "full_waiter",
-               (unsigned long long) (s->full_waiter != 0)) < 0) {
+      (!brief &&
+       (dict_set(r, "ready", (unsigned long long) (s->ready != 0)) < 0 ||
+        dict_set(r, "full_waiter",
+                 (unsigned long long) (s->full_waiter != 0)) < 0))) {
     Py_DECREF(r);
     return NULL;
   }
@@ -9092,12 +9074,12 @@ static PyObject *Pool_dump(MizuPool *self, PyObject *Py_UNUSED(args)) {
   if (workers == NULL || submitters == NULL || tasks == NULL || local == NULL)
     goto fail;
   for (uint32_t i = 0; i < d.n_workers; i++) {
-    PyObject *r = dump_worker(&d, i);
+    PyObject *r = dump_worker(&d, i, 0);
     if (r == NULL) goto fail;
     PyList_SET_ITEM(workers, (Py_ssize_t) i, r);
   }
   for (uint32_t j = 0; j < d.n_submitters; j++) {
-    PyObject *r = dump_submitter(&d, j);
+    PyObject *r = dump_submitter(&d, j, 0);
     if (r == NULL) goto fail;
     PyList_SET_ITEM(submitters, (Py_ssize_t) j, r);
   }
@@ -9190,51 +9172,13 @@ static PyObject *Pool_stats(MizuPool *self, PyObject *Py_UNUSED(args)) {
   submitters = PyList_New((Py_ssize_t) d.n_submitters);
   if (workers == NULL || submitters == NULL) goto fail;
   for (uint32_t i = 0; i < d.n_workers; i++) {
-    const mizu_worker_stat *w = &d.workers[i];
-    int s = w->status;
-    int64_t dep = w->deque_bottom - w->deque_top;
-    PyObject *r = PyDict_New();
-    int ok = r != NULL &&
-             dict_set(r, "slot", i) == 0 &&
-             dict_set_str(r, "status",
-                          s >= 0 && s < 5 ? wk_states[s] : "unknown") == 0 &&
-             dict_set_sll(r, "pid", (long long) w->pid) == 0 &&
-             dict_set(r, "tasks", (unsigned long long) w->tasks) == 0 &&
-             dict_set(r, "steals", (unsigned long long) w->steals) == 0 &&
-             dict_set(r, "injections",
-                      (unsigned long long) w->injections) == 0 &&
-             dict_set(r, "parks", (unsigned long long) w->parks) == 0 &&
-             dict_set(r, "helps", (unsigned long long) w->helps) == 0 &&
-             dict_set(r, "deque",
-                      (unsigned long long) (dep > 0 ? dep : 0)) == 0;
-    if (!ok) {
-      Py_XDECREF(r);
-      goto fail;
-    }
+    PyObject *r = dump_worker(&d, i, 1);
+    if (r == NULL) goto fail;
     PyList_SET_ITEM(workers, (Py_ssize_t) i, r);
   }
   for (uint32_t j = 0; j < d.n_submitters; j++) {
-    const mizu_sub_stat *s = &d.submitters[j];
-    int st = s->status;
-    PyObject *r = PyDict_New();
-    int ok = r != NULL &&
-             dict_set(r, "slot", j) == 0 &&
-             dict_set_str(r, "status",
-                          st >= 0 && st < 3 ? sub_states[st] :
-                          "unknown") == 0 &&
-             dict_set_sll(r, "pid", (long long) s->pid) == 0 &&
-             dict_set(r, "injected",
-                      (unsigned long long) s->injected) == 0 &&
-             dict_set(r, "claimed", (unsigned long long) s->claimed) == 0 &&
-             dict_set(r, "spills", (unsigned long long) s->spills) == 0 &&
-             dict_set(r, "spill_reuse",
-                      (unsigned long long) s->spill_reuse) == 0 &&
-             dict_set(r, "queued",
-                      (unsigned long long) (s->injected - s->claimed)) == 0;
-    if (!ok) {
-      Py_XDECREF(r);
-      goto fail;
-    }
+    PyObject *r = dump_submitter(&d, j, 1);
+    if (r == NULL) goto fail;
     PyList_SET_ITEM(submitters, (Py_ssize_t) j, r);
   }
   if (PyDict_SetItemString(out, "workers", workers) < 0 ||
@@ -9973,36 +9917,12 @@ static PyAsyncMethods Task_as_async = {
   .am_await = (unaryfunc) Task_am_await,
 };
 
-PyDoc_STRVAR(task_async_set_doc,
-"_async_set(on) -> None\n\n\
-The one-consumer-per-result flag (pymizu._aio's enrollment marker): set on\n\
-enrollment (a second enrollment raises), cleared at settle or detach.\n\
-A set flag refuses blocking collects.");
-
-static PyObject *Task_async_set(MizuTask *self, PyObject *arg) {
-  int on = PyObject_IsTrue(arg);
-  if (on < 0) return NULL;
-  if (on) {
-    if (self->async_pending) {
-      PyErr_SetString(MizuError,
-                      "pymizu: task has a pending async consumer — one "
-                      "consumer per result");
-      return NULL;
-    }
-    self->async_pending = 1;
-  } else {
-    self->async_pending = 0;
-  }
-  Py_RETURN_NONE;
-}
-
 static PyMethodDef Task_methods[] = {
   {"collect", (PyCFunction)(void (*)(void)) Task_collect,
    METH_FASTCALL | METH_KEYWORDS, task_collect_doc},
   {"cancel", (PyCFunction) Task_cancel, METH_NOARGS, task_cancel_doc},
   {"collect_async", (PyCFunction) Task_collect_async, METH_NOARGS,
    task_collect_async_doc},
-  {"_async_set", (PyCFunction) Task_async_set, METH_O, task_async_set_doc},
   {NULL, NULL, 0, NULL}
 };
 

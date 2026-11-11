@@ -521,12 +521,11 @@ PyObject *mizu_py_task_error_build(PyObject *tn, PyObject *ms,
 // The MIZL tree wrap (§3.5) --------------------------------------------------------
 
 /* What interop.c calls in _pymizu.c: the tree-borrow constructors. owner
-   is a _ShmOwner; the loan anchor (mizu_py_loan_new) holds the tree's
+   is a _ShmOwner; the loan anchor holds the tree's
    one zc loan, referenced by every element view the walk builds, so the
    sub fires at the last view's release. valid/nulls are the leaf's
    validity verdict (bitmap + count, NULL + -1 known-NA-free, NULL + 0
    the lazy scan) — a borrowed view never reads the region root's words. */
-PyObject *mizu_py_loan_new(PyObject *owner);
 /* to_dict's remote-column wrap: a fresh view open of the referenced
    region (its own counted add, the loan's sub at the view's death), the
    column's pointers rebased off the hold's mapping. NULL with an
@@ -570,9 +569,11 @@ PyObject *pymizu_tree_wrap_depth(PyObject *owner, PyObject *loan,
 
 /* A path REF's resolution: "[i,j,...]" (1-based hops, the R identifier's
    form) walked to the element's wrap. */
-PyObject *pymizu_tree_walk_path(PyObject *owner, PyObject *loan,
-                                const uint8_t *base, size_t size,
-                                const char *path);
+/* The walk itself, describing rather than wrapping: the terminal entry
+   handed out with the tree that holds it. 0 ok, -1 corrupt. */
+int pymizu_tree_ref_path(const uint8_t *base, size_t size, const char *path,
+                         const uint8_t **out_base, size_t *out_size,
+                         int64_t *out_idx, mizu_mizl_entry *ent);
 PyObject *pymizu_tree_walk_path_depth(PyObject *owner, PyObject *loan,
                                       const uint8_t *base, size_t size,
                                       const char *path, unsigned depth);
