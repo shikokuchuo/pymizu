@@ -1537,7 +1537,7 @@ def test_pool_destroy_settles_a_loop_less_state():
 
         async def main():
             task = p.submit(sleep_ident, 0.3)
-            task._async_set(True)  # a consumer outside the async state
+            p._h._tasks_enroll([task])  # a consumer outside the async state
             with pytest.raises(pymizu.MizuError, match="one consumer"):
                 p.collect_all_async([task])
             p.destroy()

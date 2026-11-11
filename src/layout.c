@@ -1054,13 +1054,5 @@ static PyMethodDef pymizu_layout_methods[] = {
 int mizu_py_layout_register(PyObject *m, PyObject *mizu_error) {
   MizuErr = mizu_error;
   Py_INCREF(MizuErr);
-  for (PyMethodDef *def = pymizu_layout_methods; def->ml_name != NULL;
-       def++) {
-    PyObject *fn = PyCFunction_New(def, NULL);
-    if (fn == NULL || PyModule_AddObject(m, def->ml_name, fn) < 0) {
-      Py_XDECREF(fn);
-      return -1;
-    }
-  }
-  return 0;
+  return PyModule_AddFunctions(m, pymizu_layout_methods);
 }

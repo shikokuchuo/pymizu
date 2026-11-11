@@ -55,7 +55,6 @@ except ImportError:  # pragma: no cover - environment-dependent
     _np = None
 
 # The region header's x_kind values (src/map.c).
-_X_DESC = 0
 _X_RAWBUF = 1
 
 # The runner stream's gen_field packing: (ordinal << 32) | generation.

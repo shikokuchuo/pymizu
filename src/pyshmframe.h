@@ -34,8 +34,6 @@ typedef struct {
                           only the heap form */
   int ncols;
   int single;
-  mizu_arrow *ar;      /* the open core handle while the emit writers run
-                          (the run functions own) */
   uint32_t caps;       /* the peer's capability mask (frame gate) */
   uint32_t lang;       /* the peer's language (the sentinel warnings gate) */
   PyObject *row_names; /* a Frame's row_names (borrowed); NULL writes the
