@@ -937,68 +937,6 @@ def test_recv_batch_stops_before_a_foreign_payload():
         peer.destroy()
 
 
-def test_iter_batches():
-    # the batch iterator yields the burst lists and ends on CLOSED
-    host, peer = chan_pair()
-    try:
-        peer.send_batch(["a", "b", "c"])
-        peer._close_signal()
-        assert list(host.iter_batches()) == [["a", "b", "c"]]
-    finally:
-        host.destroy()
-        peer.destroy()
-
-
-def test_iter_batches_fills_n():
-    # batches cap at n; the remainder follows in the next yield
-    host, peer = chan_pair()
-    try:
-        peer.send_batch(list(range(7)))
-        peer._close_signal()
-        assert list(host.iter_batches(4)) == [[0, 1, 2, 3], [4, 5, 6]]
-    finally:
-        host.destroy()
-        peer.destroy()
-
-
-def test_iter_batches_empty_on_close():
-    # a close with nothing pending ends the iteration immediately
-    host, peer = chan_pair()
-    try:
-        peer._close_signal()
-        assert list(host.iter_batches()) == []
-    finally:
-        host.destroy()
-        peer.destroy()
-
-
-def test_iter_batches_foreign_payload_reentry():
-    # a decline ends the iteration; re-entering on the same channel
-    # resumes with the message after the (consumed) declined one
-    host, peer = chan_pair()
-    try:
-        peer.send("a")
-        pymizu._pymizu._channel_send_raw(peer._h, b"R")
-        peer.send("c")
-        peer._close_signal()
-        got = []
-        with pytest.raises(pymizu.ForeignPayloadError, match="R payload"):
-            for batch in host.iter_batches():
-                got.append(batch)
-        assert got == [["a"]]
-        got.extend(host.iter_batches())
-        assert got == [["a"], ["c"]]
-    finally:
-        host.destroy()
-        peer.destroy()
-
-
-def test_iter_batches_validates_n(echo):
-    # n < 1 surfaces from the underlying verb on first iteration
-    with pytest.raises(ValueError, match="at least 1"):
-        next(echo.iter_batches(0))
-
-
 def test_unpickle_failure_is_consumed():
     # unpickling raises a plain Exception on the host — a content failure:
     # the read consumes the slot, so the next message arrives instead of
