@@ -722,12 +722,7 @@ PyPI through trusted publishing (the `pypi` environment, `id-token:
 write`, no stored token; the publisher must be registered on PyPI for
 this workflow and environment before the first tag). `workflow_dispatch`
 builds the same matrix and skips the upload, for validating before
-tagging; its `testpypi` input uploads to TestPyPI instead (the
-`testpypi` environment, its own registered publisher), so the publish
-path is proven before the first tag. That dry run sets
-`SETUPTOOLS_SCM_OVERRIDES_FOR_PYMIZU` to drop the local version segment
-(no index accepts `+g<sha>`); cibuildwheel's `environment-pass` forwards
-it into the Linux container. The wheel selection lives in pyproject.toml's
+tagging. The wheel selection lives in pyproject.toml's
 `[tool.cibuildwheel]`: cp310 through cp315, GIL builds only, on
 manylinux x86_64/aarch64, macOS arm64/x86_64 and Windows amd64/arm64
 (musllinux, i686, win32, PyPy and free-threaded are out). Every wheel
