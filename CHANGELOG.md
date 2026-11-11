@@ -6,13 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Batch reception on channels: `Channel.recv_batch_async()` receives a
-  burst of messages as one list on one `asyncio.Future`, and
-  `Channel.iter_batches()` / `Channel.iter_batches_async()` iterate over
-  received batches until the channel closes.
-
 ### Changed
 
 - Faster `import pymizu`; optional features now load on first use.
