@@ -94,10 +94,6 @@ build-verbosity = 1
 test-command = "python {project}/tools/smoke_wheel.py"
 
 [tool.cibuildwheel.linux]
-# publish.yml's TestPyPI dry run drops setuptools_scm's local version
-# segment through this variable; the Linux build runs in a container,
-# which sees only the host variables listed here.
-environment-pass = ["SETUPTOOLS_SCM_OVERRIDES_FOR_PYMIZU"]
 # The same flags setup.py pins in extra_compile_args (env CFLAGS/LDFLAGS
 # append after the image's sysconfig defaults, so the pin wins either
 # way); --strip-all keeps the dynamic symbols and drops the rest.
