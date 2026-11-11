@@ -40,7 +40,7 @@
     "href": "user-guide/channels.html",
     "title": "Channels",
     "section": "",
-    "text": "A channel is a two-way message link between your Python process and a helper process it spawns: one lock-free ring per direction, over shared memory. One side writes into shared memory and the other reads it in place — no copies through sockets, pipes, or files.\n\nCreating a channel\nChannel.create() spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with ch bound to its side of the channel:\n\nimport pymizu\n\nch = pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\")\n\nThe peer is a full Python process: it can import anything your interpreter can. Channel.create() waits up to startup_timeout seconds for the peer to connect and raises StartupError on expiry.\nA launcher changes how the peer spawns: one callable that takes the channel’s token and starts the peer process. The built-in pymizu.r_launcher() spawns an R peer (see R interop); write your own to spawn peers any other way.\n\n\nSending and receiving\nch.send() publishes a value, and the peer can see it as soon as the call returns. Sends never block for ring space. ch.recv() returns the next value, waiting up to timeout seconds (indefinitely when omitted):\n\nch.send([1, \"a\", None])\nch.recv(timeout=5)\n\n[1, 'a', None]\n\n\nOutcomes that end a conversation come back as sentinel singletons, not exceptions:\n\n\n\nSentinel\nReturned when\n\n\n\n\npymizu.FULL\na send finds the ring full\n\n\npymizu.TIMEOUT\na receive’s timeout expires\n\n\npymizu.CLOSED\nthe peer has closed and the ring is drained\n\n\npymizu.PEER_GONE\nthe peer process has died and the ring is drained\n\n\n\nTest for them by identity (x is pymizu.TIMEOUT) or with pymizu.is_sentinel(x) — no call needs an error handler. If the peer dies, receives drain what it already sent, then report PEER_GONE.\nWhen per-call overhead starts to matter, send_batch() and recv_batch() move several values in one call:\n\nch.send_batch(range(4))\nch.recv_batch(4, timeout=5)\n\n[0, 1, 2, 3]\n\n\nfor batch in ch.iter_batches() is the stream form: it yields each received batch until the channel closes, as the channel iterator does for single values.\n\nch.send_batch(range(4))\nfor batch in ch.iter_batches():\n    print(batch)\n    break  # stop after the first batch\n\n[0, 1, 2, 3]\n\n\nch.alive() reports whether the peer still runs, without touching the rings. ch.info() returns a read-only snapshot of the channel’s state.\n\n\nasyncio\nFor event-driven receives, ch.recv_async() returns an asyncio.Future that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use asyncio.timeout or asyncio.wait_for. Terminal states stay values: the Future resolves with CLOSED or PEER_GONE. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it. When arrivals come in bursts, ch.recv_batch_async(n) resolves one Future with up to n values as one list — short when fewer have arrived, never waiting to fill — the high-throughput receive form. async for batch in ch.iter_batches_async() is its stream form, ending on CLOSED or PEER_GONE.\n\nch.send_batch(range(4))\nasync for batch in ch.iter_batches_async():\n    print(batch)\n    break  # stop after the first batch\n\n[0, 1, 2, 3]\n\n\n\nch.send(1)\nassert await ch.recv_async() == 1\nch.send(2)\nawait ch.recv_async()\n\n2\n\n\n\nch.send_batch([3, 4])\nawait ch.recv_batch_async()\n\n[3, 4]\n\n\nasync for x in ch is the stream form: it awaits each value through recv_async() and ends on CLOSED or PEER_GONE, as the sync iterator does.\nA message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with ForeignPayloadError; the message is consumed and the channel keeps flowing. Under recv_async(), only that message’s waiter rejects. The rejection also ends an async for loop, and a try/except inside the loop body cannot catch it — wrap the whole loop and re-enter on the same channel to skip the message.\n\n\nClosing\nch.close() is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:\n\nch.close()\n\nTrue\n\n\nA channel is also a context manager: the with block closes it on exit. destroy() skips the wait and releases the handle immediately; the peer sees the channel as closed (PEER_GONE if it died hard). Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb (recv(), recv_batch(), ready_wait(), close()) wakes promptly so teardown can finish.\n\n\nThreading\nEach channel side belongs to one thread at a time — libmizu’s threading contract, since the shared structures carry no locks by design. Call a side’s verbs (send(), recv(), their batch forms, ready_wait()) from one thread only; a second verb from another thread raises ConcurrentUseError instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and recv_async() are likewise exclusive on a side: a blocking receive while async receives are pending raises ConcurrentUseError at the call site, except on the async consumer’s own event-loop thread, whose receives can never race it. For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread. destroy() is the exception: it is safe from any thread, as described in Closing.\n\n\nWhat crosses a channel\npymizu chooses the cheapest transport for each value:\n\nNone crosses as a marker: no data moves.\nBuffer-protocol objects (bytes, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (bytes arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages, with no copy and no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes. From 256 KB the receive is a view.\nA str that fits in a slot crosses as raw UTF-8.\nBooleans, numbers, and flat lists or dicts of them cross in a compact binary form.\nEverything else crosses as a pickle (protocol 4).\n\nEach end of a channel knows the peer’s language. Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles. An R peer restricts values to a portable subset both languages share; a value outside it raises pymizu.DeclinedError at send time, naming the value and the reason, and the channel stays usable. See R interop.\nAn uncaught error in the peer crosses as a value, not a raised exception: a pymizu.TaskError carrying the original class name and traceback text. Test a received value with pymizu.is_remote_error(x); raise it to propagate the error.\n\n\nFrames without pickling\nBetween two Python processes, a pyarrow Table, polars DataFrame, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip. pymizu.Frame.from_arrow() sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages — only the small result crosses back:\n\nimport pyarrow as pa\n\nwith pymizu.Channel.create(\"\"\"\nimport pymizu\nimport pyarrow as pa\nimport pyarrow.compute as pc\n\nwhile True:\n    f = ch.recv()\n    if f is pymizu.CLOSED:\n        break\n    t = pa.table(f)\n    ch.send(pc.sum(t.column(\"x\")).as_py())\n\"\"\") as ch:\n    f = pymizu.Frame.from_arrow(\n        pa.table({\"x\": pa.array([1.5, None] * 100_000)})\n    )\n    ch.send(f)\n    result = ch.recv(timeout=5)\nresult\n\n150000.0\n\n\nThe peer’s pa.table(f) borrows the region’s buffers, so the sum runs where the data already lives.\nConstruction adopts the producer’s own buffers wherever the column layout is already the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values). It copies only what it must:\n\n\n\nStage\nCopies\n\n\n\n\nproducer → Frame.from_arrow()\n0 per adopted column; a per-column copy only where its type forces it\n\n\nch.send(f)\n1 — the layout write into the shared region (the region is the wire)\n\n\nch.recv()\n0 — the frame reads the region in place\n\n\npa.table(f)\n0 — the frame’s __arrow_c_stream__ exports borrowed buffers\n\n\n\nValues cross exactly, but types normalize. A column whose type forces a copy is copied rather than declined:\n\n\n\nIn\nOut (the received frame’s Arrow export)\n\n\n\n\nstring\nlarge_string\n\n\nstring_view\nlarge_string (copies)\n\n\nbool\nbool (copies: bit-packed)\n\n\nint8 / int16 / uint16\nint32 (copies)\n\n\nuint32 / half_float / float32\nfloat64 (copies)\n\n\nuint64\nuint64 (adopts)\n\n\ntimestamp[s / ms / us / ns]\ntimestamp[s / ms / us / ns] (adopts)\n\n\nduration[s / ms / us / ns]\nduration[s / ms / us / ns] (adopts)\n\n\ndictionary&lt;i32, utf8&gt;\ndictionary&lt;i32, string&gt; (adopts; other index widths copy)\n\n\nchunked or sliced columns\nconcatenated or rebased (copies)\n\n\n\nChunked pyarrow tables adopt after table.combine_chunks(). Timestamps and durations keep their counts and unit: a timestamp[ns] round trip is exact to the nanosecond, timezone included. Nanosecond precision needs this pymizu version on both ends; an older peer (or R) receives the microsecond form instead, values rounded to the wire format’s microsecond precision, with no error.\nAdopted buffers stay alive for the frame’s lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. to_dict()’s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a Frame task argument and a frame returned from a task both ride the shared-memory region as on a channel (see the pools guide). Pool.map does not accept a frame as its element source.\n\n\nSizing\nChannel.create() takes capacity (ring slots, a power of two), slot_size (bytes per slot, so a payload of up to slot_size - 16 bytes fits in a slot), and arena_size (the channel’s shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. spin=True makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.",
+    "text": "A channel is a two-way message link between your Python process and a helper process it spawns: one lock-free ring per direction, over shared memory. One side writes into shared memory and the other reads it in place — no copies through sockets, pipes, or files.\n\nCreating a channel\nChannel.create() spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with ch bound to its side of the channel:\n\nimport pymizu\n\nch = pymizu.Channel.create(\"\"\"\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n\"\"\")\n\nThe peer is a full Python process: it can import anything your interpreter can. Channel.create() waits up to startup_timeout seconds for the peer to connect and raises StartupError on expiry.\nA launcher changes how the peer spawns: one callable that takes the channel’s token and starts the peer process. The built-in pymizu.r_launcher() spawns an R peer (see R interop); write your own to spawn peers any other way.\n\n\nSending and receiving\nch.send() publishes a value, and the peer can see it as soon as the call returns. Sends never block for ring space. ch.recv() returns the next value, waiting up to timeout seconds (indefinitely when omitted):\n\nch.send([1, \"a\", None])\nch.recv(timeout=5)\n\n[1, 'a', None]\n\n\nOutcomes that end a conversation come back as sentinel singletons, not exceptions:\n\n\n\nSentinel\nReturned when\n\n\n\n\npymizu.FULL\na send finds the ring full\n\n\npymizu.TIMEOUT\na receive’s timeout expires\n\n\npymizu.CLOSED\nthe peer has closed and the ring is drained\n\n\npymizu.PEER_GONE\nthe peer process has died and the ring is drained\n\n\n\nTest for them by identity (x is pymizu.TIMEOUT) or with pymizu.is_sentinel(x) — no call needs an error handler. If the peer dies, receives drain what it already sent, then report PEER_GONE.\nWhen per-call overhead starts to matter, send_batch() and recv_batch() move several values in one call:\n\nch.send_batch(range(4))\nch.recv_batch(4, timeout=5)\n\n[0, 1, 2, 3]\n\n\nch.alive() reports whether the peer still runs, without touching the rings. ch.info() returns a read-only snapshot of the channel’s state.\n\n\nasyncio\nFor event-driven receives, ch.recv_async() returns an asyncio.Future that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use asyncio.timeout or asyncio.wait_for. Terminal states stay values: the Future resolves with CLOSED or PEER_GONE. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it.\n\nch.send(1)\nassert await ch.recv_async() == 1\nch.send(2)\nawait ch.recv_async()\n\n2\n\n\nasync for x in ch is the stream form: it awaits each value through recv_async() and ends on CLOSED or PEER_GONE, as the sync iterator does.\nA message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with ForeignPayloadError; the message is consumed and the channel keeps flowing. Under recv_async(), only that message’s waiter rejects. The rejection also ends an async for loop, and a try/except inside the loop body cannot catch it — wrap the whole loop and re-enter on the same channel to skip the message.\n\n\nClosing\nch.close() is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:\n\nch.close()\n\nTrue\n\n\nA channel is also a context manager: the with block closes it on exit. destroy() skips the wait and releases the handle immediately; the peer sees the channel as closed (PEER_GONE if it died hard). Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb (recv(), recv_batch(), ready_wait(), close()) wakes promptly so teardown can finish.\n\n\nThreading\nEach channel side belongs to one thread at a time — libmizu’s threading contract, since the shared structures carry no locks by design. Call a side’s verbs (send(), recv(), their batch forms, ready_wait()) from one thread only; a second verb from another thread raises ConcurrentUseError instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and recv_async() are likewise exclusive on a side: a blocking receive while async receives are pending raises ConcurrentUseError at the call site, except on the async consumer’s own event-loop thread, whose receives can never race it. For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread. destroy() is the exception: it is safe from any thread, as described in Closing.\n\n\nWhat crosses a channel\npymizu chooses the cheapest transport for each value:\n\nNone crosses as a marker: no data moves.\nBuffer-protocol objects (bytes, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (bytes arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages, with no copy and no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes. From 256 KB the receive is a view.\nA str that fits in a slot crosses as raw UTF-8.\nBooleans, numbers, and flat lists or dicts of them cross in a compact binary form.\nEverything else crosses as a pickle (protocol 4).\n\nEach end of a channel knows the peer’s language. Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles. An R peer restricts values to a portable subset both languages share; a value outside it raises pymizu.DeclinedError at send time, naming the value and the reason, and the channel stays usable. See R interop.\nAn uncaught error in the peer crosses as a value, not a raised exception: a pymizu.TaskError carrying the original class name and traceback text. Test a received value with pymizu.is_remote_error(x); raise it to propagate the error.\n\n\nFrames without pickling\nBetween two Python processes, a pyarrow Table, polars DataFrame, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip. pymizu.Frame.from_arrow() sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages — only the small result crosses back:\n\nimport pyarrow as pa\n\nwith pymizu.Channel.create(\"\"\"\nimport pymizu\nimport pyarrow as pa\nimport pyarrow.compute as pc\n\nwhile True:\n    f = ch.recv()\n    if f is pymizu.CLOSED:\n        break\n    t = pa.table(f)\n    ch.send(pc.sum(t.column(\"x\")).as_py())\n\"\"\") as ch:\n    f = pymizu.Frame.from_arrow(\n        pa.table({\"x\": pa.array([1.5, None] * 100_000)})\n    )\n    ch.send(f)\n    result = ch.recv(timeout=5)\nresult\n\n150000.0\n\n\nThe peer’s pa.table(f) borrows the region’s buffers, so the sum runs where the data already lives.\nConstruction adopts the producer’s own buffers wherever the column layout is already the Arrow layout: a single-batch producer on offset-0 boundaries, nulls included (the validity bitmap is adopted with the values). It copies only what it must:\n\n\n\nStage\nCopies\n\n\n\n\nproducer → Frame.from_arrow()\n0 per adopted column; a per-column copy only where its type forces it\n\n\nch.send(f)\n1 — the layout write into the shared region (the region is the wire)\n\n\nch.recv()\n0 — the frame reads the region in place\n\n\npa.table(f)\n0 — the frame’s __arrow_c_stream__ exports borrowed buffers\n\n\n\nValues cross exactly, but types normalize. A column whose type forces a copy is copied rather than declined:\n\n\n\nIn\nOut (the received frame’s Arrow export)\n\n\n\n\nstring\nlarge_string\n\n\nstring_view\nlarge_string (copies)\n\n\nbool\nbool (copies: bit-packed)\n\n\nint8 / int16 / uint16\nint32 (copies)\n\n\nuint32 / half_float / float32\nfloat64 (copies)\n\n\nuint64\nuint64 (adopts)\n\n\ntimestamp[s / ms / us / ns]\ntimestamp[s / ms / us / ns] (adopts)\n\n\nduration[s / ms / us / ns]\nduration[s / ms / us / ns] (adopts)\n\n\ndictionary&lt;i32, utf8&gt;\ndictionary&lt;i32, string&gt; (adopts; other index widths copy)\n\n\nchunked or sliced columns\nconcatenated or rebased (copies)\n\n\n\nChunked pyarrow tables adopt after table.combine_chunks(). Timestamps and durations keep their counts and unit: a timestamp[ns] round trip is exact to the nanosecond, timezone included. Nanosecond precision needs this pymizu version on both ends; an older peer (or R) receives the microsecond form instead, values rounded to the wire format’s microsecond precision, with no error.\nAdopted buffers stay alive for the frame’s lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. to_dict()’s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a Frame task argument and a frame returned from a task both ride the shared-memory region as on a channel (see the pools guide). Pool.map does not accept a frame as its element source.\n\n\nSizing\nChannel.create() takes capacity (ring slots, a power of two), slot_size (bytes per slot, so a payload of up to slot_size - 16 bytes fits in a slot), and arena_size (the channel’s shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. spin=True makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.",
     "crumbs": [
       "User Guide",
       "Guide",
@@ -153,7 +153,7 @@
     "href": "reference/index.html#channel-methods",
     "title": "API Reference",
     "section": "Channel Methods",
-    "text": "Channel Methods\n\nMethods for the Channel class\n\n\nChannel.create()\n\nCreate a channel and spawn its peer.\n\nChannel.token\n\nThe join token for the peer’s attach.\n\nChannel.send()\n\nSend one value.\n\nChannel.send_batch()\n\nSend several values in one call.\n\nChannel.recv()\n\nReceive one value.\n\nChannel.recv_async()\n\nReceive the next value as an asyncio.Future.\n\nChannel.__aiter__()\n\nIterate over received payloads until CLOSED or PEER_GONE.\n\nChannel.iter_batches_async()\n\nIterate over received batches until CLOSED or PEER_GONE.\n\nChannel.recv_batch()\n\nReceive up to n values in one call.\n\nChannel.recv_batch_async()\n\nReceive up to n values as one list on an asyncio.Future.\n\nChannel.close()\n\nClose the channel in an orderly way.\n\nChannel.destroy()\n\nTear down the handle immediately, without the close handshake.\n\nChannel.alive()\n\nTrue while the peer process is alive.\n\nChannel.info()\n\nA read-only snapshot of the channel’s state (dict).\n\nChannel.__enter__()\n\n\n\nChannel.__exit__()\n\n\n\nChannel.__iter__()\n\nIterate over received payloads until CLOSED or PEER_GONE.\n\nChannel.iter_batches()\n\nIterate over received batches until CLOSED or PEER_GONE.",
+    "text": "Channel Methods\n\nMethods for the Channel class\n\n\nChannel.create()\n\nCreate a channel and spawn its peer.\n\nChannel.token\n\nThe join token for the peer’s attach.\n\nChannel.send()\n\nSend one value.\n\nChannel.send_batch()\n\nSend several values in one call.\n\nChannel.recv()\n\nReceive one value.\n\nChannel.recv_async()\n\nReceive the next value as an asyncio.Future.\n\nChannel.__aiter__()\n\nIterate over received payloads until CLOSED or PEER_GONE.\n\nChannel.recv_batch()\n\nReceive up to n values in one call.\n\nChannel.close()\n\nClose the channel in an orderly way.\n\nChannel.destroy()\n\nTear down the handle immediately, without the close handshake.\n\nChannel.alive()\n\nTrue while the peer process is alive.\n\nChannel.info()\n\nA read-only snapshot of the channel’s state (dict).\n\nChannel.__enter__()\n\n\n\nChannel.__exit__()\n\n\n\nChannel.__iter__()\n\nIterate over received payloads until CLOSED or PEER_GONE.",
     "crumbs": [
       "Reference",
       "API Index"
@@ -825,330 +825,202 @@
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch_async.html",
-    "href": "reference/Channel.recv_batch_async.html",
-    "title": "Channel.recv_batch_async()",
+    "objectID": "reference/Channel.recv_batch.html",
+    "href": "reference/Channel.recv_batch.html",
+    "title": "Channel.recv_batch()",
     "section": "",
-    "text": "Receive up to n values as one list on an asyncio.Future.",
+    "text": "Receive up to n values in one call.\n\n\nUsage\nSource\n\n\nChannel.recv_batch(\n    n=256,\n    timeout=None,\n)\n\n\nReturns a list (possibly short or empty), or a terminal sentinel.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv_batch_async"
+      "Channel.recv_batch"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch_async.html#parameters",
-    "href": "reference/Channel.recv_batch_async.html#parameters",
-    "title": "Channel.recv_batch_async()",
+    "objectID": "reference/Channel.recv.html",
+    "href": "reference/Channel.recv.html",
+    "title": "Channel.recv()",
+    "section": "",
+    "text": "Receive one value.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv.html#parameters",
+    "href": "reference/Channel.recv.html#parameters",
+    "title": "Channel.recv()",
     "section": "Parameters",
-    "text": "Parameters\n\n\nn: int = 256\n\nThe maximum batch size.",
+    "text": "Parameters\n\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv_batch_async"
+      "Channel.recv"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch_async.html#returns",
-    "href": "reference/Channel.recv_batch_async.html#returns",
-    "title": "Channel.recv_batch_async()",
+    "objectID": "reference/Channel.recv.html#returns",
+    "href": "reference/Channel.recv.html#returns",
+    "title": "Channel.recv()",
     "section": "Returns",
-    "text": "Returns\n\n\n An asyncio.Future resolving with a list of up to n\n\nvalues in arrival order — possibly short: it resolves as soon as at least one value is available, never waiting to fill. Terminal states stay values: the Future resolves with the CLOSED / PEER_GONE sentinel. An n past the drain quantum (2048) resolves with at most one quantum per pass.",
+    "text": "Returns\n\n\n The value, or the TIMEOUT / CLOSED / PEER_GONE\n\nsentinel.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv_batch_async"
+      "Channel.recv"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch_async.html#raises",
-    "href": "reference/Channel.recv_batch_async.html#raises",
-    "title": "Channel.recv_batch_async()",
+    "objectID": "reference/Channel.recv.html#raises",
+    "href": "reference/Channel.recv.html#raises",
+    "title": "Channel.recv()",
     "section": "Raises",
-    "text": "Raises\n\n\n ValueError\n\nn is less than 1.\n\n ConcurrentUseError\n\nA blocking receive on this side from another thread races the armed async consumer: a side is confined to one thread and one consumer form at a time.",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother verb is in flight on this side from a second thread, or a recv_async() consumer is armed and this is not its event-loop thread: a side is confined to one thread and one consumer form at a time.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv_batch_async"
+      "Channel.recv"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch_async.html#details",
-    "href": "reference/Channel.recv_batch_async.html#details",
-    "title": "Channel.recv_batch_async()",
-    "section": "Details",
-    "text": "Details\nOutstanding calls on one channel — recv_async() singles and batch waiters mixed — resolve in call order, each batch waiter taking up to its n from the burst (at least one when it is reached, so a batch reached late in a busy pass can resolve short). Cancelling the Future detaches the waiter, and the next message goes to the next waiter. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. A channel created with spin=True cannot arm and raises. The async consumer is the side’s one consumer: a blocking recv() on the same side while waiters are pending raises ConcurrentUseError.\nA declined foreign payload (see recv_async()) ahead of a batch resolves it short with the values before it; the waiter that reaches the declined message rejects with ForeignPayloadError, and the consumer keeps flowing.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_batch_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_batch_async.html#examples",
-    "href": "reference/Channel.recv_batch_async.html#examples",
-    "title": "Channel.recv_batch_async()",
-    "section": "Examples",
-    "text": "Examples\n\nimport pymizu\n\nwith pymizu.Channel.create('''\nimport pymizu\nwhile True:\n    x = ch.recv()\n    if x is pymizu.CLOSED:\n        break\n    ch.send(x)\n''') as ch:\n    ch.send_batch([1, 2, 3])\n    batch = await ch.recv_batch_async()\nbatch\n\n[1, 2, 3]",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_batch_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_async.html",
-    "href": "reference/Channel.recv_async.html",
-    "title": "Channel.recv_async()",
+    "objectID": "reference/Channel.info.html",
+    "href": "reference/Channel.info.html",
+    "title": "Channel.info()",
     "section": "",
-    "text": "Receive the next value as an asyncio.Future.",
+    "text": "A read-only snapshot of the channel’s state (dict).\n\n\nUsage\nSource\n\n\nChannel.info()",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv_async"
+      "Channel.info"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_async.html#returns",
-    "href": "reference/Channel.recv_async.html#returns",
-    "title": "Channel.recv_async()",
-    "section": "Returns",
-    "text": "Returns\n\n\n An asyncio.Future resolving with the same object a blocking\n\nrecv() would have returned, zero-copy views included (the receive itself runs on the event-loop thread). Terminal states stay values: the Future resolves with the CLOSED / PEER_GONE sentinel.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_async.html#details",
-    "href": "reference/Channel.recv_async.html#details",
-    "title": "Channel.recv_async()",
-    "section": "Details",
-    "text": "Details\nSeveral outstanding calls on one channel resolve in call order, one message each. Nothing is lost while arming: values already in the ring resolve immediately, and only values not yet sent wait for the wake-up. Cancelling the Future detaches the waiter, and the next message goes to the next waiter. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. A channel created with spin=True cannot arm and raises. The async consumer is the side’s one consumer: a blocking recv() on the same side while waiters are pending raises ConcurrentUseError.\nA message the peer sent outside the portable interchange subset (a language-private stream) rejects only the waiter that receives it, with ForeignPayloadError. The message is consumed and the async consumer keeps flowing, so the other outstanding calls are unaffected.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.html",
-    "href": "reference/Channel.html",
-    "title": "Channel",
+    "objectID": "reference/Channel.create.html",
+    "href": "reference/Channel.create.html",
+    "title": "Channel.create()",
     "section": "",
-    "text": "A shared-memory channel handle (process-private).\n\n\nUsage\nSource\n\n\nChannel()\n\n\nCreate the host side with Channel.create(), which spawns the peer. The peer side attaches with Channel._attach(), as python -m pymizu.child does. Handles do not survive fork().\nThreading: a side belongs to one thread at a time. Call its verbs (send(), recv(), their batch forms) from one thread only; a second verb from another thread raises ConcurrentUseError. Blocking and async receives are likewise exclusive on a side: a blocking receive while a recv_async() consumer is active raises it too, from any thread but the consumer’s event loop, whose own receives can never race it. Two-way traffic from two threads needs two channels. Teardown is the exception: destroy() is safe from any thread.",
-    "crumbs": [
-      "Reference",
-      "Channels",
-      "Channel"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.iter_batches.html",
-    "href": "reference/Channel.iter_batches.html",
-    "title": "Channel.iter_batches()",
-    "section": "",
-    "text": "Iterate over received batches until CLOSED or PEER_GONE.",
+    "text": "Create a channel and spawn its peer.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.iter_batches"
+      "Channel.create"
     ]
   },
   {
-    "objectID": "reference/Channel.iter_batches.html#parameters",
-    "href": "reference/Channel.iter_batches.html#parameters",
-    "title": "Channel.iter_batches()",
+    "objectID": "reference/Channel.create.html#parameters",
+    "href": "reference/Channel.create.html#parameters",
+    "title": "Channel.create()",
     "section": "Parameters",
-    "text": "Parameters\n\n\nn: int = 256\n\nThe maximum batch size; must be at least 1.\n\nA\n\n\n\nthe\n\n\n\nthe",
+    "text": "Parameters\n\n\npeer: str\n\nA Python source string, evaluated in the peer process with ch bound to the peer-side handle.\n\ncapacity: int = 16384\n\nRing capacity in slots; a power of two.\n\nslot_size: int = 256\n\nBytes per ring slot; a power of two. A payload of up to slot_size - 16 bytes fits in a slot.\n\narena_size: int = 4 * 1024 * 1024\n\nBytes of shared staging area for larger payloads.\n\nspin: bool = False\n\nBusy-wait rather than sleep while waiting.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the peer to attach.\n\nlauncher: _Callable[[str], _Any] | None = None\n\nA callable(token) arranging for a Python process to run python -m pymizu.child &lt;token&gt;; the default is launcher() (spawns sys.executable directly). r_launcher() returns one spawning an R peer (the R package mizu).",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.iter_batches"
+      "Channel.create"
     ]
   },
   {
-    "objectID": "reference/Channel.iter_batches.html#examples",
-    "href": "reference/Channel.iter_batches.html#examples",
-    "title": "Channel.iter_batches()",
+    "objectID": "reference/Channel.create.html#returns",
+    "href": "reference/Channel.create.html#returns",
+    "title": "Channel.create()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The host-side channel handle.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.create"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.create.html#examples",
+    "href": "reference/Channel.create.html#examples",
+    "title": "Channel.create()",
     "section": "Examples",
-    "text": "Examples\n\nimport pymizu\n\nwith pymizu.Channel.create('''\nimport pymizu\nfor _ in range(3):\n    ch.send(ch.recv())\n''') as ch:\n    ch.send_batch([1, 2, 3])\n    batches = list(ch.iter_batches())\n[x for batch in batches for x in batch]\n\n[1, 2, 3]",
+    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     ch.send([1, \"a\", None])\n...     received = ch.recv(timeout=5)\n&gt;&gt;&gt; received\n[1, 'a', None]",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.iter_batches"
+      "Channel.create"
     ]
   },
   {
-    "objectID": "reference/Channel.destroy.html",
-    "href": "reference/Channel.destroy.html",
-    "title": "Channel.destroy()",
+    "objectID": "reference/Channel.alive.html",
+    "href": "reference/Channel.alive.html",
+    "title": "Channel.alive()",
     "section": "",
-    "text": "Tear down the handle immediately, without the close handshake.\n\n\nUsage\nSource\n\n\nChannel.destroy()\n\n\nThe peer sees the channel as closed (PEER_GONE if it died hard). This is the one verb that is safe from any thread. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (recv, recv_batch, ready_wait, close) wakes promptly so that this can happen. Pending recv futures settle with PEER_GONE. Every other verb stays confined to one thread (see the class docstring).",
+    "text": "True while the peer process is alive.\n\n\nUsage\nSource\n\n\nChannel.alive()",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.destroy"
+      "Channel.alive"
     ]
   },
   {
-    "objectID": "reference/Channel.close.html",
-    "href": "reference/Channel.close.html",
-    "title": "Channel.close()",
+    "objectID": "reference/Channel.__exit__.html",
+    "href": "reference/Channel.__exit__.html",
+    "title": "Channel.__exit__()",
     "section": "",
-    "text": "Close the channel in an orderly way.",
+    "text": "Usage\nSource\n\n\nChannel.__exit__(*exc)",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.close"
+      "Channel.__exit__"
     ]
   },
   {
-    "objectID": "reference/Channel.close.html#raises",
-    "href": "reference/Channel.close.html#raises",
-    "title": "Channel.close()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nA verb is in flight on this side from a second thread: the side is confined to one thread (the class docstring).",
+    "objectID": "reference/Channel.__aiter__.html",
+    "href": "reference/Channel.__aiter__.html",
+    "title": "Channel.__aiter__()",
+    "section": "",
+    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__aiter__()\n\n\nThe async form of the sync iterator. Yields payloads as they arrive, awaiting each through recv_async(). Between iterations nothing is armed; the next iteration re-arms, and the arm’s synchronous drain picks up whatever arrived meanwhile, so nothing is lost.\nA declined foreign payload (see recv_async()) propagates out of the iteration and ends the async for statement, so a try/except inside the loop body cannot catch it. To skip one, wrap the whole loop and re-enter on the same channel: the consumer kept flowing, and the new iterator picks up the next message.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.close"
+      "Channel.__aiter__"
     ]
   },
   {
-    "objectID": "reference/Channel.__iter__.html",
-    "href": "reference/Channel.__iter__.html",
-    "title": "Channel.__iter__()",
+    "objectID": "package-info.html",
+    "href": "package-info.html",
+    "title": "Package Info",
     "section": "",
-    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__iter__()\n\n\nBlocks indefinitely between payloads (recv() with no timeout); use Channel.recv() directly when a bound is needed.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__iter__"
-    ]
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
   },
   {
-    "objectID": "reference/Channel.__enter__.html",
-    "href": "reference/Channel.__enter__.html",
-    "title": "Channel.__enter__()",
+    "objectID": "package-info.html#all",
+    "href": "package-info.html#all",
+    "title": "Package Info",
     "section": "",
-    "text": "Usage\nSource\n\n\nChannel.__enter__()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__enter__"
-    ]
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-04"
   },
   {
-    "objectID": "reference/CancelledError.html",
-    "href": "reference/CancelledError.html",
-    "title": "CancelledError",
+    "objectID": "package-info.html#cloudpickle",
+    "href": "package-info.html#cloudpickle",
+    "title": "Package Info",
     "section": "",
-    "text": "The task was cancelled before it ran.\n\n\nUsage\nSource\n\n\nCancelledError()",
-    "crumbs": [
-      "Reference",
-      "Outcomes and errors",
-      "CancelledError"
-    ]
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03"
   },
   {
-    "objectID": "license.html",
-    "href": "license.html",
-    "title": "License",
+    "objectID": "package-info.html#dev",
+    "href": "package-info.html#dev",
+    "title": "Package Info",
     "section": "",
-    "text": "▶\n    License features — MIT License\n\n\n\n\n\nPermissions\n\nCommercial use\nModification\nDistribution\nPrivate use\n\n\nConditions\n\nLicense and copyright notice\n\n\nLimitations\n\nLiability\nWarranty\n\n\n\n\n# MIT License\n\nCopyright (c) 2026 pymizu authors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
   },
   {
-    "objectID": "contributing.html",
-    "href": "contributing.html",
-    "title": "Contributing",
+    "objectID": "package-info.html#docs",
+    "href": "package-info.html#docs",
+    "title": "Package Info",
     "section": "",
-    "text": "Bug reports and pull requests are welcome. pymizu is pre-1.0 and the API can change between releases, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump(), the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module, because pickle sends them by reference and the spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03"
   },
   {
-    "objectID": "citation.html",
-    "href": "citation.html",
-    "title": "Authors and Citation",
+    "objectID": "package-info.html#numpy",
+    "href": "package-info.html#numpy",
+    "title": "Package Info",
     "section": "",
-    "text": "To cite pymizu in publications, please use the following citation."
-  },
-  {
-    "objectID": "citation.html#bibtex",
-    "href": "citation.html#bibtex",
-    "title": "Authors and Citation",
-    "section": "BibTeX",
-    "text": "BibTeX\n@Manual{,\n  title = {pymizu: Thread-speed async and parallel Python over shared memory},\n  author = {Charlie Gao},\n  year = {2026},\n  url = {https://shikokuchuo.net/pymizu/},\n}"
-  },
-  {
-    "objectID": "citation.html#apa",
-    "href": "citation.html#apa",
-    "title": "Authors and Citation",
-    "section": "APA",
-    "text": "APA\nGao, C. (2026). pymizu: Thread-speed async and parallel Python over shared memory (Version ) [Computer software]. https://shikokuchuo.net/pymizu/"
-  },
-  {
-    "objectID": "citation.html#ris",
-    "href": "citation.html#ris",
-    "title": "Authors and Citation",
-    "section": "RIS",
-    "text": "RIS\nTY  - COMP\nTI  - pymizu: Thread-speed async and parallel Python over shared memory\nAU  - Gao, Charlie\nPY  - 2026\nUR  - https://shikokuchuo.net/pymizu/\nER  -"
-  },
-  {
-    "objectID": "changelog.html",
-    "href": "changelog.html",
-    "title": "Changelog",
-    "section": "",
-    "text": "This changelog is generated automatically from GitHub Releases."
-  },
-  {
-    "objectID": "changelog.html#whats-changed",
-    "href": "changelog.html#whats-changed",
-    "title": "Changelog",
-    "section": "What’s Changed",
-    "text": "What’s Changed\n\nBuild the docs site with Great Docs by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/2\nAdd a process-wide default pool by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/4\nSilence the test suite’s expected warnings by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/5\nAdd streaming Pool.map with stream = TRUE by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/7\nAdapt the frame-export tests to polars 2.0’s stream ingest by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/8\nIntegration into asyncio event loop by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/10\nci: add package-level tests for __all__ and __version__ by @rich-iannone in https://github.com/shikokuchuo/pymizu/pull/11\nMake the pytest config a bit more strict by @rich-iannone in https://github.com/shikokuchuo/pymizu/pull/12\npymizu 0.1.0 by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/14"
-  },
-  {
-    "objectID": "changelog.html#new-contributors",
-    "href": "changelog.html#new-contributors",
-    "title": "Changelog",
-    "section": "New Contributors",
-    "text": "New Contributors\n\n@shikokuchuo made their first contribution in https://github.com/shikokuchuo/pymizu/pull/2\n@rich-iannone made their first contribution in https://github.com/shikokuchuo/pymizu/pull/11\n\nFull Changelog: https://github.com/shikokuchuo/pymizu/commits/v0.1.0"
-  },
-  {
-    "objectID": "code-of-conduct.html",
-    "href": "code-of-conduct.html",
-    "title": "Code of Conduct",
-    "section": "",
-    "text": "We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation.\nWe pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community."
-  },
-  {
-    "objectID": "code-of-conduct.html#correction",
-    "href": "code-of-conduct.html#correction",
-    "title": "Code of Conduct",
-    "section": "1. Correction",
-    "text": "1. Correction\nCommunity Impact: Use of inappropriate language or other behavior deemed unprofessional or unwelcome in the community.\nConsequence: A private, written warning from community leaders, providing clarity around the nature of the violation and an explanation of why the behavior was inappropriate. A public apology may be requested."
-  },
-  {
-    "objectID": "code-of-conduct.html#warning",
-    "href": "code-of-conduct.html#warning",
-    "title": "Code of Conduct",
-    "section": "2. Warning",
-    "text": "2. Warning\nCommunity Impact: A violation through a single incident or series of actions.\nConsequence: A warning with consequences for continued behavior. No interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, for a specified period of time. This includes avoiding interactions in community spaces as well as external channels like social media. Violating these terms may lead to a temporary or permanent ban."
-  },
-  {
-    "objectID": "code-of-conduct.html#temporary-ban",
-    "href": "code-of-conduct.html#temporary-ban",
-    "title": "Code of Conduct",
-    "section": "3. Temporary Ban",
-    "text": "3. Temporary Ban\nCommunity Impact: A serious violation of community standards, including sustained inappropriate behavior.\nConsequence: A temporary ban from any sort of interaction or public communication with the community for a specified period of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban."
-  },
-  {
-    "objectID": "code-of-conduct.html#permanent-ban",
-    "href": "code-of-conduct.html#permanent-ban",
-    "title": "Code of Conduct",
-    "section": "4. Permanent Ban",
-    "text": "4. Permanent Ban\nCommunity Impact: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.\nConsequence: A permanent ban from any sort of public interaction within the community."
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
   },
   {
     "objectID": "index.html",
@@ -1207,237 +1079,221 @@
     "text": "Where next\n\nBenchmarks — overhead against the stdlib pools, and how pymizu compares with other frameworks.\nChannels — sending and receiving, batch operations, and what crosses a channel.\nTask pools — outcomes, nested tasks, growing and observing a pool.\nParallel map — scheduling, reproducible randomness, templates, prepared maps.\nR interop — R peers and workers, what crosses the language boundary, and the dtype matrix.\nAPI reference — the generated function and class reference."
   },
   {
-    "objectID": "package-info.html",
-    "href": "package-info.html",
-    "title": "Package Info",
+    "objectID": "code-of-conduct.html",
+    "href": "code-of-conduct.html",
+    "title": "Code of Conduct",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+    "text": "We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation.\nWe pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community."
   },
   {
-    "objectID": "package-info.html#all",
-    "href": "package-info.html#all",
-    "title": "Package Info",
+    "objectID": "code-of-conduct.html#correction",
+    "href": "code-of-conduct.html#correction",
+    "title": "Code of Conduct",
+    "section": "1. Correction",
+    "text": "1. Correction\nCommunity Impact: Use of inappropriate language or other behavior deemed unprofessional or unwelcome in the community.\nConsequence: A private, written warning from community leaders, providing clarity around the nature of the violation and an explanation of why the behavior was inappropriate. A public apology may be requested."
+  },
+  {
+    "objectID": "code-of-conduct.html#warning",
+    "href": "code-of-conduct.html#warning",
+    "title": "Code of Conduct",
+    "section": "2. Warning",
+    "text": "2. Warning\nCommunity Impact: A violation through a single incident or series of actions.\nConsequence: A warning with consequences for continued behavior. No interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, for a specified period of time. This includes avoiding interactions in community spaces as well as external channels like social media. Violating these terms may lead to a temporary or permanent ban."
+  },
+  {
+    "objectID": "code-of-conduct.html#temporary-ban",
+    "href": "code-of-conduct.html#temporary-ban",
+    "title": "Code of Conduct",
+    "section": "3. Temporary Ban",
+    "text": "3. Temporary Ban\nCommunity Impact: A serious violation of community standards, including sustained inappropriate behavior.\nConsequence: A temporary ban from any sort of interaction or public communication with the community for a specified period of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban."
+  },
+  {
+    "objectID": "code-of-conduct.html#permanent-ban",
+    "href": "code-of-conduct.html#permanent-ban",
+    "title": "Code of Conduct",
+    "section": "4. Permanent Ban",
+    "text": "4. Permanent Ban\nCommunity Impact: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.\nConsequence: A permanent ban from any sort of public interaction within the community."
+  },
+  {
+    "objectID": "changelog.html",
+    "href": "changelog.html",
+    "title": "Changelog",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-04"
+    "text": "This changelog is generated automatically from GitHub Releases."
   },
   {
-    "objectID": "package-info.html#cloudpickle",
-    "href": "package-info.html#cloudpickle",
-    "title": "Package Info",
+    "objectID": "changelog.html#whats-changed",
+    "href": "changelog.html#whats-changed",
+    "title": "Changelog",
+    "section": "What’s Changed",
+    "text": "What’s Changed\n\nBuild the docs site with Great Docs by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/2\nAdd a process-wide default pool by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/4\nSilence the test suite’s expected warnings by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/5\nAdd streaming Pool.map with stream = TRUE by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/7\nAdapt the frame-export tests to polars 2.0’s stream ingest by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/8\nIntegration into asyncio event loop by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/10\nci: add package-level tests for __all__ and __version__ by @rich-iannone in https://github.com/shikokuchuo/pymizu/pull/11\nMake the pytest config a bit more strict by @rich-iannone in https://github.com/shikokuchuo/pymizu/pull/12\npymizu 0.1.0 by @shikokuchuo in https://github.com/shikokuchuo/pymizu/pull/14"
+  },
+  {
+    "objectID": "changelog.html#new-contributors",
+    "href": "changelog.html#new-contributors",
+    "title": "Changelog",
+    "section": "New Contributors",
+    "text": "New Contributors\n\n@shikokuchuo made their first contribution in https://github.com/shikokuchuo/pymizu/pull/2\n@rich-iannone made their first contribution in https://github.com/shikokuchuo/pymizu/pull/11\n\nFull Changelog: https://github.com/shikokuchuo/pymizu/commits/v0.1.0"
+  },
+  {
+    "objectID": "citation.html",
+    "href": "citation.html",
+    "title": "Authors and Citation",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03"
+    "text": "To cite pymizu in publications, please use the following citation."
   },
   {
-    "objectID": "package-info.html#dev",
-    "href": "package-info.html#dev",
-    "title": "Package Info",
+    "objectID": "citation.html#bibtex",
+    "href": "citation.html#bibtex",
+    "title": "Authors and Citation",
+    "section": "BibTeX",
+    "text": "BibTeX\n@Manual{,\n  title = {pymizu: Thread-speed async and parallel Python over shared memory},\n  author = {Charlie Gao},\n  year = {2026},\n  url = {https://shikokuchuo.net/pymizu/},\n}"
+  },
+  {
+    "objectID": "citation.html#apa",
+    "href": "citation.html#apa",
+    "title": "Authors and Citation",
+    "section": "APA",
+    "text": "APA\nGao, C. (2026). pymizu: Thread-speed async and parallel Python over shared memory (Version ) [Computer software]. https://shikokuchuo.net/pymizu/"
+  },
+  {
+    "objectID": "citation.html#ris",
+    "href": "citation.html#ris",
+    "title": "Authors and Citation",
+    "section": "RIS",
+    "text": "RIS\nTY  - COMP\nTI  - pymizu: Thread-speed async and parallel Python over shared memory\nAU  - Gao, Charlie\nPY  - 2026\nUR  - https://shikokuchuo.net/pymizu/\nER  -"
+  },
+  {
+    "objectID": "contributing.html",
+    "href": "contributing.html",
+    "title": "Contributing",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
+    "text": "Bug reports and pull requests are welcome. pymizu is pre-1.0 and the API can change between releases, so open an issue to discuss larger changes before doing the work.\n\nReporting bugs\nOpen a GitHub issue with a minimal reproducer, your platform, and your Python version. For a pool that hangs, include the output of pool.dump(), the first diagnostic tool.\n\n\nPull requests\nSet up and run the checks before submitting:\npip install -e .\npython -m pytest tests/\nruff check python tests benchmarks\npyrefly check\npre-commit install wires the hygiene hooks plus ruff-check --fix and ruff-format into each commit.\nConventions:\n\nCommit messages are a single-line subject, no body.\nNew behavior needs a test. Task callables used in pool tests belong in tests/helpers.py, not the test module, because pickle sends them by reference and the spawned workers must import them.\nNever edit src/vendor/libmizu/ by hand. Changes go upstream to libmizu and land here via tools/vendor-libmizu.sh.\nCross-language tests skip unless Rscript and the R mizu package are installed.\n\n\n\nRepository layout\n\nsrc/_pymizu.c: the extension module. It uses the raw CPython C API (no pybind11, Cython, or cffi).\nsrc/vendor/libmizu/: the vendored libmizu core. tools/vendor-libmizu.sh generates this directory. Do not edit these files by hand.\npython/pymizu/: the Python package. child.py and worker.py are the entry points for spawned processes (python -m pymizu.child &lt;token&gt;, python -m pymizu.worker &lt;suffix&gt; &lt;slot&gt;).\ntests/: the pytest suite. tests/helpers.py holds the task callables (pickle sends them by reference, so the workers must import them).\ndocs/: the documentation site, built with Great Docs. great-docs build from the repo root builds it (config in docs/great-docs.yml, guides in docs/user_guide/).\n\n\n\nCode of conduct\nThis project is released with a Contributor Code of Conduct. By participating, you agree to abide by its terms.\n\n\nLicense\nBy contributing, you agree that your contributions are licensed under the project’s MIT license."
   },
   {
-    "objectID": "package-info.html#docs",
-    "href": "package-info.html#docs",
-    "title": "Package Info",
+    "objectID": "license.html",
+    "href": "license.html",
+    "title": "License",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03"
+    "text": "▶\n    License features — MIT License\n\n\n\n\n\nPermissions\n\nCommercial use\nModification\nDistribution\nPrivate use\n\n\nConditions\n\nLicense and copyright notice\n\n\nLimitations\n\nLiability\nWarranty\n\n\n\n\n# MIT License\n\nCopyright (c) 2026 pymizu authors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE."
   },
   {
-    "objectID": "package-info.html#numpy",
-    "href": "package-info.html#numpy",
-    "title": "Package Info",
+    "objectID": "reference/CancelledError.html",
+    "href": "reference/CancelledError.html",
+    "title": "CancelledError",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+    "text": "The task was cancelled before it ran.\n\n\nUsage\nSource\n\n\nCancelledError()",
+    "crumbs": [
+      "Reference",
+      "Outcomes and errors",
+      "CancelledError"
+    ]
   },
   {
-    "objectID": "reference/Channel.__aiter__.html",
-    "href": "reference/Channel.__aiter__.html",
-    "title": "Channel.__aiter__()",
+    "objectID": "reference/Channel.__enter__.html",
+    "href": "reference/Channel.__enter__.html",
+    "title": "Channel.__enter__()",
     "section": "",
-    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__aiter__()\n\n\nThe async form of the sync iterator. Yields payloads as they arrive, awaiting each through recv_async(). Between iterations nothing is armed; the next iteration re-arms, and the arm’s synchronous drain picks up whatever arrived meanwhile, so nothing is lost.\nA declined foreign payload (see recv_async()) propagates out of the iteration and ends the async for statement, so a try/except inside the loop body cannot catch it. To skip one, wrap the whole loop and re-enter on the same channel: the consumer kept flowing, and the new iterator picks up the next message.",
+    "text": "Usage\nSource\n\n\nChannel.__enter__()",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.__aiter__"
+      "Channel.__enter__"
     ]
   },
   {
-    "objectID": "reference/Channel.__exit__.html",
-    "href": "reference/Channel.__exit__.html",
-    "title": "Channel.__exit__()",
+    "objectID": "reference/Channel.__iter__.html",
+    "href": "reference/Channel.__iter__.html",
+    "title": "Channel.__iter__()",
     "section": "",
-    "text": "Usage\nSource\n\n\nChannel.__exit__(*exc)",
+    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__iter__()\n\n\nBlocks indefinitely between payloads (recv() with no timeout); use Channel.recv() directly when a bound is needed.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.__exit__"
+      "Channel.__iter__"
     ]
   },
   {
-    "objectID": "reference/Channel.alive.html",
-    "href": "reference/Channel.alive.html",
-    "title": "Channel.alive()",
+    "objectID": "reference/Channel.close.html",
+    "href": "reference/Channel.close.html",
+    "title": "Channel.close()",
     "section": "",
-    "text": "True while the peer process is alive.\n\n\nUsage\nSource\n\n\nChannel.alive()",
+    "text": "Close the channel in an orderly way.",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.alive"
+      "Channel.close"
     ]
   },
   {
-    "objectID": "reference/Channel.create.html",
-    "href": "reference/Channel.create.html",
-    "title": "Channel.create()",
-    "section": "",
-    "text": "Create a channel and spawn its peer.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#parameters",
-    "href": "reference/Channel.create.html#parameters",
-    "title": "Channel.create()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\npeer: str\n\nA Python source string, evaluated in the peer process with ch bound to the peer-side handle.\n\ncapacity: int = 16384\n\nRing capacity in slots; a power of two.\n\nslot_size: int = 256\n\nBytes per ring slot; a power of two. A payload of up to slot_size - 16 bytes fits in a slot.\n\narena_size: int = 4 * 1024 * 1024\n\nBytes of shared staging area for larger payloads.\n\nspin: bool = False\n\nBusy-wait rather than sleep while waiting.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the peer to attach.\n\nlauncher: _Callable[[str], _Any] | None = None\n\nA callable(token) arranging for a Python process to run python -m pymizu.child &lt;token&gt;; the default is launcher() (spawns sys.executable directly). r_launcher() returns one spawning an R peer (the R package mizu).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#returns",
-    "href": "reference/Channel.create.html#returns",
-    "title": "Channel.create()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The host-side channel handle.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#examples",
-    "href": "reference/Channel.create.html#examples",
-    "title": "Channel.create()",
-    "section": "Examples",
-    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     ch.send([1, \"a\", None])\n...     received = ch.recv(timeout=5)\n&gt;&gt;&gt; received\n[1, 'a', None]",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.info.html",
-    "href": "reference/Channel.info.html",
-    "title": "Channel.info()",
-    "section": "",
-    "text": "A read-only snapshot of the channel’s state (dict).\n\n\nUsage\nSource\n\n\nChannel.info()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.info"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.iter_batches_async.html",
-    "href": "reference/Channel.iter_batches_async.html",
-    "title": "Channel.iter_batches_async()",
-    "section": "",
-    "text": "Iterate over received batches until CLOSED or PEER_GONE.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.iter_batches_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.iter_batches_async.html#parameters",
-    "href": "reference/Channel.iter_batches_async.html#parameters",
-    "title": "Channel.iter_batches_async()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nn: int = 256\n\nThe maximum batch size; must be at least 1.\n\nA\n\n\n\nthe\n\n\n\ncannot\n\n\n\nchannel",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.iter_batches_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.iter_batches_async.html#examples",
-    "href": "reference/Channel.iter_batches_async.html#examples",
-    "title": "Channel.iter_batches_async()",
-    "section": "Examples",
-    "text": "Examples\n\nimport pymizu\n\nwith pymizu.Channel.create('''\nimport pymizu\nfor _ in range(3):\n    ch.send(ch.recv())\n''') as ch:\n    ch.send_batch([1, 2, 3])\n    batches = []\n    async for batch in ch.iter_batches_async():\n        batches.append(batch)\n[x for batch in batches for x in batch]\n\n[1, 2, 3]",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.iter_batches_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html",
-    "href": "reference/Channel.recv.html",
-    "title": "Channel.recv()",
-    "section": "",
-    "text": "Receive one value.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#parameters",
-    "href": "reference/Channel.recv.html#parameters",
-    "title": "Channel.recv()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#returns",
-    "href": "reference/Channel.recv.html#returns",
-    "title": "Channel.recv()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The value, or the TIMEOUT / CLOSED / PEER_GONE\n\nsentinel.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#raises",
-    "href": "reference/Channel.recv.html#raises",
-    "title": "Channel.recv()",
+    "objectID": "reference/Channel.close.html#raises",
+    "href": "reference/Channel.close.html#raises",
+    "title": "Channel.close()",
     "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother verb is in flight on this side from a second thread, or a recv_async() consumer is armed and this is not its event-loop thread: a side is confined to one thread and one consumer form at a time.",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nA verb is in flight on this side from a second thread: the side is confined to one thread (the class docstring).",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv"
+      "Channel.close"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch.html",
-    "href": "reference/Channel.recv_batch.html",
-    "title": "Channel.recv_batch()",
+    "objectID": "reference/Channel.destroy.html",
+    "href": "reference/Channel.destroy.html",
+    "title": "Channel.destroy()",
     "section": "",
-    "text": "Receive up to n values in one call.\n\n\nUsage\nSource\n\n\nChannel.recv_batch(\n    n=256,\n    timeout=None,\n)\n\n\nReturns a list (possibly short or empty), or a terminal sentinel.",
+    "text": "Tear down the handle immediately, without the close handshake.\n\n\nUsage\nSource\n\n\nChannel.destroy()\n\n\nThe peer sees the channel as closed (PEER_GONE if it died hard). This is the one verb that is safe from any thread. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (recv, recv_batch, ready_wait, close) wakes promptly so that this can happen. Pending recv futures settle with PEER_GONE. Every other verb stays confined to one thread (see the class docstring).",
     "crumbs": [
       "Reference",
       "Channel Methods",
-      "Channel.recv_batch"
+      "Channel.destroy"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.html",
+    "href": "reference/Channel.html",
+    "title": "Channel",
+    "section": "",
+    "text": "A shared-memory channel handle (process-private).\n\n\nUsage\nSource\n\n\nChannel()\n\n\nCreate the host side with Channel.create(), which spawns the peer. The peer side attaches with Channel._attach(), as python -m pymizu.child does. Handles do not survive fork().\nThreading: a side belongs to one thread at a time. Call its verbs (send(), recv(), their batch forms) from one thread only; a second verb from another thread raises ConcurrentUseError. Blocking and async receives are likewise exclusive on a side: a blocking receive while a recv_async() consumer is active raises it too, from any thread but the consumer’s event loop, whose own receives can never race it. Two-way traffic from two threads needs two channels. Teardown is the exception: destroy() is safe from any thread.",
+    "crumbs": [
+      "Reference",
+      "Channels",
+      "Channel"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv_async.html",
+    "href": "reference/Channel.recv_async.html",
+    "title": "Channel.recv_async()",
+    "section": "",
+    "text": "Receive the next value as an asyncio.Future.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv_async"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv_async.html#returns",
+    "href": "reference/Channel.recv_async.html#returns",
+    "title": "Channel.recv_async()",
+    "section": "Returns",
+    "text": "Returns\n\n\n An asyncio.Future resolving with the same object a blocking\n\nrecv() would have returned, zero-copy views included (the receive itself runs on the event-loop thread). Terminal states stay values: the Future resolves with the CLOSED / PEER_GONE sentinel.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv_async"
+    ]
+  },
+  {
+    "objectID": "reference/Channel.recv_async.html#details",
+    "href": "reference/Channel.recv_async.html#details",
+    "title": "Channel.recv_async()",
+    "section": "Details",
+    "text": "Details\nSeveral outstanding calls on one channel resolve in call order, one message each. Nothing is lost while arming: values already in the ring resolve immediately, and only values not yet sent wait for the wake-up. Cancelling the Future detaches the waiter, and the next message goes to the next waiter. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. A channel created with spin=True cannot arm and raises. The async consumer is the side’s one consumer: a blocking recv() on the same side while waiters are pending raises ConcurrentUseError.\nA message the peer sent outside the portable interchange subset (a language-private stream) rejects only the waiter that receives it, with ForeignPayloadError. The message is consumed and the async consumer keeps flowing, so the other outstanding calls are unaffected.",
+    "crumbs": [
+      "Reference",
+      "Channel Methods",
+      "Channel.recv_async"
     ]
   },
   {

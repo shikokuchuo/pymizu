@@ -4,7 +4,7 @@ Map `fn` over `x` on the pool; return a map handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1242-L1443)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1083-L1284)
 
 ``` python
 Pool.map(

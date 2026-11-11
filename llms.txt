@@ -21,9 +21,7 @@
 - [Channel.recv](https://shikokuchuo.net/pymizu/reference/Channel.recv.html)
 - [Channel.recv_async](https://shikokuchuo.net/pymizu/reference/Channel.recv_async.html)
 - [Channel.__aiter__](https://shikokuchuo.net/pymizu/reference/Channel.__aiter__.html)
-- [Channel.iter_batches_async](https://shikokuchuo.net/pymizu/reference/Channel.iter_batches_async.html)
 - [Channel.recv_batch](https://shikokuchuo.net/pymizu/reference/Channel.recv_batch.html)
-- [Channel.recv_batch_async](https://shikokuchuo.net/pymizu/reference/Channel.recv_batch_async.html)
 - [Channel.close](https://shikokuchuo.net/pymizu/reference/Channel.close.html)
 - [Channel.destroy](https://shikokuchuo.net/pymizu/reference/Channel.destroy.html)
 - [Channel.alive](https://shikokuchuo.net/pymizu/reference/Channel.alive.html)
@@ -31,7 +29,6 @@
 - [Channel.__enter__](https://shikokuchuo.net/pymizu/reference/Channel.__enter__.html)
 - [Channel.__exit__](https://shikokuchuo.net/pymizu/reference/Channel.__exit__.html)
 - [Channel.__iter__](https://shikokuchuo.net/pymizu/reference/Channel.__iter__.html)
-- [Channel.iter_batches](https://shikokuchuo.net/pymizu/reference/Channel.iter_batches.html)
 
 #### Task pools
 > A set of worker processes that divide submitted tasks among themselves.

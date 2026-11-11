@@ -4,7 +4,7 @@ Close the channel in an orderly way.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L571-L595)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L452-L476)
 
 ``` python
 Channel.close(timeout=5.0)
