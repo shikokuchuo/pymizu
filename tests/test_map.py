@@ -173,6 +173,59 @@ def test_map_region_path(pool):
     assert pool.map(identity, x).collect() == x
 
 
+def test_map_clean_prepared_collect_skips_cleanup(pool, monkeypatch):
+    pm = pool.map_prepare(identity, list(range(2000)), n_chunks=8)
+    try:
+        m = pm.run()
+        capsule = pm._capsule
+
+        def unexpected_cleanup(self):
+            raise AssertionError(
+                "clean collection ran the cancellation cleanup"
+            )
+
+        monkeypatch.setattr(type(m), "_cleanup", unexpected_cleanup)
+        assert m.collect() == list(range(2000))
+        assert pymizu._pymizu._map_cancel_get(capsule) is False
+    finally:
+        pm.close()
+
+
+def test_map_clean_one_shot_collect_closes_region(pool):
+    m = pool.map(identity, list(range(2000)))
+    name = m.name
+    capsule = m.capsule
+    assert m.collect() == list(range(2000))
+    assert m.capsule is None
+    assert pymizu._pymizu._map_close(capsule) is None  # idempotent
+    with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+        pymizu._pymizu._map_open(name)
+
+
+def test_map_late_runner_after_clean_close(pool, monkeypatch):
+    from tests.helpers import delayed_second_runner
+
+    from pymizu import _map
+
+    monkeypatch.setattr(_map, "_runner", delayed_second_runner)
+    m = pool.map(identity, list(range(2000)), n_chunks=2)
+    late = m.handles[1]
+    deadline = time.monotonic() + 10
+    while late.state != "running":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    name = m.name
+    assert m.collect(timeout=30) == list(range(2000))
+    assert m.capsule is None
+    with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+        pymizu._pymizu._map_open(name)
+    # the delayed open fails after the unlink; the cancelled task absorbs it
+    while any(w["in_flight"] != -1 for w in pool.dump()["workers"]):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert pool.map(square, [2], timeout=15).collect() == [4]
+
+
 def test_map_fn_not_callable(pool):
     with pytest.raises(TypeError, match="callable"):
         pool.map(42, [1])

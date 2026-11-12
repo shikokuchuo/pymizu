@@ -277,6 +277,15 @@ def sleep_on(i, marks, t=0.3):
     return i
 
 
+def delayed_second_runner(region_name, ordinal, gen, seed_spec):
+    """Delay ordinal 1 before opening its region, after its task claim."""
+    from pymizu import _map
+
+    if ordinal == 1:
+        time.sleep(1)
+    return _map._runner(region_name, ordinal, gen, seed_spec)
+
+
 def map_ctx_names(_):
     """The worker's map-context cache keys (one attach per worker per map)."""
     from pymizu import _map

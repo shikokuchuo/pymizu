@@ -1207,7 +1207,12 @@ def test_pool_destroy_settles_a_loop_less_state():
 
 def test_map_await(pool):
     async def main():
-        assert await pool.map(square, range(10)) == [i * i for i in range(10)]
+        m = pool.map(square, range(2000))
+        name = m.name
+        assert await m == [i * i for i in range(2000)]
+        assert m.capsule is None
+        with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+            pymizu._pymizu._map_open(name)
 
     asyncio.run(main())
 
@@ -1218,6 +1223,28 @@ def test_map_collect_async(pool):
         assert await m.collect_async() == [0, 1, 4, 9]
 
     asyncio.run(main())
+
+
+def test_map_collect_async_clean_skips_cleanup(pool, monkeypatch):
+    pm = pool.map_prepare(square, list(range(2000)))
+
+    async def main():
+        m = pm.run()
+        capsule = pm._capsule
+
+        def unexpected_cleanup(self):
+            raise AssertionError(
+                "clean collection ran the cancellation cleanup"
+            )
+
+        monkeypatch.setattr(type(m), "_cleanup", unexpected_cleanup)
+        assert await m == [i * i for i in range(2000)]
+        assert pymizu._pymizu._map_cancel_get(capsule) is False
+
+    try:
+        asyncio.run(main())
+    finally:
+        pm.close()
 
 
 def test_map_collect_async_numpy_scalars(pool):
