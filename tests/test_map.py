@@ -1913,6 +1913,30 @@ def test_map_gather_into_arity():
         Q._map_gather_into(None, bytearray(8), 0, 0)
 
 
+def test_map_stage_arity():
+    Q = pymizu._pymizu
+    with pytest.raises(TypeError, match="takes exactly 7 arguments"):
+        Q._map_stage(b"desc", None, 1, 1, None, False)
+    with pytest.raises(TypeError, match="takes exactly 7 arguments"):
+        Q._map_stage(b"desc", None, 1, 1, None, False, 1, 0)
+
+
+def test_map_write_arity():
+    Q = pymizu._pymizu
+    with pytest.raises(TypeError, match="takes exactly 3 arguments"):
+        Q._map_write(None, 0)
+    with pytest.raises(TypeError, match="takes exactly 3 arguments"):
+        Q._map_write(None, 0, [], 0)
+
+
+def test_map_next_arity():
+    Q = pymizu._pymizu
+    with pytest.raises(TypeError, match="takes exactly 4 arguments"):
+        Q._map_next(None, None, 0)
+    with pytest.raises(TypeError, match="takes exactly 4 arguments"):
+        Q._map_next(None, None, 0, 0, 0)
+
+
 def test_map_swap_x_gates():
     import pickle
 
