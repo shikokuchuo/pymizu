@@ -91,7 +91,7 @@ ul.task-list li input[type="checkbox"] {
 <style id="gd-wide-layout-vars">:root{--gd-wide-content-scale:1.5;--gd-wide-sidebar-scale:1.2;}</style>
 <script src="./theme-init.js"></script>
 <meta name="gd-scale-to-fit" data-selectors="[&quot;table&quot;]" data-min-scale="0.5">
-<meta name="gd-logo-tooltip" content="<code>v0.1.0</code><br>Released 2026-11-04">
+<meta name="gd-logo-tooltip" content="<code>v0.1.1</code><br>Released 2026-11-12">
 <style>:root{--gd-nav-prefix-api:"API";--gd-nav-prefix-cli:"CLI";--gd-nav-prefix-mcp:"MCP";}</style>
 <link rel="canonical" href="https://shikokuchuo.net/pymizu/changelog.html">
 <meta property="og:url" content="https://shikokuchuo.net/pymizu/changelog.html">
@@ -161,7 +161,8 @@ ul.task-list li input[type="checkbox"] {
     <h2 id="toc-title">Releases</h2>
    
   <ul>
-  <li><a href="#pymizu-0.1.0" id="toc-pymizu-0.1.0" class="nav-link active" data-scroll-target="#pymizu-0.1.0">pymizu 0.1.0</a></li>
+  <li><a href="#pymizu-0.1.1" id="toc-pymizu-0.1.1" class="nav-link active" data-scroll-target="#pymizu-0.1.1">pymizu 0.1.1</a></li>
+  <li><a href="#pymizu-0.1.0" id="toc-pymizu-0.1.0" class="nav-link" data-scroll-target="#pymizu-0.1.0">pymizu 0.1.0</a></li>
   </ul>
 </nav>
     </div>
@@ -188,11 +189,57 @@ ul.task-list li input[type="checkbox"] {
 
 
 <p>This changelog is generated automatically from <a href="https://github.com/shikokuchuo/pymizu/releases">GitHub Releases</a>.</p>
+<section id="pymizu-0.1.1" class="level1 changelog-version">
+<h1 class="changelog-version">pymizu 0.1.1</h1>
+<p><em>2026-11-12</em> · <a href="https://github.com/shikokuchuo/pymizu/releases/tag/v0.1.1">GitHub</a></p>
+<section id="whats-changed" class="level2">
+<h2 class="anchored" data-anchor-id="whats-changed">What’s Changed</h2>
+<ul>
+<li>Cache numpy entry points and trim small redundancies by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/15</li>
+<li>Deduplicate repeated C idioms by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/16</li>
+<li>Hot-path efficiency by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/17</li>
+<li>Fix a Pool.stop deadlock with an in-flight notify drain by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/18</li>
+<li>Refactor C near the byte-identity surface by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/19</li>
+<li>De-thread pymizu from _map.py and dedup its Python structure by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/20</li>
+<li>Faster masked int64 Arrow conversions to R peers by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/21</li>
+<li>Send Pool.map() results over a typed result codec instead of pickle by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/22</li>
+<li>Speed up the unseeded map element loop by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/23</li>
+<li>Speed up Task.collect_async() and PoolExecutor submits by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/25</li>
+<li>Gate streaming spec seed offsets and inform numpy-less complex map errors by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/26</li>
+<li>Stage top-level scalars directly as ‘I’ tags on foreign handles by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/27</li>
+<li>Fix async pool collections hanging when a pool is reused across event loops by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/28</li>
+<li>Add Channel.recv_batch_async() and batch iterators by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/29</li>
+<li>Linux performance pass and vendored libmizu update by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/30</li>
+<li>Speed up send staging, map loops, and asyncio waiter detach by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/31</li>
+<li>Speed up task decode, spin waits, and buffer task staging by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/32</li>
+<li>Speed up small-container sends, frame resends, and view Arrow exports by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/33</li>
+<li>Faster large frame relay and batch task collection by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/34</li>
+<li>Fix PoolExecutor submit/drain collect race by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/35</li>
+<li>Build with pinned -O3, LTO, and hidden visibility; strip release wheels by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/36</li>
+<li>Resolve task fns through sys.modules; drop the fn caches by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/37</li>
+<li>Speed up C boundary calls by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/38</li>
+<li>Speed up small task collections by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/39</li>
+<li>Defer package version lookup until first access by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/40</li>
+<li>Fix Arrow RecordBatch and vector staging by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/41</li>
+<li>Re-vendor libmizu Arrow conversion kernels by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/42</li>
+<li>Speed up foreign Frame sends by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/43</li>
+<li>Re-vendor libmizu Arrow null handling speedups by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/44</li>
+<li>Speed up Frame.from_arrow copies and send Frame task arguments by name by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/46</li>
+<li>Improve executor performance by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/47</li>
+<li>Remove dead code, fold duplicated paths and re-vendor libmizu by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/48</li>
+<li>Remove the TestPyPI publish leg by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/49</li>
+<li>Fix sdist tests and guard PyPI publishing by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/50</li>
+<li>Elide the channel batch-receive API by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/51</li>
+<li>pymizu 0.1.1 by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/52</li>
+</ul>
+<p><strong>Full Changelog</strong>: <a href="https://github.com/shikokuchuo/pymizu/compare/v0.1.0...v0.1.1">https://github.com/shikokuchuo/pymizu/compare/v0.1.0…v0.1.1</a></p>
+</section>
+</section>
 <section id="pymizu-0.1.0" class="level1 changelog-version">
 <h1 class="changelog-version">pymizu 0.1.0</h1>
 <p><em>2026-11-04</em> · <a href="https://github.com/shikokuchuo/pymizu/releases/tag/v0.1.0">GitHub</a></p>
-<section id="whats-changed" class="level2">
-<h2 class="anchored" data-anchor-id="whats-changed">What’s Changed</h2>
+<section id="whats-changed-1" class="level2">
+<h2 class="anchored" data-anchor-id="whats-changed-1">What’s Changed</h2>
 <ul>
 <li>Build the docs site with Great Docs by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/2</li>
 <li>Add a process-wide default pool by <a href="https://github.com/shikokuchuo"><span class="citation" data-cites="shikokuchuo">@shikokuchuo</span></a> in https://github.com/shikokuchuo/pymizu/pull/4</li>
