@@ -674,8 +674,12 @@ def _wrap_out(raw: _Any, tag: int, n: int, m: int) -> _Any:
     if tag == _TAG_COMPLEX:
         raise TypeError("pymizu: a complex128 template output needs numpy")
     fmt = _TAG_MV[tag]
-    mv = memoryview(raw).cast(fmt)
-    return mv.cast(fmt, [n, m]) if m > 1 else mv
+    # Cast through bytes: typed-to-typed casts are invalid. Zero-length
+    # outputs stay flat because memoryview cannot represent zero dimensions.
+    mv = memoryview(raw).cast("B")
+    if m > 1 and n:
+        return mv.cast(fmt, [n, m])
+    return mv.cast(fmt)
 
 
 def _probe_x(
@@ -1306,8 +1310,8 @@ class _StreamWindowSpec:
             capsule, self.capsules[k] = self.capsules[k], None
             lo, hi = self.ranges[k]
             if tprobe is not None:
-                chunk, _ = _gather_out(capsule, tprobe, hi - lo, "copy")
-                out[lo:hi] = chunk
+                # one memcpy into the final accumulator's flat byte offset
+                _pymizu._map_gather_into(capsule, out, lo * tprobe[2])
             else:
                 run = v
                 if plan.lang == _LANG_R:

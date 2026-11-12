@@ -649,6 +649,47 @@ static PyObject *py_map_gather(PyObject *Py_UNUSED(module), PyObject *caps) {
     (const char *) mh->shm->addr + mh->h.out_off, (Py_ssize_t) nbytes);
 }
 
+/* byte_offset is a flat offset in bytes — mizu's mizu_map_gather_into takes
+   the same offset in elements. */
+PyDoc_STRVAR(map_gather_into_doc,
+"_map_gather_into(capsule, out, byte_offset) -> None\n\n\
+Copy the whole output area into a writable C-contiguous buffer at byte_offset,\n\
+validating the destination size. The spec stream's one-memcpy chunk gather.");
+
+static PyObject *py_map_gather_into(PyObject *Py_UNUSED(module),
+                                    PyObject *const *args, Py_ssize_t nargs) {
+  if (nargs != 3) {
+    PyErr_Format(PyExc_TypeError,
+                 "_map_gather_into() takes exactly 3 arguments (%zd given)",
+                 nargs);
+    return NULL;
+  }
+  mizu_pymap *mh = pymap_get(args[0]);
+  if (mh == NULL) return NULL;
+  if (mh->h.out_type == 0) {
+    PyErr_SetString(MizuErr, "pymizu: map region has no output area");
+    return NULL;
+  }
+  unsigned long long offset = pymap_K(args[2], "_map_gather_into", 3);
+  if (offset == (unsigned long long) (long long) -1 && PyErr_Occurred())
+    return NULL;
+  Py_buffer dst;
+  if (PyObject_GetBuffer(args[1], &dst,
+                         PyBUF_C_CONTIGUOUS | PyBUF_WRITABLE) < 0)
+    return NULL;
+  uint64_t nbytes = mh->h.n * mh->h.out_m * mh->h.out_elt;
+  if (offset > (uint64_t) dst.len ||
+      nbytes > (uint64_t) dst.len - (uint64_t) offset) {
+    PyBuffer_Release(&dst);
+    PyErr_SetString(MizuErr, "pymizu: map gather range out of bounds");
+    return NULL;
+  }
+  memcpy((char *) dst.buf + offset, (const char *) mh->shm->addr + mh->h.out_off,
+         (size_t) nbytes);
+  PyBuffer_Release(&dst);
+  Py_RETURN_NONE;
+}
+
 /* collect="view": the output area exported read-only, the map context
    capsule held as the owner — the region's unlink defers to the view's
    teardown (the capsule destructor), exactly the _ShmView discipline. The
@@ -1201,6 +1242,8 @@ static PyMethodDef pymap_methods[] = {
   {"_map_write", (PyCFunction)(void (*)(void)) py_map_write, METH_FASTCALL,
    map_write_doc},
   {"_map_gather", (PyCFunction) py_map_gather, METH_O, map_gather_doc},
+  {"_map_gather_into", (PyCFunction)(void (*)(void)) py_map_gather_into,
+   METH_FASTCALL, map_gather_into_doc},
   {"_map_gather_view", (PyCFunction) py_map_gather_view, METH_O,
    map_gather_view_doc},
   {NULL, NULL, 0, NULL}

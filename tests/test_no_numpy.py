@@ -67,6 +67,51 @@ def test_map_int64_without_numpy(tmp_path):
             out = p.map(square, x, template=array.array("q", [0])).collect()
             assert type(out) is memoryview and out.format == "q"
             assert list(out) == [i * i for i in range(50)]
+
+            fn = pymizu.call(
+                source="import array\\narray.array('q', [x, x * 2])"
+            )
+            template = array.array("q", [0, 0])
+            want = [[i, i * 2] for i in range(50)]
+            for kwargs in (
+                {},
+                {"collect": "view"},
+                {"stream": True, "n_chunks": 7},
+            ):
+                out = p.map(fn, x, template=template, **kwargs).collect()
+                assert type(out) is memoryview and out.shape == (50, 2)
+                assert out.tolist() == want
+            out = p.map(fn, [], template=template).collect()
+            assert type(out) is memoryview and out.tolist() == []
+        finally:
+            p.stop()
+        """,
+    )
+
+
+def test_stream_spec_template_without_numpy(tmp_path):
+    _run_without_numpy(
+        tmp_path,
+        """
+        import array
+
+        import pymizu
+        from pymizu import _map
+
+        assert _map._np is None  # the shim took; else this covers nothing
+
+        x = array.array("d", range(40))
+        p = pymizu.Pool.create(2)
+        try:
+            out = p.map(
+                pymizu.call("builtins.abs"),
+                x,
+                template=array.array("d", [0]),
+                stream=True,
+                n_chunks=7,
+            ).collect()
+            assert type(out) is memoryview and out.format == "d"
+            assert list(out) == list(x)
         finally:
             p.stop()
         """,

@@ -438,6 +438,35 @@ def test_stream_spec_fn_own_shape(pool):
         assert got == want
 
 
+def test_stream_spec_fn_template(pool):
+    import numpy as np
+
+    x = np.arange(60, dtype=np.float64)
+    for chunks in (1, 7, 60):
+        out = pool.map(
+            pymizu.call("math.sqrt"),
+            x,
+            template=np.empty(1),
+            stream=True,
+            n_chunks=chunks,
+        ).collect()
+        np.testing.assert_array_equal(out, np.sqrt(x))
+
+    fn = pymizu.call(
+        source="import numpy as np\nnp.array([x, x * 2], dtype=float)"
+    )
+    out = pool.map(
+        fn,
+        list(range(50)),
+        template=np.empty(2),
+        stream=True,
+        n_chunks=7,
+    ).collect()
+    assert out.shape == (50, 2)
+    np.testing.assert_array_equal(out[:, 0], np.arange(50))
+    np.testing.assert_array_equal(out[:, 1], np.arange(50) * 2)
+
+
 def test_stream_spec_clean_collect_skips_cleanup(pool, monkeypatch):
     m = pool.map(
         pymizu.call("builtins.abs"),
