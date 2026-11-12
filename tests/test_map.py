@@ -1905,6 +1905,14 @@ def test_map_gather_into():
         Q._map_close(capsule)
 
 
+def test_map_gather_into_arity():
+    Q = pymizu._pymizu
+    with pytest.raises(TypeError, match="takes exactly 3 arguments"):
+        Q._map_gather_into(bytearray(8), 0)
+    with pytest.raises(TypeError, match="takes exactly 3 arguments"):
+        Q._map_gather_into(None, bytearray(8), 0, 0)
+
+
 def test_map_swap_x_gates():
     import pickle
 
