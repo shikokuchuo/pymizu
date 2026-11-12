@@ -14,6 +14,7 @@ from collections.abc import Iterable as _Iterable
 from collections.abc import Iterator as _Iterator
 from typing import TYPE_CHECKING
 from typing import Any as _Any
+from typing import Self as _Self
 
 from pymizu import _pymizu
 from pymizu._pymizu import (
@@ -199,7 +200,7 @@ class Channel:
         raise TypeError("use Channel.create() or Channel._attach()")
 
     @classmethod
-    def _wrap(cls, handle: _pymizu._Channel) -> Channel:
+    def _wrap(cls, handle: _pymizu._Channel) -> _Self:
         self = cls.__new__(cls)
         self._h = handle
         self._proc = None
@@ -220,7 +221,7 @@ class Channel:
         spin: bool = False,
         startup_timeout: float = 30.0,
         launcher: _Callable[[str], _Any] | None = None,
-    ) -> Channel:
+    ) -> _Self:
         """Create a channel and spawn its peer.
 
         Parameters
@@ -293,7 +294,7 @@ class Channel:
         return ch
 
     @classmethod
-    def _attach(cls, token: str) -> Channel:
+    def _attach(cls, token: str) -> _Self:
         """Attach to the channel named by a join token (the peer side).
 
         Parameters
@@ -503,7 +504,7 @@ class Channel:
         """A read-only snapshot of the channel's state (dict)."""
         return self._h.info()
 
-    def __enter__(self) -> Channel:
+    def __enter__(self) -> _Self:
         return self
 
     def __exit__(self, *exc: _Any) -> bool:
@@ -739,7 +740,7 @@ class Pool:
         raise TypeError("use Pool.create() or Pool.attach()")
 
     @classmethod
-    def _wrap(cls, handle: _pymizu._Pool) -> Pool:
+    def _wrap(cls, handle: _pymizu._Pool) -> _Self:
         self = cls.__new__(cls)
         self._h = handle
         self._submit = handle.submit
@@ -761,7 +762,7 @@ class Pool:
         slot_size: int = 512,
         startup_timeout: float = 30.0,
         launcher: _Callable[[str, int], _Any] | None = None,
-    ) -> Pool:
+    ) -> _Self:
         """Create a pool and spawn its worker processes.
 
         Parameters
@@ -832,7 +833,7 @@ class Pool:
         return cls._wrap(h)
 
     @classmethod
-    def attach(cls, token: str) -> Pool:
+    def attach(cls, token: str) -> _Self:
         """Attach to a live pool as a submitter, by its join token.
 
         Parameters
@@ -1512,7 +1513,7 @@ class Pool:
         """
         self._h.set_trace(fn)
 
-    def __enter__(self) -> Pool:
+    def __enter__(self) -> _Self:
         return self
 
     def __exit__(self, *exc: _Any) -> bool:

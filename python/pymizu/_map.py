@@ -45,6 +45,7 @@ from collections.abc import Callable as _Callable
 from typing import Any as _Any
 from typing import Literal as _Literal
 from typing import NoReturn as _NoReturn
+from typing import Self as _Self
 
 import pymizu
 from pymizu import _LANG_PYTHON, _LANG_R, _get_aio, _pymizu, _split_source
@@ -2361,7 +2362,7 @@ class PreparedMap:
     def closed(self) -> bool:
         return self._closed
 
-    def __enter__(self) -> PreparedMap:
+    def __enter__(self) -> _Self:
         return self
 
     def __exit__(self, *exc: _Any) -> None:

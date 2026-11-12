@@ -428,8 +428,7 @@ def test_lambda_submit(pool):
     try:
         import cloudpickle  # noqa: F401
     except ImportError:
-        # 3.11+ raises PicklingError; 3.10 raises AttributeError
-        with pytest.raises((pickle.PickleError, AttributeError)):
+        with pytest.raises(pickle.PickleError):
             pool.submit(lambda: 1)
     else:
         assert pool.submit(lambda: 41).collect(timeout=5) + 1 == 42
