@@ -66,7 +66,7 @@ Against `ThreadPoolExecutor` (tasks share one process, so the GIL caps CPU-bound
 
 See [Benchmarks](user-guide/benchmarks.md) for how pymizu compares with other frameworks, and for the benchmark scripts.
 
-### Drop-in `concurrent.futures`
+### `concurrent.futures` and asyncio
 
 [PoolExecutor](./reference/PoolExecutor.md#pymizu.PoolExecutor) adapts a pool to the stdlib `concurrent.futures.Executor` interface, so code written against `ProcessPoolExecutor` drops in, and `submit` returns real `Future` objects:
 
@@ -80,7 +80,19 @@ result
 
     [1, 2, 4, 8]
 
-See [Task pools](user-guide/pools.md#concurrentfutures-interop) for wrapping an existing pool and how cancellation works.
+[Pool.submit()](./reference/Pool.submit.md#pymizu.Pool.submit) returns an awaitable [Task](./reference/Task.md#pymizu.Task), so native asyncio code needs no executor or `asyncio.wrap_future`. Batch collectors and map handles are awaitable too:
+
+``` python
+with pymizu.Pool.create(4) as pool:
+    task = pool.submit(pow, 2, 16)
+    result = await task
+
+result
+```
+
+    65536
+
+See [Task pools](user-guide/pools.md) for async collection, executor interop, and cancellation.
 
 ### Parallel map
 

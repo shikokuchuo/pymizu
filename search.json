@@ -1051,11 +1051,11 @@
     "text": "Benchmarks\nCommunication overhead against the stdlib concurrent.futures pools (Apple M4 Pro, from benchmarks/mizu-stdlib-bench.py).\nAgainst ProcessPoolExecutor (tasks run in separate processes, with pickled payloads):\n\n\n\nBenchmark\npymizu\nProcessPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.6 µs\n94.2 µs\n157x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n18,500 tasks/s\n129x\n\n\n8 KB vector round trip\n2.4 µs\n100.7 µs\n42x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n2.9 ms\n123 ms\n42x\n\n\n\nAgainst ThreadPoolExecutor (tasks share one process, so the GIL caps CPU-bound work at a single core):\n\n\n\nBenchmark\npymizu\nThreadPoolExecutor\nSpeedup\n\n\n\n\nTrivial task round trip\n0.6 µs\n9.5 µs\n16x\n\n\nPipelined throughput, 1 worker\n2,390,000 tasks/s\n405,000 tasks/s\n5.9x\n\n\n8 KB vector round trip\n2.4 µs\n9.3 µs\n3.9x\n\n\nParallel map of 2,000 ~5 µs tasks, 4 workers\n2.9 ms\n48 ms\n17x\n\n\n\nSee Benchmarks for how pymizu compares with other frameworks, and for the benchmark scripts."
   },
   {
-    "objectID": "index.html#drop-in-concurrent.futures",
-    "href": "index.html#drop-in-concurrent.futures",
+    "objectID": "index.html#concurrent.futures-and-asyncio",
+    "href": "index.html#concurrent.futures-and-asyncio",
     "title": "pymizu",
-    "section": "Drop-in concurrent.futures",
-    "text": "Drop-in concurrent.futures\nPoolExecutor adapts a pool to the stdlib concurrent.futures.Executor interface, so code written against ProcessPoolExecutor drops in, and submit returns real Future objects:\n\nwith pymizu.PoolExecutor.create(4) as ex:\n    futures = [ex.submit(pow, 2, i) for i in range(4)]\n    result = [f.result() for f in futures]\n\nresult\n\n[1, 2, 4, 8]\n\n\nSee Task pools for wrapping an existing pool and how cancellation works."
+    "section": "concurrent.futures and asyncio",
+    "text": "concurrent.futures and asyncio\nPoolExecutor adapts a pool to the stdlib concurrent.futures.Executor interface, so code written against ProcessPoolExecutor drops in, and submit returns real Future objects:\n\nwith pymizu.PoolExecutor.create(4) as ex:\n    futures = [ex.submit(pow, 2, i) for i in range(4)]\n    result = [f.result() for f in futures]\n\nresult\n\n[1, 2, 4, 8]\n\n\nPool.submit() returns an awaitable Task, so native asyncio code needs no executor or asyncio.wrap_future. Batch collectors and map handles are awaitable too:\n\nwith pymizu.Pool.create(4) as pool:\n    task = pool.submit(pow, 2, 16)\n    result = await task\n\nresult\n\n65536\n\n\nSee Task pools for async collection, executor interop, and cancellation."
   },
   {
     "objectID": "index.html#parallel-map",
