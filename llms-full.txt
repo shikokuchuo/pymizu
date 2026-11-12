@@ -33,7 +33,7 @@ from any thread.
 Methods for the Channel class
 
 
-create(peer: 'str', *, capacity: 'int' = 16384, slot_size: 'int' = 256, arena_size: 'int' = 4194304, spin: 'bool' = False, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str], _Any] | None' = None) -> 'Channel'
+create(peer: 'str', *, capacity: 'int' = 16384, slot_size: 'int' = 256, arena_size: 'int' = 4194304, spin: 'bool' = False, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str], _Any] | None' = None) -> '_Self'
 
 Create a channel and spawn its peer.
 
@@ -229,7 +229,7 @@ info(self) -> 'dict'
 
 A read-only snapshot of the channel's state (dict).
 
-__enter__(self) -> 'Channel'
+__enter__(self) -> '_Self'
 
 __exit__(self, *exc: '_Any') -> 'bool'
 
@@ -409,7 +409,7 @@ results
 Methods for the Pool class
 
 
-create(n_workers: 'int' = 1, *, max_workers: 'int | None' = None, max_submitters: 'int' = 8, injection_cap: 'int' = 1024, per_worker_cap: 'int' = 1024, result_slots: 'int' = 4096, slot_size: 'int' = 512, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str, int], _Any] | None' = None) -> 'Pool'
+create(n_workers: 'int' = 1, *, max_workers: 'int | None' = None, max_submitters: 'int' = 8, injection_cap: 'int' = 1024, per_worker_cap: 'int' = 1024, result_slots: 'int' = 4096, slot_size: 'int' = 512, startup_timeout: 'float' = 30.0, launcher: '_Callable[[str, int], _Any] | None' = None) -> '_Self'
 
 Create a pool and spawn its worker processes.
 
@@ -451,7 +451,7 @@ Examples
 >>> results
 [65536]
 
-attach(token: 'str') -> 'Pool'
+attach(token: 'str') -> '_Self'
 
 Attach to a live pool as a submitter, by its join token.
 
@@ -955,7 +955,7 @@ Registration is per-handle and per-process; ``None`` removes the
 hook. An exception in the hook is reported as unraisable, never
 raised into the pool.
 
-__enter__(self) -> 'Pool'
+__enter__(self) -> '_Self'
 
 __exit__(self, *exc: '_Any') -> 'bool'
 
@@ -1514,7 +1514,7 @@ This is the User Guide documentation for the package.
 
 ## Requirements
 
-- Python 3.10 or later, on a 64-bit platform.
+- Python 3.11 or later, on a 64-bit platform.
 - Linux: kernel 5.3 or later.
 - macOS: 10.15 or later.
 - Windows: the build requires clang-cl.
@@ -1644,7 +1644,7 @@ The two approaches solve different problems: threads trade isolation for sharing
 Python 3.14 also added `concurrent.interpreters` to the stdlib ([PEP 734](https://peps.python.org/pep-0734/)): multiple interpreters in one process, each with its own GIL, so CPU work parallelizes without new processes on the standard build.
 Objects that cross between interpreters must be shareable: builtin scalars and plain containers copy across, buffer-protocol objects share their memory (synchronization is on you), and everything else — numpy arrays included — is rejected.
 The isolation is real but not OS-level: a fatal error in one interpreter ends the process, and you build the surrounding machinery (queues, lifetimes, crash handling) yourself.
-`concurrent.interpreters` requires Python 3.14+; pymizu runs on 3.10+.
+`concurrent.interpreters` requires Python 3.14+; pymizu runs on 3.11+.
 
 ### R workers
 

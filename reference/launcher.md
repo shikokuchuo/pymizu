@@ -4,7 +4,7 @@ Return a launcher spawning Python processes running pymizu.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L83-L138)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L84-L139)
 
 ``` python
 launcher(

@@ -4,7 +4,7 @@ Receive one value.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L363-L385)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L364-L386)
 
 ``` python
 Channel.recv(timeout=None)

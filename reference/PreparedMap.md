@@ -4,7 +4,7 @@ A map set up once in shared memory, run many times.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2034-L2368)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2035-L2369)
 
 ``` python
 PreparedMap(
@@ -80,7 +80,7 @@ Release the staged shared memory.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2349-L2358)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2350-L2359)
 
 ``` python
 close()
@@ -94,7 +94,7 @@ Run the prepared map once; return the run's map handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2230-L2347)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2231-L2348)
 
 ``` python
 run(

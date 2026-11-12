@@ -12,7 +12,7 @@ metadata:
   author: Charlie Gao (@shikokuchuo)
   version: "1.0"
 license: MIT
-compatibility: Requires Python >= 3.10, 64-bit; Linux kernel >= 5.3.
+compatibility: Requires Python >= 3.11, 64-bit; Linux kernel >= 5.3.
 ---
 
 # pymizu: async and parallel Python over shared memory

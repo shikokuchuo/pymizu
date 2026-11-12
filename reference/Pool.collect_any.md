@@ -4,7 +4,7 @@ Wait on several tasks.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L980-L1006)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L981-L1007)
 
 ``` python
 Pool.collect_any(

@@ -4,7 +4,7 @@ Receive the next value as an `asyncio.Future`.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L387-L419)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L388-L420)
 
 ``` python
 Channel.recv_async()

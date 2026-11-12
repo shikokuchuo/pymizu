@@ -4,7 +4,7 @@ Create a pool and spawn its worker processes.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L751-L832)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L752-L833)
 
 ``` python
 Pool.create(

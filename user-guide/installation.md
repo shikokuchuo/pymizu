@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python 3.10 or later, on a 64-bit platform.
+- Python 3.11 or later, on a 64-bit platform.
 - Linux: kernel 5.3 or later.
 - macOS: 10.15 or later.
 - Windows: the build requires clang-cl.

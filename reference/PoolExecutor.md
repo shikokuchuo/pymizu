@@ -4,7 +4,7 @@ A `concurrent.futures.Executor` over a pymizu pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L85-L528)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L86-L529)
 
 ``` python
 PoolExecutor(
@@ -58,7 +58,7 @@ Spawn an owned pool and wrap it.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L172-L194)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L173-L195)
 
 ``` python
 create(
@@ -87,7 +87,7 @@ Return an iterator applying `fn` to every zipped input element.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L196-L289)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L197-L290)
 
 ``` python
 map(
@@ -127,7 +127,7 @@ Shut down the executor.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L391-L420)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L392-L421)
 
 ``` python
 shutdown(
@@ -151,7 +151,7 @@ Schedule `fn(*args, **kwargs)` on the pool.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L291-L380)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_executor.py#L292-L381)
 
 ``` python
 submit(

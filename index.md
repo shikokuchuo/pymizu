@@ -26,7 +26,7 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 pip install pymizu
 ```
 
-Requires Python 3.10 or later on a 64-bit platform. See [Installation](user-guide/installation.md) for platform notes, optional extras, and deployment on Linux.
+Requires Python 3.11 or later on a 64-bit platform. See [Installation](user-guide/installation.md) for platform notes, optional extras, and deployment on Linux.
 
 ### Quickstart
 
