@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `cancel()` on a collected map handle no longer disrupts a later run
+  of the same prepared map.
+
 ### Removed
 
 - Support for Python 3.10, which reached end of life in October 2026.
