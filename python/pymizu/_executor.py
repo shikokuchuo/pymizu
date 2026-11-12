@@ -24,6 +24,7 @@ from functools import partial as _partial
 from itertools import islice as _islice
 from typing import TYPE_CHECKING
 from typing import Any as _Any
+from typing import Self as _Self
 
 import pymizu as _pkg
 from pymizu import _pymizu
@@ -170,7 +171,7 @@ class PoolExecutor(_Executor):
         hooks.append(self._on_pool_destroy)
 
     @classmethod
-    def create(cls, n_workers: int = 1, **pool_kwargs: _Any) -> PoolExecutor:
+    def create(cls, n_workers: int = 1, **pool_kwargs: _Any) -> _Self:
         """Spawn an owned pool and wrap it.
 
         Calls [`Pool.create()`](`pymizu.Pool.create`) with `n_workers` and
