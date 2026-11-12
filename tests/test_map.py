@@ -1636,6 +1636,7 @@ def test_map_capsule_lifecycle():
         lambda: Q._map_x_view(caps),
         lambda: Q._map_cancel_get(caps),
         lambda: Q._map_gather(caps),
+        lambda: Q._map_gather_into(caps, bytearray(32), 0),
         lambda: Q._map_gather_view(caps),
         lambda: Q._map_next(caps, None, 0, 0),
         lambda: Q._map_write(caps, 0, [1.0]),
@@ -1858,7 +1859,48 @@ def test_map_output_area_absent():
         with pytest.raises(pymizu.MizuError, match="no output area"):
             Q._map_gather(capsule)
         with pytest.raises(pymizu.MizuError, match="no output area"):
+            Q._map_gather_into(capsule, bytearray(32), 0)
+        with pytest.raises(pymizu.MizuError, match="no output area"):
             Q._map_gather_view(capsule)
+    finally:
+        Q._map_close(capsule)
+
+
+def test_map_gather_into():
+    import pickle
+
+    import numpy as np
+
+    Q = pymizu._pymizu
+    desc = pickle.dumps((identity, (), {}), 4)
+    name, capsule = Q._map_stage(desc, None, 2, 2, np.empty(2), False, 1)
+    try:
+        Q._map_write(capsule, 0, [np.array([1.0, 2.0]), np.array([3.0, 4.0])])
+        out = np.full(8, -1.0)
+        Q._map_gather_into(capsule, out, 16)
+        np.testing.assert_array_equal(
+            out, np.array([-1.0, -1.0, 1.0, 2.0, 3.0, 4.0, -1.0, -1.0])
+        )
+        raw = bytearray(6 * 8)
+        Q._map_gather_into(capsule, raw, 8)
+        assert list(memoryview(raw).cast("d")) == [
+            0.0,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            0.0,
+        ]
+        with pytest.raises(BufferError):
+            Q._map_gather_into(capsule, bytes(32), 0)
+        with pytest.raises((BufferError, ValueError)):
+            Q._map_gather_into(capsule, np.empty(8)[::2], 0)
+        with pytest.raises(pymizu.MizuError, match="gather range"):
+            Q._map_gather_into(capsule, bytearray(31), 0)
+        with pytest.raises(pymizu.MizuError, match="gather range"):
+            Q._map_gather_into(capsule, bytearray(32), -1)
+        with pytest.raises(TypeError, match="must be int"):
+            Q._map_gather_into(capsule, bytearray(32), 0.5)
     finally:
         Q._map_close(capsule)
 

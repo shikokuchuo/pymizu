@@ -1928,3 +1928,22 @@ coverage passed.
 
 Status: `make check` green (1153 pass, 1 skip; crosslang legs included), with
 ruff format, ruff check and pyrefly clean.
+
+## 2026-11-12 — spec-stream template gather (step 3)
+
+Template chunks now gather directly into the final accumulator at its byte
+offset through `_map_gather_into()`, removing the temporary chunk array and
+second copy. A = `b11794f`; B = the phase-3 working tree. Four workers;
+A/B/A/B with `perf_counter` medians over 7 groups of 10 calls.
+
+| measurement (ms/call) | A1 | B1 | A2 | B2 |
+|---|---:|---:|---:|---:|
+| spec stream, 256 generic chunks | 3.5185 | 3.6747 | 3.5400 | 3.5452 |
+| spec stream, 256 template chunks | 3.8707 | 3.4262 | 3.7712 | 3.5083 |
+
+Generic collection is unchanged within drift. The template gather is 7-11%
+faster in the two A/B pairs. These isolated probes do not replace best-known
+rows.
+
+Status: full suite green (1156 pass, 1 skip; crosslang legs included), with
+ruff format, ruff check and pyrefly clean.

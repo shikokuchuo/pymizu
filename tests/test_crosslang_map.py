@@ -437,6 +437,9 @@ def test_stream_spec_map_template(r_pool):
         n_chunks=2,
     ).collect()
     assert out2.shape == (3, 2)
+    np.testing.assert_array_equal(
+        out2, np.array([[1.0, 2.0], [2.0, 2.0], [3.0, 2.0]])
+    )
 
 
 def test_stream_spec_map_view_collect_raises(r_pool):

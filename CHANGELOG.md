@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `Pool.map()` with a multi-element template raising `TypeError`
+  during collection when numpy is unavailable.
 - `cancel()` on a collected map handle no longer disrupts a later run
   of the same prepared map.
 
