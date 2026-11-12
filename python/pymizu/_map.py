@@ -1593,6 +1593,7 @@ class Map:
         "run",
         "pm",
         "_done",
+        "_settled",
         "_promised",
         "_cancelled",
         "_transferred",
@@ -1615,6 +1616,7 @@ class Map:
         self.run = None  # the streaming window state
         self.pm = None  # the PreparedMap back-reference, or None
         self._done = False
+        self._settled = False  # the collect has finished
         self._promised = False
         self._cancelled = False
         self._transferred = False  # a view collect owns the region
@@ -1896,6 +1898,7 @@ class Map:
         try:
             out = self._collect(remaining, expired)
         except BaseException:
+            self._settled = True
             self._cleanup(True)
             if self._cancelled:
                 # the cancel owns the outcome: a claimed runner's collect
@@ -1903,6 +1906,7 @@ class Map:
                 # "already collected" — both fold to the documented one
                 raise pymizu.CancelledError("pymizu: map cancelled") from None
             raise
+        self._settled = True
         if out is pymizu.TIMEOUT:
             self._cleanup(True)
             return out
@@ -2005,9 +2009,14 @@ class Map:
         tasks are cancelled, so a queued task is skipped, and a running batch
         completes with its result dropped. A pending collect, blocking or
         async, ends with [`CancelledError`](`pymizu.CancelledError`). Safe to
-        call more than once.
+        call more than once. A no-op on a collected handle.
         """
-        if self._cancelled:
+        # a collected handle owns nothing: its tasks are consumed, and a
+        # prepared map's stage belongs to the next run — setting the
+        # cancel word there would stop that run's runners mid-map. The
+        # gate is _settled, not _done: _done is set at collect() entry,
+        # and a cancel landing mid-collect must still stop the run
+        if self._cancelled or self._settled:
             return
         self._cancelled = True
         self._cancel_capsules(False)

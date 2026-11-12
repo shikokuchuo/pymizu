@@ -46,6 +46,7 @@ from tests.helpers import (
     scale_add,
     sleep_ident,
     sleep_on,
+    sleep_then,
     square,
 )
 
@@ -214,6 +215,24 @@ def test_prepared_run_dropped_uncollected_restages(pool):
         assert pm.run(timeout=5).collect() == [i * i for i in range(2000)]
     finally:
         pm.close()
+
+
+def test_map_prepared_cancel_after_collect(pool):
+    # cancel() on a collected handle is a no-op: the stage belongs to the
+    # next run, whose results must arrive whole
+    pm = pool.map_prepare(sleep_then, list(range(40)), args=(0.01,))
+    try:
+        m1 = pm.run()
+        assert m1.collect() == list(range(40))
+        m2 = pm.run()
+        m1.cancel()
+        assert m2.collect(timeout=30) == list(range(40))
+    finally:
+        pm.close()
+    # a collected one-shot handle: no error, no effect
+    m = pool.map(square, list(range(10)))
+    assert m.collect() == [i * i for i in range(10)]
+    m.cancel()
 
 
 def test_map_slots_exhausted():
