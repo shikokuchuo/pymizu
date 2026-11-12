@@ -313,7 +313,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li><code>handle.collect_async()</code>, or <code>await handle</code>, resolves one <code>asyncio.Future</code> with the same results when they arrive, with no blocking or polling. Cancelling the Future only detaches the waiter: the handle can be collected blocking again, and the map is never cancelled. A streaming map (<code>stream=True</code>) can only be collected blocking, because its sliding task window advances in the blocking collect loop.</li>
 <li><code>handle.cancel()</code> stops the run: workers halt within about one batch, and a pending collect, blocking or async, ends with <a href="../reference/CancelledError.html#pymizu.CancelledError" class="gdls-link gdls-code">CancelledError</a>.</li>
 </ul>
-<p><a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map()</a>’s own <code>timeout=</code> bounds submission only: on its expiry the tasks already in are cancelled and <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map()</a> itself returns the <code>TIMEOUT</code> sentinel (no handle). A dropped uncollected handle cancels at garbage collection, so no work is wasted.</p>
+<p><a href="../reference/pymizu.Pool.map.html" class="gdls-link gdls-code">Pool.map()</a>’s own <code>timeout=</code> bounds submission only: on its expiry the tasks already in are cancelled and <a href="../reference/pymizu.Pool.map.html" class="gdls-link gdls-code">Pool.map()</a> itself returns the <code>TIMEOUT</code> sentinel (no handle). A dropped uncollected handle cancels at garbage collection, so no work is wasted.</p>
 </section>
 <section id="scheduling" class="level1">
 <h1>Scheduling</h1>
@@ -352,7 +352,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>[1024, 27]</code></pre>
 </div>
 </div>
-<p>For the multi-iterable shape of <code>concurrent.futures.Executor.map</code>, zip the iterables first: <code>pool.starmap(fn, zip(xs, ys))</code>. Starmap needs Python workers: a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec raises <code>TypeError</code>. Everything else (seeding, templates, streaming, the outcomes) works as in <a href="../reference/Pool.map.html#pymizu.Pool.map" class="gdls-link gdls-code">Pool.map</a>.</p>
+<p>For the multi-iterable shape of <code>concurrent.futures.Executor.map</code>, zip the iterables first: <code>pool.starmap(fn, zip(xs, ys))</code>. Starmap needs Python workers: a <a href="../reference/call.html#pymizu.call" class="gdls-link gdls-code">pymizu.call</a> spec raises <code>TypeError</code>. Everything else (seeding, templates, streaming, the outcomes) works as in <a href="../reference/pymizu.Pool.map.html" class="gdls-link gdls-code">Pool.map</a>.</p>
 </section>
 <section id="reproducible-randomness" class="level1">
 <h1>Reproducible randomness</h1>

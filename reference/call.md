@@ -16,7 +16,7 @@ call(
 )
 ```
 
-Describes a call for [`Pool.submit()`](../reference/Pool.submit.md#pymizu.Pool.submit): a qualified name (`"mod.fn"` for Python workers, `"pkg::fn"` for R workers) or a `source=` string in the workers' language, plus the constant arguments. The spec describes a call, not a value. The language is not named at the call site, because [Pool.submit](../reference/Pool.submit.md#pymizu.Pool.submit) reads the workers' language from the pool itself, and a bare unqualified name errors at submit, not here.
+Describes a call for [`Pool.submit()`](../reference/pymizu.Pool.submit.md): a qualified name (`"mod.fn"` for Python workers, `"pkg::fn"` for R workers) or a `source=` string in the workers' language, plus the constant arguments. The spec describes a call, not a value. The language is not named at the call site, because [Pool.submit](../reference/pymizu.Pool.submit.md) reads the workers' language from the pool itself, and a bare unqualified name errors at submit, not here.
 
 ## Parameters
 
@@ -34,7 +34,7 @@ Constant keyword arguments of the call.
 
 ## Details
 
-Unnamed arguments map to the positional list and keyword arguments to the named dict, matching R's calling convention. Arguments must be portable values (the portable subset documented under [`Channel.send()`](../reference/Channel.send.md#pymizu.Channel.send)). A non-portable argument raises [`DeclinedError`](../reference/DeclinedError.md#pymizu.DeclinedError) at submit.
+Unnamed arguments map to the positional list and keyword arguments to the named dict, matching R's calling convention. Arguments must be portable values (the portable subset documented under [`Channel.send()`](../reference/pymizu.Channel.send.md)). A non-portable argument raises [`DeclinedError`](../reference/DeclinedError.md#pymizu.DeclinedError) at submit.
 
 A `source=` task evaluates in a fresh namespace with the keyword arguments bound as names and positional arguments bound as `_1`, `_2`, … The result is the trailing expression's value, or None when the source ends with a statement.
 

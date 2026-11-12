@@ -7,53 +7,6 @@ A two-way message link between a Python process and a helper process that it spa
 [Channel](Channel.md#pymizu.Channel)  
 A shared-memory channel handle (process-private).
 
-## Channel Methods
-
-Methods for the Channel class
-
-[Channel.create()](Channel.create.md#pymizu.Channel.create)  
-Create a channel and spawn its peer.
-
-[Channel.token](Channel.token.md#pymizu.Channel.token)  
-The join token for the peer's attach.
-
-[Channel.send()](Channel.send.md#pymizu.Channel.send)  
-Send one value.
-
-[Channel.send_batch()](Channel.send_batch.md#pymizu.Channel.send_batch)  
-Send several values in one call.
-
-[Channel.recv()](Channel.recv.md#pymizu.Channel.recv)  
-Receive one value.
-
-[Channel.recv_async()](Channel.recv_async.md#pymizu.Channel.recv_async)  
-Receive the next value as an `asyncio.Future`.
-
-[Channel.\_\_aiter\_\_()](Channel.__aiter__.md#pymizu.Channel.__aiter__)  
-Iterate over received payloads until CLOSED or PEER_GONE.
-
-[Channel.recv_batch()](Channel.recv_batch.md#pymizu.Channel.recv_batch)  
-Receive up to `n` values in one call.
-
-[Channel.close()](Channel.close.md#pymizu.Channel.close)  
-Close the channel in an orderly way.
-
-[Channel.destroy()](Channel.destroy.md#pymizu.Channel.destroy)  
-Tear down the handle immediately, without the close handshake.
-
-[Channel.alive()](Channel.alive.md#pymizu.Channel.alive)  
-True while the peer process is alive.
-
-[Channel.info()](Channel.info.md#pymizu.Channel.info)  
-A read-only snapshot of the channel's state (dict).
-
-[Channel.\_\_enter\_\_()](Channel.__enter__.md#pymizu.Channel.__enter__)  
-
-[Channel.\_\_exit\_\_()](Channel.__exit__.md#pymizu.Channel.__exit__)  
-
-[Channel.\_\_iter\_\_()](Channel.__iter__.md#pymizu.Channel.__iter__)  
-Iterate over received payloads until CLOSED or PEER_GONE.
-
 ## Task pools
 
 A set of worker processes that divide submitted tasks among themselves.
@@ -73,94 +26,6 @@ A map set up once in shared memory, run many times.
 [PoolExecutor](PoolExecutor.md#pymizu.PoolExecutor)  
 A `concurrent.futures.Executor` over a pymizu pool.
 
-## Pool Methods
-
-Methods for the Pool class
-
-[Pool.create()](Pool.create.md#pymizu.Pool.create)  
-Create a pool and spawn its worker processes.
-
-[Pool.attach()](Pool.attach.md#pymizu.Pool.attach)  
-Attach to a live pool as a submitter, by its join token.
-
-[Pool.token](Pool.token.md#pymizu.Pool.token)  
-The join token for worker/submitter attach.
-
-[Pool.submit()](Pool.submit.md#pymizu.Pool.submit)  
-Submit `fn(*args, **kwargs)` as a task; return a Task handle.
-
-[Pool.submit_batch()](Pool.submit_batch.md#pymizu.Pool.submit_batch)  
-Submit one task per zero-arg callable in `fns` in one call.
-
-[Pool.collect_any()](Pool.collect_any.md#pymizu.Pool.collect_any)  
-Wait on several tasks.
-
-[Pool.collect_all()](Pool.collect_all.md#pymizu.Pool.collect_all)  
-Wait until every task is terminal.
-
-[Pool.collect_any_async()](Pool.collect_any_async.md#pymizu.Pool.collect_any_async)  
-The event-driven [`collect_any()`](../reference/Pool.collect_any.md#pymizu.Pool.collect_any).
-
-[Pool.collect_all_async()](Pool.collect_all_async.md#pymizu.Pool.collect_all_async)  
-The event-driven [`collect_all()`](../reference/Pool.collect_all.md#pymizu.Pool.collect_all).
-
-[Pool.map()](Pool.map.md#pymizu.Pool.map)  
-Map `fn` over `x` on the pool; return a map handle.
-
-[Pool.starmap()](Pool.starmap.md#pymizu.Pool.starmap)  
-Map `fn` over `x`, unpacking each element as call arguments.
-
-[Pool.map_prepare()](Pool.map_prepare.md#pymizu.Pool.map_prepare)  
-Stage a map once for repeated runs; return a [PreparedMap](../reference/PreparedMap.md#pymizu.PreparedMap).
-
-[Pool.retire()](Pool.retire.md#pymizu.Pool.retire)  
-Ask the worker in `slot` to exit cleanly.
-
-[Pool.spawn_workers()](Pool.spawn_workers.md#pymizu.Pool.spawn_workers)  
-Spawn `n` additional workers and wait for them to join.
-
-[Pool.stop()](Pool.stop.md#pymizu.Pool.stop)  
-Orderly shutdown (controller only).
-
-[Pool.destroy()](Pool.destroy.md#pymizu.Pool.destroy)  
-Tear down the pool handle immediately, without waiting.
-
-[Pool.info()](Pool.info.md#pymizu.Pool.info)  
-A read-only snapshot of the pool's state (dict).
-
-[Pool.dump()](Pool.dump.md#pymizu.Pool.dump)  
-A read-only debugging snapshot of the whole pool region (dict).
-
-[Pool.stats()](Pool.stats.md#pymizu.Pool.stats)  
-Cumulative per-worker and per-submitter counters.
-
-[Pool.trace()](Pool.trace.md#pymizu.Pool.trace)  
-Register a hook called as `fn(event, id)` at each task event.
-
-[Pool.\_\_enter\_\_()](Pool.__enter__.md#pymizu.Pool.__enter__)  
-
-[Pool.\_\_exit\_\_()](Pool.__exit__.md#pymizu.Pool.__exit__)  
-
-## Task Methods
-
-Methods for the Task class
-
-[Task.state](Task.state.md#pymizu.Task.state)  
-
-[Task.pool](Task.pool.md#pymizu.Task.pool)  
-
-[Task.collect()](Task.collect.md#pymizu.Task.collect)  
-collect(timeout=None) -\> value \| sentinel
-
-[Task.cancel()](Task.cancel.md#pymizu.Task.cancel)  
-cancel() -\> bool
-
-[Task.collect_async()](Task.collect_async.md#pymizu.Task.collect_async)  
-collect_async() -\> asyncio.Future
-
-[Task.\_\_await\_\_()](Task.__await__.md#pymizu.Task.__await__)  
-Return an iterator to be used in await expression.
-
 ## Cross-language interop
 
 R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
@@ -179,28 +44,6 @@ A data.frame's Python home: named columns with a row count.
 
 [DimArray](DimArray.md#pymizu.DimArray)  
 An `ndarray` carrying R labels for faithful round trips with R.
-
-## Frame Methods
-
-Methods for the Frame class
-
-[Frame.names](Frame.names.md#pymizu.Frame.names)  
-
-[Frame.row_names](Frame.row_names.md#pymizu.Frame.row_names)  
-
-[Frame.to_dict()](Frame.to_dict.md#pymizu.Frame.to_dict)  
-to_dict() -\> dict
-
-[Frame.from_arrow()](Frame.from_arrow.md#pymizu.Frame.from_arrow)  
-from_arrow(obj) -\> Frame
-
-[Frame.\_\_arrow_c_stream\_\_()](Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__)  
-**arrow_c_stream**(requested_schema=None) -\> capsule
-
-[Frame.\_\_len\_\_()](Frame.__len__.md#pymizu.Frame.__len__)  
-Return len(self).
-
-[Frame.\_\_reduce\_\_()](Frame.__reduce__.md#pymizu.Frame.__reduce__)  
 
 ## Outcomes and errors
 
@@ -265,7 +108,7 @@ The process-wide default pool, or None when none is set.
 Set the process-wide default pool; None clears it.
 
 [using_pool()](using_pool.md#pymizu.using_pool)  
-Use [pool](../reference/Task.pool.md#pymizu.Task.pool) as the default for the with block, then restore.
+Use `pool` as the default for the with block, then restore.
 
 [current_pool()](current_pool.md#pymizu.current_pool)  
 The pool handle of the worker running the task.

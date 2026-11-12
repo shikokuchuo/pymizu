@@ -14,7 +14,7 @@ pymizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C librar
 
 - Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)
 - Drop-in `concurrent.futures.Executor` -- real `Future`s, `wait`, `as_completed`, `asyncio.wrap_future`
-- Event-driven asyncio -- `await` tasks and maps, `async for` and [recv_async()](./reference/Channel.recv_async.md#pymizu.Channel.recv_async) on channels -- wake-ups as data arrives, no polling threads
+- Event-driven asyncio -- `await` tasks and maps, `async for` and [recv_async()](./reference/pymizu.Channel.recv_async.md) on channels -- wake-ups as data arrives, no polling threads
 - Reproducible parallel random numbers (`seed=`) -- identical results for any worker count or steal order
 - Nested parallel maps -- a task can map over its own pool, deadlock-free
 
@@ -80,7 +80,7 @@ result
 
     [1, 2, 4, 8]
 
-[Pool.submit()](./reference/Pool.submit.md#pymizu.Pool.submit) returns an awaitable [Task](./reference/Task.md#pymizu.Task), so native asyncio code needs no executor or `asyncio.wrap_future`. Batch collectors and map handles are awaitable too:
+[Pool.submit()](./reference/pymizu.Pool.submit.md) returns an awaitable [Task](./reference/Task.md#pymizu.Task), so native asyncio code needs no executor or `asyncio.wrap_future`. Batch collectors and map handles are awaitable too:
 
 ``` python
 with pymizu.Pool.create(4) as pool:
@@ -128,7 +128,7 @@ with pymizu.Pool.create(4, launcher=pymizu.r_launcher()) as pool:
 
 - A numpy array arrives in R as a numeric vector, and a polars, pyarrow, or pandas frame as a data frame
 - A vector or data frame arrives back as a numpy array or a [pymizu.Frame](./reference/Frame.md#pymizu.Frame)
-- Arrow data (pyarrow tables and record batch readers, or any [\_\_arrow_c_stream\_\_](./reference/Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__) producer) crosses the same way
+- Arrow data (pyarrow tables and record batch readers, or any [\_\_arrow_c_stream\_\_](./reference/Frame.md#pymizu.Frame.__arrow_c_stream__) producer) crosses the same way
 
 The mizu README shows the reverse direction: an R host that drives Python workers with `mizu_py_launcher()`. See [R interop](user-guide/interop.md).
 

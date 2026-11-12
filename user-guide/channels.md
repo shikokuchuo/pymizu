@@ -4,7 +4,7 @@ A channel is a two-way message link between your Python process and a helper pro
 
 ## Creating a channel
 
-[Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with `ch` bound to its side of the channel:
+[Channel.create()](../reference/pymizu.Channel.create.md) spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with `ch` bound to its side of the channel:
 
 ``` python
 import pymizu
@@ -19,7 +19,7 @@ while True:
 """)
 ```
 
-The peer is a full Python process: it can import anything your interpreter can. [Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) waits up to `startup_timeout` seconds for the peer to connect and raises [StartupError](../reference/StartupError.md#pymizu.StartupError) on expiry.
+The peer is a full Python process: it can import anything your interpreter can. [Channel.create()](../reference/pymizu.Channel.create.md) waits up to `startup_timeout` seconds for the peer to connect and raises [StartupError](../reference/StartupError.md#pymizu.StartupError) on expiry.
 
 A [launcher](../reference/launcher.md#pymizu.launcher) changes how the peer spawns: one callable that takes the channel's token and starts the peer process. The built-in [pymizu.r_launcher()](../reference/r_launcher.md#pymizu.r_launcher) spawns an R peer (see [R interop](interop.md)); write your own to spawn peers any other way.
 
@@ -45,7 +45,7 @@ Outcomes that end a conversation come back as sentinel singletons, not exception
 
 Test for them by identity (`x is pymizu.TIMEOUT`) or with `pymizu.is_sentinel(x)` -- no call needs an error handler. If the peer dies, receives drain what it already sent, then report `PEER_GONE`.
 
-When per-call overhead starts to matter, [send_batch()](../reference/Channel.send_batch.md#pymizu.Channel.send_batch) and [recv_batch()](../reference/Channel.recv_batch.md#pymizu.Channel.recv_batch) move several values in one call:
+When per-call overhead starts to matter, [send_batch()](../reference/pymizu.Channel.send_batch.md) and [recv_batch()](../reference/pymizu.Channel.recv_batch.md) move several values in one call:
 
 ``` python
 ch.send_batch(range(4))
@@ -69,9 +69,9 @@ await ch.recv_async()
 
     2
 
-`async for x in ch` is the stream form: it awaits each value through [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async) and ends on `CLOSED` or `PEER_GONE`, as the sync iterator does.
+`async for x in ch` is the stream form: it awaits each value through [recv_async()](../reference/pymizu.Channel.recv_async.md) and ends on `CLOSED` or `PEER_GONE`, as the sync iterator does.
 
-A message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with [ForeignPayloadError](../reference/ForeignPayloadError.md#pymizu.ForeignPayloadError); the message is consumed and the channel keeps flowing. Under [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async), only that message's waiter rejects. The rejection also ends an `async for` loop, and a try/except inside the loop body cannot catch it -- wrap the whole loop and re-enter on the same channel to skip the message.
+A message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with [ForeignPayloadError](../reference/ForeignPayloadError.md#pymizu.ForeignPayloadError); the message is consumed and the channel keeps flowing. Under [recv_async()](../reference/pymizu.Channel.recv_async.md), only that message's waiter rejects. The rejection also ends an `async for` loop, and a try/except inside the loop body cannot catch it -- wrap the whole loop and re-enter on the same channel to skip the message.
 
 ## Closing
 
@@ -83,11 +83,11 @@ ch.close()
 
     True
 
-A channel is also a context manager: the `with` block closes it on exit. `destroy()` skips the wait and releases the handle immediately; the peer sees the channel as closed (`PEER_GONE` if it died hard). Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb ([recv()](../reference/Channel.recv.md#pymizu.Channel.recv), [recv_batch()](../reference/Channel.recv_batch.md#pymizu.Channel.recv_batch), `ready_wait()`, `close()`) wakes promptly so teardown can finish.
+A channel is also a context manager: the `with` block closes it on exit. `destroy()` skips the wait and releases the handle immediately; the peer sees the channel as closed (`PEER_GONE` if it died hard). Destroy is safe from any thread: a verb still running on another thread keeps the handle alive until it returns, and a waiting verb ([recv()](../reference/pymizu.Channel.recv.md), [recv_batch()](../reference/pymizu.Channel.recv_batch.md), `ready_wait()`, `close()`) wakes promptly so teardown can finish.
 
 ## Threading
 
-Each channel side belongs to one thread at a time -- libmizu's threading contract, since the shared structures carry no locks by design. Call a side's verbs ([send()](../reference/Channel.send.md#pymizu.Channel.send), [recv()](../reference/Channel.recv.md#pymizu.Channel.recv), their batch forms, `ready_wait()`) from one thread only; a second verb from another thread raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async) are likewise exclusive on a side: a blocking receive while async receives are pending raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) at the call site, except on the async consumer's own event-loop thread, whose receives can never race it. For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread. `destroy()` is the exception: it is safe from any thread, as described in Closing.
+Each channel side belongs to one thread at a time -- libmizu's threading contract, since the shared structures carry no locks by design. Call a side's verbs ([send()](../reference/pymizu.Channel.send.md), [recv()](../reference/pymizu.Channel.recv.md), their batch forms, `ready_wait()`) from one thread only; a second verb from another thread raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the ring. The guard is a check, not a lock: it never waits, it reports the mistake. Blocking receives and [recv_async()](../reference/pymizu.Channel.recv_async.md) are likewise exclusive on a side: a blocking receive while async receives are pending raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) at the call site, except on the async consumer's own event-loop thread, whose receives can never race it. For two-way traffic from two threads, use two channels (one per direction, each on its own thread) or route every call through a single thread. `destroy()` is the exception: it is safe from any thread, as described in Closing.
 
 ## What crosses a channel
 
@@ -105,7 +105,7 @@ An uncaught error in the peer crosses as a value, not a raised exception: a [pym
 
 ## Frames without pickling
 
-Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default -- type-exact, but a full serialize-and-parse round trip. [pymizu.Frame.from_arrow()](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages -- only the small result crosses back:
+Between two Python processes, a pyarrow `Table`, polars `DataFrame`, or duckdb relation pickles by default -- type-exact, but a full serialize-and-parse round trip. [pymizu.Frame.from_arrow()](../reference/Frame.md#pymizu.Frame.from_arrow) sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages -- only the small result crosses back:
 
 ``` python
 import pyarrow as pa
@@ -138,10 +138,10 @@ Construction adopts the producer's own buffers wherever the column layout is alr
 
 | Stage | Copies |
 |----|----|
-| producer → [Frame.from_arrow()](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) | 0 per adopted column; a per-column copy only where its type forces it |
+| producer → [Frame.from_arrow()](../reference/Frame.md#pymizu.Frame.from_arrow) | 0 per adopted column; a per-column copy only where its type forces it |
 | `ch.send(f)` | 1 -- the layout write into the shared region (the region is the wire) |
 | `ch.recv()` | 0 -- the frame reads the region in place |
-| `pa.table(f)` | 0 -- the frame's [\_\_arrow_c_stream\_\_](../reference/Frame.__arrow_c_stream__.md#pymizu.Frame.__arrow_c_stream__) exports borrowed buffers |
+| `pa.table(f)` | 0 -- the frame's [\_\_arrow_c_stream\_\_](../reference/Frame.md#pymizu.Frame.__arrow_c_stream__) exports borrowed buffers |
 
 Values cross exactly, but types normalize. A column whose type forces a copy is copied rather than declined:
 
@@ -160,8 +160,8 @@ Values cross exactly, but types normalize. A column whose type forces a copy is 
 
 Chunked pyarrow tables adopt after `table.combine_chunks()`. Timestamps and durations keep their counts and unit: a `timestamp[ns]` round trip is exact to the nanosecond, timezone included. Nanosecond precision needs this pymizu version on both ends; an older peer (or R) receives the microsecond form instead, values rounded to the wire format's microsecond precision, with no error.
 
-Adopted buffers stay alive for the frame's lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. [to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a [Frame](../reference/Frame.md#pymizu.Frame) task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.md#frames-as-task-arguments)). [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) does not accept a frame as its element source.
+Adopted buffers stay alive for the frame's lifetime: a frame built from a 4 GB table keeps the whole table in memory, like a numpy view. [to_dict()](../reference/Frame.md#pymizu.Frame.to_dict)'s masked reads copy where the Arrow export does not. When you want the exact producer type back, keep the default: a plain pyarrow or polars object pickles and comes back type-exact. On a pool, a [Frame](../reference/Frame.md#pymizu.Frame) task argument and a frame returned from a task both ride the shared-memory region as on a channel (see [the pools guide](pools.md#frames-as-task-arguments)). [Pool.map](../reference/pymizu.Pool.map.md) does not accept a frame as its element source.
 
 ## Sizing
 
-[Channel.create()](../reference/Channel.create.md#pymizu.Channel.create) takes `capacity` (ring slots, a power of two), `slot_size` (bytes per slot, so a payload of up to `slot_size - 16` bytes fits in a slot), and `arena_size` (the channel's shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. `spin=True` makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.
+[Channel.create()](../reference/pymizu.Channel.create.md) takes `capacity` (ring slots, a power of two), `slot_size` (bytes per slot, so a payload of up to `slot_size - 16` bytes fits in a slot), and `arena_size` (the channel's shared staging area). A value too large for a slot goes to the staging area or a fresh shared-memory region. `spin=True` makes receivers busy-wait instead of sleeping: the lowest latency, at full CPU while waiting.

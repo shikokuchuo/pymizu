@@ -270,7 +270,7 @@ section.level2:first-of-type > h2:first-child,
 <ul>
 <li>Zero-copy numpy arrays and Arrow interchange (pyarrow, polars, pandas, duckdb)</li>
 <li>Drop-in <code>concurrent.futures.Executor</code> — real <code>Future</code>s, <code>wait</code>, <code>as_completed</code>, <code>asyncio.wrap_future</code></li>
-<li>Event-driven asyncio — <code>await</code> tasks and maps, <code>async for</code> and <a href="./reference/Channel.recv_async.html#pymizu.Channel.recv_async" class="gdls-link gdls-code">recv_async()</a> on channels — wake-ups as data arrives, no polling threads</li>
+<li>Event-driven asyncio — <code>await</code> tasks and maps, <code>async for</code> and <a href="./reference/pymizu.Channel.recv_async.html" class="gdls-link gdls-code">recv_async()</a> on channels — wake-ups as data arrives, no polling threads</li>
 <li>Reproducible parallel random numbers (<code>seed=</code>) — identical results for any worker count or steal order</li>
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
 </ul>
@@ -389,7 +389,7 @@ section.level2:first-of-type > h2:first-child,
 <pre><code>[1, 2, 4, 8]</code></pre>
 </div>
 </div>
-<p><a href="./reference/Pool.submit.html#pymizu.Pool.submit" class="gdls-link gdls-code">Pool.submit()</a> returns an awaitable <a href="./reference/Task.html#pymizu.Task" class="gdls-link gdls-code">Task</a>, so native asyncio code needs no executor or <code>asyncio.wrap_future</code>. Batch collectors and map handles are awaitable too:</p>
+<p><a href="./reference/pymizu.Pool.submit.html" class="gdls-link gdls-code">Pool.submit()</a> returns an awaitable <a href="./reference/Task.html#pymizu.Task" class="gdls-link gdls-code">Task</a>, so native asyncio code needs no executor or <code>asyncio.wrap_future</code>. Batch collectors and map handles are awaitable too:</p>
 <div id="1ece4ba2" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
@@ -431,7 +431,7 @@ section.level2:first-of-type > h2:first-child,
 <ul>
 <li>A numpy array arrives in R as a numeric vector, and a polars, pyarrow, or pandas frame as a data frame</li>
 <li>A vector or data frame arrives back as a numpy array or a <a href="./reference/Frame.html#pymizu.Frame" class="gdls-link gdls-code">pymizu.Frame</a></li>
-<li>Arrow data (pyarrow tables and record batch readers, or any <a href="./reference/Frame.__arrow_c_stream__.html#pymizu.Frame.__arrow_c_stream__" class="gdls-link gdls-code">__arrow_c_stream__</a> producer) crosses the same way</li>
+<li>Arrow data (pyarrow tables and record batch readers, or any <a href="./reference/Frame.html#pymizu.Frame.__arrow_c_stream__" class="gdls-link gdls-code">__arrow_c_stream__</a> producer) crosses the same way</li>
 </ul>
 <p>The mizu README shows the reverse direction: an R host that drives Python workers with <code>mizu_py_launcher()</code>. See <a href="./user-guide/interop.html">R interop</a>.</p>
 </section>

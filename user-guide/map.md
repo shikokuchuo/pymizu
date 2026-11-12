@@ -21,7 +21,7 @@ A map collects exactly once, through the handle:
 - `handle.collect_async()`, or `await handle`, resolves one `asyncio.Future` with the same results when they arrive, with no blocking or polling. Cancelling the Future only detaches the waiter: the handle can be collected blocking again, and the map is never cancelled. A streaming map (`stream=True`) can only be collected blocking, because its sliding task window advances in the blocking collect loop.
 - `handle.cancel()` stops the run: workers halt within about one batch, and a pending collect, blocking or async, ends with [CancelledError](../reference/CancelledError.md#pymizu.CancelledError).
 
-[Pool.map()](../reference/Pool.map.md#pymizu.Pool.map)'s own `timeout=` bounds submission only: on its expiry the tasks already in are cancelled and [Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) itself returns the `TIMEOUT` sentinel (no handle). A dropped uncollected handle cancels at garbage collection, so no work is wasted.
+[Pool.map()](../reference/pymizu.Pool.map.md)'s own `timeout=` bounds submission only: on its expiry the tasks already in are cancelled and [Pool.map()](../reference/pymizu.Pool.map.md) itself returns the `TIMEOUT` sentinel (no handle). A dropped uncollected handle cancels at garbage collection, so no work is wasted.
 
 ## Scheduling
 
@@ -62,7 +62,7 @@ result
 
     [1024, 27]
 
-For the multi-iterable shape of `concurrent.futures.Executor.map`, zip the iterables first: `pool.starmap(fn, zip(xs, ys))`. Starmap needs Python workers: a [pymizu.call](../reference/call.md#pymizu.call) spec raises `TypeError`. Everything else (seeding, templates, streaming, the outcomes) works as in [Pool.map](../reference/Pool.map.md#pymizu.Pool.map).
+For the multi-iterable shape of `concurrent.futures.Executor.map`, zip the iterables first: `pool.starmap(fn, zip(xs, ys))`. Starmap needs Python workers: a [pymizu.call](../reference/call.md#pymizu.call) spec raises `TypeError`. Everything else (seeding, templates, streaming, the outcomes) works as in [Pool.map](../reference/pymizu.Pool.map.md).
 
 ## Reproducible randomness
 

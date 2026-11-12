@@ -4,7 +4,7 @@ A staged, submitted map; collects exactly once, through this handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1566-L2041)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1566-L2050)
 
 ``` python
 Map(
@@ -13,7 +13,7 @@ Map(
 )
 ```
 
-Returned by [`Pool.map()`](../reference/Pool.map.md#pymizu.Pool.map) and [`PreparedMap.run()`](../reference/PreparedMap.md#pymizu.PreparedMap.run). `collect()` blocks. `collect_async()` or `await` resolves one asyncio Future when the results arrive (not on a streaming map, whose sliding task window advances in the blocking collect loop). `cancel()` stops the run: workers halt within about one batch and the outstanding tasks are cancelled. A dropped uncollected handle cancels at GC, so no run of fn is wasted. One collection per handle, as for tasks.
+Returned by [`Pool.map()`](../reference/pymizu.Pool.map.md) and [`PreparedMap.run()`](../reference/PreparedMap.md#pymizu.PreparedMap.run). `collect()` blocks. `collect_async()` or `await` resolves one asyncio Future when the results arrive (not on a streaming map, whose sliding task window advances in the blocking collect loop). `cancel()` stops the run: workers halt within about one batch and the outstanding tasks are cancelled. A dropped uncollected handle cancels at GC, so no run of fn is wasted. One collection per handle, as for tasks.
 
 ## Methods
 
@@ -29,13 +29,13 @@ Stop the run: workers halt within about one batch.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2005-L2023)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2014-L2032)
 
 ``` python
 cancel()
 ```
 
-Advisory, as [`Task.cancel()`](../reference/Task.cancel.md#pymizu.Task.cancel): the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with [`CancelledError`](../reference/CancelledError.md#pymizu.CancelledError). Safe to call more than once. A no-op on a collected handle.
+Advisory, as [`Task.cancel()`](../reference/Task.md#pymizu.Task.cancel): the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with [`CancelledError`](../reference/CancelledError.md#pymizu.CancelledError). Safe to call more than once. A no-op on a collected handle.
 
 ### collect()
 
@@ -43,11 +43,13 @@ Block for the map's results; collect exactly once.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1935-L1953)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1940-L1962)
 
 ``` python
 collect(timeout=None)
 ```
+
+For a non-prepared map, successful collection with `collect="copy"` releases its shared memory immediately. With `collect="view"`, the returned view takes ownership of the shared memory.
 
 #### Parameters
 
@@ -65,7 +67,7 @@ Resolve one asyncio.Future with the results `collect()` returns.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1955-L1976)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1964-L1985)
 
 ``` python
 collect_async()

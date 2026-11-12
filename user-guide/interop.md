@@ -92,7 +92,7 @@ back = ch.recv(timeout=5)
 back.names         # ('total_bill', 'day')
 ```
 
-R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a `Date` or `POSIXct` for a `datetime64` array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. An ordered categorical -- an R ordered factor, a polars `Enum`, an ordered pyarrow dictionary -- crosses with its ordering intact. Labels cross with the values they name: a named R vector arrives as a [`DimArray`](../reference/DimArray.md#pymizu.DimArray) carrying its names, and labels you attach in Python cross to R as [names](../reference/Frame.names.md#pymizu.Frame.names) or `dimnames`.
+R sees the natural equivalent throughout: a vector for an array, a factor for a category column, a named list for a dict, a `Date` or `POSIXct` for a `datetime64` array. An Arrow array arrives as an R vector, with Arrow nulls as R missing values: `ch.send(pa.array([1, None, 3]))`. An ordered categorical -- an R ordered factor, a polars `Enum`, an ordered pyarrow dictionary -- crosses with its ordering intact. Labels cross with the values they name: a named R vector arrives as a [`DimArray`](../reference/DimArray.md#pymizu.DimArray) carrying its names, and labels you attach in Python cross to R as `names` or `dimnames`.
 
 ## What doesn't cross
 
@@ -116,7 +116,7 @@ From Python, also declined: Arrow nested, `date64`, `time`, and `interval` colum
 
 From R: a `POSIXlt` time, a character matrix, and S4 objects stay on R's side. So does a named vector with a class or of character type (a named character vector, factor, `Date`, or `POSIXct`), since names travel only on the plain atomic vectors. Among data frames: a data.table, a groupedData-style frame (a formula attribute), and a column that is itself a labeled matrix.
 
-The counterpart of the send-time decline is a value that arrives in a language-private format no send gate caught (an attach race, or a misbehaving or version-skewed peer). The read raises [`ForeignPayloadError`](../reference/ForeignPayloadError.md#pymizu.ForeignPayloadError) and the message is consumed, so one bad payload never blocks the channel; under [recv_async()](../reference/Channel.recv_async.md#pymizu.Channel.recv_async), only that message's waiter rejects.
+The counterpart of the send-time decline is a value that arrives in a language-private format no send gate caught (an attach race, or a misbehaving or version-skewed peer). The read raises [`ForeignPayloadError`](../reference/ForeignPayloadError.md#pymizu.ForeignPayloadError) and the message is consumed, so one bad payload never blocks the channel; under [recv_async()](../reference/pymizu.Channel.recv_async.md), only that message's waiter rejects.
 
 ## pymizu.Frame
 
@@ -126,7 +126,7 @@ Any Arrow consumer takes a frame in one line: `pl.from_arrow(f)`, `pa.table(f)`,
 
 A [Frame](../reference/Frame.md#pymizu.Frame) pickles, so it crosses Python-to-Python channels. Sent to R, it becomes a `data.frame` again.
 
-Frame metadata crosses unchanged: a data.frame's full class vector (a tibble's `c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`) and extra attributes travel as-is, stored on the [Frame](../reference/Frame.md#pymizu.Frame) uninterpreted. An unmodified echo restores them in R; a frame rebuilt through pyarrow, polars, pandas, or [from_arrow](../reference/Frame.from_arrow.md#pymizu.Frame.from_arrow) arrives in R as a plain `data.frame`.
+Frame metadata crosses unchanged: a data.frame's full class vector (a tibble's `c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`) and extra attributes travel as-is, stored on the [Frame](../reference/Frame.md#pymizu.Frame) uninterpreted. An unmodified echo restores them in R; a frame rebuilt through pyarrow, polars, pandas, or [from_arrow](../reference/Frame.md#pymizu.Frame.from_arrow) arrives in R as a plain `data.frame`.
 
 ## Mixed-language pools
 
@@ -151,7 +151,7 @@ On an R-worker pool, submitting a plain Python callable raises an error naming [
 
 ## Mapping over a foreign pool
 
-To map an R function over Python data, pass a [pymizu.call()](../reference/call.md#pymizu.call) spec as the `fn` of [Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) or [Pool.map_prepare()](../reference/Pool.map_prepare.md#pymizu.Pool.map_prepare) on an R-worker pool. `mizu::mizu_map()` mirrors this in R:
+To map an R function over Python data, pass a [pymizu.call()](../reference/call.md#pymizu.call) spec as the `fn` of [Pool.map()](../reference/pymizu.Pool.map.md) or [Pool.map_prepare()](../reference/pymizu.Pool.map_prepare.md) on an R-worker pool. `mizu::mizu_map()` mirrors this in R:
 
 ``` python
 import numpy as np
@@ -232,7 +232,7 @@ Between two Python processes none of this applies: the exact-match dtypes cross 
 
 [^2]: R marks missing values with sentinels inside the data: `INT_MIN` for integer and logical, `INT64_MIN` for integer64, and a special NaN value (`NA_real_`) for double; Arrow nulls convert to these sentinels, so R sees correct `NA`s. Read from Python, the result depends on the accessor:
 
-    - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.to_dict.md#pymizu.Frame.to_dict)) give exact dtypes: a logical arrives as `bool_` when it has no `NA`, else int32. An integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
+    - Copied reads (`list(...)`, [Frame.to_dict()](../reference/Frame.md#pymizu.Frame.to_dict)) give exact dtypes: a logical arrives as `bool_` when it has no `NA`, else int32. An integer arrives as int32 when `NA`-free, else float64 with NaN (every int32 value is exact in float64).
     - Zero-copy views keep the sentinel values in the buffer. `.to_numpy()` applies the same rule and checks the region's validity marks for the presence of NAs before scanning any data.
     - int64 keeps its dtype in every numpy form and warns when an `NA` is detected on a copied read or `.to_numpy()`. Use `.to_arrow()` for an NA-exact read. A genuine Python `-2^63` value round-trips without a warning.
     - Every Arrow export of a logical is Arrow `bool` with a validity bitmap, whatever the path. Integer exports are int32 or int64 with a validity bitmap. A double exports as float64 with `NA_real_` slots as Arrow nulls (a genuine NaN stays a valid value).

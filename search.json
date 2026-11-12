@@ -91,149 +91,383 @@
     ]
   },
   {
-    "objectID": "reference/prune.html",
-    "href": "reference/prune.html",
-    "title": "prune()",
+    "objectID": "reference/pymizu.Pool.trace.html",
+    "href": "reference/pymizu.Pool.trace.html",
+    "title": "trace()",
     "section": "",
-    "text": "Remove orphaned shared memory regions.",
-    "crumbs": [
-      "Reference",
-      "Housekeeping",
-      "prune"
-    ]
+    "text": "Register a hook called as fn(event, id) at each task event.\n\n\nUsage\nSource\n\n\ntrace(fn)\n\n\nThe events this process observes are \"submit\" on the submitting thread, and \"start\", \"done\", \"error\", \"drop\", and \"rehome\" on worker handles. id is \"&lt;submitter slot&gt;:&lt;counter&gt;\", stable across processes. Registration is per-handle and per-process; None removes the hook. An exception in the hook is reported as unraisable, never raised into the pool."
   },
   {
-    "objectID": "reference/prune.html#returns",
-    "href": "reference/prune.html#returns",
-    "title": "prune()",
+    "objectID": "reference/pymizu.Pool.submit_batch.html",
+    "href": "reference/pymizu.Pool.submit_batch.html",
+    "title": "submit_batch()",
+    "section": "",
+    "text": "Submit one task per zero-arg callable in fns in one call."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit_batch.html#parameters",
+    "href": "reference/pymizu.Pool.submit_batch.html#parameters",
+    "title": "submit_batch()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nfns: _Iterable[_Callable[[], _Any]]\n\nZero-arg callables, one task each. Use functools.partial to bind arguments.\n\ntimeout: float | None = None\n\nSeconds to wait for queue space; None waits indefinitely."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit_batch.html#returns",
+    "href": "reference/pymizu.Pool.submit_batch.html#returns",
+    "title": "submit_batch()",
     "section": "Returns",
-    "text": "Returns\n\n\n The region names removed, or an empty list if none were. On\n\nplatforms whose shared memory namespace cannot be enumerated (Windows, where orphans cannot exist), always an empty list.",
+    "text": "Returns\n\n\n A list of Task handles. If the queue stays full\n\npast timeout the batch ends short, and the returned handles stay valid and collectible. A mid-batch failure raises with an accepted attribute holding the handles already submitted, which stay valid and collectible."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit_batch.html#raises",
+    "href": "reference/pymizu.Pool.submit_batch.html#raises",
+    "title": "submit_batch()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother submit-family verb is in flight on this handle from a second thread: a pool handle is single-producer (the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.stop.html",
+    "href": "reference/pymizu.Pool.stop.html",
+    "title": "stop()",
+    "section": "",
+    "text": "Orderly shutdown (controller only)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.stop.html#returns",
+    "href": "reference/pymizu.Pool.stop.html#returns",
+    "title": "stop()",
+    "section": "Returns",
+    "text": "Returns\n\n\n True on clean worker exits within timeout."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.stop.html#raises",
+    "href": "reference/pymizu.Pool.stop.html#raises",
+    "title": "stop()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nA blocking collect or a submit is in flight on this handle from a second thread: each half is confined to one thread (the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.starmap.html",
+    "href": "reference/pymizu.Pool.starmap.html",
+    "title": "starmap()",
+    "section": "",
+    "text": "Map fn over x, unpacking each element as call arguments.\n\n\nUsage\nSource\n\n\nstarmap(\n    fn,\n    x,\n    *,\n    args=(),\n    kwargs=None,\n    template=None,\n    n_chunks=None,\n    seed=None,\n    timeout=None,\n    stream=False,\n    collect=None,\n)\n\n\nCalls fn(*element, *args, **kwargs) and returns the run’s Map handle, as map() does. This is the multiprocessing.Pool.starmap convention. For the multi-iterable shape of concurrent.futures.Executor.map, zip first: pool.starmap(fn, zip(xs, ys)). Elements must be iterables (a 2-D buffer’s rows qualify; a 1-D buffer’s scalars do not). A call spec cannot starmap, because element unpacking is Python-only. Everything else (seeding, templates, streaming, the errors) works as in map()."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.retire.html",
+    "href": "reference/pymizu.Pool.retire.html",
+    "title": "retire()",
+    "section": "",
+    "text": "Ask the worker in slot to exit cleanly.\n\n\nUsage\nSource\n\n\nretire(slot)\n\n\nNon-blocking; controller only."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map.html",
+    "href": "reference/pymizu.Pool.map.html",
+    "title": "map()",
+    "section": "",
+    "text": "Map fn over x on the pool; return a map handle."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map.html#parameters",
+    "href": "reference/pymizu.Pool.map.html#parameters",
+    "title": "map()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nfn: _Callable[…, _Any]\n\nThe callable to apply, or a call spec.\n\nx: _Iterable[_Any]\n\nThe iterable of elements.\n\nargs: _Iterable[_Any] = ()\n\nConstant positional arguments appended to every call.\n\nkwargs: dict[str, _Any] | None = None\n\nConstant keyword arguments of every call.\n\ntemplate: _Any = None\n\nAn example buffer (for example numpy.empty(m, dtype=...)) declaring that every fn result is m values of that dtype; see Details.\n\nn_chunks: int | None = None\n\nOverrides the number of batches the elements are split into.\n\nseed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None\n\nAn int or bytes giving every element a deterministic stream of the stdlib random module; see Details. Pass seed=(seed, offset) to shift every element’s stream by offset positions, for maps split across runs or processes.\n\ntimeout: float | None = None\n\nSeconds to wait for the submissions to go through; None waits indefinitely. Bounds submission only; the collection deadline is the handle’s collect(timeout).\n\nstream: bool = False\n\nStream slices of x to workers instead of writing the whole of x to shared memory first; see Details.\n\ncollect: str | None = None\n\n\"copy\" (the default) or \"view\"; governs how a template-backed output area is returned."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map.html#returns",
+    "href": "reference/pymizu.Pool.map.html#returns",
+    "title": "map()",
+    "section": "Returns",
+    "text": "Returns\n\n\n A Map handle. handle.collect() blocks for the\n\nresults (a list in input order, or with template the gathered output area, a view with collect=\"view\") and raises the errors below. handle.collect_async() or await handle resolves one asyncio.Future with the same results, except on a streaming map, which collects blocking only because its sliding task window advances in the blocking collect loop. handle.cancel() stops the run. On timeout expiry mid-submission, map() itself returns the TIMEOUT sentinel (no handle). A length-0 x returns a handle whose collect yields the empty result."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map.html#raises",
+    "href": "reference/pymizu.Pool.map.html#raises",
+    "title": "map()",
+    "section": "Raises",
+    "text": "Raises\n\n\n TaskError\n\nA task error re-raises from the collect as TaskError carrying the failing element’s 0-based index; the map fails fast (workers stop within about one batch).\n\n WorkerDiedError\n\nWorker death carries the lost element ranges as lost (0-based half-open (lo, hi) pairs, possibly wider than what was lost; mizu’s mizu_error_worker_died$lost carries the same set as a two-column matrix of inclusive 1-based ranges).\n\n TypeError\n\nA call spec as fn with stream=True.\n\n DeclinedError\n\nWith a spec, a non-portable constant or element at stage time."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map.html#details",
+    "href": "reference/pymizu.Pool.map.html#details",
+    "title": "map()",
+    "section": "Details",
+    "text": "Details\nOne call writes fn, the constant args/kwargs, and x to shared memory once (or sends them inside chunk tasks when small), then submits one runner task per live worker. Runners claim adaptively sized element batches off a shared counter. A C-contiguous buffer of a supported dtype (float64/int32/int64/complex128/uint8) travels as bare bytes, and each worker wraps it once and indexes into it per element.\nseed gives every element a deterministic stream of the stdlib random module: element i runs under random.seed(SHA-256(seed_bytes + i.to_bytes(8, \"little\"))), identical for any chunking, worker count, or steal order. seed covers the stdlib random module only: a task drawing from numpy calls current_rng() inside the task (the element’s own numpy.random.Generator, created once per element from the same seed material); other RNG libraries are out of scope. The legacy np.random.* module functions draw from the worker’s shared global RandomState and stay order-dependent. A seeded map element must not submit and collect nested tasks: while a worker waits it runs other work, possibly another map’s batches mid-element, which wipes this element’s current_rng() stash. A later call rebuilds from the seed, restarting the stream instead of continuing it (the stdlib streams survive).\nfn may be a call specification instead of a callable. This is how you map over a foreign pool, such as one spawned with r_launcher(). A spec always uses a shared-memory region: the description crosses in a language-neutral format that any worker language reads. The element fills the spec’s first positional slot (name kind) or binds as x (source kind), and the spec’s own constant arguments travel with it, so args and kwargs must be empty with a spec. Constants and elements must be portable values, and a non-portable one raises DeclinedError at the map() call. seed= crosses as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (on R workers, the seed within 32-bit range and the offset at most 2^53; with stream=True, the offset plus len(x) must stay within 2^53). Results are reproducible within a worker language but not identical across languages.\ntemplate declares that every fn result is m values of the example buffer’s dtype: results are written in place into a shared n x m output area and never serialized. Each result must be a matching buffer or, for m == 1, a plain Python scalar. With a template, collect=\"copy\" (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape (n, m), or (n,) for m == 1. collect=\"view\" returns it zero-copy, and the shared memory is released only when the view is gone.\nWith stream=True, the map does not write the whole of x to shared memory. It streams slices of x to workers as they take work, and the return value is unchanged. Slices travel as ordinary chunk tasks under a sliding submit/collect window of at most min(n_chunks, 2 * live workers, free result slots) outstanding tasks, so shared-memory use is bounded by window x slice instead of sizeof(x). With the default chunk count (min(len(x), 32 * live workers)) that is roughly (2 * workers) / n_chunks of the serialized x. n_chunks= overrides the chunk count (n_chunks=len(x) is the extreme of one element per task). Everything else (result order, template and collect, seed reproducibility, the errors) is the same as for the non-streaming map. The trade-offs: failure detection coarsens from about one adaptive batch to about one chunk (the bound moves with n_chunks), the adaptive batch sizing is lost (raise n_chunks to reduce skew), and slices are serialized like ordinary task payloads instead of taking the zero-copy path a raw array gets. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A call spec as fn streams too, over workers of any language. Each chunk in the window then writes a small shared-memory region of its own (the slice plus the task that runs on it, one runner task per chunk), removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by sizeof(x). Each chunk also writes its results separately, so they cannot combine into one view: collect=\"view\" raises TypeError on a streaming spec map, as does preparing one with map_prepare().\ntimeout bounds submission only (the wait for queue space while the tasks go out). The collection deadline is the handle’s collect(timeout), whose expiry cancels the outstanding work and returns the TIMEOUT sentinel rather than raising.\nstarmap() is the unpacking variant, calling fn(*element, *args, **kwargs) in the multiprocessing.Pool.starmap convention.\nThreading: a map is a producer on the handle, so it raises ConcurrentUseError when another map or a submit is in flight from a second thread (see the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map.html#examples",
+    "href": "reference/pymizu.Pool.map.html#examples",
+    "title": "map()",
+    "section": "Examples",
+    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Pool.create(2) as pool:\n...     results = pool.map(abs, range(-5, 5)).collect()\n&gt;&gt;&gt; results\n[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]"
+  },
+  {
+    "objectID": "reference/pymizu.Pool.dump.html",
+    "href": "reference/pymizu.Pool.dump.html",
+    "title": "dump()",
+    "section": "",
+    "text": "A read-only debugging snapshot of the whole pool region (dict).\n\n\nUsage\nSource\n\n\ndump()"
+  },
+  {
+    "objectID": "reference/pymizu.Pool.create.html",
+    "href": "reference/pymizu.Pool.create.html",
+    "title": "create()",
+    "section": "",
+    "text": "Create a pool and spawn its worker processes."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.create.html#parameters",
+    "href": "reference/pymizu.Pool.create.html#parameters",
+    "title": "create()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nn_workers: int = 1\n\nNumber of worker processes to spawn.\n\nmax_workers: int | None = None\n\nThe worker limit; defaults to n_workers.\n\nmax_submitters: int = 8\n\nMaximum number of submitter processes.\n\ninjection_cap: int = 1024\n\nCapacity of each submitter’s queue.\n\nper_worker_cap: int = 1024\n\nCapacity of each worker’s queue.\n\nresult_slots: int = 4096\n\nBounds each submitter’s outstanding (uncollected) tasks.\n\nslot_size: int = 512\n\nBytes per queue entry and result slot; a larger payload travels in its own shared-memory region.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the workers to attach.\n\nlauncher: _Callable[[str, int], _Any] | None = None\n\nA callable(token, slot) arranging for a Python process to run python -m pymizu.worker &lt;token&gt; &lt;slot&gt;; the default is launcher() (spawns sys.executable directly)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.create.html#returns",
+    "href": "reference/pymizu.Pool.create.html#returns",
+    "title": "create()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The controller-side pool handle."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.create.html#examples",
+    "href": "reference/pymizu.Pool.create.html#examples",
+    "title": "create()",
+    "section": "Examples",
+    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Pool.create(2) as pool:\n...     task = pool.submit(pow, 2, 16)\n...     results = pool.collect_all([task], timeout=10)\n&gt;&gt;&gt; results\n[65536]"
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any.html",
+    "href": "reference/pymizu.Pool.collect_any.html",
+    "title": "collect_any()",
+    "section": "",
+    "text": "Wait on several tasks."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any.html#parameters",
+    "href": "reference/pymizu.Pool.collect_any.html#parameters",
+    "title": "collect_any()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on.\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any.html#returns",
+    "href": "reference/pymizu.Pool.collect_any.html#returns",
+    "title": "collect_any()",
+    "section": "Returns",
+    "text": "Returns\n\n\n (index, value) of the first task to finish, or the\n\nTIMEOUT sentinel. A failure raises with an index attribute (0-based)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any.html#raises",
+    "href": "reference/pymizu.Pool.collect_any.html#raises",
+    "title": "collect_any()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother wait-half verb (a blocking collect, stop()) is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all.html",
+    "href": "reference/pymizu.Pool.collect_all.html",
+    "title": "collect_all()",
+    "section": "",
+    "text": "Wait until every task is terminal."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all.html#parameters",
+    "href": "reference/pymizu.Pool.collect_all.html#parameters",
+    "title": "collect_all()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on.\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all.html#returns",
+    "href": "reference/pymizu.Pool.collect_all.html#returns",
+    "title": "collect_all()",
+    "section": "Returns",
+    "text": "Returns\n\n\n All values in input order. On the first failure by position, raises\n\nwith an index attribute (0-based). Only the reported handle is consumed, and every other handle, including the results ahead of it, stays collectible. A result that fails to read raises with index and a values attribute carrying the consumed prefix. The TIMEOUT sentinel consumes nothing."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all.html#raises",
+    "href": "reference/pymizu.Pool.collect_all.html#raises",
+    "title": "collect_all()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother wait-half verb (a blocking collect, stop()) is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.token.html",
+    "href": "reference/pymizu.Channel.token.html",
+    "title": "token",
+    "section": "",
+    "text": "The join token for the peer’s attach.\n\n\ntoken: str"
+  },
+  {
+    "objectID": "reference/pymizu.Channel.send.html",
+    "href": "reference/pymizu.Channel.send.html",
+    "title": "send()",
+    "section": "",
+    "text": "Send one value."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.send.html#parameters",
+    "href": "reference/pymizu.Channel.send.html#parameters",
+    "title": "send()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nx: _Any\n\nThe value to send. None is a valid value; bytes and numpy arrays cross without serialization, everything else is pickled (protocol 4)."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.send.html#returns",
+    "href": "reference/pymizu.Channel.send.html#returns",
+    "title": "send()",
+    "section": "Returns",
+    "text": "Returns\n\n\n None, or the FULL / CLOSED / PEER_GONE sentinel\n\n(identity-tested)."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.send.html#raises",
+    "href": "reference/pymizu.Channel.send.html#raises",
+    "title": "send()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother verb is in flight on this side from a second thread: a side is confined to one thread at a time."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.recv_async.html",
+    "href": "reference/pymizu.Channel.recv_async.html",
+    "title": "recv_async()",
+    "section": "",
+    "text": "Receive the next value as an asyncio.Future."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.recv_async.html#returns",
+    "href": "reference/pymizu.Channel.recv_async.html#returns",
+    "title": "recv_async()",
+    "section": "Returns",
+    "text": "Returns\n\n\n An asyncio.Future resolving with the same object a blocking\n\nrecv() would have returned, zero-copy views included (the receive itself runs on the event-loop thread). Terminal states stay values: the Future resolves with the CLOSED / PEER_GONE sentinel."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.recv_async.html#details",
+    "href": "reference/pymizu.Channel.recv_async.html#details",
+    "title": "recv_async()",
+    "section": "Details",
+    "text": "Details\nSeveral outstanding calls on one channel resolve in call order, one message each. Nothing is lost while arming: values already in the ring resolve immediately, and only values not yet sent wait for the wake-up. Cancelling the Future detaches the waiter, and the next message goes to the next waiter. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. A channel created with spin=True cannot arm and raises. The async consumer is the side’s one consumer: a blocking recv() on the same side while waiters are pending raises ConcurrentUseError.\nA message the peer sent outside the portable interchange subset (a language-private stream) rejects only the waiter that receives it, with ForeignPayloadError. The message is consumed and the async consumer keeps flowing, so the other outstanding calls are unaffected."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.info.html",
+    "href": "reference/pymizu.Channel.info.html",
+    "title": "info()",
+    "section": "",
+    "text": "A read-only snapshot of the channel’s state (dict).\n\n\nUsage\nSource\n\n\ninfo()"
+  },
+  {
+    "objectID": "reference/pymizu.Channel.create.html",
+    "href": "reference/pymizu.Channel.create.html",
+    "title": "create()",
+    "section": "",
+    "text": "Create a channel and spawn its peer."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.create.html#parameters",
+    "href": "reference/pymizu.Channel.create.html#parameters",
+    "title": "create()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\npeer: str\n\nA Python source string, evaluated in the peer process with ch bound to the peer-side handle.\n\ncapacity: int = 16384\n\nRing capacity in slots; a power of two.\n\nslot_size: int = 256\n\nBytes per ring slot; a power of two. A payload of up to slot_size - 16 bytes fits in a slot.\n\narena_size: int = 4 * 1024 * 1024\n\nBytes of shared staging area for larger payloads.\n\nspin: bool = False\n\nBusy-wait rather than sleep while waiting.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the peer to attach.\n\nlauncher: _Callable[[str], _Any] | None = None\n\nA callable(token) arranging for a Python process to run python -m pymizu.child &lt;token&gt;; the default is launcher() (spawns sys.executable directly). r_launcher() returns one spawning an R peer (the R package mizu)."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.create.html#returns",
+    "href": "reference/pymizu.Channel.create.html#returns",
+    "title": "create()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The host-side channel handle."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.create.html#examples",
+    "href": "reference/pymizu.Channel.create.html#examples",
+    "title": "create()",
+    "section": "Examples",
+    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     ch.send([1, \"a\", None])\n...     received = ch.recv(timeout=5)\n&gt;&gt;&gt; received\n[1, 'a', None]"
+  },
+  {
+    "objectID": "reference/pymizu.Channel.alive.html",
+    "href": "reference/pymizu.Channel.alive.html",
+    "title": "alive()",
+    "section": "",
+    "text": "True while the peer process is alive.\n\n\nUsage\nSource\n\n\nalive()"
+  },
+  {
+    "objectID": "reference/pymizu.Channel.__aiter__.html",
+    "href": "reference/pymizu.Channel.__aiter__.html",
+    "title": "__aiter__()",
+    "section": "",
+    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\n__aiter__()\n\n\nThe async form of the sync iterator. Yields payloads as they arrive, awaiting each through recv_async(). Between iterations nothing is armed; the next iteration re-arms, and the arm’s synchronous drain picks up whatever arrived meanwhile, so nothing is lost.\nA declined foreign payload (see recv_async()) propagates out of the iteration and ends the async for statement, so a try/except inside the loop body cannot catch it. To skip one, wrap the whole loop and re-enter on the same channel: the consumer kept flowing, and the new iterator picks up the next message."
+  },
+  {
+    "objectID": "reference/launcher.html",
+    "href": "reference/launcher.html",
+    "title": "launcher()",
+    "section": "",
+    "text": "Return a launcher spawning Python processes running pymizu.",
     "crumbs": [
       "Reference",
-      "Housekeeping",
-      "prune"
+      "Cross-language interop",
+      "launcher"
     ]
   },
   {
-    "objectID": "reference/is_sentinel.html",
-    "href": "reference/is_sentinel.html",
-    "title": "is_sentinel()",
+    "objectID": "reference/launcher.html#parameters",
+    "href": "reference/launcher.html#parameters",
+    "title": "launcher()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\npython: str | None = None\n\nPath to the Python interpreter; the default is sys.executable.\n\nstdout: _Any = None\n\nForwarded to subprocess.Popen; the default inherits the console, where the peer’s error messages land.\n\nstderr: _Any = None\n\nForwarded to subprocess.Popen.",
+    "crumbs": [
+      "Reference",
+      "Cross-language interop",
+      "launcher"
+    ]
+  },
+  {
+    "objectID": "reference/launcher.html#returns",
+    "href": "reference/launcher.html#returns",
+    "title": "launcher()",
+    "section": "Returns",
+    "text": "Returns\n\n\n A callable(token, slot=None) launcher for\n\nChannel.create() and Pool.create().",
+    "crumbs": [
+      "Reference",
+      "Cross-language interop",
+      "launcher"
+    ]
+  },
+  {
+    "objectID": "reference/launcher.html#examples",
+    "href": "reference/launcher.html#examples",
+    "title": "launcher()",
+    "section": "Examples",
+    "text": "Examples\nimport pymizu\n\nwith pymizu.Pool.create(\n    4, launcher=pymizu.launcher(stderr=\"worker.log\")\n) as pool:\n    print(pool.submit(abs, -1).collect())",
+    "crumbs": [
+      "Reference",
+      "Cross-language interop",
+      "launcher"
+    ]
+  },
+  {
+    "objectID": "reference/is_remote_error.html",
+    "href": "reference/is_remote_error.html",
+    "title": "is_remote_error()",
     "section": "",
-    "text": "is_sentinel(x) -&gt; bool\n\n\nUsage\n\n\nis_sentinel(object)\n\n\nTrue only for the exact sentinel singletons this process’s verbs return, so a look-alike payload never passes. The test is identity, not class.",
+    "text": "Test whether a received channel value is a remote error.",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
-      "is_sentinel"
+      "is_remote_error"
     ]
   },
   {
-    "objectID": "reference/index.html",
-    "href": "reference/index.html",
-    "title": "API Reference",
-    "section": "",
-    "text": "A two-way message link between a Python process and a helper process that it spawns.\n\n\nChannel\n\nA shared-memory channel handle (process-private).",
+    "objectID": "reference/is_remote_error.html#returns",
+    "href": "reference/is_remote_error.html#returns",
+    "title": "is_remote_error()",
+    "section": "Returns",
+    "text": "Returns\n\n\n True for a received remote error, False otherwise.",
     "crumbs": [
       "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#channels",
-    "href": "reference/index.html#channels",
-    "title": "API Reference",
-    "section": "",
-    "text": "A two-way message link between a Python process and a helper process that it spawns.\n\n\nChannel\n\nA shared-memory channel handle (process-private).",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#channel-methods",
-    "href": "reference/index.html#channel-methods",
-    "title": "API Reference",
-    "section": "Channel Methods",
-    "text": "Channel Methods\n\nMethods for the Channel class\n\n\nChannel.create()\n\nCreate a channel and spawn its peer.\n\nChannel.token\n\nThe join token for the peer’s attach.\n\nChannel.send()\n\nSend one value.\n\nChannel.send_batch()\n\nSend several values in one call.\n\nChannel.recv()\n\nReceive one value.\n\nChannel.recv_async()\n\nReceive the next value as an asyncio.Future.\n\nChannel.__aiter__()\n\nIterate over received payloads until CLOSED or PEER_GONE.\n\nChannel.recv_batch()\n\nReceive up to n values in one call.\n\nChannel.close()\n\nClose the channel in an orderly way.\n\nChannel.destroy()\n\nTear down the handle immediately, without the close handshake.\n\nChannel.alive()\n\nTrue while the peer process is alive.\n\nChannel.info()\n\nA read-only snapshot of the channel’s state (dict).\n\nChannel.__enter__()\n\n\n\nChannel.__exit__()\n\n\n\nChannel.__iter__()\n\nIterate over received payloads until CLOSED or PEER_GONE.",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#task-pools",
-    "href": "reference/index.html#task-pools",
-    "title": "API Reference",
-    "section": "Task pools",
-    "text": "Task pools\n\nA set of worker processes that divide submitted tasks among themselves.\n\n\nPool\n\nA shared-memory work-stealing task pool handle (process-private).\n\nTask\n\nA task handle from Pool.submit(). It is collected exactly once, and an uncollected handle releases its slot when garbage collected.\n\nMap\n\nA staged, submitted map; collects exactly once, through this handle.\n\nPreparedMap\n\nA map set up once in shared memory, run many times.\n\nPoolExecutor\n\nA concurrent.futures.Executor over a pymizu pool.",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#pool-methods",
-    "href": "reference/index.html#pool-methods",
-    "title": "API Reference",
-    "section": "Pool Methods",
-    "text": "Pool Methods\n\nMethods for the Pool class\n\n\nPool.create()\n\nCreate a pool and spawn its worker processes.\n\nPool.attach()\n\nAttach to a live pool as a submitter, by its join token.\n\nPool.token\n\nThe join token for worker/submitter attach.\n\nPool.submit()\n\nSubmit fn(*args, **kwargs) as a task; return a Task handle.\n\nPool.submit_batch()\n\nSubmit one task per zero-arg callable in fns in one call.\n\nPool.collect_any()\n\nWait on several tasks.\n\nPool.collect_all()\n\nWait until every task is terminal.\n\nPool.collect_any_async()\n\nThe event-driven collect_any().\n\nPool.collect_all_async()\n\nThe event-driven collect_all().\n\nPool.map()\n\nMap fn over x on the pool; return a map handle.\n\nPool.starmap()\n\nMap fn over x, unpacking each element as call arguments.\n\nPool.map_prepare()\n\nStage a map once for repeated runs; return a PreparedMap.\n\nPool.retire()\n\nAsk the worker in slot to exit cleanly.\n\nPool.spawn_workers()\n\nSpawn n additional workers and wait for them to join.\n\nPool.stop()\n\nOrderly shutdown (controller only).\n\nPool.destroy()\n\nTear down the pool handle immediately, without waiting.\n\nPool.info()\n\nA read-only snapshot of the pool’s state (dict).\n\nPool.dump()\n\nA read-only debugging snapshot of the whole pool region (dict).\n\nPool.stats()\n\nCumulative per-worker and per-submitter counters.\n\nPool.trace()\n\nRegister a hook called as fn(event, id) at each task event.\n\nPool.__enter__()\n\n\n\nPool.__exit__()",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#task-methods",
-    "href": "reference/index.html#task-methods",
-    "title": "API Reference",
-    "section": "Task Methods",
-    "text": "Task Methods\n\nMethods for the Task class\n\n\nTask.state\n\n\n\nTask.pool\n\n\n\nTask.collect()\n\ncollect(timeout=None) -&gt; value | sentinel\n\nTask.cancel()\n\ncancel() -&gt; bool\n\nTask.collect_async()\n\ncollect_async() -&gt; asyncio.Future\n\nTask.__await__()\n\nReturn an iterator to be used in await expression.",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#cross-language-interop",
-    "href": "reference/index.html#cross-language-interop",
-    "title": "API Reference",
-    "section": "Cross-language interop",
-    "text": "Cross-language interop\n\nR peers and workers (the mizu R package), neutral task specifications, and the data.frame’s Python home.\n\n\ncall\n\nA task specification for a pool of another language’s workers.\n\nlauncher()\n\nReturn a launcher spawning Python processes running pymizu.\n\nr_launcher()\n\nReturn a launcher spawning R processes running the mizu package.\n\nFrame\n\nA data.frame’s Python home: named columns with a row count.\n\nDimArray\n\nAn ndarray carrying R labels for faithful round trips with R.",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#frame-methods",
-    "href": "reference/index.html#frame-methods",
-    "title": "API Reference",
-    "section": "Frame Methods",
-    "text": "Frame Methods\n\nMethods for the Frame class\n\n\nFrame.names\n\n\n\nFrame.row_names\n\n\n\nFrame.to_dict()\n\nto_dict() -&gt; dict\n\nFrame.from_arrow()\n\nfrom_arrow(obj) -&gt; Frame\n\nFrame.__arrow_c_stream__()\n\narrow_c_stream(requested_schema=None) -&gt; capsule\n\nFrame.__len__()\n\nReturn len(self).\n\nFrame.__reduce__()",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#outcomes-and-errors",
-    "href": "reference/index.html#outcomes-and-errors",
-    "title": "API Reference",
-    "section": "Outcomes and errors",
-    "text": "Outcomes and errors\n\nA full ring, a timeout, a close, or a dead peer returns as a sentinel singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity, never raised. Real failures raise exceptions.\n\n\nSentinel\n\nA terminal-state sentinel returned by pymizu verbs. Test by identity against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.\n\nis_sentinel()\n\nis_sentinel(x) -&gt; bool\n\nis_remote_error()\n\nTest whether a received channel value is a remote error.\n\nMizuError\n\nBase class for all pymizu errors.\n\nShmError\n\nA shared-memory region operation failed. Also an OSError: the failure is at the OS layer. Carries a ‘bytes’ attribute: the requested size of a region that was not created, None when a region was not opened.\n\nStartupError\n\nA channel peer or pool worker failed to attach within the startup timeout.\n\nSubmitTimeoutError\n\nPool.submit() timed out waiting for injection-ring space. Also a TimeoutError.\n\nSlotsExhaustedError\n\nPool.submit() found no free result slot: too many outstanding (uncollected) tasks.\n\nStoppedError\n\nThe pool is stopped; no further submission is possible.\n\nCancelledError\n\nThe task was cancelled before it ran.\n\nTaskError\n\nThe task callable raised. Carries ‘remote_type’ and ‘detail’ attributes describing the worker-side exception.\n\nWorkerDiedError\n\nThe executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.\n\nTaskLostError\n\nThe task’s payload region vanished or could not be read before any worker ran it. No worker died.\n\nDeclinedError\n\nA send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\nForeignPayloadError\n\nA received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\nConcurrentUseError\n\nA verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).",
-    "crumbs": [
-      "Reference",
-      "API Index"
-    ]
-  },
-  {
-    "objectID": "reference/index.html#housekeeping",
-    "href": "reference/index.html#housekeeping",
-    "title": "API Reference",
-    "section": "Housekeeping",
-    "text": "Housekeeping\n\nThe process-wide default pool, the current worker’s own pool handle, and cleaning up shared memory left by dead processes.\n\n\ndefault_pool()\n\nThe process-wide default pool, or None when none is set.\n\nset_default_pool()\n\nSet the process-wide default pool; None clears it.\n\nusing_pool()\n\nUse pool as the default for the with block, then restore.\n\ncurrent_pool()\n\nThe pool handle of the worker running the task.\n\ncurrent_rng()\n\nThe current element’s own numpy Generator, inside a seeded map.\n\nprune()\n\nRemove orphaned shared memory regions.",
-    "crumbs": [
-      "Reference",
-      "API Index"
+      "Outcomes and errors",
+      "is_remote_error"
     ]
   },
   {
@@ -306,42 +540,6 @@
       "Reference",
       "Outcomes and errors",
       "TaskError"
-    ]
-  },
-  {
-    "objectID": "reference/Task.html",
-    "href": "reference/Task.html",
-    "title": "Task",
-    "section": "",
-    "text": "A task handle from Pool.submit(). It is collected exactly once, and an uncollected handle releases its slot when garbage collected.\n\n\nUsage\n\n\nTask()",
-    "crumbs": [
-      "Reference",
-      "Task pools",
-      "Task"
-    ]
-  },
-  {
-    "objectID": "reference/Task.collect_async.html",
-    "href": "reference/Task.collect_async.html",
-    "title": "Task.collect_async()",
-    "section": "",
-    "text": "collect_async() -&gt; asyncio.Future\n\n\nUsage\n\n\nTask.collect_async()\n\n\nThe event-driven collect: an asyncio.Future that resolves with the task’s result (or raises the error collect() raises) when the result arrives, without blocking or polling. Cancelling the Future detaches the waiter, so a later blocking collect() works again, and never cancels the task (only cancel() does).",
-    "crumbs": [
-      "Reference",
-      "Task Methods",
-      "Task.collect_async"
-    ]
-  },
-  {
-    "objectID": "reference/Task.cancel.html",
-    "href": "reference/Task.cancel.html",
-    "title": "Task.cancel()",
-    "section": "",
-    "text": "cancel() -&gt; bool\n\n\nUsage\n\n\nTask.cancel()\n\n\nAdvisory only, and never interrupts: a queued task is skipped, and a running one completes with its result dropped. Returns True when this call cancelled the task, False in every other case.",
-    "crumbs": [
-      "Reference",
-      "Task Methods",
-      "Task.cancel"
     ]
   },
   {
@@ -421,7 +619,7 @@
     "href": "reference/PreparedMap.html#methods",
     "title": "PreparedMap",
     "section": "Methods",
-    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\nclose()\nRelease the staged shared memory.\n\n\nrun()\nRun the prepared map once; return the run’s map handle.\n\n\n\n\nclose()\n\nRelease the staged shared memory.\n\n\nUsage\nSource\n\n\nclose()\n\n\nSafe to call more than once; garbage collection releases it otherwise.\n\n\n\nrun()\n\nRun the prepared map once; return the run’s map handle.\n\n\nUsage\nSource\n\n\nrun(\n    x=None,\n    *,\n    seed=None,\n    timeout=None,\n    collect=None,\n)\n\n\nParameters\n\n\nx: _Any = None\n\nReplaces the staged data for this and later runs. When both the staged and the replacement x are arrays of the same dtype and length, the swap is an in-place copy, so a loop over same-shaped data (optimizer steps, simulation sweeps) runs at copy cost, skipping the region creation and the worker-side set-up. Any other x is staged fresh on this run.\n\nseed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None\n\nDeterministic per-element seeding for this run, as for Pool.map(); None (the default) runs unseeded. The seed travels with the run’s tasks, not the staged data, so reseeding a run costs nothing extra: a repeated-simulation loop varies seed per run while the set-up is paid once.\n\ntimeout: float | None = None\n\nSeconds before the run’s submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT Sentinel is returned (no handle). The collection deadline is the handle’s collect().\n\ncollect: str | None = None\n\n\"copy\" (the default) or \"view\", which requires template, as for Pool.map(). The choice is per run.\n\n\n\n\n\nReturns\n\n\n The run’s map handle, collected exactly once, by collect()\n\n(blocking) or collect_async() (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises ConcurrentUseError. A clean value collect keeps the set-up for the next run. A view collect hands the region to the view, and an interrupted run (timeout, an error, a worker death) drops it, so the next run stages a fresh one either way.",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\nclose()\nRelease the staged shared memory.\n\n\nrun()\nRun the prepared map once; return the run’s map handle.\n\n\n\n\nclose()\n\nRelease the staged shared memory.\n\n\nUsage\nSource\n\n\nclose()\n\n\nSafe to call more than once; garbage collection releases it otherwise.\n\n\n\nrun()\n\nRun the prepared map once; return the run’s map handle.\n\n\nUsage\nSource\n\n\nrun(\n    x=None,\n    *,\n    seed=None,\n    timeout=None,\n    collect=None,\n)\n\n\nParameters\n\n\nx: _Any = None\n\nReplaces the staged data for this and later runs. When both the staged and the replacement x are arrays of the same dtype and length, the swap is an in-place copy, so a loop over same-shaped data (optimizer steps, simulation sweeps) runs at copy cost, skipping the region creation and the worker-side set-up. Any other x is staged fresh on this run.\n\nseed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None\n\nDeterministic per-element seeding for this run, as for Pool.map(); None (the default) runs unseeded. The seed travels with the run’s tasks, not the staged data, so reseeding a run costs nothing extra: a repeated-simulation loop varies seed per run while the set-up is paid once.\n\ntimeout: float | None = None\n\nSeconds before the run’s submission gives up; on expiry the tasks already in are cancelled and the TIMEOUT Sentinel is returned (no handle). The collection deadline is the handle’s collect().\n\ncollect: str | None = None\n\n\"copy\" (the default) or \"view\", which requires template, as for Pool.map(). The choice is per run.\n\n\n\n\n\nReturns\n\n\n The run’s map handle, collected exactly once, by collect()\n\n(blocking) or collect_async() (event-driven). A run is a producer on the pool handle: a concurrent run or submit from a second thread raises ConcurrentUseError. After a successful collection with collect=\"copy\", the next run reuses the staged data. With collect=\"view\", or when a run ends with a timeout, error, or worker death, the next run stages fresh data.",
     "crumbs": [
       "Reference",
       "Task pools",
@@ -429,291 +627,39 @@
     ]
   },
   {
-    "objectID": "reference/Pool.trace.html",
-    "href": "reference/Pool.trace.html",
-    "title": "Pool.trace()",
+    "objectID": "reference/Pool.html",
+    "href": "reference/Pool.html",
+    "title": "Pool",
     "section": "",
-    "text": "Register a hook called as fn(event, id) at each task event.\n\n\nUsage\nSource\n\n\nPool.trace(fn)\n\n\nThe events this process observes are \"submit\" on the submitting thread, and \"start\", \"done\", \"error\", \"drop\", and \"rehome\" on worker handles. id is \"&lt;submitter slot&gt;:&lt;counter&gt;\", stable across processes. Registration is per-handle and per-process; None removes the hook. An exception in the hook is reported as unraisable, never raised into the pool.",
+    "text": "A shared-memory work-stealing task pool handle (process-private).",
     "crumbs": [
       "Reference",
-      "Pool Methods",
-      "Pool.trace"
+      "Task pools",
+      "Pool"
     ]
   },
   {
-    "objectID": "reference/Pool.submit_batch.html",
-    "href": "reference/Pool.submit_batch.html",
-    "title": "Pool.submit_batch()",
-    "section": "",
-    "text": "Submit one task per zero-arg callable in fns in one call.",
+    "objectID": "reference/Pool.html#attributes",
+    "href": "reference/Pool.html#attributes",
+    "title": "Pool",
+    "section": "Attributes",
+    "text": "Attributes\n\n\n\nName\nDescription\n\n\n\n\ntoken\nThe join token for worker/submitter attach.",
     "crumbs": [
       "Reference",
-      "Pool Methods",
-      "Pool.submit_batch"
+      "Task pools",
+      "Pool"
     ]
   },
   {
-    "objectID": "reference/Pool.submit_batch.html#parameters",
-    "href": "reference/Pool.submit_batch.html#parameters",
-    "title": "Pool.submit_batch()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nfns: _Iterable[_Callable[[], _Any]]\n\nZero-arg callables, one task each. Use functools.partial to bind arguments.\n\ntimeout: float | None = None\n\nSeconds to wait for queue space; None waits indefinitely.",
+    "objectID": "reference/Pool.html#functions",
+    "href": "reference/Pool.html#functions",
+    "title": "Pool",
+    "section": "Functions",
+    "text": "Functions\n\n\n\nName\nDescription\n\n\n\n\nattach()\nAttach to a live pool as a submitter, by its join token.\n\n\ncollect_all()\nWait until every task is terminal.\n\n\ncollect_all_async()\nThe event-driven collect_all().\n\n\ncollect_any()\nWait on several tasks.\n\n\ncollect_any_async()\nThe event-driven collect_any().\n\n\ncreate()\nCreate a pool and spawn its worker processes.\n\n\ndestroy()\nTear down the pool handle immediately, without waiting.\n\n\ndump()\nA read-only debugging snapshot of the whole pool region (dict).\n\n\ninfo()\nA read-only snapshot of the pool’s state (dict).\n\n\nmap()\nMap fn over x on the pool; return a map handle.\n\n\nmap_prepare()\nStage a map once for repeated runs; return a PreparedMap.\n\n\nretire()\nAsk the worker in slot to exit cleanly.\n\n\nspawn_workers()\nSpawn n additional workers and wait for them to join.\n\n\nstarmap()\nMap fn over x, unpacking each element as call arguments.\n\n\nstats()\nCumulative per-worker and per-submitter counters.\n\n\nstop()\nOrderly shutdown (controller only).\n\n\nsubmit()\nSubmit fn(*args, **kwargs) as a task; return a Task handle.\n\n\nsubmit_batch()\nSubmit one task per zero-arg callable in fns in one call.\n\n\ntrace()\nRegister a hook called as fn(event, id) at each task event.",
     "crumbs": [
       "Reference",
-      "Pool Methods",
-      "Pool.submit_batch"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit_batch.html#returns",
-    "href": "reference/Pool.submit_batch.html#returns",
-    "title": "Pool.submit_batch()",
-    "section": "Returns",
-    "text": "Returns\n\n\n A list of Task handles. If the queue stays full\n\npast timeout the batch ends short, and the returned handles stay valid and collectible. A mid-batch failure raises with an accepted attribute holding the handles already submitted, which stay valid and collectible.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit_batch"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit_batch.html#raises",
-    "href": "reference/Pool.submit_batch.html#raises",
-    "title": "Pool.submit_batch()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother submit-family verb is in flight on this handle from a second thread: a pool handle is single-producer (the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit_batch"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.stop.html",
-    "href": "reference/Pool.stop.html",
-    "title": "Pool.stop()",
-    "section": "",
-    "text": "Orderly shutdown (controller only).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.stop"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.stop.html#returns",
-    "href": "reference/Pool.stop.html#returns",
-    "title": "Pool.stop()",
-    "section": "Returns",
-    "text": "Returns\n\n\n True on clean worker exits within timeout.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.stop"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.stop.html#raises",
-    "href": "reference/Pool.stop.html#raises",
-    "title": "Pool.stop()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nA blocking collect or a submit is in flight on this handle from a second thread: each half is confined to one thread (the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.stop"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.starmap.html",
-    "href": "reference/Pool.starmap.html",
-    "title": "Pool.starmap()",
-    "section": "",
-    "text": "Map fn over x, unpacking each element as call arguments.\n\n\nUsage\nSource\n\n\nPool.starmap(\n    fn,\n    x,\n    *,\n    args=(),\n    kwargs=None,\n    template=None,\n    n_chunks=None,\n    seed=None,\n    timeout=None,\n    stream=False,\n    collect=None,\n)\n\n\nCalls fn(*element, *args, **kwargs) and returns the run’s Map handle, as map() does. This is the multiprocessing.Pool.starmap convention. For the multi-iterable shape of concurrent.futures.Executor.map, zip first: pool.starmap(fn, zip(xs, ys)). Elements must be iterables (a 2-D buffer’s rows qualify; a 1-D buffer’s scalars do not). A call spec cannot starmap, because element unpacking is Python-only. Everything else (seeding, templates, streaming, the errors) works as in map().",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.starmap"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.retire.html",
-    "href": "reference/Pool.retire.html",
-    "title": "Pool.retire()",
-    "section": "",
-    "text": "Ask the worker in slot to exit cleanly.\n\n\nUsage\nSource\n\n\nPool.retire(slot)\n\n\nNon-blocking; controller only.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.retire"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map_prepare.html",
-    "href": "reference/Pool.map_prepare.html",
-    "title": "Pool.map_prepare()",
-    "section": "",
-    "text": "Stage a map once for repeated runs; return a PreparedMap.\n\n\nUsage\nSource\n\n\nPool.map_prepare(\n    fn,\n    x,\n    *,\n    args=(),\n    kwargs=None,\n    template=None,\n    n_chunks=None,\n    stream=False,\n)\n\n\nTakes the same arguments as map() except seed, timeout, and collect, which are per-run options of PreparedMap.run(). The set-up (pickling the description, creating the shared region, the worker-side attach) is paid once here. Each pm.run() re-arms cheaply, reuses the workers’ cached set-up, and returns the run’s Map handle, on which the results are collected. A run collected with collect=\"view\" hands its region to the view, so the next run stages a fresh one. With stream=True the staged x stays on the submitter, so a replacement x of any shape re-slices. Only a length change under template stages fresh shared memory, because the output area is sized for the staged length. Close the handle (or use it as a context manager) to release the region.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map_prepare"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.info.html",
-    "href": "reference/Pool.info.html",
-    "title": "Pool.info()",
-    "section": "",
-    "text": "A read-only snapshot of the pool’s state (dict).\n\n\nUsage\nSource\n\n\nPool.info()\n\n\nIt includes the token to pass to Pool.attach().",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.info"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.destroy.html",
-    "href": "reference/Pool.destroy.html",
-    "title": "Pool.destroy()",
-    "section": "",
-    "text": "Tear down the pool handle immediately, without waiting.\n\n\nUsage\nSource\n\n\nPool.destroy()\n\n\nNo shutdown is signalled to the workers; they exit once they detect that the controller is gone. This is the one verb that is safe from any thread. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (submit, collect, collect_any, collect_all, ready_wait) wakes promptly, while stop() waits out its own deadline and a worker’s idle run() can delay teardown until it returns. Pending async consumers fail with the closed-handle error. Every other verb stays confined to one thread (see the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.destroy"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any_async.html",
-    "href": "reference/Pool.collect_any_async.html",
-    "title": "Pool.collect_any_async()",
-    "section": "",
-    "text": "The event-driven collect_any().",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any_async"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any_async.html#parameters",
-    "href": "reference/Pool.collect_any_async.html#parameters",
-    "title": "Pool.collect_any_async()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any_async"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any_async.html#returns",
-    "href": "reference/Pool.collect_any_async.html#returns",
-    "title": "Pool.collect_any_async()",
-    "section": "Returns",
-    "text": "Returns\n\n\n An asyncio.Future resolving with the first finished task’s\n\n(index, value) (with the sync verb’s tie-breaks). A failure rejects with the exception the sync verb raises, index attribute included. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. Cancelling the Future detaches every task, so each can be collected blocking again, and never cancels them.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any_async"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all_async.html",
-    "href": "reference/Pool.collect_all_async.html",
-    "title": "Pool.collect_all_async()",
-    "section": "",
-    "text": "The event-driven collect_all().",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all_async"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all_async.html#parameters",
-    "href": "reference/Pool.collect_all_async.html#parameters",
-    "title": "Pool.collect_all_async()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all_async"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all_async.html#returns",
-    "href": "reference/Pool.collect_all_async.html#returns",
-    "title": "Pool.collect_all_async()",
-    "section": "Returns",
-    "text": "Returns\n\n\n An asyncio.Future resolving with all values in input order. The\n\nfirst failure by position rejects with the exception the sync verb raises, index attribute included; only that handle is consumed, and the rest stay collectible. Cancelling the Future detaches every task and never cancels them.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all_async"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.attach.html",
-    "href": "reference/Pool.attach.html",
-    "title": "Pool.attach()",
-    "section": "",
-    "text": "Attach to a live pool as a submitter, by its join token.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.attach.html#parameters",
-    "href": "reference/Pool.attach.html#parameters",
-    "title": "Pool.attach()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntoken: str\n\nThe join token, pool.token on the creator.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.attach.html#returns",
-    "href": "reference/Pool.attach.html#returns",
-    "title": "Pool.attach()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The submitter-side pool handle.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.attach.html#details",
-    "href": "reference/Pool.attach.html#details",
-    "title": "Pool.attach()",
-    "section": "Details",
-    "text": "Details\nEach attached handle is its own producer with its own submission queue: attaching one handle per thread (or per process) is how several submitters drive one pool at once.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.attach"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.__enter__.html",
-    "href": "reference/Pool.__enter__.html",
-    "title": "Pool.__enter__()",
-    "section": "",
-    "text": "Usage\nSource\n\n\nPool.__enter__()",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.__enter__"
+      "Task pools",
+      "Pool"
     ]
   },
   {
@@ -733,7 +679,7 @@
     "href": "reference/Map.html#methods",
     "title": "Map",
     "section": "Methods",
-    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\ncancel()\nStop the run: workers halt within about one batch.\n\n\ncollect()\nBlock for the map’s results; collect exactly once.\n\n\ncollect_async()\nResolve one asyncio.Future with the results collect() returns.\n\n\n\n\ncancel()\n\nStop the run: workers halt within about one batch.\n\n\nUsage\nSource\n\n\ncancel()\n\n\nAdvisory, as Task.cancel(): the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with CancelledError. Safe to call more than once. A no-op on a collected handle.\n\n\n\ncollect()\n\nBlock for the map’s results; collect exactly once.\n\n\nUsage\nSource\n\n\ncollect(timeout=None)\n\n\nParameters\n\n\ntimeout: float | None = None\n\nSeconds to wait for completion; None waits indefinitely. On expiry the outstanding work is cancelled and the TIMEOUT Sentinel is returned rather than raised.\n\n\n\n\n\nReturns\n\n\n The results, with the same shapes and outcomes as\n\nPreparedMap.run() documents.\n\n\n\n\n\n\ncollect_async()\n\nResolve one asyncio.Future with the results collect() returns.\n\n\nUsage\nSource\n\n\ncollect_async()\n\n\nThe event-driven collect, which never blocks or polls. An element error rejects with its index. Cancelling the Future detaches the waiter, so the handle can be collected blocking again, and never cancels the map (only cancel() does). A streaming map refuses, because its sliding task window advances in the blocking collect loop.",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\ncancel()\nStop the run: workers halt within about one batch.\n\n\ncollect()\nBlock for the map’s results; collect exactly once.\n\n\ncollect_async()\nResolve one asyncio.Future with the results collect() returns.\n\n\n\n\ncancel()\n\nStop the run: workers halt within about one batch.\n\n\nUsage\nSource\n\n\ncancel()\n\n\nAdvisory, as Task.cancel(): the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with CancelledError. Safe to call more than once. A no-op on a collected handle.\n\n\n\ncollect()\n\nBlock for the map’s results; collect exactly once.\n\n\nUsage\nSource\n\n\ncollect(timeout=None)\n\n\nFor a non-prepared map, successful collection with collect=\"copy\" releases its shared memory immediately. With collect=\"view\", the returned view takes ownership of the shared memory.\n\n\nParameters\n\n\ntimeout: float | None = None\n\nSeconds to wait for completion; None waits indefinitely. On expiry the outstanding work is cancelled and the TIMEOUT Sentinel is returned rather than raised.\n\n\n\n\n\nReturns\n\n\n The results, with the same shapes and outcomes as\n\nPreparedMap.run() documents.\n\n\n\n\n\n\ncollect_async()\n\nResolve one asyncio.Future with the results collect() returns.\n\n\nUsage\nSource\n\n\ncollect_async()\n\n\nThe event-driven collect, which never blocks or polls. An element error rejects with its index. Cancelling the Future detaches the waiter, so the handle can be collected blocking again, and never cancels the map (only cancel() does). A streaming map refuses, because its sliding task window advances in the blocking collect loop.",
     "crumbs": [
       "Reference",
       "Task pools",
@@ -741,243 +687,63 @@
     ]
   },
   {
-    "objectID": "reference/Frame.row_names.html",
-    "href": "reference/Frame.row_names.html",
-    "title": "Frame.row_names",
+    "objectID": "reference/ForeignPayloadError.html",
+    "href": "reference/ForeignPayloadError.html",
+    "title": "ForeignPayloadError",
     "section": "",
-    "text": "Frame.row_names: Any",
-    "crumbs": [
-      "Reference",
-      "Frame Methods",
-      "Frame.row_names"
-    ]
-  },
-  {
-    "objectID": "reference/Frame.names.html",
-    "href": "reference/Frame.names.html",
-    "title": "Frame.names",
-    "section": "",
-    "text": "Frame.names: tuple[str, …]",
-    "crumbs": [
-      "Reference",
-      "Frame Methods",
-      "Frame.names"
-    ]
-  },
-  {
-    "objectID": "reference/Frame.__reduce__.html",
-    "href": "reference/Frame.__reduce__.html",
-    "title": "Frame.__reduce__()",
-    "section": "",
-    "text": "Usage\nSource\n\n\nFrame.__reduce__()",
-    "crumbs": [
-      "Reference",
-      "Frame Methods",
-      "Frame.__reduce__"
-    ]
-  },
-  {
-    "objectID": "reference/Frame.__arrow_c_stream__.html",
-    "href": "reference/Frame.__arrow_c_stream__.html",
-    "title": "Frame.__arrow_c_stream__()",
-    "section": "",
-    "text": "arrow_c_stream(requested_schema=None) -&gt; capsule\n\n\nUsage\nSource\n\n\nFrame.__arrow_c_stream__(requested_schema=None)\n\n\nThe Arrow C Stream Interface export: the frame as one struct batch. Consumers take it in one line: pl.from_arrow(f), pa.table(f), or pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).",
-    "crumbs": [
-      "Reference",
-      "Frame Methods",
-      "Frame.__arrow_c_stream__"
-    ]
-  },
-  {
-    "objectID": "reference/DimArray.html",
-    "href": "reference/DimArray.html",
-    "title": "DimArray",
-    "section": "",
-    "text": "An ndarray carrying R labels for faithful round trips with R.\n\n\nUsage\nSource\n\n\nDimArray()\n\n\nThe labels are names, dimnames, axis_names, and r_class. A received labeled vector or array arrives as a DimArray, and an unmodified echo restores every label in R (identical()). Attach labels explicitly to send a labeled value: names for a 1-D array, dimnames (plus optional axis_names, R’s names(dimnames(x))) for a matrix or n-D array, and r_class = \"table\" for R’s table class. Use either names or dimnames, not both; axis_names requires dimnames and has one entry per axis.\nLabels never carry over on their own. Any numpy operation that builds a new array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped or permuted array never inherits labels its data no longer matches.",
-    "crumbs": [
-      "Reference",
-      "Cross-language interop",
-      "DimArray"
-    ]
-  },
-  {
-    "objectID": "reference/ConcurrentUseError.html",
-    "href": "reference/ConcurrentUseError.html",
-    "title": "ConcurrentUseError",
-    "section": "",
-    "text": "A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).\n\n\nUsage\nSource\n\n\nConcurrentUseError()",
+    "text": "A received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\n\nUsage\nSource\n\n\nForeignPayloadError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
-      "ConcurrentUseError"
+      "ForeignPayloadError"
     ]
   },
   {
-    "objectID": "reference/Channel.send_batch.html",
-    "href": "reference/Channel.send_batch.html",
-    "title": "Channel.send_batch()",
+    "objectID": "reference/DeclinedError.html",
+    "href": "reference/DeclinedError.html",
+    "title": "DeclinedError",
     "section": "",
-    "text": "Send several values in one call.\n\n\nUsage\nSource\n\n\nChannel.send_batch(xs)\n\n\nReturns the number accepted, which is fewer than len(xs) when the ring fills or a terminal state is reached.",
+    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\n\nUsage\nSource\n\n\nDeclinedError()",
     "crumbs": [
       "Reference",
-      "Channel Methods",
-      "Channel.send_batch"
+      "Outcomes and errors",
+      "DeclinedError"
     ]
   },
   {
-    "objectID": "reference/Channel.recv_batch.html",
-    "href": "reference/Channel.recv_batch.html",
-    "title": "Channel.recv_batch()",
+    "objectID": "reference/Channel.html",
+    "href": "reference/Channel.html",
+    "title": "Channel",
     "section": "",
-    "text": "Receive up to n values in one call.\n\n\nUsage\nSource\n\n\nChannel.recv_batch(\n    n=256,\n    timeout=None,\n)\n\n\nReturns a list (possibly short or empty), or a terminal sentinel.",
+    "text": "A shared-memory channel handle (process-private).",
     "crumbs": [
       "Reference",
-      "Channel Methods",
-      "Channel.recv_batch"
+      "Channels",
+      "Channel"
     ]
   },
   {
-    "objectID": "reference/Channel.recv.html",
-    "href": "reference/Channel.recv.html",
-    "title": "Channel.recv()",
-    "section": "",
-    "text": "Receive one value.",
+    "objectID": "reference/Channel.html#attributes",
+    "href": "reference/Channel.html#attributes",
+    "title": "Channel",
+    "section": "Attributes",
+    "text": "Attributes\n\n\n\nName\nDescription\n\n\n\n\ntoken\nThe join token for the peer’s attach.",
     "crumbs": [
       "Reference",
-      "Channel Methods",
-      "Channel.recv"
+      "Channels",
+      "Channel"
     ]
   },
   {
-    "objectID": "reference/Channel.recv.html#parameters",
-    "href": "reference/Channel.recv.html#parameters",
-    "title": "Channel.recv()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
+    "objectID": "reference/Channel.html#functions",
+    "href": "reference/Channel.html#functions",
+    "title": "Channel",
+    "section": "Functions",
+    "text": "Functions\n\n\n\nName\nDescription\n\n\n\n\n__aiter__()\nIterate over received payloads until CLOSED or PEER_GONE.\n\n\n__iter__()\nIterate over received payloads until CLOSED or PEER_GONE.\n\n\nalive()\nTrue while the peer process is alive.\n\n\nclose()\nClose the channel in an orderly way.\n\n\ncreate()\nCreate a channel and spawn its peer.\n\n\ndestroy()\nTear down the handle immediately, without the close handshake.\n\n\ninfo()\nA read-only snapshot of the channel’s state (dict).\n\n\nrecv()\nReceive one value.\n\n\nrecv_async()\nReceive the next value as an asyncio.Future.\n\n\nrecv_batch()\nReceive up to n values in one call.\n\n\nsend()\nSend one value.\n\n\nsend_batch()\nSend several values in one call.",
     "crumbs": [
       "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#returns",
-    "href": "reference/Channel.recv.html#returns",
-    "title": "Channel.recv()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The value, or the TIMEOUT / CLOSED / PEER_GONE\n\nsentinel.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv.html#raises",
-    "href": "reference/Channel.recv.html#raises",
-    "title": "Channel.recv()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother verb is in flight on this side from a second thread, or a recv_async() consumer is armed and this is not its event-loop thread: a side is confined to one thread and one consumer form at a time.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.info.html",
-    "href": "reference/Channel.info.html",
-    "title": "Channel.info()",
-    "section": "",
-    "text": "A read-only snapshot of the channel’s state (dict).\n\n\nUsage\nSource\n\n\nChannel.info()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.info"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html",
-    "href": "reference/Channel.create.html",
-    "title": "Channel.create()",
-    "section": "",
-    "text": "Create a channel and spawn its peer.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#parameters",
-    "href": "reference/Channel.create.html#parameters",
-    "title": "Channel.create()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\npeer: str\n\nA Python source string, evaluated in the peer process with ch bound to the peer-side handle.\n\ncapacity: int = 16384\n\nRing capacity in slots; a power of two.\n\nslot_size: int = 256\n\nBytes per ring slot; a power of two. A payload of up to slot_size - 16 bytes fits in a slot.\n\narena_size: int = 4 * 1024 * 1024\n\nBytes of shared staging area for larger payloads.\n\nspin: bool = False\n\nBusy-wait rather than sleep while waiting.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the peer to attach.\n\nlauncher: _Callable[[str], _Any] | None = None\n\nA callable(token) arranging for a Python process to run python -m pymizu.child &lt;token&gt;; the default is launcher() (spawns sys.executable directly). r_launcher() returns one spawning an R peer (the R package mizu).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#returns",
-    "href": "reference/Channel.create.html#returns",
-    "title": "Channel.create()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The host-side channel handle.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.create.html#examples",
-    "href": "reference/Channel.create.html#examples",
-    "title": "Channel.create()",
-    "section": "Examples",
-    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     ch.send([1, \"a\", None])\n...     received = ch.recv(timeout=5)\n&gt;&gt;&gt; received\n[1, 'a', None]",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.create"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.alive.html",
-    "href": "reference/Channel.alive.html",
-    "title": "Channel.alive()",
-    "section": "",
-    "text": "True while the peer process is alive.\n\n\nUsage\nSource\n\n\nChannel.alive()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.alive"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.__exit__.html",
-    "href": "reference/Channel.__exit__.html",
-    "title": "Channel.__exit__()",
-    "section": "",
-    "text": "Usage\nSource\n\n\nChannel.__exit__(*exc)",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__exit__"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.__aiter__.html",
-    "href": "reference/Channel.__aiter__.html",
-    "title": "Channel.__aiter__()",
-    "section": "",
-    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__aiter__()\n\n\nThe async form of the sync iterator. Yields payloads as they arrive, awaiting each through recv_async(). Between iterations nothing is armed; the next iteration re-arms, and the arm’s synchronous drain picks up whatever arrived meanwhile, so nothing is lost.\nA declined foreign payload (see recv_async()) propagates out of the iteration and ends the async for statement, so a try/except inside the loop body cannot catch it. To skip one, wrap the whole loop and re-enter on the same channel: the consumer kept flowing, and the new iterator picks up the next message.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__aiter__"
+      "Channels",
+      "Channel"
     ]
   },
   {
@@ -985,7 +751,7 @@
     "href": "package-info.html",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-12\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-12\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npymizu\n\n\n—\n\n\n2026-11-12\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-12\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-12\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\njupyter\n\n\n—\n\n\n2024-08-30\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nPackage\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10"
   },
   {
     "objectID": "package-info.html#all",
@@ -1006,7 +772,7 @@
     "href": "package-info.html#dev",
     "title": "Package Info",
     "section": "",
-    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-12\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-05\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
+    "text": "Package\n\n\nVersion Constraint\n\n\nLast Published\n\n\nPyPI\n\n\n\n\n\n\npytest\n\n\n&gt;=9\n\n\n2026-10-27\n\n\n\n\n\n\n\ncoverage\n\n\n—\n\n\n2026-11-12\n\n\n\n\n\n\n\nruff\n\n\n==0.14.0\n\n\n2026-11-12\n\n\n\n\n\n\n\npyrefly\n\n\n—\n\n\n2026-11-05\n\n\n\n\n\n\n\nbuild\n\n\n—\n\n\n2026-09-10\n\n\n\n\n\n\n\nnumpy\n\n\n—\n\n\n2026-10-10\n\n\n\n\n\n\n\ncloudpickle\n\n\n—\n\n\n2025-11-03\n\n\n\n\n\n\n\npyarrow\n\n\n—\n\n\n2026-11-03\n\n\n\n\n\n\n\npolars\n\n\n—\n\n\n2026-10-25\n\n\n\n\n\n\n\npandas\n\n\n—\n\n\n2026-11-04\n\n\n\n\n\n\n\nduckdb\n\n\n—\n\n\n2026-10-21"
   },
   {
     "objectID": "package-info.html#docs",
@@ -1196,219 +962,27 @@
     ]
   },
   {
-    "objectID": "reference/Channel.__enter__.html",
-    "href": "reference/Channel.__enter__.html",
-    "title": "Channel.__enter__()",
+    "objectID": "reference/ConcurrentUseError.html",
+    "href": "reference/ConcurrentUseError.html",
+    "title": "ConcurrentUseError",
     "section": "",
-    "text": "Usage\nSource\n\n\nChannel.__enter__()",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__enter__"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.__iter__.html",
-    "href": "reference/Channel.__iter__.html",
-    "title": "Channel.__iter__()",
-    "section": "",
-    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\nChannel.__iter__()\n\n\nBlocks indefinitely between payloads (recv() with no timeout); use Channel.recv() directly when a bound is needed.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.__iter__"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.close.html",
-    "href": "reference/Channel.close.html",
-    "title": "Channel.close()",
-    "section": "",
-    "text": "Close the channel in an orderly way.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.close"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.close.html#raises",
-    "href": "reference/Channel.close.html#raises",
-    "title": "Channel.close()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nA verb is in flight on this side from a second thread: the side is confined to one thread (the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.close"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.destroy.html",
-    "href": "reference/Channel.destroy.html",
-    "title": "Channel.destroy()",
-    "section": "",
-    "text": "Tear down the handle immediately, without the close handshake.\n\n\nUsage\nSource\n\n\nChannel.destroy()\n\n\nThe peer sees the channel as closed (PEER_GONE if it died hard). This is the one verb that is safe from any thread. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (recv, recv_batch, ready_wait, close) wakes promptly so that this can happen. Pending recv futures settle with PEER_GONE. Every other verb stays confined to one thread (see the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.destroy"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.html",
-    "href": "reference/Channel.html",
-    "title": "Channel",
-    "section": "",
-    "text": "A shared-memory channel handle (process-private).\n\n\nUsage\nSource\n\n\nChannel()\n\n\nCreate the host side with Channel.create(), which spawns the peer. The peer side attaches with Channel._attach(), as python -m pymizu.child does. Handles do not survive fork().\nThreading: a side belongs to one thread at a time. Call its verbs (send(), recv(), their batch forms) from one thread only; a second verb from another thread raises ConcurrentUseError. Blocking and async receives are likewise exclusive on a side: a blocking receive while a recv_async() consumer is active raises it too, from any thread but the consumer’s event loop, whose own receives can never race it. Two-way traffic from two threads needs two channels. Teardown is the exception: destroy() is safe from any thread.",
-    "crumbs": [
-      "Reference",
-      "Channels",
-      "Channel"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_async.html",
-    "href": "reference/Channel.recv_async.html",
-    "title": "Channel.recv_async()",
-    "section": "",
-    "text": "Receive the next value as an asyncio.Future.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_async.html#returns",
-    "href": "reference/Channel.recv_async.html#returns",
-    "title": "Channel.recv_async()",
-    "section": "Returns",
-    "text": "Returns\n\n\n An asyncio.Future resolving with the same object a blocking\n\nrecv() would have returned, zero-copy views included (the receive itself runs on the event-loop thread). Terminal states stay values: the Future resolves with the CLOSED / PEER_GONE sentinel.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.recv_async.html#details",
-    "href": "reference/Channel.recv_async.html#details",
-    "title": "Channel.recv_async()",
-    "section": "Details",
-    "text": "Details\nSeveral outstanding calls on one channel resolve in call order, one message each. Nothing is lost while arming: values already in the ring resolve immediately, and only values not yet sent wait for the wake-up. Cancelling the Future detaches the waiter, and the next message goes to the next waiter. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. A channel created with spin=True cannot arm and raises. The async consumer is the side’s one consumer: a blocking recv() on the same side while waiters are pending raises ConcurrentUseError.\nA message the peer sent outside the portable interchange subset (a language-private stream) rejects only the waiter that receives it, with ForeignPayloadError. The message is consumed and the async consumer keeps flowing, so the other outstanding calls are unaffected.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.recv_async"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html",
-    "href": "reference/Channel.send.html",
-    "title": "Channel.send()",
-    "section": "",
-    "text": "Send one value.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html#parameters",
-    "href": "reference/Channel.send.html#parameters",
-    "title": "Channel.send()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nx: _Any\n\nThe value to send. None is a valid value; bytes and numpy arrays cross without serialization, everything else is pickled (protocol 4).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html#returns",
-    "href": "reference/Channel.send.html#returns",
-    "title": "Channel.send()",
-    "section": "Returns",
-    "text": "Returns\n\n\n None, or the FULL / CLOSED / PEER_GONE sentinel\n\n(identity-tested).",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.send.html#raises",
-    "href": "reference/Channel.send.html#raises",
-    "title": "Channel.send()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother verb is in flight on this side from a second thread: a side is confined to one thread at a time.",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.send"
-    ]
-  },
-  {
-    "objectID": "reference/Channel.token.html",
-    "href": "reference/Channel.token.html",
-    "title": "Channel.token",
-    "section": "",
-    "text": "The join token for the peer’s attach.\n\n\nChannel.token: str",
-    "crumbs": [
-      "Reference",
-      "Channel Methods",
-      "Channel.token"
-    ]
-  },
-  {
-    "objectID": "reference/DeclinedError.html",
-    "href": "reference/DeclinedError.html",
-    "title": "DeclinedError",
-    "section": "",
-    "text": "A send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\n\nUsage\nSource\n\n\nDeclinedError()",
+    "text": "A verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).\n\n\nUsage\nSource\n\n\nConcurrentUseError()",
     "crumbs": [
       "Reference",
       "Outcomes and errors",
-      "DeclinedError"
+      "ConcurrentUseError"
     ]
   },
   {
-    "objectID": "reference/ForeignPayloadError.html",
-    "href": "reference/ForeignPayloadError.html",
-    "title": "ForeignPayloadError",
+    "objectID": "reference/DimArray.html",
+    "href": "reference/DimArray.html",
+    "title": "DimArray",
     "section": "",
-    "text": "A received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\n\nUsage\nSource\n\n\nForeignPayloadError()",
+    "text": "An ndarray carrying R labels for faithful round trips with R.\n\n\nUsage\nSource\n\n\nDimArray()\n\n\nThe labels are names, dimnames, axis_names, and r_class. A received labeled vector or array arrives as a DimArray, and an unmodified echo restores every label in R (identical()). Attach labels explicitly to send a labeled value: names for a 1-D array, dimnames (plus optional axis_names, R’s names(dimnames(x))) for a matrix or n-D array, and r_class = \"table\" for R’s table class. Use either names or dimnames, not both; axis_names requires dimnames and has one entry per axis.\nLabels never carry over on their own. Any numpy operation that builds a new array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped or permuted array never inherits labels its data no longer matches.",
     "crumbs": [
       "Reference",
-      "Outcomes and errors",
-      "ForeignPayloadError"
-    ]
-  },
-  {
-    "objectID": "reference/Frame.__len__.html",
-    "href": "reference/Frame.__len__.html",
-    "title": "Frame.__len__()",
-    "section": "",
-    "text": "Return len(self).\n\n\nUsage\nSource\n\n\nFrame.__len__()",
-    "crumbs": [
-      "Reference",
-      "Frame Methods",
-      "Frame.__len__"
-    ]
-  },
-  {
-    "objectID": "reference/Frame.from_arrow.html",
-    "href": "reference/Frame.from_arrow.html",
-    "title": "Frame.from_arrow()",
-    "section": "",
-    "text": "from_arrow(obj) -&gt; Frame\n\n\nUsage\nSource\n\n\nFrame.from_arrow(obj)\n\n\nConstruct a frame from an Arrow producer, adopting its buffers wherever a column’s frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies only what it has to, nulls included.\nThis is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer’s columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer’s type.\n\n\nobj Any __arrow_c_stream__ producer: a pyarrow Table or RecordBatchReader, a polars DataFrame, a duckdb relation. A chunked table adopts after Table.combine_chunks().\n\n\nThe frame. An adopted column keeps the producer's buffers alive\nfor the frame's lifetime (numpy-view semantics: a frame from a\n4 GB table pins it).\n\n\nMizuError The Arrow type has no portable equivalent (the error names the column), or the producer’s export failed.\n\n\n&gt;&gt;&gt; import pyarrow as pa\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     f = pymizu.Frame.from_arrow(\n...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n...     )\n...     ch.send(f)\n...     echoed = pa.table(ch.recv(timeout=5))\n&gt;&gt;&gt; echoed.column(\"x\").null_count\n100000",
-    "crumbs": [
-      "Reference",
-      "Frame Methods",
-      "Frame.from_arrow"
+      "Cross-language interop",
+      "DimArray"
     ]
   },
   {
@@ -1416,7 +990,7 @@
     "href": "reference/Frame.html",
     "title": "Frame",
     "section": "",
-    "text": "A data.frame’s Python home: named columns with a row count.\n\n\nUsage\nSource\n\n\nFrame()\n\n\nto_dict() returns the columns as a dict without an Arrow library, and arrow_c_stream exports to polars, pyarrow, or pandas. from_arrow() constructs one from an Arrow producer, the opt-in zero-copy path for Python-to-Python channels. R frame metadata (classes, extra attributes) survives an unmodified round trip, while a rebuilt frame arrives in R as a plain data.frame.",
+    "text": "A data.frame’s Python home: named columns with a row count.",
     "crumbs": [
       "Reference",
       "Cross-language interop",
@@ -1424,15 +998,15 @@
     ]
   },
   {
-    "objectID": "reference/Frame.to_dict.html",
-    "href": "reference/Frame.to_dict.html",
-    "title": "Frame.to_dict()",
-    "section": "",
-    "text": "to_dict() -&gt; dict\n\n\nUsage\nSource\n\n\nFrame.to_dict()\n\n\nThe frame as a dict of columns: numpy arrays for numeric columns (or memoryviews without numpy), datetime64 for Date / POSIXct, and list[str | None] for string and factor columns. Complex columns carry complex128 here (the Arrow export has no complex type).",
+    "objectID": "reference/Frame.html#methods",
+    "href": "reference/Frame.html#methods",
+    "title": "Frame",
+    "section": "Methods",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\n__arrow_c_stream__()\narrow_c_stream(requested_schema=None) -&gt; capsule\n\n\n__len__()\nReturn len(self).\n\n\nfrom_arrow()\nfrom_arrow(obj) -&gt; Frame\n\n\nto_dict()\nto_dict() -&gt; dict\n\n\n\n\n__arrow_c_stream__()\n\narrow_c_stream(requested_schema=None) -&gt; capsule\n\n\nUsage\nSource\n\n\n__arrow_c_stream__(requested_schema=None)\n\n\nThe Arrow C Stream Interface export: the frame as one struct batch. Consumers take it in one line: pl.from_arrow(f), pa.table(f), or pd.DataFrame.from_arrow(f). A complex column raises (no Arrow type).\n\n\n\n__len__()\n\nReturn len(self).\n\n\nUsage\nSource\n\n\n__len__()\n\n\n\nfrom_arrow()\n\nfrom_arrow(obj) -&gt; Frame\n\n\nUsage\nSource\n\n\nfrom_arrow(obj)\n\n\nConstruct a frame from an Arrow producer, adopting its buffers wherever a column’s frame layout is the Arrow layout (a single-batch producer on offset-0 boundaries), so construction copies only what it has to, nulls included.\nThis is the opt-in zero-copy frame path for Python-to-Python channels: past the zero-copy floor the frame crosses as one shared-memory region and is read in place, where a plain Arrow object pickles (type-exact, but a full copy). The frame reads back with the same values but normalized types: a chunked or sliced producer’s columns concatenate, uints widen, nanosecond timestamps rescale to microseconds, and the received value is a Frame, not the producer’s type.\n\n\nobj Any __arrow_c_stream__ producer: a pyarrow Table or RecordBatchReader, a polars DataFrame, a duckdb relation. A chunked table adopts after Table.combine_chunks().\n\n\nThe frame. An adopted column keeps the producer's buffers alive\nfor the frame's lifetime (numpy-view semantics: a frame from a\n4 GB table pins it).\n\n\nMizuError The Arrow type has no portable equivalent (the error names the column), or the producer’s export failed.\n\n\n&gt;&gt;&gt; import pyarrow as pa\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Channel.create(\n...     \"\"\"\n... import pymizu\n... while True:\n...     x = ch.recv()\n...     if x is pymizu.CLOSED:\n...         break\n...     ch.send(x)\n... \"\"\"\n... ) as ch:\n...     f = pymizu.Frame.from_arrow(\n...         pa.table({\"x\": pa.array([1.5, None] * 100000)})\n...     )\n...     ch.send(f)\n...     echoed = pa.table(ch.recv(timeout=5))\n&gt;&gt;&gt; echoed.column(\"x\").null_count\n100000\n\n\n\nto_dict()\n\nto_dict() -&gt; dict\n\n\nUsage\nSource\n\n\nto_dict()\n\n\nThe frame as a dict of columns: numpy arrays for numeric columns (or memoryviews without numpy), datetime64 for Date / POSIXct, and list[str | None] for string and factor columns. Complex columns carry complex128 here (the Arrow export has no complex type).",
     "crumbs": [
       "Reference",
-      "Frame Methods",
-      "Frame.to_dict"
+      "Cross-language interop",
+      "Frame"
     ]
   },
   {
@@ -1445,390 +1019,6 @@
       "Reference",
       "Outcomes and errors",
       "MizuError"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.__exit__.html",
-    "href": "reference/Pool.__exit__.html",
-    "title": "Pool.__exit__()",
-    "section": "",
-    "text": "Usage\nSource\n\n\nPool.__exit__(*exc)",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.__exit__"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all.html",
-    "href": "reference/Pool.collect_all.html",
-    "title": "Pool.collect_all()",
-    "section": "",
-    "text": "Wait until every task is terminal.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all.html#parameters",
-    "href": "reference/Pool.collect_all.html#parameters",
-    "title": "Pool.collect_all()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on.\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all.html#returns",
-    "href": "reference/Pool.collect_all.html#returns",
-    "title": "Pool.collect_all()",
-    "section": "Returns",
-    "text": "Returns\n\n\n All values in input order. On the first failure by position, raises\n\nwith an index attribute (0-based). Only the reported handle is consumed, and every other handle, including the results ahead of it, stays collectible. A result that fails to read raises with index and a values attribute carrying the consumed prefix. The TIMEOUT sentinel consumes nothing.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_all.html#raises",
-    "href": "reference/Pool.collect_all.html#raises",
-    "title": "Pool.collect_all()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother wait-half verb (a blocking collect, stop()) is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_all"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any.html",
-    "href": "reference/Pool.collect_any.html",
-    "title": "Pool.collect_any()",
-    "section": "",
-    "text": "Wait on several tasks.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any.html#parameters",
-    "href": "reference/Pool.collect_any.html#parameters",
-    "title": "Pool.collect_any()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on.\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any.html#returns",
-    "href": "reference/Pool.collect_any.html#returns",
-    "title": "Pool.collect_any()",
-    "section": "Returns",
-    "text": "Returns\n\n\n (index, value) of the first task to finish, or the\n\nTIMEOUT sentinel. A failure raises with an index attribute (0-based).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.collect_any.html#raises",
-    "href": "reference/Pool.collect_any.html#raises",
-    "title": "Pool.collect_any()",
-    "section": "Raises",
-    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother wait-half verb (a blocking collect, stop()) is in flight on this handle from a second thread: the waiting half is confined to one thread (the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.collect_any"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.create.html",
-    "href": "reference/Pool.create.html",
-    "title": "Pool.create()",
-    "section": "",
-    "text": "Create a pool and spawn its worker processes.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.create"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.create.html#parameters",
-    "href": "reference/Pool.create.html#parameters",
-    "title": "Pool.create()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nn_workers: int = 1\n\nNumber of worker processes to spawn.\n\nmax_workers: int | None = None\n\nThe worker limit; defaults to n_workers.\n\nmax_submitters: int = 8\n\nMaximum number of submitter processes.\n\ninjection_cap: int = 1024\n\nCapacity of each submitter’s queue.\n\nper_worker_cap: int = 1024\n\nCapacity of each worker’s queue.\n\nresult_slots: int = 4096\n\nBounds each submitter’s outstanding (uncollected) tasks.\n\nslot_size: int = 512\n\nBytes per queue entry and result slot; a larger payload travels in its own shared-memory region.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the workers to attach.\n\nlauncher: _Callable[[str, int], _Any] | None = None\n\nA callable(token, slot) arranging for a Python process to run python -m pymizu.worker &lt;token&gt; &lt;slot&gt;; the default is launcher() (spawns sys.executable directly).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.create"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.create.html#returns",
-    "href": "reference/Pool.create.html#returns",
-    "title": "Pool.create()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The controller-side pool handle.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.create"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.create.html#examples",
-    "href": "reference/Pool.create.html#examples",
-    "title": "Pool.create()",
-    "section": "Examples",
-    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Pool.create(2) as pool:\n...     task = pool.submit(pow, 2, 16)\n...     results = pool.collect_all([task], timeout=10)\n&gt;&gt;&gt; results\n[65536]",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.create"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.dump.html",
-    "href": "reference/Pool.dump.html",
-    "title": "Pool.dump()",
-    "section": "",
-    "text": "A read-only debugging snapshot of the whole pool region (dict).\n\n\nUsage\nSource\n\n\nPool.dump()",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.dump"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map.html",
-    "href": "reference/Pool.map.html",
-    "title": "Pool.map()",
-    "section": "",
-    "text": "Map fn over x on the pool; return a map handle.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map.html#parameters",
-    "href": "reference/Pool.map.html#parameters",
-    "title": "Pool.map()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nfn: _Callable[…, _Any]\n\nThe callable to apply, or a call spec.\n\nx: _Iterable[_Any]\n\nThe iterable of elements.\n\nargs: _Iterable[_Any] = ()\n\nConstant positional arguments appended to every call.\n\nkwargs: dict[str, _Any] | None = None\n\nConstant keyword arguments of every call.\n\ntemplate: _Any = None\n\nAn example buffer (for example numpy.empty(m, dtype=...)) declaring that every fn result is m values of that dtype; see Details.\n\nn_chunks: int | None = None\n\nOverrides the number of batches the elements are split into.\n\nseed: int | bytes | bytearray | tuple[int | bytes | bytearray, int] | None = None\n\nAn int or bytes giving every element a deterministic stream of the stdlib random module; see Details. Pass seed=(seed, offset) to shift every element’s stream by offset positions, for maps split across runs or processes.\n\ntimeout: float | None = None\n\nSeconds to wait for the submissions to go through; None waits indefinitely. Bounds submission only; the collection deadline is the handle’s collect(timeout).\n\nstream: bool = False\n\nStream slices of x to workers instead of writing the whole of x to shared memory first; see Details.\n\ncollect: str | None = None\n\n\"copy\" (the default) or \"view\"; governs how a template-backed output area is returned.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map.html#returns",
-    "href": "reference/Pool.map.html#returns",
-    "title": "Pool.map()",
-    "section": "Returns",
-    "text": "Returns\n\n\n A Map handle. handle.collect() blocks for the\n\nresults (a list in input order, or with template the gathered output area, a view with collect=\"view\") and raises the errors below. handle.collect_async() or await handle resolves one asyncio.Future with the same results, except on a streaming map, which collects blocking only because its sliding task window advances in the blocking collect loop. handle.cancel() stops the run. On timeout expiry mid-submission, map() itself returns the TIMEOUT sentinel (no handle). A length-0 x returns a handle whose collect yields the empty result.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map.html#raises",
-    "href": "reference/Pool.map.html#raises",
-    "title": "Pool.map()",
-    "section": "Raises",
-    "text": "Raises\n\n\n TaskError\n\nA task error re-raises from the collect as TaskError carrying the failing element’s 0-based index; the map fails fast (workers stop within about one batch).\n\n WorkerDiedError\n\nWorker death carries the lost element ranges as lost (0-based half-open (lo, hi) pairs, possibly wider than what was lost; mizu’s mizu_error_worker_died$lost carries the same set as a two-column matrix of inclusive 1-based ranges).\n\n TypeError\n\nA call spec as fn with stream=True.\n\n DeclinedError\n\nWith a spec, a non-portable constant or element at stage time.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map.html#details",
-    "href": "reference/Pool.map.html#details",
-    "title": "Pool.map()",
-    "section": "Details",
-    "text": "Details\nOne call writes fn, the constant args/kwargs, and x to shared memory once (or sends them inside chunk tasks when small), then submits one runner task per live worker. Runners claim adaptively sized element batches off a shared counter. A C-contiguous buffer of a supported dtype (float64/int32/int64/complex128/uint8) travels as bare bytes, and each worker wraps it once and indexes into it per element.\nseed gives every element a deterministic stream of the stdlib random module: element i runs under random.seed(SHA-256(seed_bytes + i.to_bytes(8, \"little\"))), identical for any chunking, worker count, or steal order. seed covers the stdlib random module only: a task drawing from numpy calls current_rng() inside the task (the element’s own numpy.random.Generator, created once per element from the same seed material); other RNG libraries are out of scope. The legacy np.random.* module functions draw from the worker’s shared global RandomState and stay order-dependent. A seeded map element must not submit and collect nested tasks: while a worker waits it runs other work, possibly another map’s batches mid-element, which wipes this element’s current_rng() stash. A later call rebuilds from the seed, restarting the stream instead of continuing it (the stdlib streams survive).\nfn may be a call specification instead of a callable. This is how you map over a foreign pool, such as one spawned with r_launcher(). A spec always uses a shared-memory region: the description crosses in a language-neutral format that any worker language reads. The element fills the spec’s first positional slot (name kind) or binds as x (source kind), and the spec’s own constant arguments travel with it, so args and kwargs must be empty with a spec. Constants and elements must be portable values, and a non-portable one raises DeclinedError at the map() call. seed= crosses as a language-neutral pair and each worker language derives its own streams, so a spec map takes int seeds only (on R workers, the seed within 32-bit range and the offset at most 2^53; with stream=True, the offset plus len(x) must stay within 2^53). Results are reproducible within a worker language but not identical across languages.\ntemplate declares that every fn result is m values of the example buffer’s dtype: results are written in place into a shared n x m output area and never serialized. Each result must be a matching buffer or, for m == 1, a plain Python scalar. With a template, collect=\"copy\" (the default) returns the area as one gathered numpy array (a memoryview without numpy) of shape (n, m), or (n,) for m == 1. collect=\"view\" returns it zero-copy, and the shared memory is released only when the view is gone.\nWith stream=True, the map does not write the whole of x to shared memory. It streams slices of x to workers as they take work, and the return value is unchanged. Slices travel as ordinary chunk tasks under a sliding submit/collect window of at most min(n_chunks, 2 * live workers, free result slots) outstanding tasks, so shared-memory use is bounded by window x slice instead of sizeof(x). With the default chunk count (min(len(x), 32 * live workers)) that is roughly (2 * workers) / n_chunks of the serialized x. n_chunks= overrides the chunk count (n_chunks=len(x) is the extreme of one element per task). Everything else (result order, template and collect, seed reproducibility, the errors) is the same as for the non-streaming map. The trade-offs: failure detection coarsens from about one adaptive batch to about one chunk (the bound moves with n_chunks), the adaptive batch sizing is lost (raise n_chunks to reduce skew), and slices are serialized like ordinary task payloads instead of taking the zero-copy path a raw array gets. A streaming map with Python workers shares one description of the map with every worker, each read at most once. A call spec as fn streams too, over workers of any language. Each chunk in the window then writes a small shared-memory region of its own (the slice plus the task that runs on it, one runner task per chunk), removed as soon as the chunk completes. Shared-memory use stays bounded by the window plus a small per-worker cache rather than by sizeof(x). Each chunk also writes its results separately, so they cannot combine into one view: collect=\"view\" raises TypeError on a streaming spec map, as does preparing one with map_prepare().\ntimeout bounds submission only (the wait for queue space while the tasks go out). The collection deadline is the handle’s collect(timeout), whose expiry cancels the outstanding work and returns the TIMEOUT sentinel rather than raising.\nstarmap() is the unpacking variant, calling fn(*element, *args, **kwargs) in the multiprocessing.Pool.starmap convention.\nThreading: a map is a producer on the handle, so it raises ConcurrentUseError when another map or a submit is in flight from a second thread (see the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.map.html#examples",
-    "href": "reference/Pool.map.html#examples",
-    "title": "Pool.map()",
-    "section": "Examples",
-    "text": "Examples\n&gt;&gt;&gt; import pymizu\n&gt;&gt;&gt; with pymizu.Pool.create(2) as pool:\n...     results = pool.map(abs, range(-5, 5)).collect()\n&gt;&gt;&gt; results\n[5, 4, 3, 2, 1, 0, 1, 2, 3, 4]",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.map"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.html",
-    "href": "reference/Pool.html",
-    "title": "Pool",
-    "section": "",
-    "text": "A shared-memory work-stealing task pool handle (process-private).\n\n\nUsage\nSource\n\n\nPool()\n\n\nCreate the controller side with Pool.create(), which spawns the workers (python -m pymizu.worker). Other processes join as submitters with Pool.attach(). The pool exists only as long as the process that created it: dropping the handle shuts the pool down as Pool.stop() does, but without waiting for the workers. Handles do not survive fork().\nTask callables travel by pickle. With the standard pickle a submitted callable must be an importable reference (as with multiprocessing), and installing cloudpickle lifts that restriction.\nThreading: a handle has two single-threaded halves. The producing half (submit(), submit_batch(), map()) belongs to one thread, and a concurrent second producer raises ConcurrentUseError. The waiting half (the blocking collects and stop()) likewise belongs to one thread, which may be a different one from the producer’s. To produce from several threads, attach() one handle per thread (each is its own producer, with its own submission queue), or use PoolExecutor, whose submits are thread-safe. Teardown is the exception: destroy() is safe from any thread.",
-    "crumbs": [
-      "Reference",
-      "Task pools",
-      "Pool"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.spawn_workers.html",
-    "href": "reference/Pool.spawn_workers.html",
-    "title": "Pool.spawn_workers()",
-    "section": "",
-    "text": "Spawn n additional workers and wait for them to join.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.spawn_workers"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.spawn_workers.html#parameters",
-    "href": "reference/Pool.spawn_workers.html#parameters",
-    "title": "Pool.spawn_workers()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nn: int = 1\n\nNumber of workers to spawn.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the workers to attach.\n\nlauncher: _Callable[[str, int], _Any] | None = None\n\nAs for Pool.create(); the default is launcher().",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.spawn_workers"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.spawn_workers.html#returns",
-    "href": "reference/Pool.spawn_workers.html#returns",
-    "title": "Pool.spawn_workers()",
-    "section": "Returns",
-    "text": "Returns\n\n\n The slot indices spawned into.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.spawn_workers"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.stats.html",
-    "href": "reference/Pool.stats.html",
-    "title": "Pool.stats()",
-    "section": "",
-    "text": "Cumulative per-worker and per-submitter counters.\n\n\nUsage\nSource\n\n\nPool.stats()\n\n\nCounted since each participant joined; a dict with workers and submitters lists.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.stats"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit.html",
-    "href": "reference/Pool.submit.html",
-    "title": "Pool.submit()",
-    "section": "",
-    "text": "Submit fn(*args, **kwargs) as a task; return a Task handle.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit.html#parameters",
-    "href": "reference/Pool.submit.html#parameters",
-    "title": "Pool.submit()",
-    "section": "Parameters",
-    "text": "Parameters\n\n\nfn: _Callable[…, _Any]\n\nThe callable to run, or a call spec.\n\nargs: _Any = ()\n\nPositional arguments for fn.\n\ntimeout: float | None = None\n\nSeconds to wait for queue space; None waits indefinitely.\n\nkwargs: _Any = {}\n\nKeyword arguments for fn.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit.html#returns",
-    "href": "reference/Pool.submit.html#returns",
-    "title": "Pool.submit()",
-    "section": "Returns",
-    "text": "Returns\n\n\n A Task handle.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit.html#raises",
-    "href": "reference/Pool.submit.html#raises",
-    "title": "Pool.submit()",
-    "section": "Raises",
-    "text": "Raises\n\n\n SubmitTimeoutError\n\nOn timeout expiry.\n\n SlotsExhaustedError\n\nWhen no result slot is free.\n\n StoppedError\n\nWhen the pool is stopped.\n\n ConcurrentUseError\n\nAnother submit-family verb is in flight on this handle from a second thread: a pool handle is single-producer (the class docstring).",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit.html#details",
-    "href": "reference/Pool.submit.html#details",
-    "title": "Pool.submit()",
-    "section": "Details",
-    "text": "Details\ntimeout belongs to the submission, not to fn: a callable taking its own timeout= keyword argument cannot receive it through **kwargs here. Bind it first with functools.partial as functools.partial(fn, timeout=...).\nA buffer-protocol argument (for example a numpy array) larger than 32 KB crosses as a read-only view over shared pages, not a writable copy.\nA callable that crosses by reference is resolved per task off the worker’s imported modules: replacing the function in an already-imported module is picked up on the next submission. Install cloudpickle to send callables by value.\nWith a call spec as fn (no *args or **kwargs, since the spec carries them), the task crosses in a language-neutral format. This is how you drive a pool of another language’s workers, spawned with r_launcher(). On a foreign pool a plain callable raises an error naming call.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.submit.html#examples",
-    "href": "reference/Pool.submit.html#examples",
-    "title": "Pool.submit()",
-    "section": "Examples",
-    "text": "Examples\nSee Pool.create() for a submit and collect example.",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.submit"
-    ]
-  },
-  {
-    "objectID": "reference/Pool.token.html",
-    "href": "reference/Pool.token.html",
-    "title": "Pool.token",
-    "section": "",
-    "text": "The join token for worker/submitter attach.\n\n\nPool.token: str",
-    "crumbs": [
-      "Reference",
-      "Pool Methods",
-      "Pool.token"
     ]
   },
   {
@@ -1940,51 +1130,27 @@
     ]
   },
   {
-    "objectID": "reference/Task.__await__.html",
-    "href": "reference/Task.__await__.html",
-    "title": "Task.__await__()",
+    "objectID": "reference/Task.html",
+    "href": "reference/Task.html",
+    "title": "Task",
     "section": "",
-    "text": "Return an iterator to be used in await expression.\n\n\nUsage\n\n\nTask.__await__()",
+    "text": "A task handle from Pool.submit(). It is collected exactly once, and an uncollected handle releases its slot when garbage collected.",
     "crumbs": [
       "Reference",
-      "Task Methods",
-      "Task.__await__"
+      "Task pools",
+      "Task"
     ]
   },
   {
-    "objectID": "reference/Task.collect.html",
-    "href": "reference/Task.collect.html",
-    "title": "Task.collect()",
-    "section": "",
-    "text": "collect(timeout=None) -&gt; value | sentinel\n\n\nUsage\n\n\nTask.collect(timeout=None)\n\n\nWait up to timeout seconds (None indefinitely, 0 polls once) for the task to finish and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type and detail), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, and a lost result as pymizu.TaskLostError. Returns pymizu.TIMEOUT on expiry. A task is collected exactly once.",
+    "objectID": "reference/Task.html#methods",
+    "href": "reference/Task.html#methods",
+    "title": "Task",
+    "section": "Methods",
+    "text": "Methods\n\n\n\nName\nDescription\n\n\n\n\n__await__()\nReturn an iterator to be used in await expression.\n\n\ncancel()\ncancel() -&gt; bool\n\n\ncollect()\ncollect(timeout=None) -&gt; value | sentinel\n\n\ncollect_async()\ncollect_async() -&gt; asyncio.Future\n\n\n\n\n__await__()\n\nReturn an iterator to be used in await expression.\n\n\nUsage\n\n\n__await__()\n\n\n\ncancel()\n\ncancel() -&gt; bool\n\n\nUsage\n\n\ncancel()\n\n\nAdvisory only, and never interrupts: a queued task is skipped, and a running one completes with its result dropped. Returns True when this call cancelled the task, False in every other case.\n\n\n\ncollect()\n\ncollect(timeout=None) -&gt; value | sentinel\n\n\nUsage\n\n\ncollect(timeout=None)\n\n\nWait up to timeout seconds (None indefinitely, 0 polls once) for the task to finish and return its result. A task error re-raises as pymizu.TaskError (carrying remote_type and detail), a cancellation as pymizu.CancelledError, a dead worker as pymizu.WorkerDiedError, and a lost result as pymizu.TaskLostError. Returns pymizu.TIMEOUT on expiry. A task is collected exactly once.\n\n\n\ncollect_async()\n\ncollect_async() -&gt; asyncio.Future\n\n\nUsage\n\n\ncollect_async()\n\n\nThe event-driven collect: an asyncio.Future that resolves with the task’s result (or raises the error collect() raises) when the result arrives, without blocking or polling. Cancelling the Future detaches the waiter, so a later blocking collect() works again, and never cancels the task (only cancel() does).",
     "crumbs": [
       "Reference",
-      "Task Methods",
-      "Task.collect"
-    ]
-  },
-  {
-    "objectID": "reference/Task.pool.html",
-    "href": "reference/Task.pool.html",
-    "title": "Task.pool",
-    "section": "",
-    "text": "Task.pool: _Pool",
-    "crumbs": [
-      "Reference",
-      "Task Methods",
-      "Task.pool"
-    ]
-  },
-  {
-    "objectID": "reference/Task.state.html",
-    "href": "reference/Task.state.html",
-    "title": "Task.state",
-    "section": "",
-    "text": "Task.state: str",
-    "crumbs": [
-      "Reference",
-      "Task Methods",
-      "Task.state"
+      "Task pools",
+      "Task"
     ]
   },
   {
@@ -2096,76 +1262,344 @@
     ]
   },
   {
-    "objectID": "reference/is_remote_error.html",
-    "href": "reference/is_remote_error.html",
-    "title": "is_remote_error()",
+    "objectID": "reference/index.html",
+    "href": "reference/index.html",
+    "title": "API Reference",
     "section": "",
-    "text": "Test whether a received channel value is a remote error.",
+    "text": "A two-way message link between a Python process and a helper process that it spawns.\n\n\nChannel\n\nA shared-memory channel handle (process-private).",
     "crumbs": [
       "Reference",
-      "Outcomes and errors",
-      "is_remote_error"
+      "API Index"
     ]
   },
   {
-    "objectID": "reference/is_remote_error.html#returns",
-    "href": "reference/is_remote_error.html#returns",
-    "title": "is_remote_error()",
+    "objectID": "reference/index.html#channels",
+    "href": "reference/index.html#channels",
+    "title": "API Reference",
+    "section": "",
+    "text": "A two-way message link between a Python process and a helper process that it spawns.\n\n\nChannel\n\nA shared-memory channel handle (process-private).",
+    "crumbs": [
+      "Reference",
+      "API Index"
+    ]
+  },
+  {
+    "objectID": "reference/index.html#task-pools",
+    "href": "reference/index.html#task-pools",
+    "title": "API Reference",
+    "section": "Task pools",
+    "text": "Task pools\n\nA set of worker processes that divide submitted tasks among themselves.\n\n\nPool\n\nA shared-memory work-stealing task pool handle (process-private).\n\nTask\n\nA task handle from Pool.submit(). It is collected exactly once, and an uncollected handle releases its slot when garbage collected.\n\nMap\n\nA staged, submitted map; collects exactly once, through this handle.\n\nPreparedMap\n\nA map set up once in shared memory, run many times.\n\nPoolExecutor\n\nA concurrent.futures.Executor over a pymizu pool.",
+    "crumbs": [
+      "Reference",
+      "API Index"
+    ]
+  },
+  {
+    "objectID": "reference/index.html#cross-language-interop",
+    "href": "reference/index.html#cross-language-interop",
+    "title": "API Reference",
+    "section": "Cross-language interop",
+    "text": "Cross-language interop\n\nR peers and workers (the mizu R package), neutral task specifications, and the data.frame’s Python home.\n\n\ncall\n\nA task specification for a pool of another language’s workers.\n\nlauncher()\n\nReturn a launcher spawning Python processes running pymizu.\n\nr_launcher()\n\nReturn a launcher spawning R processes running the mizu package.\n\nFrame\n\nA data.frame’s Python home: named columns with a row count.\n\nDimArray\n\nAn ndarray carrying R labels for faithful round trips with R.",
+    "crumbs": [
+      "Reference",
+      "API Index"
+    ]
+  },
+  {
+    "objectID": "reference/index.html#outcomes-and-errors",
+    "href": "reference/index.html#outcomes-and-errors",
+    "title": "API Reference",
+    "section": "Outcomes and errors",
+    "text": "Outcomes and errors\n\nA full ring, a timeout, a close, or a dead peer returns as a sentinel singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity, never raised. Real failures raise exceptions.\n\n\nSentinel\n\nA terminal-state sentinel returned by pymizu verbs. Test by identity against pymizu.FULL / TIMEOUT / CLOSED / PEER_GONE.\n\nis_sentinel()\n\nis_sentinel(x) -&gt; bool\n\nis_remote_error()\n\nTest whether a received channel value is a remote error.\n\nMizuError\n\nBase class for all pymizu errors.\n\nShmError\n\nA shared-memory region operation failed. Also an OSError: the failure is at the OS layer. Carries a ‘bytes’ attribute: the requested size of a region that was not created, None when a region was not opened.\n\nStartupError\n\nA channel peer or pool worker failed to attach within the startup timeout.\n\nSubmitTimeoutError\n\nPool.submit() timed out waiting for injection-ring space. Also a TimeoutError.\n\nSlotsExhaustedError\n\nPool.submit() found no free result slot: too many outstanding (uncollected) tasks.\n\nStoppedError\n\nThe pool is stopped; no further submission is possible.\n\nCancelledError\n\nThe task was cancelled before it ran.\n\nTaskError\n\nThe task callable raised. Carries ‘remote_type’ and ‘detail’ attributes describing the worker-side exception.\n\nWorkerDiedError\n\nThe executing worker died mid-task. Carries ‘slot’ and ‘pid’ attributes identifying the worker.\n\nTaskLostError\n\nThe task’s payload region vanished or could not be read before any worker ran it. No worker died.\n\nDeclinedError\n\nA send on a foreign-language channel of a value outside the portable interchange subset. Carries ‘path’ and ‘reason’ attributes (‘reason’ includes the one-line rewrite guidance for the value).\n\nForeignPayloadError\n\nA received payload in a language-private or unrecognized format: the peer sent a value outside the portable interchange subset. The message is consumed, so the ring is never blocked, and under recv_async() only the Future waiting on that message rejects.\n\nConcurrentUseError\n\nA verb ran concurrently with another verb in the same handle role: each handle role is confined to one thread at a time (libmizu ‘Handle threading’).",
+    "crumbs": [
+      "Reference",
+      "API Index"
+    ]
+  },
+  {
+    "objectID": "reference/index.html#housekeeping",
+    "href": "reference/index.html#housekeeping",
+    "title": "API Reference",
+    "section": "Housekeeping",
+    "text": "Housekeeping\n\nThe process-wide default pool, the current worker’s own pool handle, and cleaning up shared memory left by dead processes.\n\n\ndefault_pool()\n\nThe process-wide default pool, or None when none is set.\n\nset_default_pool()\n\nSet the process-wide default pool; None clears it.\n\nusing_pool()\n\nUse pool as the default for the with block, then restore.\n\ncurrent_pool()\n\nThe pool handle of the worker running the task.\n\ncurrent_rng()\n\nThe current element’s own numpy Generator, inside a seeded map.\n\nprune()\n\nRemove orphaned shared memory regions.",
+    "crumbs": [
+      "Reference",
+      "API Index"
+    ]
+  },
+  {
+    "objectID": "reference/is_sentinel.html",
+    "href": "reference/is_sentinel.html",
+    "title": "is_sentinel()",
+    "section": "",
+    "text": "is_sentinel(x) -&gt; bool\n\n\nUsage\n\n\nis_sentinel(object)\n\n\nTrue only for the exact sentinel singletons this process’s verbs return, so a look-alike payload never passes. The test is identity, not class.",
+    "crumbs": [
+      "Reference",
+      "Outcomes and errors",
+      "is_sentinel"
+    ]
+  },
+  {
+    "objectID": "reference/prune.html",
+    "href": "reference/prune.html",
+    "title": "prune()",
+    "section": "",
+    "text": "Remove orphaned shared memory regions.",
+    "crumbs": [
+      "Reference",
+      "Housekeeping",
+      "prune"
+    ]
+  },
+  {
+    "objectID": "reference/prune.html#returns",
+    "href": "reference/prune.html#returns",
+    "title": "prune()",
     "section": "Returns",
-    "text": "Returns\n\n\n True for a received remote error, False otherwise.",
+    "text": "Returns\n\n\n The region names removed, or an empty list if none were. On\n\nplatforms whose shared memory namespace cannot be enumerated (Windows, where orphans cannot exist), always an empty list.",
     "crumbs": [
       "Reference",
-      "Outcomes and errors",
-      "is_remote_error"
+      "Housekeeping",
+      "prune"
     ]
   },
   {
-    "objectID": "reference/launcher.html",
-    "href": "reference/launcher.html",
-    "title": "launcher()",
+    "objectID": "reference/pymizu.Channel.__iter__.html",
+    "href": "reference/pymizu.Channel.__iter__.html",
+    "title": "__iter__()",
     "section": "",
-    "text": "Return a launcher spawning Python processes running pymizu.",
-    "crumbs": [
-      "Reference",
-      "Cross-language interop",
-      "launcher"
-    ]
+    "text": "Iterate over received payloads until CLOSED or PEER_GONE.\n\n\nUsage\nSource\n\n\n__iter__()\n\n\nBlocks indefinitely between payloads (recv() with no timeout); use Channel.recv() directly when a bound is needed."
   },
   {
-    "objectID": "reference/launcher.html#parameters",
-    "href": "reference/launcher.html#parameters",
-    "title": "launcher()",
+    "objectID": "reference/pymizu.Channel.close.html",
+    "href": "reference/pymizu.Channel.close.html",
+    "title": "close()",
+    "section": "",
+    "text": "Close the channel in an orderly way."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.close.html#raises",
+    "href": "reference/pymizu.Channel.close.html#raises",
+    "title": "close()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nA verb is in flight on this side from a second thread: the side is confined to one thread (the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.destroy.html",
+    "href": "reference/pymizu.Channel.destroy.html",
+    "title": "destroy()",
+    "section": "",
+    "text": "Tear down the handle immediately, without the close handshake.\n\n\nUsage\nSource\n\n\ndestroy()\n\n\nThe peer sees the channel as closed (PEER_GONE if it died hard). This is the one verb that is safe from any thread. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (recv, recv_batch, ready_wait, close) wakes promptly so that this can happen. Pending recv futures settle with PEER_GONE. Every other verb stays confined to one thread (see the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.recv.html",
+    "href": "reference/pymizu.Channel.recv.html",
+    "title": "recv()",
+    "section": "",
+    "text": "Receive one value."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.recv.html#parameters",
+    "href": "reference/pymizu.Channel.recv.html#parameters",
+    "title": "recv()",
     "section": "Parameters",
-    "text": "Parameters\n\n\npython: str | None = None\n\nPath to the Python interpreter; the default is sys.executable.\n\nstdout: _Any = None\n\nForwarded to subprocess.Popen; the default inherits the console, where the peer’s error messages land.\n\nstderr: _Any = None\n\nForwarded to subprocess.Popen.",
-    "crumbs": [
-      "Reference",
-      "Cross-language interop",
-      "launcher"
-    ]
+    "text": "Parameters\n\n\ntimeout: float | None = None\n\nSeconds to wait; None waits indefinitely."
   },
   {
-    "objectID": "reference/launcher.html#returns",
-    "href": "reference/launcher.html#returns",
-    "title": "launcher()",
+    "objectID": "reference/pymizu.Channel.recv.html#returns",
+    "href": "reference/pymizu.Channel.recv.html#returns",
+    "title": "recv()",
     "section": "Returns",
-    "text": "Returns\n\n\n A callable(token, slot=None) launcher for\n\nChannel.create() and Pool.create().",
-    "crumbs": [
-      "Reference",
-      "Cross-language interop",
-      "launcher"
-    ]
+    "text": "Returns\n\n\n The value, or the TIMEOUT / CLOSED / PEER_GONE\n\nsentinel."
   },
   {
-    "objectID": "reference/launcher.html#examples",
-    "href": "reference/launcher.html#examples",
-    "title": "launcher()",
+    "objectID": "reference/pymizu.Channel.recv.html#raises",
+    "href": "reference/pymizu.Channel.recv.html#raises",
+    "title": "recv()",
+    "section": "Raises",
+    "text": "Raises\n\n\n ConcurrentUseError\n\nAnother verb is in flight on this side from a second thread, or a recv_async() consumer is armed and this is not its event-loop thread: a side is confined to one thread and one consumer form at a time."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.recv_batch.html",
+    "href": "reference/pymizu.Channel.recv_batch.html",
+    "title": "recv_batch()",
+    "section": "",
+    "text": "Receive up to n values in one call.\n\n\nUsage\nSource\n\n\nrecv_batch(\n    n=256,\n    timeout=None,\n)\n\n\nReturns a list (possibly short or empty), or a terminal sentinel."
+  },
+  {
+    "objectID": "reference/pymizu.Channel.send_batch.html",
+    "href": "reference/pymizu.Channel.send_batch.html",
+    "title": "send_batch()",
+    "section": "",
+    "text": "Send several values in one call.\n\n\nUsage\nSource\n\n\nsend_batch(xs)\n\n\nReturns the number accepted, which is fewer than len(xs) when the ring fills or a terminal state is reached."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.attach.html",
+    "href": "reference/pymizu.Pool.attach.html",
+    "title": "attach()",
+    "section": "",
+    "text": "Attach to a live pool as a submitter, by its join token."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.attach.html#parameters",
+    "href": "reference/pymizu.Pool.attach.html#parameters",
+    "title": "attach()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntoken: str\n\nThe join token, pool.token on the creator."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.attach.html#returns",
+    "href": "reference/pymizu.Pool.attach.html#returns",
+    "title": "attach()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The submitter-side pool handle."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.attach.html#details",
+    "href": "reference/pymizu.Pool.attach.html#details",
+    "title": "attach()",
+    "section": "Details",
+    "text": "Details\nEach attached handle is its own producer with its own submission queue: attaching one handle per thread (or per process) is how several submitters drive one pool at once."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all_async.html",
+    "href": "reference/pymizu.Pool.collect_all_async.html",
+    "title": "collect_all_async()",
+    "section": "",
+    "text": "The event-driven collect_all()."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all_async.html#parameters",
+    "href": "reference/pymizu.Pool.collect_all_async.html#parameters",
+    "title": "collect_all_async()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_all_async.html#returns",
+    "href": "reference/pymizu.Pool.collect_all_async.html#returns",
+    "title": "collect_all_async()",
+    "section": "Returns",
+    "text": "Returns\n\n\n An asyncio.Future resolving with all values in input order. The\n\nfirst failure by position rejects with the exception the sync verb raises, index attribute included; only that handle is consumed, and the rest stay collectible. Cancelling the Future detaches every task and never cancels them."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any_async.html",
+    "href": "reference/pymizu.Pool.collect_any_async.html",
+    "title": "collect_any_async()",
+    "section": "",
+    "text": "The event-driven collect_any()."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any_async.html#parameters",
+    "href": "reference/pymizu.Pool.collect_any_async.html#parameters",
+    "title": "collect_any_async()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\ntasks: _Iterable[Task]\n\nThe Task handles to wait on."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.collect_any_async.html#returns",
+    "href": "reference/pymizu.Pool.collect_any_async.html#returns",
+    "title": "collect_any_async()",
+    "section": "Returns",
+    "text": "Returns\n\n\n An asyncio.Future resolving with the first finished task’s\n\n(index, value) (with the sync verb’s tie-breaks). A failure rejects with the exception the sync verb raises, index attribute included. There is no timeout argument: use asyncio.timeout or asyncio.wait_for. Cancelling the Future detaches every task, so each can be collected blocking again, and never cancels them."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.destroy.html",
+    "href": "reference/pymizu.Pool.destroy.html",
+    "title": "destroy()",
+    "section": "",
+    "text": "Tear down the pool handle immediately, without waiting.\n\n\nUsage\nSource\n\n\ndestroy()\n\n\nNo shutdown is signalled to the workers; they exit once they detect that the controller is gone. This is the one verb that is safe from any thread. A verb still running on another thread keeps the handle alive, and teardown completes when the last one returns; an indefinite wait (submit, collect, collect_any, collect_all, ready_wait) wakes promptly, while stop() waits out its own deadline and a worker’s idle run() can delay teardown until it returns. Pending async consumers fail with the closed-handle error. Every other verb stays confined to one thread (see the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.info.html",
+    "href": "reference/pymizu.Pool.info.html",
+    "title": "info()",
+    "section": "",
+    "text": "A read-only snapshot of the pool’s state (dict).\n\n\nUsage\nSource\n\n\ninfo()\n\n\nIt includes the token to pass to Pool.attach()."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.map_prepare.html",
+    "href": "reference/pymizu.Pool.map_prepare.html",
+    "title": "map_prepare()",
+    "section": "",
+    "text": "Stage a map once for repeated runs; return a PreparedMap.\n\n\nUsage\nSource\n\n\nmap_prepare(\n    fn,\n    x,\n    *,\n    args=(),\n    kwargs=None,\n    template=None,\n    n_chunks=None,\n    stream=False,\n)\n\n\nTakes the same arguments as map() except seed, timeout, and collect, which are per-run options of PreparedMap.run(). The set-up (pickling the description, creating the shared region, the worker-side attach) is paid once here. Each pm.run() re-arms cheaply, reuses the workers’ cached set-up, and returns the run’s Map handle, on which the results are collected. A run collected with collect=\"view\" hands its region to the view, so the next run stages a fresh one. With stream=True the staged x stays on the submitter, so a replacement x of any shape re-slices. Only a length change under template stages fresh shared memory, because the output area is sized for the staged length. Close the handle (or use it as a context manager) to release the region."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.spawn_workers.html",
+    "href": "reference/pymizu.Pool.spawn_workers.html",
+    "title": "spawn_workers()",
+    "section": "",
+    "text": "Spawn n additional workers and wait for them to join."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.spawn_workers.html#parameters",
+    "href": "reference/pymizu.Pool.spawn_workers.html#parameters",
+    "title": "spawn_workers()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nn: int = 1\n\nNumber of workers to spawn.\n\nstartup_timeout: float = 30.0\n\nSeconds to wait for the workers to attach.\n\nlauncher: _Callable[[str, int], _Any] | None = None\n\nAs for Pool.create(); the default is launcher()."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.spawn_workers.html#returns",
+    "href": "reference/pymizu.Pool.spawn_workers.html#returns",
+    "title": "spawn_workers()",
+    "section": "Returns",
+    "text": "Returns\n\n\n The slot indices spawned into."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.stats.html",
+    "href": "reference/pymizu.Pool.stats.html",
+    "title": "stats()",
+    "section": "",
+    "text": "Cumulative per-worker and per-submitter counters.\n\n\nUsage\nSource\n\n\nstats()\n\n\nCounted since each participant joined; a dict with workers and submitters lists."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit.html",
+    "href": "reference/pymizu.Pool.submit.html",
+    "title": "submit()",
+    "section": "",
+    "text": "Submit fn(*args, **kwargs) as a task; return a Task handle."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit.html#parameters",
+    "href": "reference/pymizu.Pool.submit.html#parameters",
+    "title": "submit()",
+    "section": "Parameters",
+    "text": "Parameters\n\n\nfn: _Callable[…, _Any]\n\nThe callable to run, or a call spec.\n\nargs: _Any = ()\n\nPositional arguments for fn.\n\ntimeout: float | None = None\n\nSeconds to wait for queue space; None waits indefinitely.\n\nkwargs: _Any = {}\n\nKeyword arguments for fn."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit.html#returns",
+    "href": "reference/pymizu.Pool.submit.html#returns",
+    "title": "submit()",
+    "section": "Returns",
+    "text": "Returns\n\n\n A Task handle."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit.html#raises",
+    "href": "reference/pymizu.Pool.submit.html#raises",
+    "title": "submit()",
+    "section": "Raises",
+    "text": "Raises\n\n\n SubmitTimeoutError\n\nOn timeout expiry.\n\n SlotsExhaustedError\n\nWhen no result slot is free.\n\n StoppedError\n\nWhen the pool is stopped.\n\n ConcurrentUseError\n\nAnother submit-family verb is in flight on this handle from a second thread: a pool handle is single-producer (the class docstring)."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit.html#details",
+    "href": "reference/pymizu.Pool.submit.html#details",
+    "title": "submit()",
+    "section": "Details",
+    "text": "Details\ntimeout belongs to the submission, not to fn: a callable taking its own timeout= keyword argument cannot receive it through **kwargs here. Bind it first with functools.partial as functools.partial(fn, timeout=...).\nA buffer-protocol argument (for example a numpy array) larger than 32 KB crosses as a read-only view over shared pages, not a writable copy.\nA callable that crosses by reference is resolved per task off the worker’s imported modules: replacing the function in an already-imported module is picked up on the next submission. Install cloudpickle to send callables by value.\nWith a call spec as fn (no *args or **kwargs, since the spec carries them), the task crosses in a language-neutral format. This is how you drive a pool of another language’s workers, spawned with r_launcher(). On a foreign pool a plain callable raises an error naming call."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.submit.html#examples",
+    "href": "reference/pymizu.Pool.submit.html#examples",
+    "title": "submit()",
     "section": "Examples",
-    "text": "Examples\nimport pymizu\n\nwith pymizu.Pool.create(\n    4, launcher=pymizu.launcher(stderr=\"worker.log\")\n) as pool:\n    print(pool.submit(abs, -1).collect())",
-    "crumbs": [
-      "Reference",
-      "Cross-language interop",
-      "launcher"
-    ]
+    "text": "Examples\nSee Pool.create() for a submit and collect example."
+  },
+  {
+    "objectID": "reference/pymizu.Pool.token.html",
+    "href": "reference/pymizu.Pool.token.html",
+    "title": "token",
+    "section": "",
+    "text": "The join token for worker/submitter attach.\n\n\ntoken: str"
   },
   {
     "objectID": "reference/r_launcher.html",

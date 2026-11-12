@@ -15,7 +15,7 @@ launcher(
 )
 ```
 
-[`Channel.create()`](../reference/Channel.create.md#pymizu.Channel.create) calls it with `token` alone to spawn the peer; [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create) calls it with `token` and `slot` to spawn each worker. The process runs `python -m pymizu.child <token>` or `python -m pymizu.worker <token> <slot>`. This is the default of every `launcher=` argument, and the counterpart of the R package's `mizu_launcher()`.
+[`Channel.create()`](../reference/pymizu.Channel.create.md) calls it with `token` alone to spawn the peer; [`Pool.create()`](../reference/pymizu.Pool.create.md) calls it with `token` and `slot` to spawn each worker. The process runs `python -m pymizu.child <token>` or `python -m pymizu.worker <token> <slot>`. This is the default of every `launcher=` argument, and the counterpart of the R package's `mizu_launcher()`.
 
 ## Parameters
 
@@ -31,7 +31,7 @@ Forwarded to `subprocess.Popen`.
 ## Returns
 
 `A callable(token, slot=None) launcher for`  
-[`Channel.create()`](../reference/Channel.create.md#pymizu.Channel.create) and [`Pool.create()`](../reference/Pool.create.md#pymizu.Pool.create).
+[`Channel.create()`](../reference/pymizu.Channel.create.md) and [`Pool.create()`](../reference/pymizu.Pool.create.md).
 
 ## Examples
 

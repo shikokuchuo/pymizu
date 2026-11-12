@@ -11,25 +11,6 @@
 
 - [Channel](https://shikokuchuo.net/pymizu/reference/Channel.html): A shared-memory channel handle (process-private)
 
-#### Channel Methods
-> Methods for the Channel class
-
-- [Channel.create](https://shikokuchuo.net/pymizu/reference/Channel.create.html)
-- [Channel.token](https://shikokuchuo.net/pymizu/reference/Channel.token.html)
-- [Channel.send](https://shikokuchuo.net/pymizu/reference/Channel.send.html)
-- [Channel.send_batch](https://shikokuchuo.net/pymizu/reference/Channel.send_batch.html)
-- [Channel.recv](https://shikokuchuo.net/pymizu/reference/Channel.recv.html)
-- [Channel.recv_async](https://shikokuchuo.net/pymizu/reference/Channel.recv_async.html)
-- [Channel.__aiter__](https://shikokuchuo.net/pymizu/reference/Channel.__aiter__.html)
-- [Channel.recv_batch](https://shikokuchuo.net/pymizu/reference/Channel.recv_batch.html)
-- [Channel.close](https://shikokuchuo.net/pymizu/reference/Channel.close.html)
-- [Channel.destroy](https://shikokuchuo.net/pymizu/reference/Channel.destroy.html)
-- [Channel.alive](https://shikokuchuo.net/pymizu/reference/Channel.alive.html)
-- [Channel.info](https://shikokuchuo.net/pymizu/reference/Channel.info.html)
-- [Channel.__enter__](https://shikokuchuo.net/pymizu/reference/Channel.__enter__.html)
-- [Channel.__exit__](https://shikokuchuo.net/pymizu/reference/Channel.__exit__.html)
-- [Channel.__iter__](https://shikokuchuo.net/pymizu/reference/Channel.__iter__.html)
-
 #### Task pools
 > A set of worker processes that divide submitted tasks among themselves.
 
@@ -39,42 +20,6 @@
 - [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A map set up once in shared memory, run many times
 - [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A `concurrent.futures.Executor` over a pymizu pool
 
-#### Pool Methods
-> Methods for the Pool class
-
-- [Pool.create](https://shikokuchuo.net/pymizu/reference/Pool.create.html)
-- [Pool.attach](https://shikokuchuo.net/pymizu/reference/Pool.attach.html)
-- [Pool.token](https://shikokuchuo.net/pymizu/reference/Pool.token.html)
-- [Pool.submit](https://shikokuchuo.net/pymizu/reference/Pool.submit.html)
-- [Pool.submit_batch](https://shikokuchuo.net/pymizu/reference/Pool.submit_batch.html)
-- [Pool.collect_any](https://shikokuchuo.net/pymizu/reference/Pool.collect_any.html)
-- [Pool.collect_all](https://shikokuchuo.net/pymizu/reference/Pool.collect_all.html)
-- [Pool.collect_any_async](https://shikokuchuo.net/pymizu/reference/Pool.collect_any_async.html)
-- [Pool.collect_all_async](https://shikokuchuo.net/pymizu/reference/Pool.collect_all_async.html)
-- [Pool.map](https://shikokuchuo.net/pymizu/reference/Pool.map.html)
-- [Pool.starmap](https://shikokuchuo.net/pymizu/reference/Pool.starmap.html)
-- [Pool.map_prepare](https://shikokuchuo.net/pymizu/reference/Pool.map_prepare.html)
-- [Pool.retire](https://shikokuchuo.net/pymizu/reference/Pool.retire.html)
-- [Pool.spawn_workers](https://shikokuchuo.net/pymizu/reference/Pool.spawn_workers.html)
-- [Pool.stop](https://shikokuchuo.net/pymizu/reference/Pool.stop.html)
-- [Pool.destroy](https://shikokuchuo.net/pymizu/reference/Pool.destroy.html)
-- [Pool.info](https://shikokuchuo.net/pymizu/reference/Pool.info.html)
-- [Pool.dump](https://shikokuchuo.net/pymizu/reference/Pool.dump.html)
-- [Pool.stats](https://shikokuchuo.net/pymizu/reference/Pool.stats.html)
-- [Pool.trace](https://shikokuchuo.net/pymizu/reference/Pool.trace.html)
-- [Pool.__enter__](https://shikokuchuo.net/pymizu/reference/Pool.__enter__.html)
-- [Pool.__exit__](https://shikokuchuo.net/pymizu/reference/Pool.__exit__.html)
-
-#### Task Methods
-> Methods for the Task class
-
-- [Task.state](https://shikokuchuo.net/pymizu/reference/Task.state.html)
-- [Task.pool](https://shikokuchuo.net/pymizu/reference/Task.pool.html)
-- [Task.collect](https://shikokuchuo.net/pymizu/reference/Task.collect.html)
-- [Task.cancel](https://shikokuchuo.net/pymizu/reference/Task.cancel.html)
-- [Task.collect_async](https://shikokuchuo.net/pymizu/reference/Task.collect_async.html)
-- [Task.__await__](https://shikokuchuo.net/pymizu/reference/Task.__await__.html)
-
 #### Cross-language interop
 > R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
 
@@ -83,17 +28,6 @@
 - [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a launcher spawning R processes running the `mizu` package
 - [Frame](https://shikokuchuo.net/pymizu/reference/Frame.html): A data.frame's Python home: named columns with a row count
 - [DimArray](https://shikokuchuo.net/pymizu/reference/DimArray.html): An `ndarray` carrying R labels for faithful round trips with R
-
-#### Frame Methods
-> Methods for the Frame class
-
-- [Frame.names](https://shikokuchuo.net/pymizu/reference/Frame.names.html)
-- [Frame.row_names](https://shikokuchuo.net/pymizu/reference/Frame.row_names.html)
-- [Frame.to_dict](https://shikokuchuo.net/pymizu/reference/Frame.to_dict.html)
-- [Frame.from_arrow](https://shikokuchuo.net/pymizu/reference/Frame.from_arrow.html)
-- [Frame.__arrow_c_stream__](https://shikokuchuo.net/pymizu/reference/Frame.__arrow_c_stream__.html)
-- [Frame.__len__](https://shikokuchuo.net/pymizu/reference/Frame.__len__.html)
-- [Frame.__reduce__](https://shikokuchuo.net/pymizu/reference/Frame.__reduce__.html)
 
 #### Outcomes and errors
 > A full ring, a timeout, a close, or a dead peer returns as a sentinel singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity, never raised. Real failures raise exceptions.

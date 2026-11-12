@@ -1,6 +1,6 @@
 # Task pools
 
-A pool is a set of worker processes that share out submitted tasks. [Pool.create()](../reference/Pool.create.md#pymizu.Pool.create) spawns them. Workers pull tasks from per-submitter queues and steal work from each other, so the load balances itself. A submission costs one shared-memory write plus at most one wake-up -- there is no dispatcher process.
+A pool is a set of worker processes that share out submitted tasks. [Pool.create()](../reference/pymizu.Pool.create.md) spawns them. Workers pull tasks from per-submitter queues and steal work from each other, so the load balances itself. A submission costs one shared-memory write plus at most one wake-up -- there is no dispatcher process.
 
 ``` python
 import pymizu
@@ -108,13 +108,13 @@ total
 
 (This example needs cloudpickle: `fan_out` is not an importable reference.)
 
-[Pool.map()](../reference/Pool.map.md#pymizu.Pool.map) nests the same way: a task can map over its own pool. See [Nested maps](map.md#nested-maps).
+[Pool.map()](../reference/pymizu.Pool.map.md) nests the same way: a task can map over its own pool. See [Nested maps](map.md#nested-maps).
 
 ## A default pool for package code
 
 Package code can read a process-wide default pool with [pymizu.default_pool()](../reference/default_pool.md#pymizu.default_pool). `pymizu.set_default_pool(pool)` sets it (`None` clears it) and returns the previous default, so you can save and restore. A pool set as the default stays alive after its variable is deleted. `pymizu.using_pool(pool)` scopes the default to a `with` block, restoring the previous default on exit, exception included.
 
-Resolve an optional pool in this order: an explicit [pool](../reference/Task.pool.md#pymizu.Task.pool) argument, [current_pool()](../reference/current_pool.md#pymizu.current_pool) inside a task, [default_pool()](../reference/default_pool.md#pymizu.default_pool), then your own fallback (sequential execution or an error). Inside a task, [current_pool()](../reference/current_pool.md#pymizu.current_pool) takes precedence over the default, so nested submission always goes to the worker's own pool. Setting a default checks only the type: a stopped pool is accepted and fails when used. Handles from [Pool.attach()](../reference/Pool.attach.md#pymizu.Pool.attach) are valid defaults.
+Resolve an optional pool in this order: an explicit `pool` argument, [current_pool()](../reference/current_pool.md#pymizu.current_pool) inside a task, [default_pool()](../reference/default_pool.md#pymizu.default_pool), then your own fallback (sequential execution or an error). Inside a task, [current_pool()](../reference/current_pool.md#pymizu.current_pool) takes precedence over the default, so nested submission always goes to the worker's own pool. Setting a default checks only the type: a stopped pool is accepted and fails when used. Handles from [Pool.attach()](../reference/pymizu.Pool.attach.md) are valid defaults.
 
 ``` python
 def run(x, pool=None):
@@ -152,7 +152,7 @@ pool.trace(fn)  # fn(event, id) at each task lifecycle event; None removes it
 
 ## Threading
 
-A pool handle is single-producer: call its submit family (`submit()`, [submit_batch()](../reference/Pool.submit_batch.md#pymizu.Pool.submit_batch), `map()`) from one thread only. A second concurrent producer raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the submission queue. The guard is a check, not a lock: it never waits, it reports the mistake. The waiting half (the blocking collects, `ready_wait()`, [stop()](../reference/Pool.stop.md#pymizu.Pool.stop)) likewise belongs to one thread -- which may differ from the producer's -- and a concurrent second wait raises the same error. This is libmizu's threading contract: the shared structures carry no locks by design.
+A pool handle is single-producer: call its submit family (`submit()`, [submit_batch()](../reference/pymizu.Pool.submit_batch.md), `map()`) from one thread only. A second concurrent producer raises [ConcurrentUseError](../reference/ConcurrentUseError.md#pymizu.ConcurrentUseError) instead of corrupting the submission queue. The guard is a check, not a lock: it never waits, it reports the mistake. The waiting half (the blocking collects, `ready_wait()`, [stop()](../reference/pymizu.Pool.stop.md)) likewise belongs to one thread -- which may differ from the producer's -- and a concurrent second wait raises the same error. This is libmizu's threading contract: the shared structures carry no locks by design.
 
 Three ways to produce from several threads, in rough order of preference:
 
@@ -176,8 +176,8 @@ result
 
     [1, 2, 4, 8]
 
-Wrap an existing pool with `PoolExecutor(pool)`; its lifetime stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` instead spawns an owned pool that [shutdown](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation behaves like [Task.cancel](../reference/Task.cancel.md#pymizu.Task.cancel). If the result table is full, `submit` waits for the executor to collect a result instead of raising [SlotsExhaustedError](../reference/SlotsExhaustedError.md#pymizu.SlotsExhaustedError); a submit from a listener-thread done callback still raises rather than deadlocking the drain. The executor's `map` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`; its default remains one task per element, and [Pool.map](../reference/Pool.map.md#pymizu.Pool.map) remains the faster bulk-map path.
+Wrap an existing pool with `PoolExecutor(pool)`; its lifetime stays with its owner. `PoolExecutor.create(workers, **pool_kwargs)` instead spawns an owned pool that [shutdown](../reference/PoolExecutor.md#pymizu.PoolExecutor.shutdown) stops. A task's failure surfaces as [pymizu.TaskError](../reference/TaskError.md#pymizu.TaskError), and cancellation behaves like [Task.cancel](../reference/Task.md#pymizu.Task.cancel). If the result table is full, `submit` waits for the executor to collect a result instead of raising [SlotsExhaustedError](../reference/SlotsExhaustedError.md#pymizu.SlotsExhaustedError); a submit from a listener-thread done callback still raises rather than deadlocking the drain. The executor's `map` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`; its default remains one task per element, and [Pool.map](../reference/pymizu.Pool.map.md) remains the faster bulk-map path.
 
 ## Sizing a pool
 
-[Pool.create()](../reference/Pool.create.md#pymizu.Pool.create) sizing options: `max_workers` (the worker limit), `max_submitters`, `injection_cap` (each submitter's queue size), `per_worker_cap` (each worker's queue size), `result_slots` (outstanding uncollected tasks per submitter), and `slot_size` (bytes per queue entry and result slot; a larger payload travels in its own shared-memory region).
+[Pool.create()](../reference/pymizu.Pool.create.md) sizing options: `max_workers` (the worker limit), `max_submitters`, `injection_cap` (each submitter's queue size), `per_worker_cap` (each worker's queue size), `result_slots` (outstanding uncollected tasks per submitter), and `slot_size` (bytes per queue entry and result slot; a larger payload travels in its own shared-memory region).

@@ -1,6 +1,6 @@
 # using_pool()
 
-Use [pool](../reference/Task.pool.md#pymizu.Task.pool) as the default for the with block, then restore.
+Use `pool` as the default for the with block, then restore.
 
 Usage
 
