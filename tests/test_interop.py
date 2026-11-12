@@ -1504,7 +1504,7 @@ def test_stdlib_datetime_zone_forms():
     # datetime.timezone.utc has no zoneinfo key: its str() is "UTC"
     got = _read(
         _pymizu._write_stream(
-            datetime.datetime(2023, 11, 14, 22, tzinfo=datetime.timezone.utc)
+            datetime.datetime(2023, 11, 14, 22, tzinfo=datetime.UTC)
         )
     )
     assert got == np.array(["2023-11-14T22:00:00"], dtype="datetime64[us]")[0]

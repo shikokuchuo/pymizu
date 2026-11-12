@@ -13,7 +13,7 @@ package). The governing design document is the ipc plan in the libmizu repo
 
 ## Requirements
 
-- Python >= 3.10, 64-bit platform. Linux: kernel >= 5.3. macOS: 10.15
+- Python >= 3.11, 64-bit platform. Linux: kernel >= 5.3. macOS: 10.15
   (the parker's `UL_COMPARE_AND_WAIT_SHARED` ulock opcode). Windows: the
   build requires clang-cl (see Build).
 - Raw CPython C API only — no pybind11/Cython/cffi. No numpy at build
@@ -701,7 +701,7 @@ finalizer — short-circuits to the released-pool answer instead).
 --check` + pyrefly, with numpy/cloudpickle/pyarrow/polars installed so
 the optional paths typecheck), an sdist leg (the sdist must carry the
 vendored C core and build standalone), and a build matrix — ubuntu
-3.10/3.11/3.14/3.15, macos 3.12/3.15, windows 3.13/3.15 — that installs, runs
+3.11/3.14/3.15, macos 3.12/3.15, windows 3.13/3.15 — that installs, runs
 an import smoke, and measures coverage (codecov upload from ubuntu
 only). All checkouts use `fetch-depth: 0` so setuptools_scm sees the
 tags. Windows legs add
@@ -723,13 +723,13 @@ write`, no stored token; the publisher must be registered on PyPI for
 this workflow and environment before the first tag). `workflow_dispatch`
 builds the same matrix and skips the upload, for validating before
 tagging. The wheel selection lives in pyproject.toml's
-`[tool.cibuildwheel]`: cp310 through cp315, GIL builds only, on
+`[tool.cibuildwheel]`: cp311 through cp315, GIL builds only, on
 manylinux x86_64/aarch64, macOS arm64/x86_64 and Windows amd64/arm64
 (musllinux, i686, win32, PyPy and free-threaded are out). Every wheel
 runs `tools/smoke_wheel.py` from a temporary directory, so the import
 and a pool round trip come from the installed wheel alone. An x86_64
 override pins `MACOSX_DEPLOYMENT_TARGET` to 10.15, the parker's ulock
-opcode floor: cibuildwheel's own default is 10.13 for cp310-cp313 on
+opcode floor: cibuildwheel's own default is 10.13 for cp311-cp313 on
 x86_64, which would tag those wheels installable on systems where the
 park loop spins (arm64's floor is 11.0 already, and a lower value there
 only draws a bump warning). The Windows clang-cl PATH entry goes through

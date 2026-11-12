@@ -7,7 +7,7 @@
 [![codecov](https://codecov.io/gh/shikokuchuo/pymizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/pymizu)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Python 3.10+](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
+[![Python 3.11+](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
 
 Thread-speed async and parallel Python over shared memory.
 
@@ -43,7 +43,7 @@ Or the development version from GitHub:
 pip install git+https://github.com/shikokuchuo/pymizu
 ```
 
-Requires Python 3.10 or later on a 64-bit platform.
+Requires Python 3.11 or later on a 64-bit platform.
 The extension compiles the vendored C core, so no system library is necessary.
 
 Optional extras:

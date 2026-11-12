@@ -73,7 +73,7 @@ The two approaches solve different problems: threads trade isolation for sharing
 Python 3.14 also added `concurrent.interpreters` to the stdlib ([PEP 734](https://peps.python.org/pep-0734/)): multiple interpreters in one process, each with its own GIL, so CPU work parallelizes without new processes on the standard build.
 Objects that cross between interpreters must be shareable: builtin scalars and plain containers copy across, buffer-protocol objects share their memory (synchronization is on you), and everything else — numpy arrays included — is rejected.
 The isolation is real but not OS-level: a fatal error in one interpreter ends the process, and you build the surrounding machinery (queues, lifetimes, crash handling) yourself.
-`concurrent.interpreters` requires Python 3.14+; pymizu runs on 3.10+.
+`concurrent.interpreters` requires Python 3.14+; pymizu runs on 3.11+.
 
 ### R workers
 

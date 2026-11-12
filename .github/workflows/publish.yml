@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # setuptools_scm reads the version from tags
-      # Build selection (cp310-cp315, GIL builds only), the macOS
+      # Build selection (cp311-cp315, GIL builds only), the macOS
       # deployment target and the Windows clang-cl PATH live in
       # pyproject.toml's [tool.cibuildwheel].
       - uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5

@@ -7,7 +7,7 @@ name = "pymizu"
 dynamic = ["version"]
 description = "Thread-speed async and parallel Python over shared memory"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Charlie Gao", email = "charlie.gao@posit.co" }]
 maintainers = [{ name = "Charlie Gao", email = "charlie.gao@posit.co" }]
@@ -25,7 +25,6 @@ classifiers = [
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -88,7 +87,7 @@ pymizu = ["py.typed", "*.pyi"]
 # C API), 32-bit (64-bit platforms only), and musllinux (untested libc;
 # the kernel >= 5.3 requirement narrows its audience anyway).
 [tool.cibuildwheel]
-build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
+build = "cp311-* cp312-* cp313-* cp314-* cp315-*"
 skip = ["*-win32", "*-manylinux_i686", "*-musllinux*"]
 build-verbosity = 1
 test-command = "python {project}/tools/smoke_wheel.py"
@@ -105,7 +104,7 @@ environment = { CFLAGS = "-O3 -DNDEBUG -fvisibility=hidden -flto", LDFLAGS = "-f
 environment = { CFLAGS = "-O3 -DNDEBUG -fvisibility=hidden -flto", LDFLAGS = "-flto -Wl,-S -Wl,-x" }
 
 # The parker's __ulock_wait opcode (UL_COMPARE_AND_WAIT_SHARED) needs
-# macOS 10.15. cibuildwheel's own default is 10.13 for cp310-cp313 on
+# macOS 10.15. cibuildwheel's own default is 10.13 for cp311-cp313 on
 # x86_64, which would tag those wheels installable on systems where the
 # opcode fails and the park loop spins. Scoped to x86_64: arm64's floor
 # is 11.0 already, and a lower value there only draws a bump warning.
@@ -124,7 +123,7 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "10.15", CFLAGS = "-O3 -DNDEBUG -fvis
 environment = { PATH = 'C:\\Program Files\\LLVM\\bin;$PATH' }
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 79
 src = ["python"]
 
@@ -134,7 +133,7 @@ select = ["E", "F", "W", "I", "UP", "B"]
 [tool.pyrefly]
 project-includes = ["python"]
 search-path = ["python"]
-python-version = "3.10"
+python-version = "3.11"
 # Surface warnings (e.g. deprecated) in output and the exit code.
 min-severity = "warn"
 

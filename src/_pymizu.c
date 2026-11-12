@@ -22,9 +22,9 @@
 #include <Python.h>
 #include <methodobject.h>   /* PyCFunction_CheckExact */
 
-/* The exact function-type check, without funcobject.h: its location moves
-   across versions (top-level on 3.10, cpython/ on 3.13+), and the symbol
-   is all we need — a public export, redeclared as the header would. */
+/* The exact function-type check, without funcobject.h: it lives under
+   cpython/, not a stable include path, and the symbol is all we need —
+   a public export, redeclared as the header would. */
 PyAPI_DATA(PyTypeObject) PyFunction_Type;
 #define PyFunction_CheckExact(op) Py_IS_TYPE((op), &PyFunction_Type)
 
@@ -5502,8 +5502,9 @@ static PyObject *utf8_truncate(PyObject *s, size_t n) {
   return out;
 }
 
-/* The 3-arg form with the fetched tb: the single-argument form only reads
-   __traceback__ off the instance on 3.11+; on 3.10 it formats no stack. */
+/* The 3-arg form with the fetched tb: before 3.12 the fetched tb need not
+   be attached to the instance, and the single-argument form reads only
+   __traceback__. Collapse to the 1-arg form when the floor reaches 3.12. */
 static PyObject *traceback_text(PyObject *type, PyObject *value,
                                 PyObject *tb) {
   if (mizu_traceback_fmt == NULL) {
