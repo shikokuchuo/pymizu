@@ -4,7 +4,7 @@ A staged, submitted map; collects exactly once, through this handle.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1566-L2032)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1566-L2041)
 
 ``` python
 Map(
@@ -29,13 +29,13 @@ Stop the run: workers halt within about one batch.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2001-L2014)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2005-L2023)
 
 ``` python
 cancel()
 ```
 
-Advisory, as [`Task.cancel()`](../reference/Task.cancel.md#pymizu.Task.cancel): the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with [`CancelledError`](../reference/CancelledError.md#pymizu.CancelledError). Safe to call more than once.
+Advisory, as [`Task.cancel()`](../reference/Task.cancel.md#pymizu.Task.cancel): the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with [`CancelledError`](../reference/CancelledError.md#pymizu.CancelledError). Safe to call more than once. A no-op on a collected handle.
 
 ### collect()
 
@@ -43,7 +43,7 @@ Block for the map's results; collect exactly once.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1931-L1949)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1935-L1953)
 
 ``` python
 collect(timeout=None)
@@ -65,7 +65,7 @@ Resolve one asyncio.Future with the results `collect()` returns.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1951-L1972)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1955-L1976)
 
 ``` python
 collect_async()

@@ -826,7 +826,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1566-L2032" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1566-L2041" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Map</span>(</span>
@@ -868,13 +868,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2001-L2014" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L2005-L2023" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb2"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cancel</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Advisory, as <a href="../reference/Task.cancel.html#pymizu.Task.cancel" class="gdls-link"><code>Task.cancel()</code></a>: the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with <a href="../reference/CancelledError.html#pymizu.CancelledError" class="gdls-link"><code>CancelledError</code></a>. Safe to call more than once.</p>
+<p>Advisory, as <a href="../reference/Task.cancel.html#pymizu.Task.cancel" class="gdls-link"><code>Task.cancel()</code></a>: the outstanding tasks are cancelled, so a queued task is skipped, and a running batch completes with its result dropped. A pending collect, blocking or async, ends with <a href="../reference/CancelledError.html#pymizu.CancelledError" class="gdls-link"><code>CancelledError</code></a>. Safe to call more than once. A no-op on a collected handle.</p>
 </div>
 </section>
 <section id="collect" class="level3">
@@ -884,7 +884,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1931-L1949" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1935-L1953" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb3"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">collect</span>(<span class="va">timeout</span><span class="op">=</span><span class="cn">None</span>)</span></code></pre></div>
@@ -919,7 +919,7 @@ Seconds to wait for completion; None waits indefinitely. On expiry the outstandi
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1951-L1972" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_map.py#L1955-L1976" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb4"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">collect_async</span>()</span></code></pre></div>
