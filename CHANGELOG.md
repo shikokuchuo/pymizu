@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Faster `Pool.map()` collection and lower shared-memory use for a
+  (non-prepared) map collected by value.
+
 ### Fixed
 
 - `cancel()` on a collected map handle no longer disrupts a later run

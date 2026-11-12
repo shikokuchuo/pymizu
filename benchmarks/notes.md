@@ -1904,3 +1904,27 @@ No best-known swaps (isolated probe rows).
 
 Status: full suite 1169 pass, 1 skip (crosslang legs included); ruff format,
 ruff check and pyrefly clean.
+
+## 2026-11-12 — clean map collection (step 2)
+
+A = `e214bdc`; B = A without clean-collection cancellation; C = B plus gated
+close for non-prepared maps. Four workers; `perf_counter` medians over 7 groups
+(9 prepared), 10 calls/group (100 prepared).
+
+| measurement (ms/call) | A | B | C |
+|---|---:|---:|---:|
+| prepared, 32 elements | 0.032 | 0.030 | 0.028 |
+| spec stream, 256 chunks | 4.122 | 3.978 | 3.826 |
+
+C's new spec-stream template row: 4.099 ms/call. New prepared and
+generic/template spec-stream rows are report-only in `mizu-bench.py`; these
+isolated probes do not replace best-known rows.
+
+Retaining 16 non-prepared handles (1M float64 x + 1M float64 output per map)
+grew RSS 49.5 → 303.7 MiB before close. With clean close, RSS was 59.3 MiB
+after 4 maps and stayed there through 16 (start 49.4 MiB). Sync/async close,
+prepared-stage retention, timeout cleanup and delayed-runner open-after-unlink
+coverage passed.
+
+Status: `make check` green (1153 pass, 1 skip; crosslang legs included), with
+ruff format, ruff check and pyrefly clean.

@@ -1776,9 +1776,9 @@ class Map:
     def _cancel_capsules(self, close: bool) -> None:
         """Set the fail-fast word on the run's own region (or the
         prepared map's staged one) and the spec window's chunk regions,
-        unlinking them too when `close` (the collect-end form keeps a
-        view-collected region for the view, and a clean prepared stage
-        for the O(1) re-arm)."""
+        unlinking them too when `close` (explicit cancellation keeps every
+        region mapped; an unclean cleanup closes all except a transferred
+        view region)."""
         if self.pm is None:
             if self.capsule is not None:
                 _pymizu._map_cancel_set(self.capsule)
@@ -1800,8 +1800,7 @@ class Map:
                         run.capsules[i] = None
 
     def _cancel_tasks(self) -> None:
-        """Cancel every outstanding task of the run (a clean collect
-        consumed them all — a no-op then)."""
+        """Cancel every outstanding task of the run."""
         for h in self._tasks():
             if h is not None:
                 h.cancel()
@@ -1881,14 +1880,12 @@ class Map:
                 self.pm._name = None
         return out
 
-    def _cleanup(self, unclean: bool) -> None:
-        """The collect-end backstop: cancel the outstanding tasks (a
-        clean collect consumed them all — a no-op then). A one-shot map
-        unlinks its region explicitly; a prepared run keeps a clean
-        stage for the O(1) re-arm and drops an unclean one (a straggler
-        of an unclean run faces no generation fence, so the next run
-        restages into a fresh region)."""
-        self._cancel_capsules(unclean)
+    def _cleanup(self) -> None:
+        """The unclean collect-end backstop: cancel the outstanding tasks
+        and unlink the run's regions. A prepared run drops its stage (a
+        straggler of an unclean run faces no generation fence, so the next
+        run restages into a fresh region)."""
+        self._cancel_capsules(True)
         self._cancel_tasks()
 
     def _resolve(self, remaining, expired) -> _Any:
@@ -1899,7 +1896,7 @@ class Map:
             out = self._collect(remaining, expired)
         except BaseException:
             self._settled = True
-            self._cleanup(True)
+            self._cleanup()
             if self._cancelled:
                 # the cancel owns the outcome: a claimed runner's collect
                 # raises CancelledError, a skipped queued one's frees to
@@ -1907,15 +1904,23 @@ class Map:
                 raise pymizu.CancelledError("pymizu: map cancelled") from None
             raise
         self._settled = True
+        if out is pymizu.TIMEOUT or self._cancelled:
+            self._cleanup()
         if out is pymizu.TIMEOUT:
-            self._cleanup(True)
             return out
         if self._cancelled:
             # cancelled mid-collect: the runners' partial histories must
             # not splice into a result
-            self._cleanup(True)
             raise pymizu.CancelledError("pymizu: map cancelled")
-        self._cleanup(False)
+        if (
+            self.pm is None
+            and not self._transferred
+            and self.capsule is not None
+        ):
+            # a one-shot non-view region has no owner left after the gather:
+            # release its x copy and output area now, not at a later GC
+            _pymizu._map_close(self.capsule)
+            self.capsule = None
         return out
 
     def _gate(self) -> None:
@@ -1934,6 +1939,10 @@ class Map:
 
     def collect(self, timeout: float | None = None) -> _Any:
         """Block for the map's results; collect exactly once.
+
+        For a non-prepared map, successful collection with ``collect="copy"``
+        releases its shared memory immediately. With ``collect="view"``, the
+        returned view takes ownership of the shared memory.
 
         Parameters
         ----------
@@ -2281,10 +2290,10 @@ class PreparedMap:
             The run's map handle, collected exactly once, by `collect()`
             (blocking) or `collect_async()` (event-driven). A run is a producer
             on the pool handle: a concurrent run or submit from a second thread
-            raises `ConcurrentUseError`. A clean value collect keeps the set-up
-            for the next run. A view collect hands the region to the view, and
-            an interrupted run (timeout, an error, a worker death) drops it, so
-            the next run stages a fresh one either way.
+            raises `ConcurrentUseError`. After a successful collection with
+            ``collect="copy"``, the next run reuses the staged data. With
+            ``collect="view"``, or when a run ends with a timeout, error, or
+            worker death, the next run stages fresh data.
         """
         plan = self._plan
         if self._closed:

@@ -479,6 +479,52 @@ def map_overhead(p):
             lambda: [pm.run().collect() for _ in range(k)],
             "us/elt",
         )
+        # clean-collect overhead: tiny prepared re-runs and many-chunk specs
+        pm32 = p.map_prepare(plus_one, list(range(32)))
+        try:
+            pm32.run().collect()
+            note(
+                "map clean collect",
+                "pymizu prepared32",
+                best_ms(lambda: pm32.run().collect()),
+                "ms wall",
+            )
+        finally:
+            pm32.close()
+        spec_x = list(range(2048))
+
+        def spec_stream():
+            p.map(
+                pymizu.call("builtins.abs"),
+                spec_x,
+                stream=True,
+                n_chunks=256,
+            ).collect()
+
+        spec_stream()
+        note(
+            "map clean collect",
+            "pymizu spec stream 256",
+            best_ms(spec_stream),
+            "ms wall",
+        )
+
+        def spec_template():
+            p.map(
+                pymizu.call("builtins.abs"),
+                spec_x,
+                template=np.empty(1),
+                stream=True,
+                n_chunks=256,
+            ).collect()
+
+        spec_template()
+        note(
+            "map clean collect",
+            "pymizu spec stream 256 template",
+            best_ms(spec_template),
+            "ms wall",
+        )
     finally:
         pm.close()
 

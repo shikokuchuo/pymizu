@@ -40,7 +40,15 @@ def pool():
 
 def test_stream_roundtrip(pool):
     x = list(range(100))
-    assert pool.map(square, x, stream=True).collect() == [i * i for i in x]
+    m = pool.map(square, x, stream=True)
+    name = m.name
+    assert m.collect() == [i * i for i in x]
+    assert m.capsule is None
+    # POSIX unlinks the name at close; a Win32 file mapping's name lives
+    # on while any handle (a worker's cached context) is open
+    if os.name != "nt":
+        with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+            pymizu._pymizu._map_open(name)
 
 
 def test_stream_matches_non_streaming(pool):
@@ -428,6 +436,21 @@ def test_stream_spec_fn_own_shape(pool):
             pymizu.call("math.floor"), x, stream=True, n_chunks=chunks
         ).collect()
         assert got == want
+
+
+def test_stream_spec_clean_collect_skips_cleanup(pool, monkeypatch):
+    m = pool.map(
+        pymizu.call("builtins.abs"),
+        list(range(2048)),
+        stream=True,
+        n_chunks=256,
+    )
+
+    def unexpected_cleanup(self):
+        raise AssertionError("clean collection ran the cancellation cleanup")
+
+    monkeypatch.setattr(type(m), "_cleanup", unexpected_cleanup)
+    assert m.collect() == list(range(2048))
 
 
 def test_stream_spec_fn_seed_invariance(pool):
