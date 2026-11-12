@@ -198,8 +198,11 @@ def test_map_clean_one_shot_collect_closes_region(pool):
     assert m.collect() == list(range(2000))
     assert m.capsule is None
     assert pymizu._pymizu._map_close(capsule) is None  # idempotent
-    with pytest.raises(pymizu.ShmError, match="cannot open map region"):
-        pymizu._pymizu._map_open(name)
+    # POSIX unlinks the name at close; a Win32 file mapping's name lives
+    # on while any handle (a worker's cached context) is open
+    if sys.platform != "win32":
+        with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+            pymizu._pymizu._map_open(name)
 
 
 def test_map_late_runner_after_clean_close(pool, monkeypatch):
@@ -217,9 +220,13 @@ def test_map_late_runner_after_clean_close(pool, monkeypatch):
     name = m.name
     assert m.collect(timeout=30) == list(range(2000))
     assert m.capsule is None
-    with pytest.raises(pymizu.ShmError, match="cannot open map region"):
-        pymizu._pymizu._map_open(name)
-    # the delayed open fails after the unlink; the cancelled task absorbs it
+    # POSIX unlinks the name at close; a Win32 file mapping's name lives
+    # on while any handle (a worker's cached context) is open
+    if sys.platform != "win32":
+        with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+            pymizu._pymizu._map_open(name)
+    # the delayed open after the unlink fails (POSIX) or claims the
+    # exhausted cursor; the cancelled task absorbs both
     while any(w["in_flight"] != -1 for w in pool.dump()["workers"]):
         assert time.monotonic() < deadline
         time.sleep(0.01)

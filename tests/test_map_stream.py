@@ -44,8 +44,11 @@ def test_stream_roundtrip(pool):
     name = m.name
     assert m.collect() == [i * i for i in x]
     assert m.capsule is None
-    with pytest.raises(pymizu.ShmError, match="cannot open map region"):
-        pymizu._pymizu._map_open(name)
+    # POSIX unlinks the name at close; a Win32 file mapping's name lives
+    # on while any handle (a worker's cached context) is open
+    if os.name != "nt":
+        with pytest.raises(pymizu.ShmError, match="cannot open map region"):
+            pymizu._pymizu._map_open(name)
 
 
 def test_stream_matches_non_streaming(pool):

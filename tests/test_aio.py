@@ -1211,8 +1211,13 @@ def test_map_await(pool):
         name = m.name
         assert await m == [i * i for i in range(2000)]
         assert m.capsule is None
-        with pytest.raises(pymizu.ShmError, match="cannot open map region"):
-            pymizu._pymizu._map_open(name)
+        # POSIX unlinks the name at close; a Win32 file mapping's name
+        # lives on while any handle (a worker's cached context) is open
+        if sys.platform != "win32":
+            with pytest.raises(
+                pymizu.ShmError, match="cannot open map region"
+            ):
+                pymizu._pymizu._map_open(name)
 
     asyncio.run(main())
 
