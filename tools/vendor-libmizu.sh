@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="768559be14a8820e1c8310661ca76d5ebf82006e"  # libmizu: Fold duplicated collect wait, region open and notify arm paths (#9)
+PIN="6e5571185385936ff33aa9416657a7280fead105"  # libmizu 0.2.0
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
