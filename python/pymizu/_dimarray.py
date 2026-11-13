@@ -1,12 +1,4 @@
-"""The labeled array: an ndarray carrying R labels for round trips.
-
-[`DimArray`](`pymizu.DimArray`) is the Python home of R's labeled
-shapes — a named vector, a matrix or array with `dimnames` (axis names
-included), and the `table` class. The labels attach at read and
-validate at send; numpy operations drop them rather than propagate
-them onto data they no longer describe (the no-propagation doctrine:
-`a.T`, `a + 1`, a slice, and `copy` all arrive unlabeled).
-"""
+"""An `ndarray` subclass for R dimension and element labels."""
 
 from __future__ import annotations
 
@@ -16,19 +8,21 @@ import numpy as _np
 
 
 class DimArray(_np.ndarray):
-    """An `ndarray` carrying R labels for faithful round trips with R.
+    """An `ndarray` carrying R labels.
 
-    The labels are `names`, `dimnames`, `axis_names`, and `r_class`. A received
-    labeled vector or array arrives as a DimArray, and an unmodified echo
-    restores every label in R (`identical()`). Attach labels explicitly to send
-    a labeled value: `names` for a 1-D array, `dimnames` (plus optional
-    `axis_names`, R's `names(dimnames(x))`) for a matrix or n-D array, and
-    `r_class = "table"` for R's table class. Use either `names` or `dimnames`,
-    not both; `axis_names` requires `dimnames` and has one entry per axis.
+    A received labeled vector or array arrives as a DimArray. An unmodified
+    echo restores every label in R (`identical()`). The labels are `names`,
+    `dimnames`, `axis_names`, and `r_class`.
 
-    Labels never carry over on their own. Any numpy operation that builds a new
-    array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped
-    or permuted array never inherits labels its data no longer matches.
+    To send a labeled value, set `names` on a 1-D array. Set `dimnames` on a
+    matrix or n-D array, with optional `axis_names` for R's
+    `names(dimnames(x))`. For R's table class, set `r_class = "table"`. Use
+    either `names` or `dimnames`, not both. `axis_names` requires `dimnames`
+    and has one entry per axis.
+
+    Numpy operations that build a new array drop all labels. This includes
+    transposes, arithmetic, slices, and copies. A new array never inherits
+    labels that no longer match its data.
     """
 
     names: tuple[str | None, ...] | None

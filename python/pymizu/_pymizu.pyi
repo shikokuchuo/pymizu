@@ -34,8 +34,10 @@ class DeclinedError(TypeError):
 
 class ForeignPayloadError(MizuError):
     """A received payload in a language-private or unrecognized format.
-    The message is consumed, never wedging the ring; the async drain
-    rejects only the head waiter and continues."""
+
+    Receiving consumes the message. An async drain rejects only the head
+    waiter, then continues.
+    """
 
 class Frame:
     """A data.frame's Python home: named columns with a row count."""

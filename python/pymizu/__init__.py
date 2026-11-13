@@ -386,54 +386,47 @@ class Channel:
         return self._recv(timeout)
 
     def recv_async(self) -> _Any:
-        """Receive the next value as an `asyncio.Future`.
-
-        The event-driven receive: the Future resolves when the value arrives,
-        without blocking or polling.
+        """Return an `asyncio.Future` that resolves with the next value.
 
         Returns
         -------
             An `asyncio.Future` resolving with the same object a blocking
-            [`recv()`](`pymizu.Channel.recv`) would have returned, zero-copy
-            views included (the receive itself runs on the event-loop thread).
-            Terminal states stay values: the Future resolves with the `CLOSED`
-            / `PEER_GONE` sentinel.
+            [`recv()`](`pymizu.Channel.recv`) would return, including zero-copy
+            views. The receive runs on the event-loop thread. Terminal states
+            stay values: the Future resolves with the `CLOSED` / `PEER_GONE`
+            sentinel.
 
         Details
         -------
-        Several outstanding calls on one channel resolve in call order, one
-        message each. Nothing is lost while arming: values already in the ring
-        resolve immediately, and only values not yet sent wait for the wake-up.
-        Cancelling the Future detaches the waiter, and the next message goes to
-        the next waiter. There is no `timeout` argument: use `asyncio.timeout`
-        or `asyncio.wait_for`. A channel created with ``spin=True`` cannot arm
-        and raises. The async consumer is the side's one consumer: a blocking
-        [`recv()`](`pymizu.Channel.recv`) on the same side while waiters are
-        pending raises [`ConcurrentUseError`](`pymizu.ConcurrentUseError`).
+        Outstanding calls on one channel resolve in call order, one message
+        each. Values already in the ring resolve immediately. Values not yet
+        sent wait for the wake-up. Cancelling the Future detaches the waiter,
+        and the next message goes to the next waiter. There is no `timeout`
+        argument. Use `asyncio.timeout` or `asyncio.wait_for` instead. A
+        channel created with ``spin=True`` raises instead of arming. While
+        waiters are pending, a blocking [`recv()`](`pymizu.Channel.recv`) on
+        the same side raises
+        [`ConcurrentUseError`](`pymizu.ConcurrentUseError`).
 
-        A message the peer sent outside the portable interchange subset (a
-        language-private stream) rejects only the waiter that receives it, with
-        [`ForeignPayloadError`](`pymizu.ForeignPayloadError`). The message is
-        consumed and the async consumer keeps flowing, so the other outstanding
-        calls are unaffected.
+        A language-private message rejects only the waiter that receives it,
+        with [`ForeignPayloadError`](`pymizu.ForeignPayloadError`). The
+        message is consumed. Later waiters are unaffected.
         """
         return _get_aio().chan_recv_async(self)
 
     async def __aiter__(self) -> _Any:
-        """Iterate over received payloads until CLOSED or PEER_GONE.
+        """Yield received values until `CLOSED` or `PEER_GONE`.
 
-        The async form of the sync iterator. Yields payloads as they arrive,
-        awaiting each through [`recv_async()`](`pymizu.Channel.recv_async`).
-        Between iterations nothing is armed; the next iteration re-arms, and
-        the arm's synchronous drain picks up whatever arrived meanwhile, so
-        nothing is lost.
+        Each value is awaited through
+        [`recv_async()`](`pymizu.Channel.recv_async`). No waiter stays armed
+        between iterations. The next iteration drains any values that arrived
+        in the meantime.
 
-        A declined foreign payload (see
-        [`recv_async()`](`pymizu.Channel.recv_async`)) propagates out of the
-        iteration and ends the ``async for`` statement, so a try/except inside
-        the loop body cannot catch it. To skip one, wrap the whole loop and
-        re-enter on the same channel: the consumer kept flowing, and the new
-        iterator picks up the next message.
+        A [`ForeignPayloadError`](`pymizu.ForeignPayloadError`) ends the
+        ``async for`` statement. A try/except inside the loop body cannot catch
+        it. To skip the payload, wrap the whole loop and re-enter on the same
+        channel. The channel remains usable, and the new iterator receives the
+        next message.
         """
         while True:
             x = await self.recv_async()
@@ -451,12 +444,7 @@ class Channel:
         return self._recv_batch(n, timeout)
 
     def recv_batch_async(self, n: int = 256) -> _Any:
-        """Receive up to ``n`` values as one list on an `asyncio.Future`.
-
-        The burst form of [`recv_async()`](`pymizu.Channel.recv_async`):
-        one Future resolves with a whole burst of arrivals at once, the
-        high-throughput receive form — one resolution per burst rather
-        than one per message.
+        """Return an `asyncio.Future` for a list of received values.
 
         Parameters
         ----------
@@ -465,12 +453,12 @@ class Channel:
 
         Returns
         -------
-            An `asyncio.Future` resolving with a list of up to ``n``
-            values in arrival order — possibly short: it resolves as
-            soon as at least one value is available, never waiting to
-            fill. Terminal states stay values: the Future resolves with
-            the `CLOSED` / `PEER_GONE` sentinel. An ``n`` past the drain
-            quantum (2048) resolves with at most one quantum per pass.
+            An `asyncio.Future` resolving with a list of up to ``n`` values in
+            arrival order. The list can be short: the Future resolves as soon
+            as one value is available and does not wait for a full batch.
+            Terminal states stay values: the Future resolves with the `CLOSED`
+            / `PEER_GONE` sentinel. An ``n`` past the drain quantum (2048)
+            resolves with at most one quantum per pass.
 
         Raises
         ------
@@ -483,26 +471,18 @@ class Channel:
 
         Details
         -------
-        Outstanding calls on one channel —
-        [`recv_async()`](`pymizu.Channel.recv_async`) singles and batch
-        waiters mixed — resolve in call order, each batch waiter taking
-        up to its ``n`` from the burst (at least one when it is reached,
-        so a batch reached late in a busy pass can resolve short).
-        Cancelling the Future detaches the waiter, and the next message
-        goes to the next waiter. There is no ``timeout`` argument: use
-        `asyncio.timeout` or `asyncio.wait_for`. A channel created with
-        ``spin=True`` cannot arm and raises. The async consumer is the
-        side's one consumer: a blocking
-        [`recv()`](`pymizu.Channel.recv`) on the same side while waiters
-        are pending raises
-        [`ConcurrentUseError`](`pymizu.ConcurrentUseError`).
+        Single and batch waiters on one channel resolve in call order. A batch
+        waiter takes up to its ``n`` values from the available burst. It takes
+        at least one value when reached, so a batch reached late in a busy pass
+        can resolve short.
 
-        A declined foreign payload (see
-        [`recv_async()`](`pymizu.Channel.recv_async`)) ahead of a batch
-        resolves it short with the values before it; the waiter that
-        reaches the declined message rejects with
-        [`ForeignPayloadError`](`pymizu.ForeignPayloadError`), and the
-        consumer keeps flowing.
+        Cancellation, timeouts, ``spin=True``, and consumer exclusion follow
+        [`recv_async()`](`pymizu.Channel.recv_async`).
+
+        A declined foreign payload ahead of a batch resolves it short with the
+        preceding values. The waiter that reaches the declined message rejects
+        with [`ForeignPayloadError`](`pymizu.ForeignPayloadError`). Later
+        waiters are unaffected.
 
         Examples
         --------
@@ -1112,10 +1092,9 @@ class Pool:
         return self._collect_all(tasks, timeout)
 
     def collect_any_async(self, tasks: _Iterable[Task]) -> _Any:
-        """The event-driven [`collect_any()`](`pymizu.Pool.collect_any`).
+        """Return an `asyncio.Future` for the first finished task.
 
-        One `asyncio.Future` for the whole collection, resolved when a task
-        finishes.
+        The async form of [`collect_any()`](`pymizu.Pool.collect_any`).
 
         Parameters
         ----------
@@ -1125,20 +1104,19 @@ class Pool:
         Returns
         -------
             An `asyncio.Future` resolving with the first finished task's
-            ``(index, value)`` (with the sync verb's tie-breaks). A failure
-            rejects with the exception the sync verb raises, ``index``
-            attribute included. There is no `timeout` argument: use
-            `asyncio.timeout` or `asyncio.wait_for`. Cancelling the Future
-            detaches every task, so each can be collected blocking again, and
-            never cancels them.
+            ``(index, value)``, with the tie-breaks of `collect_any()`. A
+            failure rejects with the exception `collect_any()` raises,
+            including its ``index`` attribute. There is no `timeout` argument.
+            Use `asyncio.timeout` or `asyncio.wait_for` instead. Cancelling the
+            Future detaches every task without cancelling it, so each can be
+            collected with a blocking call.
         """
         return _get_aio().collect_any_async(self, tasks)
 
     def collect_all_async(self, tasks: _Iterable[Task]) -> _Any:
-        """The event-driven [`collect_all()`](`pymizu.Pool.collect_all`).
+        """Return an `asyncio.Future` that resolves when every task finishes.
 
-        One `asyncio.Future` for the whole collection, resolved when every task
-        is terminal.
+        The async form of [`collect_all()`](`pymizu.Pool.collect_all`).
 
         Parameters
         ----------
@@ -1148,10 +1126,10 @@ class Pool:
         Returns
         -------
             An `asyncio.Future` resolving with all values in input order. The
-            first failure by position rejects with the exception the sync verb
-            raises, ``index`` attribute included; only that handle is consumed,
-            and the rest stay collectible. Cancelling the Future detaches every
-            task and never cancels them.
+            first failure by position rejects with the exception
+            `collect_all()` raises, including its ``index`` attribute. Only
+            that handle is consumed, and the rest stay collectible. Cancelling
+            the Future detaches every task without cancelling it.
         """
         return _get_aio().collect_all_async(self, tasks)
 
@@ -1173,7 +1151,7 @@ class Pool:
         stream: bool = False,
         collect: str | None = None,
     ) -> _Any:
-        """Map ``fn`` over ``x`` on the pool; return a map handle.
+        """Map ``fn`` over ``x`` on the pool.
 
         Parameters
         ----------
@@ -1186,23 +1164,17 @@ class Pool:
         kwargs
             Constant keyword arguments of every call.
         template
-            An example buffer (for example
-            ``numpy.empty(m, dtype=...)``)
-            declaring that every ``fn`` result is ``m`` values of that
-            dtype; see Details.
+            An example buffer declaring each result's length and dtype, such
+            as ``numpy.empty(m, dtype=...)``. See Details.
         n_chunks
             Overrides the number of batches the elements are split
             into.
         seed
-            An int or bytes giving every element a deterministic
-            stream of the stdlib `random` module; see Details. Pass
-            ``seed=(seed, offset)`` to shift every element's stream by
-            ``offset`` positions, for maps split across runs or
-            processes.
+            An int or bytes seeding a deterministic random stream per element,
+            or a ``(seed, offset)`` tuple. See Details.
         timeout
-            Seconds to wait for the submissions to go through; None waits
-            indefinitely. Bounds submission only; the collection deadline is
-            the handle's ``collect(timeout)``.
+            Seconds to wait for submissions. None waits indefinitely. The
+            handle's ``collect(timeout)`` sets the collection deadline.
         stream
             Stream slices of ``x`` to workers instead of writing the
             whole of ``x`` to shared memory first; see Details.
@@ -1212,16 +1184,11 @@ class Pool:
 
         Returns
         -------
-            A [`Map`](`pymizu.Map`) handle. ``handle.collect()`` blocks for the
-            results (a list in input order, or with ``template`` the gathered
-            output area, a view with ``collect="view"``) and raises the errors
-            below. ``handle.collect_async()`` or ``await handle`` resolves one
-            `asyncio.Future` with the same results, except on a streaming map,
-            which collects blocking only because its sliding task window
-            advances in the blocking collect loop. ``handle.cancel()`` stops
-            the run. On ``timeout`` expiry mid-submission, `map()` itself
-            returns the `TIMEOUT` sentinel (no handle). A length-0 ``x``
-            returns a handle whose collect yields the empty result.
+            A [`Map`](`pymizu.Map`) handle for the run. See
+            [`Map.collect()`](`pymizu.Map.collect`) for the result forms and
+            [`Map`](`pymizu.Map`) for async collection and cancellation. If
+            submission times out, `map()` returns the `TIMEOUT` sentinel
+            without a handle.
 
         Raises
         ------
@@ -1236,8 +1203,8 @@ class Pool:
             carries the same set as a two-column matrix of inclusive
             1-based ranges).
         TypeError
-            A [`call`](`pymizu.call`) spec as ``fn`` with
-            ``stream=True``.
+            ``collect="view"`` with a streaming
+            [`call`](`pymizu.call`) spec.
         DeclinedError
             With a spec, a non-portable constant or element at stage
             time.
@@ -1251,25 +1218,30 @@ class Pool:
         supported dtype (float64/int32/int64/complex128/uint8) travels as bare
         bytes, and each worker wraps it once and indexes into it per element.
 
-        ``seed`` gives every element a deterministic stream of the
-        stdlib `random` module: element ``i`` runs under
-        ``random.seed(SHA-256(seed_bytes + i.to_bytes(8, "little")))``,
-        identical for any chunking, worker count, or steal order.
-        ``seed`` covers the stdlib `random` module only: a task drawing
-        from numpy calls [`current_rng()`](`pymizu.current_rng`) inside
-        the task (the element's own ``numpy.random.Generator``,
-        created once per element from the same seed material); other
-        RNG libraries are out of scope. The legacy ``np.random.*``
-        module functions draw from the worker's shared global
-        RandomState and stay order-dependent. A seeded map element must not
-        submit and collect nested tasks: while a worker waits it runs other
-        work, possibly another map's batches mid-element, which wipes this
-        element's [`current_rng()`](`pymizu.current_rng`) stash. A later call
-        rebuilds from the seed, restarting the stream instead of continuing it
-        (the stdlib streams survive).
+        ``seed`` gives every element a deterministic stream of the stdlib
+        `random` module. Element ``i`` runs under
+        ``random.seed(SHA-256(seed_bytes + key.to_bytes(8, "little")))``,
+        where ``key = i + offset``. The default ``offset`` is 0. Pass
+        ``seed=(seed, offset)`` to shift every stream for maps split across
+        runs or processes. Chunking, worker count, and steal order do not
+        change the streams.
 
-        ``fn`` may be a [`call`](`pymizu.call`) specification instead of a
-        callable. This is how you map over a foreign pool, such as one spawned
+        For deterministic numpy draws, call
+        [`current_rng()`](`pymizu.current_rng`) inside the task. It returns the
+        element's ``numpy.random.Generator``, created on first call from the
+        same seed. Its derivation is separate from the stdlib stream. The
+        legacy ``np.random.*`` functions draw from the worker's shared global
+        RandomState and stay order-dependent. The map does not seed other RNG
+        libraries.
+
+        A seeded map element must not submit and collect nested tasks. While
+        the worker waits, it can run another map's batches and clear this
+        element's [`current_rng()`](`pymizu.current_rng`) state. A later call
+        rebuilds the generator from the seed and restarts its stream. The
+        stdlib streams survive.
+
+        ``fn`` can be a [`call`](`pymizu.call`) specification instead of a
+        callable. Use a spec to map over a foreign pool, such as one spawned
         with [`r_launcher()`](`pymizu.r_launcher`). A spec always uses a
         shared-memory region: the description crosses in a language-neutral
         format that any worker language reads. The element fills the spec's
@@ -1287,46 +1259,39 @@ class Pool:
         across languages.
 
         ``template`` declares that every ``fn`` result is ``m`` values of the
-        example buffer's dtype: results are written in place into a shared ``n
+        example buffer's dtype. Results are written in place into a shared ``n
         x m`` output area and never serialized. Each result must be a matching
-        buffer or, for ``m == 1``, a plain Python scalar. With a template,
-        ``collect="copy"`` (the default) returns the area as one gathered numpy
-        array (a memoryview without numpy) of shape ``(n, m)``, or ``(n,)`` for
-        ``m == 1``. ``collect="view"`` returns it zero-copy, and the shared
-        memory is released only when the view is gone.
+        buffer or, for ``m == 1``, a plain Python scalar. ``collect="copy"``
+        gathers the output area. ``collect="view"`` returns it zero-copy, and
+        the shared memory is released when the view is gone. See
+        [`Map.collect()`](`pymizu.Map.collect`) for the returned shape.
 
-        With ``stream=True``, the map does not write the whole of ``x`` to
-        shared memory. It streams slices of ``x`` to workers as they take work,
-        and the return value is unchanged. Slices travel as ordinary chunk
-        tasks under a sliding submit/collect window of at most ``min(n_chunks,
-        2 * live workers, free result slots)`` outstanding tasks, so
-        shared-memory use is bounded by ``window x slice`` instead of
-        ``sizeof(x)``. With the default chunk count (``min(len(x), 32 * live
-        workers)``) that is roughly ``(2 * workers) / n_chunks`` of the
-        serialized ``x``. ``n_chunks=`` overrides the chunk count
-        (``n_chunks=len(x)`` is the extreme of one element per task).
-        Everything else (result order, ``template`` and ``collect``, ``seed``
-        reproducibility, the errors) is the same as for the non-streaming map.
-        The trade-offs: failure detection coarsens from about one adaptive
-        batch to about one chunk (the bound moves with ``n_chunks``), the
-        adaptive batch sizing is lost (raise ``n_chunks`` to reduce skew), and
-        slices are serialized like ordinary task payloads instead of taking the
-        zero-copy path a raw array gets. A streaming map with Python workers
-        shares one description of the map with every worker, each read at most
-        once. A [`call`](`pymizu.call`) spec as ``fn`` streams too, over
-        workers of any language. Each chunk in the window then writes a small
-        shared-memory region of its own (the slice plus the task that runs on
-        it, one runner task per chunk), removed as soon as the chunk completes.
-        Shared-memory use stays bounded by the window plus a small per-worker
-        cache rather than by ``sizeof(x)``. Each chunk also writes its results
-        separately, so they cannot combine into one view: ``collect="view"``
+        With ``stream=True``, slices travel as ordinary chunk tasks under a
+        sliding submit/collect window of at most ``min(n_chunks, 2 * live
+        workers, free result slots)`` outstanding tasks. Shared-memory use is
+        bounded by ``window x slice`` instead of ``sizeof(x)``. With the
+        default chunk count (``min(len(x), 32 * live workers)``), that is
+        roughly ``(2 * workers) / n_chunks`` of the serialized ``x``.
+        ``n_chunks=`` overrides the chunk count. ``n_chunks=len(x)`` uses one
+        element per task. Result order, ``template``, ``collect``, ``seed``
+        reproducibility, and errors are the same as for a non-streaming map.
+
+        Streaming has three costs. Failure detection coarsens from about one
+        adaptive batch to about one chunk, with the bound set by ``n_chunks``.
+        Adaptive batch sizing is lost, so raise ``n_chunks`` to reduce skew.
+        Slices are serialized like ordinary task payloads instead of using the
+        zero-copy path for a raw array.
+
+        A streaming map with Python workers shares one description of the map
+        with every worker, each read at most once. A [`call`](`pymizu.call`)
+        spec as ``fn`` streams too, over workers of any language. Each chunk in
+        the window then writes a small shared-memory region of its own: the
+        slice plus its task, with one runner task per chunk. The region is
+        removed when the chunk completes. Shared-memory use stays bounded by
+        the window plus a small per-worker cache. Each chunk writes its results
+        separately, so they cannot combine into one view. ``collect="view"``
         raises ``TypeError`` on a streaming spec map, as does preparing one
         with [`map_prepare()`](`pymizu.Pool.map_prepare`).
-
-        ``timeout`` bounds submission only (the wait for queue space while the
-        tasks go out). The collection deadline is the handle's
-        ``collect(timeout)``, whose expiry cancels the outstanding work and
-        returns the `TIMEOUT` sentinel rather than raising.
 
         [`starmap()`](`pymizu.Pool.starmap`) is the unpacking variant, calling
         ``fn(*element, *args, **kwargs)`` in the `multiprocessing.Pool.starmap`
@@ -1422,21 +1387,13 @@ class Pool:
         n_chunks: int | None = None,
         stream: bool = False,
     ) -> PreparedMap:
-        """Stage a map once for repeated runs; return a `PreparedMap`.
+        """Stage a map for repeated runs and return a `PreparedMap`.
 
-        Takes the same arguments as [`map()`](`pymizu.Pool.map`) except
-        ``seed``, ``timeout``, and ``collect``, which are per-run options of
-        [`PreparedMap.run()`](`pymizu.PreparedMap.run`). The set-up (pickling
-        the description, creating the shared region, the worker-side attach) is
-        paid once here. Each ``pm.run()`` re-arms cheaply, reuses the workers'
-        cached set-up, and returns the run's [`Map`](`pymizu.Map`) handle, on
-        which the results are collected. A run collected with
-        ``collect="view"`` hands its region to the view, so the next run stages
-        a fresh one. With ``stream=True`` the staged ``x`` stays on the
-        submitter, so a replacement ``x`` of any shape re-slices. Only a length
-        change under ``template`` stages fresh shared memory, because the
-        output area is sized for the staged length. Close the handle (or use it
-        as a context manager) to release the region.
+        This takes the same arguments as [`map()`](`pymizu.Pool.map`) except
+        ``seed``, ``timeout``, and ``collect``. Those are per-run options of
+        [`PreparedMap.run()`](`pymizu.PreparedMap.run`). See
+        [`PreparedMap`](`pymizu.PreparedMap`) for reuse and shared-memory
+        lifetime.
         """
         return _get_map().PreparedMap(
             self,
@@ -1670,12 +1627,12 @@ def current_pool() -> Pool | None:
 
 
 def current_rng() -> _np.random.Generator | None:
-    """The current element's own numpy Generator, inside a seeded map.
+    """Return the current element's numpy Generator inside a seeded map.
 
     Returns
     -------
-        The element's own ``numpy.random.Generator`` inside a
-        seeded map element; None outside one.
+        The element's own ``numpy.random.Generator`` inside a seeded map
+        element. None outside one.
 
     Raises
     ------
@@ -1684,21 +1641,11 @@ def current_rng() -> _np.random.Generator | None:
 
     Details
     -------
-    [`Pool.map()`](`pymizu.Pool.map`) ``seed=`` seeds the stdlib
-    `random` module per element; a task drawing from numpy calls this
-    instead: the element's own ``numpy.random.Generator``, derived
-    from the same seed material on first call in the element
-    (kept separate from the stdlib derivation, so those streams are
-    unchanged). Two calls in one element continue one stream, and distinct
-    elements get distinct streams, so results are identical for any chunking,
-    worker count, or steal order.
-
-    Outside a seeded map element (an unseeded map, an ordinary task, the
-    submitter process) the return is None. A seeded map element must
-    not submit and collect nested tasks: while the worker waits it runs
-    other work, possibly another map's batches mid-element, which wipes this
-    element's stash. A later call rebuilds from the seed, restarting the stream
-    instead of continuing it.
+    The first call in an element creates the generator from the map seed.
+    Later calls in that element continue the same stream. This derivation is
+    separate from the stdlib `random` stream. See
+    [`Pool.map()`](`pymizu.Pool.map`) for the seed format, reproducibility
+    rules, and nested-task restriction.
     """
     return _get_map()._current_rng()
 

@@ -1,14 +1,4 @@
-"""concurrent.futures.Executor adapter: stdlib drop-in interop over a Pool.
-
-PoolExecutor maps submit/shutdown onto a pymizu Pool and resolves real
-concurrent.futures.Future objects, so wait / as_completed / wrap_future
-and a ProcessPoolExecutor-style chunked map work unchanged. There is
-no drain thread: the pool's notify endpoint wakes a scan (the core's
-edge-triggered signal rides the death-listener machinery), and
-concurrent.futures.Future.set_result — thread-safe by design, it is how
-executor workers resolve — resolves futures directly in the listener
-callback. Cancellation is advisory, mirroring Task.cancel.
-"""
+"""The `concurrent.futures.Executor` adapter for pymizu pools."""
 
 from __future__ import annotations
 
@@ -84,13 +74,12 @@ class _TaskFuture(_Future):
 
 
 class PoolExecutor(_Executor):
-    """A `concurrent.futures.Executor` over a pymizu pool.
+    """A `concurrent.futures.Executor` backed by a pymizu pool.
 
-    `submit()` returns a real `concurrent.futures.Future`: `wait` /
-    `as_completed` / `result(timeout)` / `asyncio.wrap_future` and `map`
-    with `ProcessPoolExecutor` chunking all work unchanged, so code written
-    against `ProcessPoolExecutor` drops in. `create()` spawns an owned
-    pool instead.
+    `submit()` returns a standard `concurrent.futures.Future`. The stdlib
+    `wait`, `as_completed`, and `asyncio.wrap_future` helpers accept it.
+    `map()` supports `ProcessPoolExecutor`-style chunking. `create()` spawns
+    an owned pool.
 
     Parameters
     ----------
@@ -102,30 +91,33 @@ class PoolExecutor(_Executor):
 
     Notes
     -----
-    `submit()` (and the stdlib `map` over it) is thread-safe, as the
-    `concurrent.futures` contract requires: an internal lock serializes the
-    single-producer pool handle. Use this adapter when several threads must
-    submit to one pool. Differences from the stdlib: a task's failure surfaces
-    as `pymizu.TaskError`; `Future.running()` is always False (futures resolve
-    at completion); cancellation works like [`Task.cancel()`](`pymizu.Task`)
-    and never interrupts a running task; and `shutdown(cancel_futures=True)`
-    cancels every outstanding future, since the pool exposes no
-    queued-versus-running signal (a running task completes, but its result is
-    discarded). An internal failure (for example the wrapped pool is stopped
-    from under the executor) fails every outstanding future, and later
-    submissions raise instead of queueing onto a broken executor. Futures
-    resolve, and `add_done_callback` callbacks run, on pymizu's listener
-    thread, the same discipline as the stdlib executors' management thread:
-    keep callbacks short, and never block one on the pool itself. If the
-    result table is full, `submit()` waits for the executor to collect a
-    result; a submission from a listener-thread done callback instead raises
-    `SlotsExhaustedError`, since waiting there would deadlock the drain.
-    `map()` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`;
-    for bulk maps, [`Pool.map`](`pymizu.Pool.map`) remains the faster path.
+    `submit()` and the stdlib `map()` are thread-safe. An internal lock
+    serializes the single-producer pool handle. Use this adapter when several
+    threads submit to one pool.
+
+    Task failures raise `pymizu.TaskError`. `Future.running()` always returns
+    False because futures resolve at completion. Cancellation follows
+    [`Task.cancel()`](`pymizu.Task`) and never interrupts a running task.
+    `shutdown(cancel_futures=True)` cancels every outstanding future because
+    the pool cannot distinguish queued from running tasks. A running task
+    completes, but its result is discarded.
+
+    An internal error, such as another caller stopping the wrapped pool, fails
+    every outstanding future. Later submissions raise instead of queueing
+    work.
+
+    Futures resolve, and `add_done_callback` callbacks run, on pymizu's
+    listener thread. Keep callbacks short. Never block a callback on the pool
+    itself. If the result table is full, `submit()` waits for the executor to
+    collect a result. A submission from a listener-thread done callback raises
+    `SlotsExhaustedError` because waiting there would deadlock the drain.
+
+    `map()` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`.
+    For bulk maps, [`Pool.map`](`pymizu.Pool.map`) is faster.
 
     Examples
     --------
-    Use as a drop-in `concurrent.futures.Executor`:
+    Use as a `concurrent.futures.Executor`:
 
     ```{python}
     import pymizu
