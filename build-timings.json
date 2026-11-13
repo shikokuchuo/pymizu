@@ -1,229 +1,154 @@
 {
-  "build_time": "2026-11-13T14:38:00Z",
-  "total_seconds": 41.027,
+  "build_time": "2026-11-13T14:58:26Z",
+  "total_seconds": 38.242,
   "pages": [
     {
       "page": "user-guide/channels.qmd",
-      "seconds": 2.982,
+      "seconds": 2.631,
       "frozen": true
     },
     {
       "page": "changelog.qmd",
-      "seconds": 2.232,
+      "seconds": 2.023,
       "frozen": false
     },
     {
       "page": "user-guide/pools.qmd",
-      "seconds": 1.372,
+      "seconds": 1.191,
       "frozen": true
     },
     {
-      "page": "reference/pymizu.Channel.recv_batch.qmd",
-      "seconds": 0.872,
+      "page": "reference/pymizu.Pool.create.qmd",
+      "seconds": 0.83,
       "frozen": false
     },
     {
       "page": "index.qmd",
-      "seconds": 0.839,
+      "seconds": 0.825,
       "frozen": true
     },
     {
       "page": "contributing.qmd",
-      "seconds": 0.713,
+      "seconds": 0.699,
       "frozen": false
     },
     {
       "page": "user-guide/installation.qmd",
-      "seconds": 0.695,
-      "frozen": false
-    },
-    {
-      "page": "user-guide/interop.qmd",
-      "seconds": 0.66,
+      "seconds": 0.667,
       "frozen": false
     },
     {
       "page": "citation.qmd",
-      "seconds": 0.639,
-      "frozen": false
-    },
-    {
-      "page": "reference/Pool.qmd",
-      "seconds": 0.572,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.recv_batch_async.qmd",
-      "seconds": 0.572,
-      "frozen": true
-    },
-    {
-      "page": "reference/PoolExecutor.qmd",
-      "seconds": 0.546,
-      "frozen": true
-    },
-    {
-      "page": "user-guide/map.qmd",
-      "seconds": 0.532,
-      "frozen": true
-    },
-    {
-      "page": "reference/Channel.qmd",
-      "seconds": 0.524,
-      "frozen": false
-    },
-    {
-      "page": "reference/PreparedMap.qmd",
-      "seconds": 0.518,
-      "frozen": true
-    },
-    {
-      "page": "package-info.qmd",
-      "seconds": 0.49,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.map.qmd",
-      "seconds": 0.487,
-      "frozen": false
-    },
-    {
-      "page": "skills.qmd",
-      "seconds": 0.481,
-      "frozen": false
-    },
-    {
-      "page": "reference/Frame.qmd",
-      "seconds": 0.477,
-      "frozen": false
-    },
-    {
-      "page": "reference/index.qmd",
-      "seconds": 0.477,
-      "frozen": false
-    },
-    {
-      "page": "user-guide/benchmarks.qmd",
-      "seconds": 0.474,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.spawn_workers.qmd",
-      "seconds": 0.469,
-      "frozen": false
-    },
-    {
-      "page": "reference/Map.qmd",
-      "seconds": 0.467,
-      "frozen": false
-    },
-    {
-      "page": "reference/call.qmd",
-      "seconds": 0.455,
-      "frozen": false
-    },
-    {
-      "page": "reference/prune.qmd",
-      "seconds": 0.45,
-      "frozen": false
-    },
-    {
-      "page": "reference/Task.qmd",
-      "seconds": 0.445,
-      "frozen": false
-    },
-    {
-      "page": "reference/r_launcher.qmd",
-      "seconds": 0.444,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.retire.qmd",
-      "seconds": 0.431,
-      "frozen": false
-    },
-    {
-      "page": "reference/Sentinel.qmd",
-      "seconds": 0.43,
-      "frozen": false
-    },
-    {
-      "page": "reference/launcher.qmd",
-      "seconds": 0.43,
-      "frozen": false
-    },
-    {
-      "page": "code-of-conduct.qmd",
-      "seconds": 0.426,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.recv_async.qmd",
-      "seconds": 0.422,
-      "frozen": false
-    },
-    {
-      "page": "reference/default_pool.qmd",
-      "seconds": 0.416,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.submit.qmd",
-      "seconds": 0.414,
-      "frozen": false
-    },
-    {
-      "page": "reference/ForeignPayloadError.qmd",
-      "seconds": 0.413,
-      "frozen": false
-    },
-    {
-      "page": "reference/ConcurrentUseError.qmd",
-      "seconds": 0.412,
+      "seconds": 0.651,
       "frozen": false
     },
     {
       "page": "reference/MizuError.qmd",
-      "seconds": 0.412,
+      "seconds": 0.606,
       "frozen": false
     },
     {
-      "page": "reference/using_pool.qmd",
-      "seconds": 0.412,
+      "page": "user-guide/interop.qmd",
+      "seconds": 0.572,
       "frozen": false
     },
     {
-      "page": "reference/current_rng.qmd",
-      "seconds": 0.411,
+      "page": "reference/pymizu.Pool.destroy.qmd",
+      "seconds": 0.529,
       "frozen": false
     },
     {
-      "page": "reference/is_remote_error.qmd",
+      "page": "reference/Pool.qmd",
+      "seconds": 0.522,
+      "frozen": false
+    },
+    {
+      "page": "user-guide/map.qmd",
+      "seconds": 0.514,
+      "frozen": true
+    },
+    {
+      "page": "reference/PreparedMap.qmd",
+      "seconds": 0.506,
+      "frozen": true
+    },
+    {
+      "page": "reference/Channel.qmd",
+      "seconds": 0.505,
+      "frozen": false
+    },
+    {
+      "page": "reference/PoolExecutor.qmd",
+      "seconds": 0.488,
+      "frozen": true
+    },
+    {
+      "page": "reference/pymizu.Pool.dump.qmd",
+      "seconds": 0.47,
+      "frozen": false
+    },
+    {
+      "page": "reference/Map.qmd",
+      "seconds": 0.464,
+      "frozen": false
+    },
+    {
+      "page": "user-guide/benchmarks.qmd",
+      "seconds": 0.463,
+      "frozen": false
+    },
+    {
+      "page": "reference/Frame.qmd",
+      "seconds": 0.446,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.map.qmd",
+      "seconds": 0.428,
+      "frozen": false
+    },
+    {
+      "page": "skills.qmd",
+      "seconds": 0.425,
+      "frozen": false
+    },
+    {
+      "page": "reference/call.qmd",
+      "seconds": 0.423,
+      "frozen": false
+    },
+    {
+      "page": "package-info.qmd",
+      "seconds": 0.42,
+      "frozen": false
+    },
+    {
+      "page": "reference/TaskLostError.qmd",
+      "seconds": 0.42,
+      "frozen": false
+    },
+    {
+      "page": "reference/index.qmd",
+      "seconds": 0.42,
+      "frozen": false
+    },
+    {
+      "page": "reference/Task.qmd",
       "seconds": 0.41,
       "frozen": false
     },
     {
-      "page": "reference/ShmError.qmd",
+      "page": "reference/SlotsExhaustedError.qmd",
       "seconds": 0.409,
       "frozen": false
     },
     {
-      "page": "reference/DeclinedError.qmd",
-      "seconds": 0.408,
-      "frozen": false
-    },
-    {
-      "page": "reference/DimArray.qmd",
-      "seconds": 0.408,
-      "frozen": false
-    },
-    {
-      "page": "reference/current_pool.qmd",
+      "page": "reference/StartupError.qmd",
       "seconds": 0.406,
       "frozen": false
     },
     {
-      "page": "reference/set_default_pool.qmd",
+      "page": "reference/WorkerDiedError.qmd",
       "seconds": 0.406,
       "frozen": false
     },
@@ -233,183 +158,258 @@
       "frozen": false
     },
     {
-      "page": "reference/TaskError.qmd",
-      "seconds": 0.405,
-      "frozen": false
-    },
-    {
-      "page": "reference/TaskLostError.qmd",
-      "seconds": 0.403,
-      "frozen": false
-    },
-    {
-      "page": "reference/CancelledError.qmd",
+      "page": "code-of-conduct.qmd",
       "seconds": 0.402,
       "frozen": false
     },
     {
-      "page": "reference/SlotsExhaustedError.qmd",
+      "page": "reference/Sentinel.qmd",
+      "seconds": 0.402,
+      "frozen": false
+    },
+    {
+      "page": "reference/ForeignPayloadError.qmd",
       "seconds": 0.401,
       "frozen": false
     },
     {
-      "page": "reference/StoppedError.qmd",
-      "seconds": 0.401,
-      "frozen": false
-    },
-    {
-      "page": "reference/StartupError.qmd",
+      "page": "reference/prune.qmd",
       "seconds": 0.4,
       "frozen": false
     },
     {
-      "page": "reference/WorkerDiedError.qmd",
-      "seconds": 0.4,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.create.qmd",
-      "seconds": 0.4,
-      "frozen": false
-    },
-    {
-      "page": "reference/is_sentinel.qmd",
+      "page": "reference/DimArray.qmd",
       "seconds": 0.399,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Channel.create.qmd",
-      "seconds": 0.395,
+      "page": "reference/ShmError.qmd",
+      "seconds": 0.397,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Pool.submit_batch.qmd",
-      "seconds": 0.374,
+      "page": "reference/StoppedError.qmd",
+      "seconds": 0.397,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Pool.collect_all.qmd",
-      "seconds": 0.372,
+      "page": "reference/ConcurrentUseError.qmd",
+      "seconds": 0.393,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Pool.collect_any_async.qmd",
-      "seconds": 0.371,
+      "page": "reference/r_launcher.qmd",
+      "seconds": 0.392,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Channel.recv.qmd",
-      "seconds": 0.366,
+      "page": "reference/using_pool.qmd",
+      "seconds": 0.391,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Channel.__aiter__.qmd",
-      "seconds": 0.363,
+      "page": "reference/DeclinedError.qmd",
+      "seconds": 0.39,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Pool.collect_any.qmd",
-      "seconds": 0.362,
+      "page": "reference/pymizu.Pool.submit.qmd",
+      "seconds": 0.386,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Pool.destroy.qmd",
-      "seconds": 0.361,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.attach.qmd",
-      "seconds": 0.359,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.map_prepare.qmd",
-      "seconds": 0.359,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.collect_all_async.qmd",
-      "seconds": 0.358,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.close.qmd",
-      "seconds": 0.355,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.send.qmd",
-      "seconds": 0.355,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.dump.qmd",
-      "seconds": 0.355,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.stop.qmd",
-      "seconds": 0.355,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.send_batch.qmd",
-      "seconds": 0.354,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.starmap.qmd",
-      "seconds": 0.353,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.__iter__.qmd",
-      "seconds": 0.352,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Pool.trace.qmd",
-      "seconds": 0.352,
-      "frozen": false
-    },
-    {
-      "page": "license.qmd",
-      "seconds": 0.351,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.destroy.qmd",
-      "seconds": 0.351,
-      "frozen": false
-    },
-    {
-      "page": "reference/pymizu.Channel.token.qmd",
-      "seconds": 0.35,
+      "page": "reference/launcher.qmd",
+      "seconds": 0.385,
       "frozen": false
     },
     {
       "page": "reference/pymizu.Pool.token.qmd",
-      "seconds": 0.35,
+      "seconds": 0.383,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Channel.alive.qmd",
-      "seconds": 0.346,
+      "page": "reference/is_remote_error.qmd",
+      "seconds": 0.382,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Channel.info.qmd",
-      "seconds": 0.346,
+      "page": "reference/set_default_pool.qmd",
+      "seconds": 0.376,
       "frozen": false
     },
     {
-      "page": "reference/pymizu.Pool.stats.qmd",
-      "seconds": 0.345,
+      "page": "reference/CancelledError.qmd",
+      "seconds": 0.373,
+      "frozen": false
+    },
+    {
+      "page": "reference/current_pool.qmd",
+      "seconds": 0.373,
+      "frozen": false
+    },
+    {
+      "page": "reference/current_rng.qmd",
+      "seconds": 0.371,
+      "frozen": false
+    },
+    {
+      "page": "reference/TaskError.qmd",
+      "seconds": 0.37,
+      "frozen": false
+    },
+    {
+      "page": "reference/default_pool.qmd",
+      "seconds": 0.367,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.recv_batch_async.qmd",
+      "seconds": 0.36,
+      "frozen": true
+    },
+    {
+      "page": "reference/is_sentinel.qmd",
+      "seconds": 0.358,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.submit_batch.qmd",
+      "seconds": 0.357,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.create.qmd",
+      "seconds": 0.356,
       "frozen": false
     },
     {
       "page": "reference/pymizu.Pool.info.qmd",
-      "seconds": 0.341,
+      "seconds": 0.355,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.collect_any_async.qmd",
+      "seconds": 0.352,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.token.qmd",
+      "seconds": 0.343,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.recv.qmd",
+      "seconds": 0.342,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.destroy.qmd",
+      "seconds": 0.336,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.collect_all.qmd",
+      "seconds": 0.335,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.spawn_workers.qmd",
+      "seconds": 0.334,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.trace.qmd",
+      "seconds": 0.332,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.collect_any.qmd",
+      "seconds": 0.329,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.recv_async.qmd",
+      "seconds": 0.328,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.send.qmd",
+      "seconds": 0.328,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.collect_all_async.qmd",
+      "seconds": 0.327,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.__aiter__.qmd",
+      "seconds": 0.326,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.attach.qmd",
+      "seconds": 0.326,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.info.qmd",
+      "seconds": 0.325,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.stop.qmd",
+      "seconds": 0.322,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.send_batch.qmd",
+      "seconds": 0.321,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.starmap.qmd",
+      "seconds": 0.321,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.map_prepare.qmd",
+      "seconds": 0.319,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.close.qmd",
+      "seconds": 0.318,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.alive.qmd",
+      "seconds": 0.317,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.recv_batch.qmd",
+      "seconds": 0.317,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.stats.qmd",
+      "seconds": 0.317,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Channel.__iter__.qmd",
+      "seconds": 0.315,
+      "frozen": false
+    },
+    {
+      "page": "reference/pymizu.Pool.retire.qmd",
+      "seconds": 0.314,
+      "frozen": false
+    },
+    {
+      "page": "license.qmd",
+      "seconds": 0.308,
       "frozen": false
     }
   ]
