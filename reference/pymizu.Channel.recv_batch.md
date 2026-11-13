@@ -4,7 +4,7 @@ Receive up to `n` values in one call.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L444-L451)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L437-L444)
 
 ``` python
 recv_batch(

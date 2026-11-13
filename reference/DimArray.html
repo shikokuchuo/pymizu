@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="An ndarray carrying R labels for faithful round trips with R.">
+<meta name="description" content="An ndarray carrying R labels.">
 
 <title>DimArray | pymizu</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Thread-speed async and parallel Python over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "DimArray - pymizu", "isPartOf": {"@type": "WebSite", "name": "pymizu"}, "url": "https://shikokuchuo.net/pymizu/reference/DimArray.html"}]</script>
@@ -135,11 +135,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="DimArray | pymizu">
-<meta property="og:description" content="An ndarray carrying R labels for faithful round trips with R.">
+<meta property="og:description" content="An ndarray carrying R labels.">
 <meta property="og:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta property="og:site_name" content="pymizu">
 <meta name="twitter:title" content="DimArray | pymizu">
-<meta name="twitter:description" content="An ndarray carrying R labels for faithful round trips with R.">
+<meta name="twitter:description" content="An ndarray carrying R labels.">
 <meta name="twitter:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -479,18 +479,19 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>An <code>ndarray</code> carrying R labels for faithful round trips with R.</p>
+<p>An <code>ndarray</code> carrying R labels.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_dimarray.py#L18-L45" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_dimarray.py#L10-L39" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">DimArray</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>The labels are <code>names</code>, <code>dimnames</code>, <code>axis_names</code>, and <code>r_class</code>. A received labeled vector or array arrives as a DimArray, and an unmodified echo restores every label in R (<code>identical()</code>). Attach labels explicitly to send a labeled value: <code>names</code> for a 1-D array, <code>dimnames</code> (plus optional <code>axis_names</code>, R’s <code>names(dimnames(x))</code>) for a matrix or n-D array, and <code>r_class = "table"</code> for R’s table class. Use either <code>names</code> or <code>dimnames</code>, not both; <code>axis_names</code> requires <code>dimnames</code> and has one entry per axis.</p>
-<p>Labels never carry over on their own. Any numpy operation that builds a new array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped or permuted array never inherits labels its data no longer matches.</p>
+<p>A received labeled vector or array arrives as a DimArray. An unmodified echo restores every label in R (<code>identical()</code>). The labels are <code>names</code>, <code>dimnames</code>, <code>axis_names</code>, and <code>r_class</code>.</p>
+<p>To send a labeled value, set <code>names</code> on a 1-D array. Set <code>dimnames</code> on a matrix or n-D array, with optional <code>axis_names</code> for R’s <code>names(dimnames(x))</code>. For R’s table class, set <code>r_class = "table"</code>. Use either <code>names</code> or <code>dimnames</code>, not both. <code>axis_names</code> requires <code>dimnames</code> and has one entry per axis.</p>
+<p>Numpy operations that build a new array drop all labels. This includes transposes, arithmetic, slices, and copies. A new array never inherits labels that no longer match its data.</p>
 </div>
 
 

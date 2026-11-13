@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="The event-driven collect_any().">
+<meta name="description" content="Return an asyncio.Future for the first finished task.">
 
 <title>collect_any_async() | pymizu</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Thread-speed async and parallel Python over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "pymizu.Pool.collect_any_async - pymizu", "isPartOf": {"@type": "WebSite", "name": "pymizu"}, "url": "https://shikokuchuo.net/pymizu/reference/pymizu.Pool.collect_any_async.html"}]</script>
@@ -135,11 +135,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="collect_any_async() | pymizu">
-<meta property="og:description" content="The event-driven collect_any().">
+<meta property="og:description" content="Return an asyncio.Future for the first finished task.">
 <meta property="og:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta property="og:site_name" content="pymizu">
 <meta name="twitter:title" content="collect_any_async() | pymizu">
-<meta name="twitter:description" content="The event-driven collect_any().">
+<meta name="twitter:description" content="Return an asyncio.Future for the first finished task.">
 <meta name="twitter:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -225,17 +225,17 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>The event-driven <a href="../reference/pymizu.Pool.collect_any.html" class="gdls-link"><code>collect_any()</code></a>.</p>
+<p>Return an <code>asyncio.Future</code> for the first finished task.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1114-L1135" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1094-L1114" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">collect_any_async</span>(<span class="va">tasks</span>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>One <code>asyncio.Future</code> for the whole collection, resolved when a task finishes.</p>
+<p>The async form of <a href="../reference/pymizu.Pool.collect_any.html" class="gdls-link"><code>collect_any()</code></a>.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -254,7 +254,7 @@ The <a href="../reference/Task.html#pymizu.Task" class="gdls-link"><code>Task</c
 <dl>
 <dt><code> <span class="doc-parameter-annotation">An <code>asyncio.Future</code> resolving with the first finished task’s</span></code></dt>
 <dd>
-<code>(index, value)</code> (with the sync verb’s tie-breaks). A failure rejects with the exception the sync verb raises, <code>index</code> attribute included. There is no <code>timeout</code> argument: use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>. Cancelling the Future detaches every task, so each can be collected blocking again, and never cancels them.
+<code>(index, value)</code>, with the tie-breaks of <a href="../reference/pymizu.Pool.collect_any.html" class="gdls-link gdls-code">collect_any()</a>. A failure rejects with the exception <a href="../reference/pymizu.Pool.collect_any.html" class="gdls-link gdls-code">collect_any()</a> raises, including its <code>index</code> attribute. There is no <code>timeout</code> argument. Use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code> instead. Cancelling the Future detaches every task without cancelling it, so each can be collected with a blocking call.
 </dd>
 </dl>
 </div>

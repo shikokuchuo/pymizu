@@ -18,13 +18,13 @@ A shared-memory work-stealing task pool handle (process-private).
 A task handle from Pool.submit(). It is collected exactly once, and an uncollected handle releases its slot when garbage collected.
 
 [Map](Map.md#pymizu.Map)  
-A staged, submitted map; collects exactly once, through this handle.
+The handle for one submitted map run.
 
 [PreparedMap](PreparedMap.md#pymizu.PreparedMap)  
-A map set up once in shared memory, run many times.
+A reusable map staged in shared memory.
 
 [PoolExecutor](PoolExecutor.md#pymizu.PoolExecutor)  
-A `concurrent.futures.Executor` over a pymizu pool.
+A `concurrent.futures.Executor` backed by a pymizu pool.
 
 ## Cross-language interop
 
@@ -43,7 +43,7 @@ Return a launcher spawning R processes running the `mizu` package.
 A data.frame's Python home: named columns with a row count.
 
 [DimArray](DimArray.md#pymizu.DimArray)  
-An `ndarray` carrying R labels for faithful round trips with R.
+An `ndarray` carrying R labels.
 
 ## Outcomes and errors
 
@@ -114,7 +114,7 @@ Use `pool` as the default for the with block, then restore.
 The pool handle of the worker running the task.
 
 [current_rng()](current_rng.md#pymizu.current_rng)  
-The current element's own numpy Generator, inside a seeded map.
+Return the current element's numpy Generator inside a seeded map.
 
 [prune()](prune.md#pymizu.prune)  
 Remove orphaned shared memory regions.

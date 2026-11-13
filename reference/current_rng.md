@@ -1,10 +1,10 @@
 # current_rng()
 
-The current element's own numpy Generator, inside a seeded map.
+Return the current element's numpy Generator inside a seeded map.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1672-L1703)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1629-L1650)
 
 ``` python
 current_rng()
@@ -12,8 +12,8 @@ current_rng()
 
 ## Returns
 
-`The element's own numpy.random.Generator inside a`  
-seeded map element; None outside one.
+`The element's own numpy.random.Generator inside a seeded map`  
+element. None outside one.
 
 ## Raises
 
@@ -22,6 +22,4 @@ When numpy is not installed.
 
 ## Details
 
-[`Pool.map()`](../reference/pymizu.Pool.map.md) `seed=` seeds the stdlib `random` module per element; a task drawing from numpy calls this instead: the element's own `numpy.random.Generator`, derived from the same seed material on first call in the element (kept separate from the stdlib derivation, so those streams are unchanged). Two calls in one element continue one stream, and distinct elements get distinct streams, so results are identical for any chunking, worker count, or steal order.
-
-Outside a seeded map element (an unseeded map, an ordinary task, the submitter process) the return is None. A seeded map element must not submit and collect nested tasks: while the worker waits it runs other work, possibly another map's batches mid-element, which wipes this element's stash. A later call rebuilds from the seed, restarting the stream instead of continuing it.
+The first call in an element creates the generator from the map seed. Later calls in that element continue the same stream. This derivation is separate from the stdlib `random` stream. See [`Pool.map()`](../reference/pymizu.Pool.map.md) for the seed format, reproducibility rules, and nested-task restriction.

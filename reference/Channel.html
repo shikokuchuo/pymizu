@@ -490,7 +490,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L599" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L579" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Channel</span>()</span></code></pre></div>
@@ -528,7 +528,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <tbody>
 <tr class="odd">
 <td><a href="../reference/pymizu.Channel.__aiter__.html" class="doc-function doc-label doc-label-method">__aiter__()</a></td>
-<td>Iterate over received payloads until CLOSED or PEER_GONE.</td>
+<td>Yield received values until <code>CLOSED</code> or <code>PEER_GONE</code>.</td>
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Channel.__iter__.html" class="doc-function doc-label doc-label-method">__iter__()</a></td>
@@ -560,7 +560,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td><a href="../reference/pymizu.Channel.recv_async.html" class="doc-function doc-label doc-label-method">recv_async()</a></td>
-<td>Receive the next value as an <code>asyncio.Future</code>.</td>
+<td>Return an <code>asyncio.Future</code> that resolves with the next value.</td>
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Channel.recv_batch.html" class="doc-function doc-label doc-label-method">recv_batch()</a></td>
@@ -568,7 +568,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td><a href="../reference/pymizu.Channel.recv_batch_async.html" class="doc-function doc-label doc-label-method">recv_batch_async()</a></td>
-<td>Receive up to <code>n</code> values as one list on an <code>asyncio.Future</code>.</td>
+<td>Return an <code>asyncio.Future</code> for a list of received values.</td>
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Channel.send.html" class="doc-function doc-label doc-label-method">send()</a></td>

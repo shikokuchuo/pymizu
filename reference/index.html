@@ -481,15 +481,15 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/Map.html#pymizu.Map" class="doc-class doc-label doc-label-class">Map</a></dt>
 <dd>
-<p>A staged, submitted map; collects exactly once, through this handle.</p>
+<p>The handle for one submitted map run.</p>
 </dd>
 <dt><a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="doc-class doc-label doc-label-class">PreparedMap</a></dt>
 <dd>
-<p>A map set up once in shared memory, run many times.</p>
+<p>A reusable map staged in shared memory.</p>
 </dd>
 <dt><a href="../reference/PoolExecutor.html#pymizu.PoolExecutor" class="doc-class doc-label doc-label-class">PoolExecutor</a></dt>
 <dd>
-<p>A <code>concurrent.futures.Executor</code> over a pymizu pool.</p>
+<p>A <code>concurrent.futures.Executor</code> backed by a pymizu pool.</p>
 </dd>
 </dl>
 </section>
@@ -517,7 +517,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/DimArray.html#pymizu.DimArray" class="doc-class doc-label doc-label-class">DimArray</a></dt>
 <dd>
-<p>An <code>ndarray</code> carrying R labels for faithful round trips with R.</p>
+<p>An <code>ndarray</code> carrying R labels.</p>
 </dd>
 </dl>
 </section>
@@ -617,7 +617,7 @@ ul.task-list li input[type="checkbox"] {
 </dd>
 <dt><a href="../reference/current_rng.html#pymizu.current_rng" class="doc-function doc-label doc-label-function">current_rng()</a></dt>
 <dd>
-<p>The current element’s own numpy Generator, inside a seeded map.</p>
+<p>Return the current element’s numpy Generator inside a seeded map.</p>
 </dd>
 <dt><a href="../reference/prune.html#pymizu.prune" class="doc-function doc-label doc-label-function">prune()</a></dt>
 <dd>

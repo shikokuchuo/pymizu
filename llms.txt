@@ -16,9 +16,9 @@
 
 - [Pool](https://shikokuchuo.net/pymizu/reference/Pool.html): A shared-memory work-stealing task pool handle (process-private)
 - [Task](https://shikokuchuo.net/pymizu/reference/Task.html): A task handle from Pool.submit(). It is collected exactly once, and an uncollected handle releases its slot when garbage collected
-- [Map](https://shikokuchuo.net/pymizu/reference/Map.html): A staged, submitted map; collects exactly once, through this handle
-- [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A map set up once in shared memory, run many times
-- [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A `concurrent.futures.Executor` over a pymizu pool
+- [Map](https://shikokuchuo.net/pymizu/reference/Map.html): The handle for one submitted map run
+- [PreparedMap](https://shikokuchuo.net/pymizu/reference/PreparedMap.html): A reusable map staged in shared memory
+- [PoolExecutor](https://shikokuchuo.net/pymizu/reference/PoolExecutor.html): A `concurrent.futures.Executor` backed by a pymizu pool
 
 #### Cross-language interop
 > R peers and workers (the mizu R package), neutral task specifications, and the data.frame's Python home.
@@ -27,7 +27,7 @@
 - [launcher](https://shikokuchuo.net/pymizu/reference/launcher.html): Return a launcher spawning Python processes running pymizu
 - [r_launcher](https://shikokuchuo.net/pymizu/reference/r_launcher.html): Return a launcher spawning R processes running the `mizu` package
 - [Frame](https://shikokuchuo.net/pymizu/reference/Frame.html): A data.frame's Python home: named columns with a row count
-- [DimArray](https://shikokuchuo.net/pymizu/reference/DimArray.html): An `ndarray` carrying R labels for faithful round trips with R
+- [DimArray](https://shikokuchuo.net/pymizu/reference/DimArray.html): An `ndarray` carrying R labels
 
 #### Outcomes and errors
 > A full ring, a timeout, a close, or a dead peer returns as a sentinel singleton — FULL / TIMEOUT / CLOSED / PEER_GONE — tested by identity, never raised. Real failures raise exceptions.
@@ -56,5 +56,5 @@
 - [set_default_pool](https://shikokuchuo.net/pymizu/reference/set_default_pool.html): Set the process-wide default pool; None clears it
 - [using_pool](https://shikokuchuo.net/pymizu/reference/using_pool.html): Use ``pool`` as the default for the with block, then restore
 - [current_pool](https://shikokuchuo.net/pymizu/reference/current_pool.html): The pool handle of the worker running the task
-- [current_rng](https://shikokuchuo.net/pymizu/reference/current_rng.html): The current element's own numpy Generator, inside a seeded map
+- [current_rng](https://shikokuchuo.net/pymizu/reference/current_rng.html): Return the current element's numpy Generator inside a seeded map
 - [prune](https://shikokuchuo.net/pymizu/reference/prune.html): Remove orphaned shared memory regions

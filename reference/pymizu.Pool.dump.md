@@ -4,7 +4,7 @@ A read-only debugging snapshot of the whole pool region (dict).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1565-L1567)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1522-L1524)
 
 ``` python
 dump()

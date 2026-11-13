@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Receive up to n values as one list on an asyncio.Future.">
+<meta name="description" content="Return an asyncio.Future for a list of received values.">
 
 <title>recv_batch_async() | pymizu</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Thread-speed async and parallel Python over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "pymizu.Channel.recv_batch_async - pymizu", "isPartOf": {"@type": "WebSite", "name": "pymizu"}, "url": "https://shikokuchuo.net/pymizu/reference/pymizu.Channel.recv_batch_async.html"}]</script>
@@ -135,11 +135,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="recv_batch_async() | pymizu">
-<meta property="og:description" content="Receive up to n values as one list on an asyncio.Future.">
+<meta property="og:description" content="Return an asyncio.Future for a list of received values.">
 <meta property="og:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta property="og:site_name" content="pymizu">
 <meta name="twitter:title" content="recv_batch_async() | pymizu">
-<meta name="twitter:description" content="Receive up to n values as one list on an asyncio.Future.">
+<meta name="twitter:description" content="Return an asyncio.Future for a list of received values.">
 <meta name="twitter:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -228,17 +228,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Receive up to <code>n</code> values as one list on an <code>asyncio.Future</code>.</p>
+<p>Return an <code>asyncio.Future</code> for a list of received values.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L453-L525" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L446-L505" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">recv_batch_async</span>(<span class="va">n</span><span class="op">=</span><span class="dv">256</span>)</span></code></pre></div>
-</div>
-<div class="doc-text">
-<p>The burst form of <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a>: one Future resolves with a whole burst of arrivals at once, the high-throughput receive form — one resolution per burst rather than one per message.</p>
 </div>
 <section id="parameters" class="level2 doc-parameters">
 <h2 class="doc-parameters anchored" data-anchor-id="parameters">Parameters</h2>
@@ -255,9 +252,9 @@ The maximum batch size.
 <h2 class="doc-returns anchored" data-anchor-id="returns">Returns</h2>
 <div class="doc-definition-items">
 <dl>
-<dt><code> <span class="doc-parameter-annotation">An <code>asyncio.Future</code> resolving with a list of up to <code>n</code></span></code></dt>
+<dt><code> <span class="doc-parameter-annotation">An <code>asyncio.Future</code> resolving with a list of up to <code>n</code> values in</span></code></dt>
 <dd>
-values in arrival order — possibly short: it resolves as soon as at least one value is available, never waiting to fill. Terminal states stay values: the Future resolves with the <code>CLOSED</code> / <code>PEER_GONE</code> sentinel. An <code>n</code> past the drain quantum (2048) resolves with at most one quantum per pass.
+arrival order. The list can be short: the Future resolves as soon as one value is available and does not wait for a full batch. Terminal states stay values: the Future resolves with the <code>CLOSED</code> / <code>PEER_GONE</code> sentinel. An <code>n</code> past the drain quantum (2048) resolves with at most one quantum per pass.
 </dd>
 </dl>
 </div>
@@ -279,12 +276,13 @@ A blocking receive on this side from another thread races the armed async consum
 </section>
 <section id="details" class="level2 doc-details">
 <h2 class="doc-details anchored" data-anchor-id="details">Details</h2>
-<p>Outstanding calls on one channel — <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a> singles and batch waiters mixed — resolve in call order, each batch waiter taking up to its <code>n</code> from the burst (at least one when it is reached, so a batch reached late in a busy pass can resolve short). Cancelling the Future detaches the waiter, and the next message goes to the next waiter. There is no <code>timeout</code> argument: use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>. A channel created with <code>spin=True</code> cannot arm and raises. The async consumer is the side’s one consumer: a blocking <a href="../reference/pymizu.Channel.recv.html" class="gdls-link"><code>recv()</code></a> on the same side while waiters are pending raises <a href="../reference/ConcurrentUseError.html#pymizu.ConcurrentUseError" class="gdls-link"><code>ConcurrentUseError</code></a>.</p>
-<p>A declined foreign payload (see <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a>) ahead of a batch resolves it short with the values before it; the waiter that reaches the declined message rejects with <a href="../reference/ForeignPayloadError.html#pymizu.ForeignPayloadError" class="gdls-link"><code>ForeignPayloadError</code></a>, and the consumer keeps flowing.</p>
+<p>Single and batch waiters on one channel resolve in call order. A batch waiter takes up to its <code>n</code> values from the available burst. It takes at least one value when reached, so a batch reached late in a busy pass can resolve short.</p>
+<p>Cancellation, timeouts, <code>spin=True</code>, and consumer exclusion follow <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a>.</p>
+<p>A declined foreign payload ahead of a batch resolves it short with the preceding values. The waiter that reaches the declined message rejects with <a href="../reference/ForeignPayloadError.html#pymizu.ForeignPayloadError" class="gdls-link"><code>ForeignPayloadError</code></a>. Later waiters are unaffected.</p>
 </section>
 <section id="examples" class="level2 doc-examples">
 <h2 class="doc-examples anchored" data-anchor-id="examples">Examples</h2>
-<div id="c0064513" class="cell" data-execution_count="1">
+<div id="aeddc19e" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Channel.create(<span class="st">'''</span></span>

@@ -68,29 +68,27 @@ A task handle from Pool.submit(). It is collected exactly once, and an uncollect
 
 Map(pool: 'pymizu.Pool', plan: '_Plan') -> 'None'
 
-A staged, submitted map; collects exactly once, through this handle.
+The handle for one submitted map run.
 
 Returned by [`Pool.map()`](`pymizu.Pool.map`) and
-[`PreparedMap.run()`](`pymizu.PreparedMap.run`). `collect()` blocks.
-`collect_async()` or `await` resolves one asyncio Future when the results
-arrive (not on a streaming map, whose sliding task window advances in the
-blocking collect loop). `cancel()` stops the run: workers halt within about
-one batch and the outstanding tasks are cancelled. A dropped uncollected
-handle cancels at GC, so no run of fn is wasted. One collection per handle,
-as for tasks.
+[`PreparedMap.run()`](`pymizu.PreparedMap.run`). Each handle collects
+exactly once. `collect()` blocks for the results. `collect_async()` and
+`await` provide the same results without blocking. A streaming map requires
+`collect()` because its sliding task window advances in the blocking loop.
+
+`cancel()` stops the run. Workers halt within about one batch, and the
+outstanding tasks are cancelled. An uncollected handle cancels its run at
+garbage collection.
 
 PreparedMap(pool: 'pymizu.Pool', fn: '_Callable[..., _Any]', x: '_Any', *, args: '_Any' = (), kwargs: 'dict | None' = None, n_chunks: 'int | None' = None, template: '_Any' = None, stream: 'bool' = False) -> 'None'
 
-A map set up once in shared memory, run many times.
+A reusable map staged in shared memory.
 
-Create with [`Pool.map_prepare()`](`pymizu.Pool.map_prepare`); run
-with `run()`, which returns the run's map handle (the collect
-happens on it, as for [`Pool.map()`](`pymizu.Pool.map`)). Re-arming
-is cheap, and workers reuse their cached set-up, so a re-run skips
-the pickling, the region creation, and the worker-side set-up. A
-run collected with `collect="view"` hands its region to the view,
-so the next run stages a fresh one. Close with `close()` (or a
-with block) to release the shared memory.
+Create with [`Pool.map_prepare()`](`pymizu.Pool.map_prepare`). `run()`
+returns a [`Map`](`pymizu.Map`) handle for one run. Preparation stores the
+map description and shared data. Later runs reuse the staged data and the
+workers' cached setup when possible. Close with `close()` or a `with`
+block to release the shared memory.
 
 Parameters
 ----------
@@ -112,15 +110,11 @@ template
     [`Pool.map()`](`pymizu.Pool.map`).
 stream
     Stream slices of `x` instead of writing it to shared memory whole, as
-    for [`Pool.map()`](`pymizu.Pool.map`). The map is set up here; `seed`
-    and `collect` are per-run options of
-    [`PreparedMap.run()`](`pymizu.PreparedMap.run`) (mirroring mizu's
-    `mizu_map_run()`).
+    for [`Pool.map()`](`pymizu.Pool.map`).
 
 Examples
 --------
-Set the map up once, then re-run it over replacement data at copy
-cost (same dtype and length swap in place):
+Run a prepared map again with replacement data:
 
 ```{python}
 import numpy as np
@@ -137,13 +131,12 @@ second
 
 PoolExecutor(pool: 'pymizu.Pool', *, stop_pool: 'bool' = False) -> 'None'
 
-A `concurrent.futures.Executor` over a pymizu pool.
+A `concurrent.futures.Executor` backed by a pymizu pool.
 
-`submit()` returns a real `concurrent.futures.Future`: `wait` /
-`as_completed` / `result(timeout)` / `asyncio.wrap_future` and `map`
-with `ProcessPoolExecutor` chunking all work unchanged, so code written
-against `ProcessPoolExecutor` drops in. `create()` spawns an owned
-pool instead.
+`submit()` returns a standard `concurrent.futures.Future`. The stdlib
+`wait`, `as_completed`, and `asyncio.wrap_future` helpers accept it.
+`map()` supports `ProcessPoolExecutor`-style chunking. `create()` spawns
+an owned pool.
 
 Parameters
 ----------
@@ -155,30 +148,33 @@ stop_pool
 
 Notes
 -----
-`submit()` (and the stdlib `map` over it) is thread-safe, as the
-`concurrent.futures` contract requires: an internal lock serializes the
-single-producer pool handle. Use this adapter when several threads must
-submit to one pool. Differences from the stdlib: a task's failure surfaces
-as `pymizu.TaskError`; `Future.running()` is always False (futures resolve
-at completion); cancellation works like [`Task.cancel()`](`pymizu.Task`)
-and never interrupts a running task; and `shutdown(cancel_futures=True)`
-cancels every outstanding future, since the pool exposes no
-queued-versus-running signal (a running task completes, but its result is
-discarded). An internal failure (for example the wrapped pool is stopped
-from under the executor) fails every outstanding future, and later
-submissions raise instead of queueing onto a broken executor. Futures
-resolve, and `add_done_callback` callbacks run, on pymizu's listener
-thread, the same discipline as the stdlib executors' management thread:
-keep callbacks short, and never block one on the pool itself. If the
-result table is full, `submit()` waits for the executor to collect a
-result; a submission from a listener-thread done callback instead raises
-`SlotsExhaustedError`, since waiting there would deadlock the drain.
-`map()` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`;
-for bulk maps, [`Pool.map`](`pymizu.Pool.map`) remains the faster path.
+`submit()` and the stdlib `map()` are thread-safe. An internal lock
+serializes the single-producer pool handle. Use this adapter when several
+threads submit to one pool.
+
+Task failures raise `pymizu.TaskError`. `Future.running()` always returns
+False because futures resolve at completion. Cancellation follows
+[`Task.cancel()`](`pymizu.Task`) and never interrupts a running task.
+`shutdown(cancel_futures=True)` cancels every outstanding future because
+the pool cannot distinguish queued from running tasks. A running task
+completes, but its result is discarded.
+
+An internal error, such as another caller stopping the wrapped pool, fails
+every outstanding future. Later submissions raise instead of queueing
+work.
+
+Futures resolve, and `add_done_callback` callbacks run, on pymizu's
+listener thread. Keep callbacks short. Never block a callback on the pool
+itself. If the result table is full, `submit()` waits for the executor to
+collect a result. A submission from a listener-thread done callback raises
+`SlotsExhaustedError` because waiting there would deadlock the drain.
+
+`map()` honors `chunksize` and `buffersize` like `ProcessPoolExecutor`.
+For bulk maps, [`Pool.map`](`pymizu.Pool.map`) is faster.
 
 Examples
 --------
-Use as a drop-in `concurrent.futures.Executor`:
+Use as a `concurrent.futures.Executor`:
 
 ```{python}
 import pymizu
@@ -358,19 +354,21 @@ data.frame.
 
 DimArray(shape, dtype=None, buffer=None, offset=0, strides=None, order=None)
 
-An `ndarray` carrying R labels for faithful round trips with R.
+An `ndarray` carrying R labels.
 
-The labels are `names`, `dimnames`, `axis_names`, and `r_class`. A received
-labeled vector or array arrives as a DimArray, and an unmodified echo
-restores every label in R (`identical()`). Attach labels explicitly to send
-a labeled value: `names` for a 1-D array, `dimnames` (plus optional
-`axis_names`, R's `names(dimnames(x))`) for a matrix or n-D array, and
-`r_class = "table"` for R's table class. Use either `names` or `dimnames`,
-not both; `axis_names` requires `dimnames` and has one entry per axis.
+A received labeled vector or array arrives as a DimArray. An unmodified
+echo restores every label in R (`identical()`). The labels are `names`,
+`dimnames`, `axis_names`, and `r_class`.
 
-Labels never carry over on their own. Any numpy operation that builds a new
-array (a transpose, arithmetic, a slice, a copy) drops them, so a reshaped
-or permuted array never inherits labels its data no longer matches.
+To send a labeled value, set `names` on a 1-D array. Set `dimnames` on a
+matrix or n-D array, with optional `axis_names` for R's
+`names(dimnames(x))`. For R's table class, set `r_class = "table"`. Use
+either `names` or `dimnames`, not both. `axis_names` requires `dimnames`
+and has one entry per axis.
+
+Numpy operations that build a new array drop all labels. This includes
+transposes, arithmetic, slices, and copies. A new array never inherits
+labels that no longer match its data.
 
 
 ## Outcomes and errors
@@ -532,12 +530,12 @@ deadlock the pool. The process-wide default set with
 
 current_rng() -> '_np.random.Generator | None'
 
-The current element's own numpy Generator, inside a seeded map.
+Return the current element's numpy Generator inside a seeded map.
 
 Returns
 -------
-    The element's own ``numpy.random.Generator`` inside a
-    seeded map element; None outside one.
+    The element's own ``numpy.random.Generator`` inside a seeded map
+    element. None outside one.
 
 Raises
 ------
@@ -546,21 +544,11 @@ TypeError
 
 Details
 -------
-[`Pool.map()`](`pymizu.Pool.map`) ``seed=`` seeds the stdlib
-`random` module per element; a task drawing from numpy calls this
-instead: the element's own ``numpy.random.Generator``, derived
-from the same seed material on first call in the element
-(kept separate from the stdlib derivation, so those streams are
-unchanged). Two calls in one element continue one stream, and distinct
-elements get distinct streams, so results are identical for any chunking,
-worker count, or steal order.
-
-Outside a seeded map element (an unseeded map, an ordinary task, the
-submitter process) the return is None. A seeded map element must
-not submit and collect nested tasks: while the worker waits it runs
-other work, possibly another map's batches mid-element, which wipes this
-element's stash. A later call rebuilds from the seed, restarting the stream
-instead of continuing it.
+The first call in an element creates the generator from the map seed.
+Later calls in that element continue the same stream. This derivation is
+separate from the stdlib `random` stream. See
+[`Pool.map()`](`pymizu.Pool.map`) for the seed format, reproducibility
+rules, and nested-task restriction.
 
 prune() -> 'list[str]'
 

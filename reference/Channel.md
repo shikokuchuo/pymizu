@@ -4,7 +4,7 @@ A shared-memory channel handle (process-private).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L599)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L579)
 
 ``` python
 Channel()
@@ -24,7 +24,7 @@ Threading: a side belongs to one thread at a time. Call its verbs ([`send()`](..
 
 | Name | Description |
 |----|----|
-| [\_\_aiter\_\_()](pymizu.Channel.__aiter__.md) | Iterate over received payloads until CLOSED or PEER_GONE. |
+| [\_\_aiter\_\_()](pymizu.Channel.__aiter__.md) | Yield received values until `CLOSED` or `PEER_GONE`. |
 | [\_\_iter\_\_()](pymizu.Channel.__iter__.md) | Iterate over received payloads until CLOSED or PEER_GONE. |
 | [alive()](pymizu.Channel.alive.md) | True while the peer process is alive. |
 | [close()](pymizu.Channel.close.md) | Close the channel in an orderly way. |
@@ -32,8 +32,8 @@ Threading: a side belongs to one thread at a time. Call its verbs ([`send()`](..
 | [destroy()](pymizu.Channel.destroy.md) | Tear down the handle immediately, without the close handshake. |
 | [info()](pymizu.Channel.info.md) | A read-only snapshot of the channel's state (dict). |
 | [recv()](pymizu.Channel.recv.md) | Receive one value. |
-| [recv_async()](pymizu.Channel.recv_async.md) | Receive the next value as an `asyncio.Future`. |
+| [recv_async()](pymizu.Channel.recv_async.md) | Return an `asyncio.Future` that resolves with the next value. |
 | [recv_batch()](pymizu.Channel.recv_batch.md) | Receive up to `n` values in one call. |
-| [recv_batch_async()](pymizu.Channel.recv_batch_async.md) | Receive up to `n` values as one list on an `asyncio.Future`. |
+| [recv_batch_async()](pymizu.Channel.recv_batch_async.md) | Return an `asyncio.Future` for a list of received values. |
 | [send()](pymizu.Channel.send.md) | Send one value. |
 | [send_batch()](pymizu.Channel.send_batch.md) | Send several values in one call. |

@@ -4,7 +4,7 @@ Pool.submit() found no free result slot: too many outstanding (uncollected) task
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L67-L68)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L69-L70)
 
 ``` python
 SlotsExhaustedError()

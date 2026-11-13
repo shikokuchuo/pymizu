@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Iterate over received payloads until CLOSED or PEER_GONE.">
+<meta name="description" content="Yield received values until CLOSED or PEER_GONE.">
 
 <title>__aiter__() | pymizu</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Thread-speed async and parallel Python over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "pymizu.Channel.__aiter__ - pymizu", "isPartOf": {"@type": "WebSite", "name": "pymizu"}, "url": "https://shikokuchuo.net/pymizu/reference/pymizu.Channel.__aiter__.html"}]</script>
@@ -135,11 +135,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="__aiter__() | pymizu">
-<meta property="og:description" content="Iterate over received payloads until CLOSED or PEER_GONE.">
+<meta property="og:description" content="Yield received values until CLOSED or PEER_GONE.">
 <meta property="og:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta property="og:site_name" content="pymizu">
 <meta name="twitter:title" content="__aiter__() | pymizu">
-<meta name="twitter:description" content="Iterate over received payloads until CLOSED or PEER_GONE.">
+<meta name="twitter:description" content="Yield received values until CLOSED or PEER_GONE.">
 <meta name="twitter:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -218,18 +218,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Iterate over received payloads until CLOSED or PEER_GONE.</p>
+<p>Yield received values until <code>CLOSED</code> or <code>PEER_GONE</code>.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L422-L442" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L417-L435" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">__aiter__</span>()</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>The async form of the sync iterator. Yields payloads as they arrive, awaiting each through <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a>. Between iterations nothing is armed; the next iteration re-arms, and the arm’s synchronous drain picks up whatever arrived meanwhile, so nothing is lost.</p>
-<p>A declined foreign payload (see <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a>) propagates out of the iteration and ends the <code>async for</code> statement, so a try/except inside the loop body cannot catch it. To skip one, wrap the whole loop and re-enter on the same channel: the consumer kept flowing, and the new iterator picks up the next message.</p>
+<p>Each value is awaited through <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link"><code>recv_async()</code></a>. No waiter stays armed between iterations. The next iteration drains any values that arrived in the meantime.</p>
+<p>A <a href="../reference/ForeignPayloadError.html#pymizu.ForeignPayloadError" class="gdls-link"><code>ForeignPayloadError</code></a> ends the <code>async for</code> statement. A try/except inside the loop body cannot catch it. To skip the payload, wrap the whole loop and re-enter on the same channel. The channel remains usable, and the new iterator receives the next message.</p>
 </div>
 
 

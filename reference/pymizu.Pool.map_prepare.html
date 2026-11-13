@@ -8,7 +8,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
-<meta name="description" content="Stage a map once for repeated runs; return a PreparedMap.">
+<meta name="description" content="Stage a map for repeated runs and return a PreparedMap.">
 
 <title>map_prepare() | pymizu</title>
 <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "pymizu", "description": "Thread-speed async and parallel Python over shared memory", "codeRepository": "https://github.com/shikokuchuo/pymizu", "license": "https://opensource.org/licenses/MIT", "url": "https://shikokuchuo.net/pymizu", "documentation": "https://shikokuchuo.net/pymizu", "programmingLanguage": {"@type": "ComputerLanguage", "name": "Python"}}, {"@context": "https://schema.org", "@type": "WebPage", "name": "pymizu.Pool.map_prepare - pymizu", "isPartOf": {"@type": "WebSite", "name": "pymizu"}, "url": "https://shikokuchuo.net/pymizu/reference/pymizu.Pool.map_prepare.html"}]</script>
@@ -135,11 +135,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <meta property="og:title" content="map_prepare() | pymizu">
-<meta property="og:description" content="Stage a map once for repeated runs; return a PreparedMap.">
+<meta property="og:description" content="Stage a map for repeated runs and return a PreparedMap.">
 <meta property="og:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta property="og:site_name" content="pymizu">
 <meta name="twitter:title" content="map_prepare() | pymizu">
-<meta name="twitter:description" content="Stage a map once for repeated runs; return a PreparedMap.">
+<meta name="twitter:description" content="Stage a map for repeated runs and return a PreparedMap.">
 <meta name="twitter:image" content="https://shikokuchuo.net/pymizu/assets/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -218,11 +218,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 
 
 <div class="doc-subject">
-<p>Stage a map once for repeated runs; return a <a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</p>
+<p>Stage a map for repeated runs and return a <a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</p>
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1414-L1450" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1379-L1407" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-function">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">map_prepare</span>(</span>
@@ -237,7 +237,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div>
 </div>
 <div class="doc-text">
-<p>Takes the same arguments as <a href="../reference/pymizu.Pool.map.html" class="gdls-link"><code>map()</code></a> except <code>seed</code>, <code>timeout</code>, and <code>collect</code>, which are per-run options of <a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link"><code>PreparedMap.run()</code></a>. The set-up (pickling the description, creating the shared region, the worker-side attach) is paid once here. Each <code>pm.run()</code> re-arms cheaply, reuses the workers’ cached set-up, and returns the run’s <a href="../reference/Map.html#pymizu.Map" class="gdls-link"><code>Map</code></a> handle, on which the results are collected. A run collected with <code>collect="view"</code> hands its region to the view, so the next run stages a fresh one. With <code>stream=True</code> the staged <code>x</code> stays on the submitter, so a replacement <code>x</code> of any shape re-slices. Only a length change under <code>template</code> stages fresh shared memory, because the output area is sized for the staged length. Close the handle (or use it as a context manager) to release the region.</p>
+<p>This takes the same arguments as <a href="../reference/pymizu.Pool.map.html" class="gdls-link"><code>map()</code></a> except <code>seed</code>, <code>timeout</code>, and <code>collect</code>. Those are per-run options of <a href="../reference/PreparedMap.html#pymizu.PreparedMap.run" class="gdls-link"><code>PreparedMap.run()</code></a>. See <a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link"><code>PreparedMap</code></a> for reuse and shared-memory lifetime.</p>
 </div>
 
 

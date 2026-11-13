@@ -4,7 +4,7 @@ A shared-memory work-stealing task pool handle (process-private).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L777-L1595)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L757-L1552)
 
 ``` python
 Pool()
@@ -28,15 +28,15 @@ Threading: a handle has two single-threaded halves. The producing half ([`submit
 |----|----|
 | [attach()](pymizu.Pool.attach.md) | Attach to a live pool as a submitter, by its join token. |
 | [collect_all()](pymizu.Pool.collect_all.md) | Wait until every task is terminal. |
-| [collect_all_async()](pymizu.Pool.collect_all_async.md) | The event-driven [`collect_all()`](../reference/pymizu.Pool.collect_all.md). |
+| [collect_all_async()](pymizu.Pool.collect_all_async.md) | Return an `asyncio.Future` that resolves when every task finishes. |
 | [collect_any()](pymizu.Pool.collect_any.md) | Wait on several tasks. |
-| [collect_any_async()](pymizu.Pool.collect_any_async.md) | The event-driven [`collect_any()`](../reference/pymizu.Pool.collect_any.md). |
+| [collect_any_async()](pymizu.Pool.collect_any_async.md) | Return an `asyncio.Future` for the first finished task. |
 | [create()](pymizu.Pool.create.md) | Create a pool and spawn its worker processes. |
 | [destroy()](pymizu.Pool.destroy.md) | Tear down the pool handle immediately, without waiting. |
 | [dump()](pymizu.Pool.dump.md) | A read-only debugging snapshot of the whole pool region (dict). |
 | [info()](pymizu.Pool.info.md) | A read-only snapshot of the pool's state (dict). |
-| [map()](pymizu.Pool.map.md) | Map `fn` over `x` on the pool; return a map handle. |
-| [map_prepare()](pymizu.Pool.map_prepare.md) | Stage a map once for repeated runs; return a [PreparedMap](../reference/PreparedMap.md#pymizu.PreparedMap). |
+| [map()](pymizu.Pool.map.md) | Map `fn` over `x` on the pool. |
+| [map_prepare()](pymizu.Pool.map_prepare.md) | Stage a map for repeated runs and return a [PreparedMap](../reference/PreparedMap.md#pymizu.PreparedMap). |
 | [retire()](pymizu.Pool.retire.md) | Ask the worker in `slot` to exit cleanly. |
 | [spawn_workers()](pymizu.Pool.spawn_workers.md) | Spawn `n` additional workers and wait for them to join. |
 | [starmap()](pymizu.Pool.starmap.md) | Map `fn` over `x`, unpacking each element as call arguments. |

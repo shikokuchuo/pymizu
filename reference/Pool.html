@@ -490,7 +490,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L777-L1595" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L757-L1552" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Pool</span>()</span></code></pre></div>
@@ -537,7 +537,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td><a href="../reference/pymizu.Pool.collect_all_async.html" class="doc-function doc-label doc-label-method">collect_all_async()</a></td>
-<td>The event-driven <a href="../reference/pymizu.Pool.collect_all.html" class="gdls-link"><code>collect_all()</code></a>.</td>
+<td>Return an <code>asyncio.Future</code> that resolves when every task finishes.</td>
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Pool.collect_any.html" class="doc-function doc-label doc-label-method">collect_any()</a></td>
@@ -545,7 +545,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="odd">
 <td><a href="../reference/pymizu.Pool.collect_any_async.html" class="doc-function doc-label doc-label-method">collect_any_async()</a></td>
-<td>The event-driven <a href="../reference/pymizu.Pool.collect_any.html" class="gdls-link"><code>collect_any()</code></a>.</td>
+<td>Return an <code>asyncio.Future</code> for the first finished task.</td>
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Pool.create.html" class="doc-function doc-label doc-label-method">create()</a></td>
@@ -565,11 +565,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Pool.map.html" class="doc-function doc-label doc-label-method">map()</a></td>
-<td>Map <code>fn</code> over <code>x</code> on the pool; return a map handle.</td>
+<td>Map <code>fn</code> over <code>x</code> on the pool.</td>
 </tr>
 <tr class="odd">
 <td><a href="../reference/pymizu.Pool.map_prepare.html" class="doc-function doc-label doc-label-method">map_prepare()</a></td>
-<td>Stage a map once for repeated runs; return a <a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</td>
+<td>Stage a map for repeated runs and return a <a href="../reference/PreparedMap.html#pymizu.PreparedMap" class="gdls-link gdls-code">PreparedMap</a>.</td>
 </tr>
 <tr class="even">
 <td><a href="../reference/pymizu.Pool.retire.html" class="doc-function doc-label doc-label-method">retire()</a></td>

@@ -1,16 +1,16 @@
 # collect_any_async()
 
-The event-driven [`collect_any()`](../reference/pymizu.Pool.collect_any.md).
+Return an `asyncio.Future` for the first finished task.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1114-L1135)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1094-L1114)
 
 ``` python
 collect_any_async(tasks)
 ```
 
-One `asyncio.Future` for the whole collection, resolved when a task finishes.
+The async form of [`collect_any()`](../reference/pymizu.Pool.collect_any.md).
 
 ## Parameters
 
@@ -20,4 +20,4 @@ The [`Task`](../reference/Task.md#pymizu.Task) handles to wait on.
 ## Returns
 
 `An asyncio.Future resolving with the first finished task's`  
-`(index, value)` (with the sync verb's tie-breaks). A failure rejects with the exception the sync verb raises, `index` attribute included. There is no `timeout` argument: use `asyncio.timeout` or `asyncio.wait_for`. Cancelling the Future detaches every task, so each can be collected blocking again, and never cancels them.
+`(index, value)`, with the tie-breaks of [collect_any()](../reference/pymizu.Pool.collect_any.md). A failure rejects with the exception [collect_any()](../reference/pymizu.Pool.collect_any.md) raises, including its `index` attribute. There is no `timeout` argument. Use `asyncio.timeout` or `asyncio.wait_for` instead. Cancelling the Future detaches every task without cancelling it, so each can be collected with a blocking call.
