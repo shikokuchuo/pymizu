@@ -15,11 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Faster `Pool.map()` collection and lower shared-memory use for a
   (non-prepared) map collected by value.
+- Faster `Pool.map()` with a `pymizu.call()` source spec, especially
+  spec-stream maps with many chunks.
 
 ### Fixed
 
 - Fixed `Pool.map()` with a multi-element template raising `TypeError`
   during collection when numpy is unavailable.
+- `Pool.map(stream=True)` with a `pymizu.call()` spec no longer retains
+  completed chunk regions on Python workers.
 - `cancel()` on a collected map handle no longer disrupts a later run
   of the same prepared map.
 

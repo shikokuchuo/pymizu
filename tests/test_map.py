@@ -22,6 +22,7 @@ from tests.helpers import (
     identity,
     is_even,
     kill_at,
+    map_ctx_names,
     mixed_type,
     mul_add,
     nested_map,
@@ -171,6 +172,20 @@ def test_map_region_path(pool):
     # a descriptor past the inline budget forces the region path
     x = list(range(2000))
     assert pool.map(identity, x).collect() == x
+
+
+def test_map_single_morsel_runner_context_not_cached(pool):
+    m = pool.map(map_ctx_names, list(range(2000)), n_chunks=1)
+    out = m.collect()
+    assert len(out) == 2000
+    assert all(m.name not in names for names in out)
+
+
+def test_map_multi_morsel_runner_context_stays_cached(pool):
+    m = pool.map(map_ctx_names, list(range(2000)), n_chunks=8)
+    out = m.collect()
+    assert len(out) == 2000
+    assert all(m.name in names for names in out)
 
 
 def test_map_clean_prepared_collect_skips_cleanup(pool, monkeypatch):
@@ -1157,6 +1172,34 @@ def test_map_spec_name_kind(pool):
     ]
 
 
+def test_map_spec_source_compilation_memoized(monkeypatch):
+    from pymizu import _map
+
+    split_source = _map._split_source
+    calls = 0
+
+    def counted_split(code):
+        nonlocal calls
+        calls += 1
+        return split_source(code)
+
+    monkeypatch.setattr(_map, "_split_source", counted_split)
+    _map._source_cache.clear()
+    try:
+        f = _map._source_fn("x + _1 + k", [2], {"k": 3})
+        _map._sweep_ctx_cache()  # the source memo owns no mappings
+        g = _map._source_fn("x + _1 + k", [10], {"k": 20})
+        assert f(4) == 9
+        assert g(4) == 34
+        assert calls == 1
+
+        for i in range(_map._SOURCE_CACHE_MAX + 1):
+            _map._source_fn(f"x + {i}", [], {})
+        assert len(_map._source_cache) <= _map._SOURCE_CACHE_MAX
+    finally:
+        _map._source_cache.clear()
+
+
 def test_map_spec_source_kind(pool):
     assert pool.map(pymizu.call(source="x * 2"), [1, 2, 3]).collect() == [
         2,
@@ -1247,6 +1290,21 @@ def test_runner_ix_ordinal_out_of_range(pool):
     finally:
         _map._ctx_cache.pop(name, None)
         pymizu._pymizu._map_close(capsule)
+
+
+def test_runner_ix_nested_stale_single_morsel(tmp_path):
+    # The live single-morsel runner owns a private context. Its nested stale
+    # runner must open the same region exactly once, then leave the live run
+    # intact after claiming nothing against the generation fence.
+    marker = tmp_path / "region-name"
+    src = (
+        "from tests.helpers import nested_stale_runner\n"
+        "(nested_stale_runner(marker), x * 2)"
+    )
+    with pymizu.Pool.create(1) as p:
+        m = p.map(pymizu.call(source=src, marker=str(marker)), [3], n_chunks=1)
+        marker.write_text(m.name)
+        assert m.collect(timeout=15) == [(1, 6)]
 
 
 def test_collect_region_fatal_runner_error(pool):

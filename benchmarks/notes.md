@@ -1947,3 +1947,57 @@ rows.
 
 Status: full suite green (1156 pass, 1 skip; crosslang legs included), with
 ruff format, ruff check and pyrefly clean.
+
+## 2026-11-13 — spec-stream source memo and single-morsel contexts (phase 5)
+
+Source specs now reuse their split/compiled artifacts, and runner misses on
+one-morsel regions stay private instead of filling the worker context cache.
+One worker; the residency probe used 8 MiB of raw x plus 8 MiB of template
+output per chunk. A restores the previous context-cache behavior in the
+worker; B is the new private-context path.
+
+| worker RSS | chunk 8 | chunk 9 | after idle |
+|---|---:|---:|---:|
+| A, cached chunk contexts | 202.5 MiB | 103.3 MiB | 111.0 MiB |
+| B, private chunk contexts | 93.8 MiB | 101.5 MiB | 109.1 MiB |
+
+At chunk 8, A retained about 109 MiB more than B, consistent with seven
+completed 16 MiB regions; ordinary Python heap growth raises both later
+baselines. Opening chunk 9 cleared A's full cache. B shows no completed-chunk
+accumulation at either marker or after idle, with no worker `gc()`.
+
+The earlier instrumented setup probe covered 1,792 chunk contexts per case
+(256 chunks x 7 maps):
+
+| case | context miss | source work |
+|---|---:|---:|
+| name control | 4.21 us | — |
+| trivial source | 10.83 us | 6.87 us total, 6.17 us AST + compile |
+| prefix + tail source | 22.35 us | 18.15 us total, 17.45 us AST + compile |
+
+New uninstrumented A/B wall rows use `perf_counter` medians over 7 groups of
+10 calls. A restores the old `_source_fn()` only; B has the source memo. The
+name control is unchanged, and the source rows isolate the memoization win.
+
+| 256-chunk spec stream (ms/call) | A1 | B1 | A2 | B2 |
+|---|---:|---:|---:|---:|
+| name control | 2.5278 | 2.5383 | 2.5874 | 2.6104 |
+| trivial source | 4.3797 | 2.5228 | 4.4179 | 2.5358 |
+| prefix + tail source | 7.1353 | 2.5405 | 7.2932 | 2.5418 |
+
+With the memo held fixed, the context-cache A/B is neutral within drift,
+including the ordinary prepared single-morsel shape (100 calls/group):
+
+| measurement (ms/call) | old cache 1 | private 1 | old cache 2 | private 2 |
+|---|---:|---:|---:|---:|
+| name, 256 chunks | 2.6305 | 2.7461 | 2.9465 | 2.5322 |
+| trivial source, 256 chunks | 2.6868 | 2.6709 | 2.7540 | 2.5381 |
+| prefix + tail, 256 chunks | 2.7121 | 2.7738 | 2.7187 | 2.5290 |
+| prepared, 32 elements, n_chunks = 1 | 0.0225 | 0.0212 | 0.0210 | 0.0205 |
+
+The two source-spec stream rows and the prepared single-morsel row are now
+report-only rows in `mizu-bench.py`. These isolated probes do not replace
+best-known rows.
+
+Status: full suite green (1181 pass, 1 skip; crosslang legs included), with
+ruff format, ruff check and pyrefly clean.
