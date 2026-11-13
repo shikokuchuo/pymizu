@@ -296,7 +296,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="creating-a-channel" class="level1">
 <h1>Creating a channel</h1>
 <p><a href="../reference/pymizu.Channel.create.html" class="gdls-link gdls-code">Channel.create()</a> spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with <code>ch</code> bound to its side of the channel:</p>
-<div id="fcbd67b4" class="cell" data-execution_count="1">
+<div id="00229de1" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -314,7 +314,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="sending-and-receiving" class="level1">
 <h1>Sending and receiving</h1>
 <p><code>ch.send()</code> publishes a value, and the peer can see it as soon as the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next value, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
-<div id="d733e275" class="cell" data-execution_count="2">
+<div id="aac5c997" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
@@ -350,7 +350,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </table>
 <p>Test for them by identity (<code>x is pymizu.TIMEOUT</code>) or with <code>pymizu.is_sentinel(x)</code> — no call needs an error handler. If the peer dies, receives drain what it already sent, then report <code>PEER_GONE</code>.</p>
 <p>When per-call overhead starts to matter, <a href="../reference/pymizu.Channel.send_batch.html" class="gdls-link gdls-code">send_batch()</a> and <a href="../reference/pymizu.Channel.recv_batch.html" class="gdls-link gdls-code">recv_batch()</a> move several values in one call:</p>
-<div id="be194dd7" class="cell" data-execution_count="3">
+<div id="7be0a408" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch(<span class="bu">range</span>(<span class="dv">4</span>))</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>ch.recv_batch(<span class="dv">4</span>, timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="3">
@@ -362,7 +362,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="asyncio" class="level1">
 <h1>asyncio</h1>
 <p>For event-driven receives, <code>ch.recv_async()</code> returns an <code>asyncio.Future</code> that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>. Terminal states stay values: the Future resolves with <code>CLOSED</code> or <code>PEER_GONE</code>. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it. When arrivals come in bursts, <code>ch.recv_batch_async(n)</code> resolves one Future with up to <code>n</code> values as one list — short when fewer have arrived, never waiting to fill — the high-throughput receive form.</p>
-<div id="0d616456" class="cell" data-execution_count="4">
+<div id="b58085ad" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ch.send(<span class="dv">1</span>)</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> <span class="cf">await</span> ch.recv_async() <span class="op">==</span> <span class="dv">1</span></span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>ch.send(<span class="dv">2</span>)</span>
@@ -371,7 +371,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>2</code></pre>
 </div>
 </div>
-<div id="2f6e3c12" class="cell" data-execution_count="5">
+<div id="78fe0ace" class="cell" data-execution_count="5">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch([<span class="dv">3</span>, <span class="dv">4</span>])</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="cf">await</span> ch.recv_batch_async()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="5">
@@ -384,7 +384,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="closing" class="level1">
 <h1>Closing</h1>
 <p><code>ch.close()</code> is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:</p>
-<div id="690de2fb" class="cell" data-execution_count="6">
+<div id="5723d1ba" class="cell" data-execution_count="6">
 <div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="6">
 <pre><code>True</code></pre>
@@ -403,7 +403,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li><code>None</code> crosses as a marker: no data moves.</li>
 <li>Buffer-protocol objects (<code>bytes</code>, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (<code>bytes</code> arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages, with no copy and no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes. From 256 KB the receive is a view.</li>
 <li>A <code>str</code> that fits in a slot crosses as raw UTF-8.</li>
-<li>Booleans, numbers, and flat lists or dicts of them cross in a compact binary form.</li>
+<li>Booleans, numbers, and nested lists, tuples, and dicts of them cross in a compact binary form. A payload that references the same list or dict more than once crosses as a pickle instead, which keeps the sharing.</li>
 <li>Everything else crosses as a pickle (protocol 4).</li>
 </ol>
 <p>Each end of a channel knows the peer’s language. Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles. An R peer restricts values to a portable subset both languages share; a value outside it raises <a href="../reference/DeclinedError.html#pymizu.DeclinedError" class="gdls-link gdls-code">pymizu.DeclinedError</a> at send time, naming the value and the reason, and the channel stays usable. See <a href="../user-guide/interop.html">R interop</a>.</p>
@@ -412,7 +412,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="frames-without-pickling" class="level1">
 <h1>Frames without pickling</h1>
 <p>Between two Python processes, a pyarrow <code>Table</code>, polars <code>DataFrame</code>, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip. <a href="../reference/Frame.html#pymizu.Frame.from_arrow" class="gdls-link gdls-code">pymizu.Frame.from_arrow()</a> sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages — only the small result crosses back:</p>
-<div id="2d536247" class="cell" data-execution_count="7">
+<div id="7bc592c7" class="cell" data-execution_count="7">
 <div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyarrow <span class="im">as</span> pa</span>
 <span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Channel.create(<span class="st">"""</span></span>

@@ -103,7 +103,7 @@ pymizu chooses the cheapest transport for each value:
 1.  `None` crosses as a marker: no data moves.
 2.  Buffer-protocol objects (`bytes`, 1-D C-contiguous numpy arrays) cross without serialization. float64, int32, int64, complex128, and uint8 keep their exact values and arrive as arrays (`bytes` arrives as a uint8 array). numpy scalars and 0-d arrays keep their exact type and shape. A large buffer arrives as a read-only zero-copy view over the shared pages, with no copy and no parse. A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes. From 256 KB the receive is a view.
 3.  A `str` that fits in a slot crosses as raw UTF-8.
-4.  Booleans, numbers, and flat lists or dicts of them cross in a compact binary form.
+4.  Booleans, numbers, and nested lists, tuples, and dicts of them cross in a compact binary form. A payload that references the same list or dict more than once crosses as a pickle instead, which keeps the sharing.
 5.  Everything else crosses as a pickle (protocol 4).
 
 Each end of a channel knows the peer's language. Between two Python processes it changes nothing: arrays of the listed dtypes cross unchanged, and everything else pickles. An R peer restricts values to a portable subset both languages share; a value outside it raises [pymizu.DeclinedError](../reference/DeclinedError.md#pymizu.DeclinedError) at send time, naming the value and the reason, and the channel stays usable. See [R interop](interop.md).
