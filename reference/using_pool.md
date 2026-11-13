@@ -4,7 +4,7 @@ Use `pool` as the default for the with block, then restore.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1679-L1698)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1753-L1772)
 
 ``` python
 using_pool(pool)

@@ -4,7 +4,7 @@ Orderly shutdown (controller only).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1432-L1457)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1506-L1531)
 
 ``` python
 stop(timeout=5.0)

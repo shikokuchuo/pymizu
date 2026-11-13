@@ -296,7 +296,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="creating-a-channel" class="level1">
 <h1>Creating a channel</h1>
 <p><a href="../reference/pymizu.Channel.create.html" class="gdls-link gdls-code">Channel.create()</a> spawns the peer process and connects both ends. Pass the peer program as a Python source string; the peer evaluates it with <code>ch</code> bound to its side of the channel:</p>
-<div id="ed3e931a" class="cell" data-execution_count="1">
+<div id="fcbd67b4" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>ch <span class="op">=</span> pymizu.Channel.create(<span class="st">"""</span></span>
@@ -314,7 +314,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="sending-and-receiving" class="level1">
 <h1>Sending and receiving</h1>
 <p><code>ch.send()</code> publishes a value, and the peer can see it as soon as the call returns. Sends never block for ring space. <code>ch.recv()</code> returns the next value, waiting up to <code>timeout</code> seconds (indefinitely when omitted):</p>
-<div id="f1e60809" class="cell" data-execution_count="2">
+<div id="d733e275" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>ch.send([<span class="dv">1</span>, <span class="st">"a"</span>, <span class="va">None</span>])</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="2">
@@ -350,7 +350,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </table>
 <p>Test for them by identity (<code>x is pymizu.TIMEOUT</code>) or with <code>pymizu.is_sentinel(x)</code> — no call needs an error handler. If the peer dies, receives drain what it already sent, then report <code>PEER_GONE</code>.</p>
 <p>When per-call overhead starts to matter, <a href="../reference/pymizu.Channel.send_batch.html" class="gdls-link gdls-code">send_batch()</a> and <a href="../reference/pymizu.Channel.recv_batch.html" class="gdls-link gdls-code">recv_batch()</a> move several values in one call:</p>
-<div id="cf06dcaf" class="cell" data-execution_count="3">
+<div id="be194dd7" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch(<span class="bu">range</span>(<span class="dv">4</span>))</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>ch.recv_batch(<span class="dv">4</span>, timeout<span class="op">=</span><span class="dv">5</span>)</span></code></pre></div>
 <div class="cell-output cell-output-display" data-execution_count="3">
@@ -361,8 +361,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="asyncio" class="level1">
 <h1>asyncio</h1>
-<p>For event-driven receives, <code>ch.recv_async()</code> returns an <code>asyncio.Future</code> that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>. Terminal states stay values: the Future resolves with <code>CLOSED</code> or <code>PEER_GONE</code>. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it.</p>
-<div id="32bdca3b" class="cell" data-execution_count="4">
+<p>For event-driven receives, <code>ch.recv_async()</code> returns an <code>asyncio.Future</code> that resolves with the next value when it arrives — no blocking, no polling. It takes no timeout; use <code>asyncio.timeout</code> or <code>asyncio.wait_for</code>. Terminal states stay values: the Future resolves with <code>CLOSED</code> or <code>PEER_GONE</code>. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it. When arrivals come in bursts, <code>ch.recv_batch_async(n)</code> resolves one Future with up to <code>n</code> values as one list — short when fewer have arrived, never waiting to fill — the high-throughput receive form.</p>
+<div id="0d616456" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ch.send(<span class="dv">1</span>)</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="cf">assert</span> <span class="cf">await</span> ch.recv_async() <span class="op">==</span> <span class="dv">1</span></span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>ch.send(<span class="dv">2</span>)</span>
@@ -371,15 +371,22 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>2</code></pre>
 </div>
 </div>
+<div id="2f6e3c12" class="cell" data-execution_count="5">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>ch.send_batch([<span class="dv">3</span>, <span class="dv">4</span>])</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="cf">await</span> ch.recv_batch_async()</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="5">
+<pre><code>[3, 4]</code></pre>
+</div>
+</div>
 <p><code>async for x in ch</code> is the stream form: it awaits each value through <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link gdls-code">recv_async()</a> and ends on <code>CLOSED</code> or <code>PEER_GONE</code>, as the sync iterator does.</p>
 <p>A message outside the portable interchange subset (a language-private stream from the peer) is declined at read time with <a href="../reference/ForeignPayloadError.html#pymizu.ForeignPayloadError" class="gdls-link gdls-code">ForeignPayloadError</a>; the message is consumed and the channel keeps flowing. Under <a href="../reference/pymizu.Channel.recv_async.html" class="gdls-link gdls-code">recv_async()</a>, only that message’s waiter rejects. The rejection also ends an <code>async for</code> loop, and a try/except inside the loop body cannot catch it — wrap the whole loop and re-enter on the same channel to skip the message.</p>
 </section>
 <section id="closing" class="level1">
 <h1>Closing</h1>
 <p><code>ch.close()</code> is the orderly shutdown: it tells the peer to close and waits for it to finish reading before releasing the shared memory:</p>
-<div id="3f091f90" class="cell" data-execution_count="5">
-<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="5">
+<div id="690de2fb" class="cell" data-execution_count="6">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>ch.close()</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="6">
 <pre><code>True</code></pre>
 </div>
 </div>
@@ -405,28 +412,28 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="frames-without-pickling" class="level1">
 <h1>Frames without pickling</h1>
 <p>Between two Python processes, a pyarrow <code>Table</code>, polars <code>DataFrame</code>, or duckdb relation pickles by default — type-exact, but a full serialize-and-parse round trip. <a href="../reference/Frame.html#pymizu.Frame.from_arrow" class="gdls-link gdls-code">pymizu.Frame.from_arrow()</a> sends an Arrow producer as a frame instead: one shared-memory region, read in place at receive. Here the peer sums a 200,000-row column straight off the shared pages — only the small result crosses back:</p>
-<div id="924b7785" class="cell" data-execution_count="6">
-<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyarrow <span class="im">as</span> pa</span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Channel.create(<span class="st">"""</span></span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="st">import pymizu</span></span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="st">import pyarrow as pa</span></span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="st">import pyarrow.compute as pc</span></span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="st">while True:</span></span>
-<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="st">    f = ch.recv()</span></span>
-<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="st">    if f is pymizu.CLOSED:</span></span>
-<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a><span class="st">        break</span></span>
-<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a><span class="st">    t = pa.table(f)</span></span>
-<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a><span class="st">    ch.send(pc.sum(t.column("x")).as_py())</span></span>
-<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>) <span class="im">as</span> ch:</span>
-<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>    f <span class="op">=</span> pymizu.Frame.from_arrow(</span>
-<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>        pa.table({<span class="st">"x"</span>: pa.array([<span class="fl">1.5</span>, <span class="va">None</span>] <span class="op">*</span> <span class="dv">100_000</span>)})</span>
-<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>    ch.send(f)</span>
-<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span>
-<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
-<div class="cell-output cell-output-display" data-execution_count="6">
+<div id="2d536247" class="cell" data-execution_count="7">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pyarrow <span class="im">as</span> pa</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Channel.create(<span class="st">"""</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="st">import pymizu</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="st">import pyarrow as pa</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a><span class="st">import pyarrow.compute as pc</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a><span class="st">while True:</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a><span class="st">    f = ch.recv()</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a><span class="st">    if f is pymizu.CLOSED:</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a><span class="st">        break</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a><span class="st">    t = pa.table(f)</span></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a><span class="st">    ch.send(pc.sum(t.column("x")).as_py())</span></span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a><span class="st">"""</span>) <span class="im">as</span> ch:</span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>    f <span class="op">=</span> pymizu.Frame.from_arrow(</span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>        pa.table({<span class="st">"x"</span>: pa.array([<span class="fl">1.5</span>, <span class="va">None</span>] <span class="op">*</span> <span class="dv">100_000</span>)})</span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>    ch.send(f)</span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> ch.recv(timeout<span class="op">=</span><span class="dv">5</span>)</span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a>result</span></code></pre></div>
+<div class="cell-output cell-output-display" data-execution_count="7">
 <pre><code>150000.0</code></pre>
 </div>
 </div>

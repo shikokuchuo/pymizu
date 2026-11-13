@@ -4,7 +4,7 @@ A shared-memory work-stealing task pool handle (process-private).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L703-L1521)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L777-L1595)
 
 ``` python
 Pool()

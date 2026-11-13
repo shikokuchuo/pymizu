@@ -4,7 +4,7 @@ Register a hook called as `fn(event, id)` at each task event.
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1503-L1514)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L1577-L1588)
 
 ``` python
 trace(fn)

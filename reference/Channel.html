@@ -490,7 +490,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </div>
 <div class="doc-usage-source">
 <p>Usage</p>
-<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L525" target="_blank" rel="noopener">Source</a></p>
+<p><a href="https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L599" target="_blank" rel="noopener">Source</a></p>
 </div>
 <div class="doc-signature doc-class">
 <div class="sourceCode" id="cb1"><pre class="sourceCode pythonsignature"><code class="sourceCode pythonsignature"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Channel</span>()</span></code></pre></div>
@@ -567,10 +567,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <td>Receive up to <code>n</code> values in one call.</td>
 </tr>
 <tr class="odd">
+<td><a href="../reference/pymizu.Channel.recv_batch_async.html" class="doc-function doc-label doc-label-method">recv_batch_async()</a></td>
+<td>Receive up to <code>n</code> values as one list on an <code>asyncio.Future</code>.</td>
+</tr>
+<tr class="even">
 <td><a href="../reference/pymizu.Channel.send.html" class="doc-function doc-label doc-label-method">send()</a></td>
 <td>Send one value.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td><a href="../reference/pymizu.Channel.send_batch.html" class="doc-function doc-label doc-label-method">send_batch()</a></td>
 <td>Send several values in one call.</td>
 </tr>

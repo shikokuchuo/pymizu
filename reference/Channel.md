@@ -4,7 +4,7 @@ A shared-memory channel handle (process-private).
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L525)
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/__init__.py#L172-L599)
 
 ``` python
 Channel()
@@ -34,5 +34,6 @@ Threading: a side belongs to one thread at a time. Call its verbs ([`send()`](..
 | [recv()](pymizu.Channel.recv.md) | Receive one value. |
 | [recv_async()](pymizu.Channel.recv_async.md) | Receive the next value as an `asyncio.Future`. |
 | [recv_batch()](pymizu.Channel.recv_batch.md) | Receive up to `n` values in one call. |
+| [recv_batch_async()](pymizu.Channel.recv_batch_async.md) | Receive up to `n` values as one list on an `asyncio.Future`. |
 | [send()](pymizu.Channel.send.md) | Send one value. |
 | [send_batch()](pymizu.Channel.send_batch.md) | Send several values in one call. |

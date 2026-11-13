@@ -58,7 +58,7 @@ ch.recv_batch(4, timeout=5)
 
 ## asyncio
 
-For event-driven receives, `ch.recv_async()` returns an `asyncio.Future` that resolves with the next value when it arrives -- no blocking, no polling. It takes no timeout; use `asyncio.timeout` or `asyncio.wait_for`. Terminal states stay values: the Future resolves with `CLOSED` or `PEER_GONE`. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it.
+For event-driven receives, `ch.recv_async()` returns an `asyncio.Future` that resolves with the next value when it arrives -- no blocking, no polling. It takes no timeout; use `asyncio.timeout` or `asyncio.wait_for`. Terminal states stay values: the Future resolves with `CLOSED` or `PEER_GONE`. Outstanding calls resolve in call order, one message each. Cancelling a Future detaches its waiter and passes the next message to the one behind it. When arrivals come in bursts, `ch.recv_batch_async(n)` resolves one Future with up to `n` values as one list -- short when fewer have arrived, never waiting to fill -- the high-throughput receive form.
 
 ``` python
 ch.send(1)
@@ -68,6 +68,13 @@ await ch.recv_async()
 ```
 
     2
+
+``` python
+ch.send_batch([3, 4])
+await ch.recv_batch_async()
+```
+
+    [3, 4]
 
 `async for x in ch` is the stream form: it awaits each value through [recv_async()](../reference/pymizu.Channel.recv_async.md) and ends on `CLOSED` or `PEER_GONE`, as the sync iterator does.
 

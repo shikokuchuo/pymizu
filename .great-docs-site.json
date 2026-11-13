@@ -142,6 +142,8 @@
     "reference/pymizu.Channel.recv_async.md",
     "reference/pymizu.Channel.recv_batch.html",
     "reference/pymizu.Channel.recv_batch.md",
+    "reference/pymizu.Channel.recv_batch_async.html",
+    "reference/pymizu.Channel.recv_batch_async.md",
     "reference/pymizu.Channel.send.html",
     "reference/pymizu.Channel.send.md",
     "reference/pymizu.Channel.send_batch.html",
