@@ -829,16 +829,36 @@ static int stage_convert_buffer(const Py_buffer *v, mizu_slot_hdr *hdr,
 
 // Fast-path codec --------------------------------------------------------------
 
-/* The compact codec: the hot subset (bool, int, float, str, bytes, and one
-   flat container level of those, capped) framed as a tiny binary stream —
-   the analogue of R's compact codec. Anything outside the subset falls
-   back to pickle, the same discipline as R's codec rejecting ALTREP.
-   Streams carry a magic first byte so readers dispatch on it; the
-   first-byte namespace is shared (pickle protocol 4 is 0x80, R's codec is
-   'R', R native streams 'B'/'X'/'A') and owned by the vendored mizu_ext.h
-   (MIZU_PYMIZU_CODEC_MAGIC is this codec's 'P'). Integers are int64,
-   little-endian; all supported platforms are little-endian. */
+/* The compact codec: the hot subset (bool, int, float, str, bytes, None,
+   and list/tuple/dict trees of those, capped per container) framed as a
+   tiny binary stream — the analogue of R's compact codec. Anything outside
+   the subset falls back to pickle, the same discipline as R's codec
+   rejecting ALTREP. Streams carry a magic first byte so readers dispatch
+   on it; the first-byte namespace is shared (pickle protocol 4 is 0x80,
+   R's codec is 'R', R native streams 'B'/'X'/'A') and owned by the
+   vendored mizu_ext.h (MIZU_PYMIZU_CODEC_MAGIC is this codec's 'P').
+   Integers are int64, little-endian; all supported platforms are
+   little-endian. Container tags in element position are the format's one
+   evolution: a nested stream from a new build fails loud on an old build
+   (a container tag where a scalar was expected is its corrupt-slot error),
+   never a silent misread. */
 #define PYMIZU_CODEC_CAP 64       /* container element cap: staging stays bounded */
+/* Recursion bound on the writer and reader, container nesting only. Past
+   it the writer falls back to pickle and the reader errors (a valid
+   stream never approaches it). A cyclic graph never reaches it: the
+   alias guard below declines at the first revisit. */
+#define PYMIZU_CODEC_MAXDEPTH 500
+/* The writer's alias guard. Nothing is memoized, so a container written
+   once per reference would arrive as independent copies (and an aliased
+   tree's stream would grow superlinearly in its live objects): the walk
+   instead declines to pickle, whose memo keeps the sharing, on the second
+   sight of a container. Only a container with more than one reference can
+   be aliased, so the set holds those alone — a freshly built tree's inner
+   containers never touch it. A shared tuple of scalars is exempt: a value
+   through and through, it is written per occurrence like the scalars
+   themselves (a constant tuple in a comprehension is one object across
+   every row). The reader needs no guard: a stream is a tree. */
+#define PYMIZU_CODEC_SEEN_INLINE 16   /* a power of two */
 
 enum {
   PYMIZU_TAG_BOOL = 'b', PYMIZU_TAG_INT = 'i', PYMIZU_TAG_FLOAT = 'f',
@@ -867,8 +887,8 @@ static int codec_tag_of(PyObject *o) {
   return 0;
 }
 
-/* Size pass, 0 ok / -1 reject (not in the subset, an int past int64, a
-   lone-surrogate str, over the cap). Never sets an error. */
+/* Scalar size pass, 0 ok / -1 reject (not a codec scalar, an int past
+   int64, a lone-surrogate str). Never sets an error. */
 static int codec_scalar_size(PyObject *o, uint64_t *sz) {
   if (o == Py_None) {
     *sz += 1;
@@ -915,8 +935,8 @@ static void codec_put64(uint8_t **p, uint64_t v) {
   *p += 8;
 }
 
-/* A write-only pass: a validating walk (the fused walk's, or the task
-   frame's size pass) already ran, so the puts cannot fail. */
+/* A write-only pass: the task frame's size pass already validated, so the
+   puts cannot fail. */
 static void codec_put_scalar(uint8_t **p, PyObject *o) {
   if (o == Py_None) {
     *(*p)++ = PYMIZU_TAG_NONE;
@@ -959,31 +979,6 @@ static void codec_put_scalar(uint8_t **p, PyObject *o) {
     return;
   }
   }
-}
-
-static void codec_put(uint8_t **p, PyObject *o) {
-  if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
-    int is_list = PyList_CheckExact(o) != 0;
-    Py_ssize_t n = is_list ? PyList_GET_SIZE(o) : PyTuple_GET_SIZE(o);
-    *(*p)++ = (uint8_t) (is_list ? PYMIZU_TAG_LIST : PYMIZU_TAG_TUPLE);
-    codec_put32(p, (uint32_t) n);
-    for (Py_ssize_t i = 0; i < n; i++)
-      codec_put_scalar(p, is_list ? PyList_GET_ITEM(o, i) :
-                       PyTuple_GET_ITEM(o, i));
-    return;
-  }
-  if (PyDict_CheckExact(o)) {
-    *(*p)++ = PYMIZU_TAG_DICT;
-    codec_put32(p, (uint32_t) PyDict_Size(o));
-    PyObject *k, *v;
-    Py_ssize_t pos = 0;
-    while (PyDict_Next(o, &pos, &k, &v)) {
-      codec_put_scalar(p, k);
-      codec_put_scalar(p, v);
-    }
-    return;
-  }
-  codec_put_scalar(p, o);
 }
 
 // The fused size/write walk (stage_codec's) ------------------------------------
@@ -1084,14 +1079,75 @@ static int codec_walk_scalar(PyObject *o, uint8_t **pp, const uint8_t *end,
   return -1;
 }
 
-/* The container walk: one flat level of scalars under the cap, one
-   PyDict_Next pass (was: the size pass's walk plus the write pass's). */
-static int codec_walk(PyObject *o, uint8_t **pp, const uint8_t *end,
-                      uint64_t *sz) {
+typedef struct {
+  PyObject **tab;   /* open addressing, NULL-empty; NULL until the first add */
+  size_t cap;       /* a power of two */
+  size_t n;
+  PyObject *inl[PYMIZU_CODEC_SEEN_INLINE];
+} codec_seen;
+
+static size_t codec_seen_slot(PyObject *o, size_t cap) {
+  return (size_t) (((uint64_t) (uintptr_t) o >> 4) * 0x9E3779B97F4A7C15ull
+                   >> 32) & (cap - 1);
+}
+
+/* 0 a first sight (recorded), -1 a repeat or a failed growth: a decline
+   either way. Never sets an error. */
+static int codec_seen_add(codec_seen *s, PyObject *o) {
+  if (s->tab == NULL) {
+    memset(s->inl, 0, sizeof s->inl);
+    s->tab = s->inl;
+    s->cap = PYMIZU_CODEC_SEEN_INLINE;
+  } else if (s->n * 2 >= s->cap) {
+    const size_t cap = s->cap * 2;
+    PyObject **tab = PyMem_RawCalloc(cap, sizeof *tab);
+    if (tab == NULL) return -1;
+    for (size_t j = 0; j < s->cap; j++) {
+      PyObject *e = s->tab[j];
+      if (e == NULL) continue;
+      size_t i = codec_seen_slot(e, cap);
+      while (tab[i] != NULL) i = (i + 1) & (cap - 1);
+      tab[i] = e;
+    }
+    if (s->tab != s->inl) PyMem_RawFree(s->tab);
+    s->tab = tab;
+    s->cap = cap;
+  }
+  size_t i = codec_seen_slot(o, s->cap);
+  while (s->tab[i] != NULL) {
+    if (s->tab[i] == o) return -1;
+    i = (i + 1) & (s->cap - 1);
+  }
+  s->tab[i] = o;
+  s->n++;
+  return 0;
+}
+
+/* A tuple holding scalars only: the alias guard's exemption. */
+static int codec_tuple_flat(PyObject *o, Py_ssize_t n) {
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *it = PyTuple_GET_ITEM(o, i);
+    if (it != Py_None && codec_tag_of(it) == 0) return 0;
+  }
+  return 1;
+}
+
+/* The container walk recurses into list/tuple/dict trees, validating as it
+   writes; -1 for anything else (every caller tries the scalar first, which
+   keeps the flat hot path at one probe). Dict keys stay scalar. A NULL
+   seen skips the alias guard: the spill re-walk's, over a tree the guarded
+   walk already passed. */
+static int codec_walk_container(PyObject *o, uint8_t **pp,
+                                const uint8_t *end, uint64_t *sz,
+                                unsigned depth, codec_seen *seen) {
+  if (depth >= PYMIZU_CODEC_MAXDEPTH) return -1;
   if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
     int is_list = PyList_CheckExact(o) != 0;
     Py_ssize_t n = is_list ? PyList_GET_SIZE(o) : PyTuple_GET_SIZE(o);
     if (n > PYMIZU_CODEC_CAP) return -1;
+    if (seen != NULL && Py_REFCNT(o) > 1 &&
+        (is_list || !codec_tuple_flat(o, n)) && codec_seen_add(seen, o) < 0)
+      return -1;
     uint8_t *p = codec_emit(pp, end, sz, 5);
     if (p != NULL) {
       p[0] = (uint8_t) (is_list ? PYMIZU_TAG_LIST : PYMIZU_TAG_TUPLE);
@@ -1101,13 +1157,17 @@ static int codec_walk(PyObject *o, uint8_t **pp, const uint8_t *end,
     for (Py_ssize_t i = 0; i < n; i++) {
       PyObject *it = is_list ? PyList_GET_ITEM(o, i) :
         PyTuple_GET_ITEM(o, i);
-      if (codec_walk_scalar(it, pp, end, sz) < 0) return -1;
+      if (codec_walk_scalar(it, pp, end, sz) < 0 &&
+          codec_walk_container(it, pp, end, sz, depth + 1, seen) < 0)
+        return -1;
     }
     return 0;
   }
   if (PyDict_CheckExact(o)) {
     const Py_ssize_t n = PyDict_Size(o);
     if (n > PYMIZU_CODEC_CAP) return -1;
+    if (seen != NULL && Py_REFCNT(o) > 1 && codec_seen_add(seen, o) < 0)
+      return -1;
     uint8_t *p = codec_emit(pp, end, sz, 5);
     if (p != NULL) {
       p[0] = PYMIZU_TAG_DICT;
@@ -1118,31 +1178,51 @@ static int codec_walk(PyObject *o, uint8_t **pp, const uint8_t *end,
     Py_ssize_t pos = 0;
     while (PyDict_Next(o, &pos, &k, &v)) {
       if (codec_walk_scalar(k, pp, end, sz) < 0) return -1;
-      if (codec_walk_scalar(v, pp, end, sz) < 0) return -1;
+      if (codec_walk_scalar(v, pp, end, sz) < 0 &&
+          codec_walk_container(v, pp, end, sz, depth + 1, seen) < 0)
+        return -1;
     }
     return 0;
   }
-  return codec_walk_scalar(o, pp, end, sz);
+  return -1;
 }
 
 /* The codec's driver: the fused walk against the inline budget. 0 the
    stream fits (dst holds it, *sz its length), 1 it spills (*sz the exact
-   total — the caller reserves and re-walks write-only), -1 decline.
+   total — the caller reserves and codec_stream_fill re-walks), -1 decline.
    Partial bytes on a decline are uncommitted scratch. */
 static int codec_stream_write(PyObject *obj, uint8_t *dst,
                               uint32_t inline_max, uint64_t *sz) {
   *sz = 1;   /* the magic byte */
   dst[0] = MIZU_PYMIZU_CODEC_MAGIC;
   uint8_t *p = dst + 1;
-  if (codec_walk(obj, &p, dst + inline_max, sz) < 0) return -1;
-  return p == NULL;
+  const uint8_t *end = dst + inline_max;
+  codec_seen seen;
+  seen.tab = NULL;
+  seen.cap = seen.n = 0;
+  /* container first, the common root; it declines a scalar untouched (a
+     declined container fails the scalar probe too) */
+  int rc = codec_walk_container(obj, &p, end, sz, 0, &seen);
+  if (seen.tab != NULL && seen.tab != seen.inl) PyMem_RawFree(seen.tab);
+  if (rc < 0) rc = codec_walk_scalar(obj, &p, end, sz);
+  return rc < 0 ? -1 : p == NULL;
+}
+
+/* The spill fill: the same walk into a reservation of the exact total
+   codec_stream_write returned. It cannot fail — that walk validated the
+   tree, and unguarded this one allocates nothing. */
+static void codec_stream_fill(PyObject *obj, uint8_t *dst, uint64_t sz) {
+  uint64_t n = 1;
+  dst[0] = MIZU_PYMIZU_CODEC_MAGIC;
+  uint8_t *p = dst + 1;
+  if (codec_walk_container(obj, &p, dst + sz, &n, 0, NULL) < 0)
+    (void) codec_walk_scalar(obj, &p, dst + sz, &n);
 }
 
 /* Try the codec; returns 0 staged, 1 error, -1 fall back to pickle. The
    inline path encodes straight into the slot payload in the one fused
    walk; past the budget the walk's exact total sizes the reservation and
-   the write-only re-walk (cannot fail — the walk already validated)
-   fills it. The pickle fallback overwrites a declined walk's partial
+   codec_stream_fill's re-walk fills it. The pickle fallback overwrites a declined walk's partial
    bytes from byte 0. */
 static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
                        uint32_t inline_max, mizu_handle *h) {
@@ -1152,14 +1232,12 @@ static int stage_codec(PyObject *obj, mizu_slot_hdr *hdr, uint8_t *payload,
   if (rc == 0) {
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) sz;
-    hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a flat codec stream references nothing */
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;   /* a codec tree references nothing */
     return 0;
   }
   uint8_t *dst = mizu_py_stage_reserve((size_t) sz, hdr, payload, h);
   if (dst == NULL) return 1;
-  dst[0] = MIZU_PYMIZU_CODEC_MAGIC;
-  uint8_t *p = dst + 1;
-  codec_put(&p, obj);
+  codec_stream_fill(obj, dst, sz);
   return 0;
 }
 
@@ -4590,7 +4668,8 @@ static PyObject *codec_read_scalar(const uint8_t **p, const uint8_t *end) {
    is a corrupt stream; NULL with ctx->gone is a vanished BUFREF region —
    both propagate unchanged through the frame readers. */
 static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
-                                 mizu_read_ctx *ctx) {
+                                 mizu_read_ctx *ctx,
+                                 unsigned Py_UNUSED(depth)) {
   if (*p >= end) return NULL;
   switch (**p) {
   case PYMIZU_TAG_BUFFER: {
@@ -4641,26 +4720,24 @@ static PyObject *frame_read_flat(const uint8_t **p, const uint8_t *end,
   }
 }
 
-/* The codec's one-level container read, shared by the three readers: a
-   LIST / TUPLE / DICT body behind its tag (want != 0 pins the tag).
-   read_elt reads an element (a dict's value; keys are always scalars,
-   str_keys the unicode enforcement the frame readers keep and codec_read
-   drops). NULL with nothing set is a malformed body — the caller's error
-   discipline (silent for the frame readers, codec_read's corrupt); a
-   reader's own error propagates. */
+/* The codec's container read, shared by the three readers: a LIST / TUPLE /
+   DICT body behind its tag (want != 0 pins the tag), the depth bound the
+   corrupt discipline's. read_elt reads an element (a dict's value; keys
+   are always scalars, str_keys the unicode enforcement the frame readers
+   keep and codec_read drops) at the container's depth: codec_read's node
+   reader recurses into nested containers at depth + 1, the frame readers
+   ignore it (their wire stays one flat level). NULL with nothing set is a
+   malformed body — the caller's error discipline (silent for the frame
+   readers, codec_read's corrupt); a reader's own error propagates. */
 typedef PyObject *(*codec_leaf_fn)(const uint8_t **, const uint8_t *,
-                                   mizu_read_ctx *);
-
-static PyObject *codec_read_scalar_leaf(const uint8_t **p,
-                                        const uint8_t *end,
-                                        mizu_read_ctx *Py_UNUSED(ctx)) {
-  return codec_read_scalar(p, end);
-}
+                                   mizu_read_ctx *, unsigned);
 
 static PyObject *codec_read_seq(const uint8_t **p, const uint8_t *end,
                                 mizu_read_ctx *ctx, int want,
-                                codec_leaf_fn read_elt, int str_keys) {
-  if ((size_t) (end - *p) < 5) return NULL;
+                                codec_leaf_fn read_elt, int str_keys,
+                                unsigned depth) {
+  if (depth >= PYMIZU_CODEC_MAXDEPTH || (size_t) (end - *p) < 5)
+    return NULL;
   const int tag = *(*p)++;
   if ((want != 0 && tag != want) ||
       (tag != PYMIZU_TAG_LIST && tag != PYMIZU_TAG_TUPLE &&
@@ -4677,7 +4754,7 @@ static PyObject *codec_read_seq(const uint8_t **p, const uint8_t *end,
         Py_DECREF(k);
         k = NULL;
       }
-      PyObject *v = k != NULL ? read_elt(p, end, ctx) : NULL;
+      PyObject *v = k != NULL ? read_elt(p, end, ctx, depth) : NULL;
       if (k == NULL || v == NULL) {
         Py_XDECREF(k);
         Py_XDECREF(v);
@@ -4698,7 +4775,7 @@ static PyObject *codec_read_seq(const uint8_t **p, const uint8_t *end,
     PyTuple_New((Py_ssize_t) count);
   if (out == NULL) return NULL;
   for (uint32_t i = 0; i < count; i++) {
-    PyObject *it = read_elt(p, end, ctx);
+    PyObject *it = read_elt(p, end, ctx, depth);
     if (it == NULL) {
       Py_DECREF(out);
       return NULL;
@@ -4711,14 +4788,31 @@ static PyObject *codec_read_seq(const uint8_t **p, const uint8_t *end,
   return out;
 }
 
+/* codec_read's element reader: a container tag recurses, anything else is
+   a scalar (the depth bound is codec_read_seq's entry check — NULL with
+   nothing set, the corrupt discipline). */
+static PyObject *codec_read_node_leaf(const uint8_t **p, const uint8_t *end,
+                                      mizu_read_ctx *ctx, unsigned depth) {
+  if (*p >= end) return NULL;
+  switch (**p) {
+  case PYMIZU_TAG_LIST:
+  case PYMIZU_TAG_TUPLE:
+  case PYMIZU_TAG_DICT:
+    return codec_read_seq(p, end, ctx, 0, codec_read_node_leaf, 0,
+                          depth + 1);
+  }
+  return codec_read_scalar(p, end);
+}
+
 static PyObject *frame_read_leaf(const uint8_t **p, const uint8_t *end,
-                                 mizu_read_ctx *ctx) {
+                                 mizu_read_ctx *ctx,
+                                 unsigned Py_UNUSED(depth)) {
   if (*p >= end) return NULL;
   int tag = **p;
   if (tag == PYMIZU_TAG_LIST || tag == PYMIZU_TAG_TUPLE ||
       tag == PYMIZU_TAG_DICT)
-    return codec_read_seq(p, end, ctx, 0, frame_read_flat, 1);
-  return frame_read_flat(p, end, ctx);
+    return codec_read_seq(p, end, ctx, 0, frame_read_flat, 1, 0);
+  return frame_read_flat(p, end, ctx, 0);
 }
 
 /* A by-reference fn: resolve the module through sys.modules first, the
@@ -4800,13 +4894,13 @@ static PyObject *frame_read_task(const uint8_t **p, const uint8_t *end,
   /* args: a tuple of leaves (elements may be one container level);
      kwargs: a dict of str keys to leaves */
   PyObject *args = codec_read_seq(p, end, ctx, PYMIZU_TAG_TUPLE,
-                                  frame_read_leaf, 0);
+                                  frame_read_leaf, 0, 0);
   if (args == NULL) {
     Py_DECREF(fn);
     return NULL;
   }
   PyObject *kwargs = codec_read_seq(p, end, ctx, PYMIZU_TAG_DICT,
-                                    frame_read_leaf, 1);
+                                    frame_read_leaf, 1, 0);
   if (kwargs == NULL) {
     Py_DECREF(fn);
     Py_DECREF(args);
@@ -5062,7 +5156,7 @@ static PyObject *codec_read(const uint8_t *src, size_t n, mizu_read_ctx *ctx) {
   case PYMIZU_TAG_TUPLE:
   case PYMIZU_TAG_DICT:
     p--;   /* the shared reader consumes its own tag */
-    out = codec_read_seq(&p, end, ctx, 0, codec_read_scalar_leaf, 0);
+    out = codec_read_seq(&p, end, ctx, 0, codec_read_node_leaf, 0, 0);
     if (out == NULL) {
       if (!PyErr_Occurred()) goto corrupt;
       return NULL;
@@ -10538,7 +10632,7 @@ them a compat contract). None for a value outside the codec's subset\n\
 static PyObject *pymizu_codec_stream(PyObject *Py_UNUSED(module),
                                      PyObject *arg) {
   /* the stage's own paths: the fused inline walk against a scratch
-     budget, the exact count + write-only re-walk past it */
+     budget, the exact count + the fill's re-walk past it */
   uint8_t scratch[4096];
   uint64_t sz;
   int rc = codec_stream_write(arg, scratch, (uint32_t) sizeof scratch, &sz);
@@ -10547,10 +10641,7 @@ static PyObject *pymizu_codec_stream(PyObject *Py_UNUSED(module),
     return PyBytes_FromStringAndSize((const char *) scratch, (Py_ssize_t) sz);
   PyObject *out = PyBytes_FromStringAndSize(NULL, (Py_ssize_t) sz);
   if (out == NULL) return NULL;
-  uint8_t *buf = (uint8_t *) PyBytes_AS_STRING(out);
-  buf[0] = MIZU_PYMIZU_CODEC_MAGIC;
-  uint8_t *p = buf + 1;
-  codec_put(&p, arg);
+  codec_stream_fill(arg, (uint8_t *) PyBytes_AS_STRING(out), sz);
   return out;
 }
 

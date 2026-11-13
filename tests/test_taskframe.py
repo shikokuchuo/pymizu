@@ -763,8 +763,19 @@ def test_codec_stream_declines():
     assert _codec_stream({i: i for i in range(65)}) is None
     assert _codec_stream({1}) is None  # a set has no codec row
     assert _codec_stream(object()) is None
-    assert _codec_stream([[]]) is None  # no nested containers
     assert _codec_stream(bytearray(1)) is None  # not an exact codec type
+    x = []
+    assert _codec_stream([x, x]) is None  # an aliased container
+    assert _codec_stream([[i] for i in range(40)] * 2) is None
+    t = (1, "a", None)
+    assert _codec_stream([t, t]) == _codec_stream([(1, "a", None)] * 2)
+    assert _codec_stream([[[i] for i in range(40)]]) is not None
+    # the depth bound: the writer's deepest stream is the reader's deepest
+    deep = []
+    for _ in range(499):
+        deep = [deep]
+    assert _read_stream(_codec_stream(deep)) == deep
+    assert _codec_stream([deep]) is None
 
 
 def test_codec_stream_spill():
@@ -772,6 +783,15 @@ def test_codec_stream_spill():
     s = "x" * 5000
     assert _codec_stream([s]) == (
         b"Pl"
+        + (1).to_bytes(4, "little")
+        + b"s"
+        + (5000).to_bytes(4, "little")
+        + b"x" * 5000
+    )
+    assert _codec_stream([[s]]) == (
+        b"Pl"
+        + (1).to_bytes(4, "little")
+        + b"l"
         + (1).to_bytes(4, "little")
         + b"s"
         + (5000).to_bytes(4, "little")

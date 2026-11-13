@@ -161,7 +161,9 @@ def test_concurrent_first_dumps_on_independent_handles():
 
         try:
             threads = [
-                threading.Thread(target=exchange, args=(pair, [[i], [i + 1]]))
+                threading.Thread(
+                    target=exchange, args=(pair, [[i], [i + 1], {i}])
+                )
                 for i, pair in enumerate(pairs)
             ]
             for thread in threads:

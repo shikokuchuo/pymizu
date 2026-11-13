@@ -59,6 +59,7 @@ probes and A/B isolations stay in the log.
 | stage memcpy | 100.5 us/send | 2026-08-30 |
 | stage identity | 101.6 us/send | 2026-08-30 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
+| stage nested tree | 10.0 us/send | 2026-11-07 |
 | frame 10col relay, unmodified REF | 5.3 us/rt | 2026-11-08 |
 | frame 10col relay, one computed col | 201.0 us/rt | 2026-11-08 |
 | frame strcol relay, unmodified string REF | 2,410.8 us/rt | 2026-10-03 |
@@ -2001,3 +2002,46 @@ best-known rows.
 
 Status: full suite green (1181 pass, 1 skip; crosslang legs included), with
 ruff format, ruff check and pyrefly clean.
+
+## 2026-11-07 — recursive 'P' codec: nested container trees
+
+The compact codec recurses into list/tuple/dict trees (a depth bound of
+500, the per-container cap of 64 unchanged; dict keys stay scalar), so a
+nested same-language payload skips the pickle fallback. A nested stream
+from a new build fails loud on an old build (its "corrupt payload slot"
+error). `mizu-bench.py` gains the standing "stage nested tree" row — a
+64-key dict of [int, float, str, tuple] lists, ~450 nodes; the A/B below
+is its first measurement.
+
+Results (one-way sends against an acking sink, best of 3 x 1000; the
+pickle column is the same tree with one complex leaf, which declines the
+codec and pickles whole — the pre-change path):
+
+| payload | before (pickle) | after (codec) |
+|----|----|----|
+| nested tree | 13.8 us/send | 10.0 us/send |
+
+Status: full suite 1080 pass, 1 skip; ruff clean.
+
+## 2026-11-13 — recursive 'P' codec: alias guard replaces the node budget
+
+The codec writes a subtree once per reference, so an aliased payload
+arrived as independent copies and its stream grew with the reference
+count (an 18-level doubling DAG: a 5 MB stream in 5.3 ms against pickle's
+125 bytes). The node budget capped the cost only. The writer now declines
+to pickle on the second sight of a container: the set holds containers
+with more than one reference only, and a shared tuple of scalars is
+exempt (the bench tree's constant tuple is one object across all 64
+rows). Sharing and cycles keep pickle's semantics; the node budget is
+gone.
+
+Results (in-process `_codec_stream`, best of 7 x 20000; the channel row
+best of 3 x 1000):
+
+| payload | before | after |
+|----|----|----|
+| nested tree encode, no guarded container | 1.77 us | 1.84 us |
+| 64 held rows encode, every row guarded | n/a | 1.49 us (1.14 us unguarded: ~5 ns per container) |
+| stage nested tree (channel) | 10.0 us/send | 9.9 us/send |
+
+Status: full suite 1186 pass, 1 skip; ruff clean.

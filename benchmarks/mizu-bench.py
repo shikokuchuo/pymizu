@@ -783,6 +783,29 @@ try:
 except ImportError:
     pass
 
+# codec staging: a nested container tree rides the compact codec whole
+# (before the recursive codec a tree like this one pickled)
+print("\n== codec staging (nested tree sends, channel) ==")
+
+NESTED_TREE = {
+    f"k{i}": [i, 2.5, "x" * 8, (True, None, b"yz")] for i in range(64)
+}
+
+
+def codec_channel(ch):
+    n = 1000
+
+    def rep():
+        for _ in range(n):
+            ch.send(NESTED_TREE)
+            ch.recv(timeout=30)
+
+    warmup(rep, n=3)
+    note_us("stage nested tree", "pymizu channel", n, rep, "us/send")
+
+
+with_channel(SINK_PEER, codec_channel)
+
 # 7. task args by reference (F1) ----------------------------------------------
 
 print("\n== 7. task args by reference: 8 MB float64 arg to a pool task ==")

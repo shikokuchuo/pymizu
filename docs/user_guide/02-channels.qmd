@@ -123,7 +123,8 @@ pymizu chooses the cheapest transport for each value:
    A contiguous buffer below 256 KB instead crosses as one copy into shared memory, which is cheaper than a separate region at those sizes.
    From 256 KB the receive is a view.
 3. A `str` that fits in a slot crosses as raw UTF-8.
-4. Booleans, numbers, and flat lists or dicts of them cross in a compact binary form.
+4. Booleans, numbers, and nested lists, tuples, and dicts of them cross in a compact binary form.
+   A payload that references the same list or dict more than once crosses as a pickle instead, which keeps the sharing.
 5. Everything else crosses as a pickle (protocol 4).
 
 Each end of a channel knows the peer's language.
