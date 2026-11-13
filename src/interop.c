@@ -5466,7 +5466,8 @@ static int ixs_pull(ixs *x) {
    pointer array (and the single path's wrapper arrays) is caller-owned —
    it must outlive the handle: keep takes the allocation, freed by the
    caller after mizu_arrow_close. */
-static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep) {
+static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep,
+                                  int lazy) {
   *keep = NULL;
   if (x->single) {
     /* the single path wrapped as a one-column struct: the same writer
@@ -5522,8 +5523,9 @@ static mizu_arrow *ixs_arrow_open(ixs *x, uint32_t peer_caps, void **keep) {
   }
   for (size_t b = 0; b < x->hold.nb; b++) batches[b] = &x->hold.arrs[b];
   mizu_arrow *ar = NULL;
-  mizu_status st = mizu_arrow_open(&ar, &x->schema, batches, x->hold.nb,
-                                   peer_caps);
+  mizu_status st = lazy
+    ? mizu_arrow_open_lazy(&ar, &x->schema, batches, x->hold.nb, peer_caps)
+    : mizu_arrow_open(&ar, &x->schema, batches, x->hold.nb, peer_caps);
   if (st != MIZU_OK) {
     free(batches);
     return NULL;
@@ -5544,6 +5546,41 @@ static char **ixs_names_collect(ixs *x) {
   return names;
 }
 
+/* The provenance pass over an open frame: the whole-frame REF of an
+   unmodified round trip (*ref set: staged, nothing more to write), else
+   the per-column REF (F2) — every matched column registered with the core
+   as a remote leaf; a peer short of the remote-leaf bit gets full layout
+   leaves for every column, never a partial-remote tree. The names array
+   serves the blob and the matches: collected here when the blob path has
+   not. -1 with the exception set on an allocation failure. */
+static int ixs_frame_prov(ixs *x, mizu_arrow *ar, char ***names,
+                          mizu_slot_hdr *hdr, uint8_t *payload,
+                          uint32_t inline_max, int *ref) {
+  *ref = 0;
+  if (*names == NULL && (*names = ixs_names_collect(x)) == NULL) return -1;
+  if (pymizu_shmframe_pv_match(x, *names, hdr, payload, inline_max) == 0) {
+    *ref = 1;
+    return 0;
+  }
+  struct pv_entry const **hits = calloc((size_t) x->ncols, sizeof(*hits));
+  if (hits == NULL) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  int nremote = pymizu_shmframe_pv_match_cols(x, *names, hits);
+  if (nremote != 0 && (x->caps & MIZU_CAP_MIZL_REF) != 0) {
+    for (int i = 0; i < x->ncols; i++) {
+      if (hits[i] == NULL) continue;
+      mizu_shm *acq = pymizu_shmframe_pv_acq(hits[i]);
+      /* a torn referenced tree: the column stays local */
+      (void) mizu_arrow_remote(ar, i, acq->name, (size_t) acq->name_len,
+                               mizu_shm_addr(acq), mizu_shm_size(acq), i);
+    }
+  }
+  free(hits);
+  return 0;
+}
+
 static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
                          uint32_t inline_max, mizu_handle *h) {
   x->ncols = (int) x->schema.n_children;
@@ -5555,7 +5592,7 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   /* the classification, batch vetting and dictionary validation are the
      core's (arrow.c), the TLS decline re-raised as this front-end's */
   void *keep;
-  mizu_arrow *ar = ixs_arrow_open(x, x->caps, &keep);
+  mizu_arrow *ar = ixs_arrow_open(x, x->caps, &keep, 1);
   if (ar == NULL) {
     if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
     return 1;
@@ -5582,37 +5619,40 @@ static int ixs_run_frame(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
     mizu_arrow_root_blob(ar, blob, bn);
   }
   {
-    /* the MIZL tier (3.6/3.8) decides on the memoized frame span: past the
-       zero-copy gate and no churn, the provenance REF of an unmodified
-       round trip first, else the core writer's layout stage. The core
-       stage owns the frame capability conjunction; anything less falls to
-       the copy tiers. */
+    /* the MIZL tier (3.6/3.8): past the zero-copy gate and no churn, the
+       provenance REF of an unmodified round trip first, else the core
+       writer's layout stage. The open was lazy so that the provenance
+       pass comes first wherever the O(1) size floor already proves the
+       gate: a matched string column then skips its O(rows) offsets walk.
+       Under the floor the walk is small, and the pass waits for the exact
+       span. The core stage owns the frame capability conjunction;
+       anything less falls to the copy tiers. */
     const size_t zc_gate = mizu_py_zc_gate(inline_max);
-    if (mizu_arrow_size(ar) > zc_gate && !mizu_handle_churn(h)) {
-      /* the names array serves the blob and provenance matches: collect it
-         only on one of those paths, off the plain by-value path */
-      if (names == NULL && (names = ixs_names_collect(x)) == NULL) goto done;
-      rc = pymizu_shmframe_pv_match(x, names, hdr, payload, inline_max);
-      if (rc == 0) goto done;
-      /* the per-column REF (F2): a peer short of the remote-leaf bit gets
-         full layout leaves for every column, never a partial-remote tree */
-      struct pv_entry const **hits =
-        calloc((size_t) x->ncols, sizeof(*hits));
-      if (hits == NULL) {
-        PyErr_NoMemory();
+    const int zc = !mizu_handle_churn(h);
+    const int early = zc && mizu_arrow_size_floor(ar) > zc_gate;
+    int ref = 0;
+    if (early) {
+      if (ixs_frame_prov(x, ar, &names, hdr, payload, inline_max, &ref) < 0)
+        goto done;
+      if (ref) {
+        rc = 0;
         goto done;
       }
-      int nremote = pymizu_shmframe_pv_match_cols(x, names, hits);
-      if (nremote != 0 && (x->caps & MIZU_CAP_MIZL_REF) != 0) {
-        for (int i = 0; i < x->ncols; i++) {
-          if (hits[i] == NULL) continue;
-          mizu_shm *acq = pymizu_shmframe_pv_acq(hits[i]);
-          /* a torn referenced tree: the column stays local */
-          (void) mizu_arrow_remote(ar, i, acq->name, (size_t) acq->name_len,
-                                   mizu_shm_addr(acq), mizu_shm_size(acq), i);
+    }
+    if (mizu_arrow_validate(ar) != MIZU_OK) {
+      ixs_decline(mizu_last_error_message());
+      goto done;
+    }
+    if (zc && (early || mizu_arrow_size(ar) > zc_gate)) {
+      if (!early) {
+        if (ixs_frame_prov(x, ar, &names, hdr, payload, inline_max,
+                           &ref) < 0)
+          goto done;
+        if (ref) {
+          rc = 0;
+          goto done;
         }
       }
-      free(hits);
       mizu_arrow_warn warn;
       if (mizu_arrow_stage(h, ar, hdr, payload, &warn) == MIZU_OK) {
         /* staged: the conversion warnings raise after the write half
@@ -5669,7 +5709,7 @@ static int ixs_run_single(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
      classify verdicts (the ordered dictionary's two-element class); the
      by-value writers convert regardless */
   void *keep;
-  mizu_arrow *ar = ixs_arrow_open(x, x->caps, &keep);
+  mizu_arrow *ar = ixs_arrow_open(x, x->caps, &keep, 0);
   if (ar == NULL) {
     if (PyErr_Occurred() == NULL) ixs_decline(mizu_last_error_message());
     return 1;
@@ -5894,7 +5934,7 @@ static int ixs_run_frame_mizl(ixs *x, mizu_slot_hdr *hdr, uint8_t *payload,
   if (x->cols == NULL) goto out;
   /* the real peer caps word: the core stage's conjunction needs it (the
      same-language paths used to carry 0 — the drift dies here) */
-  ar = ixs_arrow_open(x, peer_caps, &keep);
+  ar = ixs_arrow_open(x, peer_caps, &keep, 0);
   if (ar == NULL) goto out;
   for (int i = 0; i < x->ncols; i++)
     mizu_arrow_col_info(ar, i, &x->cols[i]);
@@ -6451,7 +6491,7 @@ frame_cols *ixs_frame_cols_build(PyObject *obj) {
   }
   /* the classification, batch vetting and dictionary validation are the
      core's (arrow.c); its TLS decline already names the column */
-  ar = ixs_arrow_open(&x, 0, &keep);
+  ar = ixs_arrow_open(&x, 0, &keep, 0);
   if (ar == NULL) {
     if (PyErr_Occurred() == NULL)
       PyErr_Format(MizuError, "pymizu: Frame.from_arrow: %s",

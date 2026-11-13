@@ -653,6 +653,29 @@ def test_arrow_probe_error_propagates():
     h.destroy()
 
 
+def test_arrow_frame_malformed_string_offsets_decline():
+    # a string column whose offsets run backwards declines at send, and
+    # the handle stays usable
+    bad = pa.Array.from_buffers(
+        pa.string(),
+        3,
+        [
+            None,
+            pa.py_buffer(np.array([0, 5, 2, 7], dtype=np.int32).tobytes()),
+            pa.py_buffer(b"abcdefg"),
+        ],
+    )
+    h, p = foreign_pair()
+    try:
+        with pytest.raises(pymizu.DeclinedError, match="invalid Arrow string"):
+            h.send(pa.table({"i": pa.array([1, 2, 3]), "s": bad}))
+        assert h.send(pa.table({"s": pa.array(["a", "b"])})) is None
+        assert p.recv(10).to_dict()["s"] == ["a", "b"]
+    finally:
+        p.destroy()
+        h.destroy()
+
+
 def test_arrow_stream_schema_failures():
     # a producer whose get_schema fails surfaces its error (or the neutral
     # one); a NULL-format schema is the export-contract decline
