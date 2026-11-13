@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster sends of nested list, tuple, and dict payloads between Python
   processes. Both ends need this version: an older pymizu fails the
   receive of such a payload with "corrupt payload slot".
+- Faster first task on a new pool: it no longer waits 10 to 25 ms while
+  an idle worker loads numpy. Workers now load numpy only when a task or
+  map needs it.
 
 ### Fixed
 

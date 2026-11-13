@@ -5547,18 +5547,22 @@ static void py_park(void *Py_UNUSED(ctx), int entering) {
 /* The worker's idle cache drop: clear the Python-side map context cache
    (each cached _Ctx pins a map-region mapping, and a view-x's counted zc
    loan). Runs at the core's idle/departure points on the worker thread;
-   an error is unraisable, never into the core. */
+   an error is unraisable, never into the core. The module is looked up in
+   sys.modules, never imported: a worker that has run no map has no cache,
+   and the import (numpy with it) would land on its first park and stall
+   its first task. */
 static PyObject *mizu_map_sweep = NULL;
 
 static void py_sweep(void *Py_UNUSED(ctx)) {
   PyGILState_STATE gs = PyGILState_Ensure();
   if (mizu_map_sweep == NULL) {
-    PyObject *mod = PyImport_ImportModule("pymizu._map");
+    /* borrowed; NULL with no error set on a miss */
+    PyObject *mod = PyDict_GetItemString(PyImport_GetModuleDict(),
+                                         "pymizu._map");
     if (mod != NULL) {
       mizu_map_sweep = PyObject_GetAttrString(mod, "_sweep_ctx_cache");
-      Py_DECREF(mod);
+      if (mizu_map_sweep == NULL) PyErr_Clear();
     }
-    if (mizu_map_sweep == NULL) PyErr_Clear();
   }
   if (mizu_map_sweep != NULL) {
     PyObject *r = PyObject_CallNoArgs(mizu_map_sweep);

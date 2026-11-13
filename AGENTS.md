@@ -425,7 +425,9 @@ finalizer — short-circuits to the released-pool answer instead).
   drops the GIL for each bounded sleep. Worker handles also register the
   core's idle `sweep` hook (`py_sweep`): it clears the Python-side map
   context cache (`pymizu._map._ctx_cache`), so a parked worker holds no
-  map-region mappings or view-x zc loans.
+  map-region mappings or view-x zc loans. The hook reads `pymizu._map`
+  from `sys.modules` and never imports it: an import there (numpy with
+  it) lands on the worker's first park and stalls its first task.
 - The `_Pool` and `_Task` handle types participate in the cyclic GC
   (`Py_TPFLAGS_HAVE_GC` + traverse; `_Pool` clears `trace_fn`), so a
   trace hook closing over its pool no longer pins it.
