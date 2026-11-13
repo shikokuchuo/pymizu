@@ -770,6 +770,12 @@ def test_codec_stream_declines():
     t = (1, "a", None)
     assert _codec_stream([t, t]) == _codec_stream([(1, "a", None)] * 2)
     assert _codec_stream([[[i] for i in range(40)]]) is not None
+    # the depth bound: the writer's deepest stream is the reader's deepest
+    deep = []
+    for _ in range(499):
+        deep = [deep]
+    assert _read_stream(_codec_stream(deep)) == deep
+    assert _codec_stream([deep]) is None
 
 
 def test_codec_stream_spill():
