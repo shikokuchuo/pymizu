@@ -66,13 +66,14 @@ class _WaiterFuture(_asyncio.Future):
     done-callback that the add_done_callback form scheduled on every
     resolution. Detach runs on the cancelling thread — the loop's, by
     asyncio's own thread-confinement discipline. ``want`` is the channel
-    waiter's batch size (1 for a single recv); the pool half's futures
-    are built by the C side with CallNoArgs, so the default costs it
+    waiter's batch size (1 for a single recv); ``batch`` distinguishes a
+    one-element batch from a single receive. The pool half's futures are
+    built by the C side with CallNoArgs, so the defaults cost them
     nothing. ``_detach`` is one of the module-level detach functions —
     stored plain, never a per-enrollment closure — taking the future
     itself, with ``_st`` / ``_arg`` carrying its state and argument."""
 
-    __slots__ = ("_detach", "_st", "_arg", "want")
+    __slots__ = ("_detach", "_st", "_arg", "want", "batch")
 
     def __init__(self) -> None:
         super().__init__()
@@ -80,6 +81,7 @@ class _WaiterFuture(_asyncio.Future):
         self._st: _Any = None
         self._arg: _Any = None
         self.want = 1
+        self.batch = False
 
     def cancel(self, msg: _Any = None) -> bool:
         detach, self._detach = self._detach, None
@@ -119,8 +121,8 @@ class _ChanState:
     Over-count is the hazard direction
     (an ask past the live wants over-reads the burst into a popleft that
     raises, failing every waiter); under-count only shortens a burst.
-    ``batches`` counts the live batch waiters (want > 1) under the same
-    discipline, so the distribution can run the index-free one-element-
+    ``batches`` counts the live batch waiters (including n = 1) under the
+    same discipline, so the distribution can run the index-free one-element-
     per-pop form when the FIFO is all singles — the common case pays no
     per-message bookkeeping beyond the counter."""
 
@@ -194,7 +196,7 @@ class _ChanState:
                     fut = self.fifo.popleft()
                     w = fut.want
                     self.wants -= w
-                    if w > 1:
+                    if fut.batch:
                         self.batches -= 1
                     if not fut.done():
                         fut.set_exception(e)
@@ -229,9 +231,9 @@ class _ChanState:
                             continue
                         w = fut.want
                         self.wants -= w
-                        if w > 1:
+                        if fut.batch:
                             self.batches -= 1
-                        if w == 1:
+                        if not fut.batch:
                             fut.set_result(burst[i])
                             i += 1
                         else:
@@ -272,14 +274,16 @@ class _ChanState:
             self._disarm()
 
 
-def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
+def chan_recv_async(
+    ch: pymizu.Channel, want: int = 1, batch: bool = False
+) -> _asyncio.Future:
     """[`Channel.recv_async()`](`pymizu.Channel.recv_async`)'s and
     [`Channel.recv_batch_async()`](`pymizu.Channel.recv_batch_async`)'s
     engine: enqueue one waiter (a batch waiter's ``want`` messages as
     one list), arm (the first call also registers the watch), and run
     the synchronous drain — loss-free: data already in the ring resolves
     from this pass; only genuinely pending entries ride the watch."""
-    if want != 1:
+    if batch:
         # the batch path alone pays validation: recv_async's literal 1
         # skips it (the codebase's exact-type discipline: bool still
         # resolves through __index__)
@@ -301,6 +305,8 @@ def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
         st._fail(RuntimeError("pymizu: event loop changed"))
         st.armed = False
     fut = _WaiterFuture()
+    if batch:
+        fut.batch = True
     if want > 1:
         # __init__ already stores 1: singles skip the slot store
         fut.want = want
@@ -308,7 +314,7 @@ def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
     fut._st = st
     st.fifo.append(fut)
     st.wants += want
-    if want > 1:
+    if batch:
         st.batches += 1
     if not st.armed:
         try:
@@ -318,7 +324,7 @@ def chan_recv_async(ch: pymizu.Channel, want: int = 1) -> _asyncio.Future:
             # enrolled — it is still the just-appended tail
             assert st.fifo.pop() is fut
             st.wants -= want
-            if want > 1:
+            if batch:
                 st.batches -= 1
             fut._detach = None
             raise
@@ -336,7 +342,7 @@ def _detach_chan(fut: _WaiterFuture) -> None:
     only dead entries), not the detach's."""
     st = fut._st
     st.wants -= fut.want
-    if fut.want > 1:
+    if fut.batch:
         st.batches -= 1
 
 

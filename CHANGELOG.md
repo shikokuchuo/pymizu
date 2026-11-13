@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Channel.recv_batch_async()` receives a burst of channel messages as one
+  list on one `asyncio.Future`.
+
 ### Changed
 
 - Faster `Pool.map()` collection and lower shared-memory use for a
