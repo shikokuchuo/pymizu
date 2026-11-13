@@ -2112,3 +2112,20 @@ above the table; the composite row is left as is).
 
 Status: libmizu unit and integration suites pass; pymizu pool, executor
 and map tests 301 pass, 1 skip.
+
+## 2026-11-13 — stdlib comparison re-run, README tables refreshed (b29d232)
+
+`mizu-stdlib-bench.py` on Python 3.14.8 on a busy host (Spotlight
+re-indexing after a reboot, load average 12-26). Only the rows below
+changed in the README and docs tables.
+
+| row | before | after |
+|---|---|---|
+| pipelined, pymizu pool | 2.39M tasks/s | 2.20M tasks/s |
+| pipelined, cf process pool | 18,500 tasks/s | 19,500 tasks/s |
+| payload 8,000 B, pymizu pool | 2.4 us/task | 2.0 us/task |
+| map winsum x 2000, pymizu pool | 2.9 ms | 2.8 ms |
+| map winsum x 2000, cf thread pool | 48 ms | 47 ms |
+
+The pipelined pool figure is the best of 2,700 isolated reps; no
+best-known swap.
