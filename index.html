@@ -284,7 +284,7 @@ section.level2:first-of-type > h2:first-child,
 </section>
 <section id="quickstart" class="level2">
 <h2 class="anchored" data-anchor-id="quickstart">Quickstart</h2>
-<div id="59454180" class="cell" data-execution_count="1">
+<div id="4db864a4" class="cell" data-execution_count="1">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pymizu</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
@@ -319,21 +319,21 @@ section.level2:first-of-type > h2:first-child,
 </tr>
 <tr class="even">
 <td>Pipelined throughput, 1 worker</td>
-<td>2,390,000 tasks/s</td>
-<td>18,500 tasks/s</td>
-<td>129x</td>
+<td>2,200,000 tasks/s</td>
+<td>19,500 tasks/s</td>
+<td>113x</td>
 </tr>
 <tr class="odd">
 <td>8 KB vector round trip</td>
-<td>2.4 µs</td>
+<td>2.0 µs</td>
 <td>100.7 µs</td>
-<td>42x</td>
+<td>50x</td>
 </tr>
 <tr class="even">
 <td>Parallel map of 2,000 ~5 µs tasks, 4 workers</td>
-<td>2.9 ms</td>
+<td>2.8 ms</td>
 <td>123 ms</td>
-<td>42x</td>
+<td>44x</td>
 </tr>
 </tbody>
 </table>
@@ -356,20 +356,20 @@ section.level2:first-of-type > h2:first-child,
 </tr>
 <tr class="even">
 <td>Pipelined throughput, 1 worker</td>
-<td>2,390,000 tasks/s</td>
+<td>2,200,000 tasks/s</td>
 <td>405,000 tasks/s</td>
-<td>5.9x</td>
+<td>5.4x</td>
 </tr>
 <tr class="odd">
 <td>8 KB vector round trip</td>
-<td>2.4 µs</td>
+<td>2.0 µs</td>
 <td>9.3 µs</td>
-<td>3.9x</td>
+<td>4.7x</td>
 </tr>
 <tr class="even">
 <td>Parallel map of 2,000 ~5 µs tasks, 4 workers</td>
-<td>2.9 ms</td>
-<td>48 ms</td>
+<td>2.8 ms</td>
+<td>47 ms</td>
 <td>17x</td>
 </tr>
 </tbody>
@@ -379,7 +379,7 @@ section.level2:first-of-type > h2:first-child,
 <section id="concurrent.futures-and-asyncio" class="level2">
 <h2 class="anchored" data-anchor-id="concurrent.futures-and-asyncio"><code>concurrent.futures</code> and asyncio</h2>
 <p><a href="./reference/PoolExecutor.html#pymizu.PoolExecutor" class="gdls-link gdls-code">PoolExecutor</a> adapts a pool to the stdlib <code>concurrent.futures.Executor</code> interface, so code written against <code>ProcessPoolExecutor</code> drops in, and <code>submit</code> returns real <code>Future</code> objects:</p>
-<div id="083e727c" class="cell" data-execution_count="2">
+<div id="3c00926d" class="cell" data-execution_count="2">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.PoolExecutor.create(<span class="dv">4</span>) <span class="im">as</span> ex:</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    futures <span class="op">=</span> [ex.submit(<span class="bu">pow</span>, <span class="dv">2</span>, i) <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">4</span>)]</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> [f.result() <span class="cf">for</span> f <span class="kw">in</span> futures]</span>
@@ -390,7 +390,7 @@ section.level2:first-of-type > h2:first-child,
 </div>
 </div>
 <p><a href="./reference/pymizu.Pool.submit.html" class="gdls-link gdls-code">Pool.submit()</a> returns an awaitable <a href="./reference/Task.html#pymizu.Task" class="gdls-link gdls-code">Task</a>, so native asyncio code needs no executor or <code>asyncio.wrap_future</code>. Batch collectors and map handles are awaitable too:</p>
-<div id="1ece4ba2" class="cell" data-execution_count="3">
+<div id="c630ae54" class="cell" data-execution_count="3">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    task <span class="op">=</span> pool.submit(<span class="bu">pow</span>, <span class="dv">2</span>, <span class="dv">16</span>)</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> <span class="cf">await</span> task</span>
@@ -406,7 +406,7 @@ section.level2:first-of-type > h2:first-child,
 <h2 class="anchored" data-anchor-id="parallel-map">Parallel map</h2>
 <p><code>Pool.map(fn, x)</code> maps <code>fn</code> over <code>x</code> on the pool and returns a <a href="./reference/Map.html#pymizu.Map" class="gdls-link gdls-code">Map</a> handle immediately. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor. <code>handle.collect()</code> returns the results in order, or <code>await handle</code> in asyncio code.</p>
 <p>A map also nests: the mapped function can map over its own pool with <a href="./reference/current_pool.html#pymizu.current_pool" class="gdls-link gdls-code">pymizu.current_pool()</a>, deadlock-free.</p>
-<div id="87f331eb" class="cell" data-execution_count="4">
+<div id="942cd7d5" class="cell" data-execution_count="4">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="cf">with</span> pymizu.Pool.create(<span class="dv">4</span>) <span class="im">as</span> pool:</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    result <span class="op">=</span> pool.<span class="bu">map</span>(<span class="bu">abs</span>, <span class="bu">range</span>(<span class="op">-</span><span class="dv">5</span>, <span class="dv">5</span>)).collect()</span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
