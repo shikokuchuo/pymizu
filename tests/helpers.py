@@ -30,6 +30,11 @@ def identity(x):
     return x
 
 
+def modules_loaded(names):
+    """Which of `names` the worker has imported."""
+    return sorted(n for n in names if n in sys.modules)
+
+
 def busy(i):
     time.sleep(0.05)
     return i * 2

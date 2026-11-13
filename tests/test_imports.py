@@ -138,6 +138,30 @@ def test_default_pool_and_channel_startup():
     )
 
 
+def test_idle_worker_defers_map_module():
+    # the worker's idle sweep must not import pymizu._map (numpy with it):
+    # the import would land on the first park and stall the first task
+    _run(
+        """
+        import time
+        import pymizu
+        from tests.helpers import modules_loaded, square
+
+        with pymizu.Pool.create(1) as pool:
+            names = ["pymizu._map"]
+            first = pool.submit(modules_loaded, names).collect(timeout=10)
+            time.sleep(0.2)  # the worker parks, and its sweep hook fires
+            idle = pool.submit(modules_loaded, names).collect(timeout=10)
+            assert first == [] and idle == [], (first, idle)
+            # a map loads the module, and the sweep then finds it
+            assert pool.map(square, [1, 2]).collect(timeout=10) == [1, 4]
+            time.sleep(0.2)
+            after = pool.submit(modules_loaded, names).collect(timeout=10)
+            assert after == names
+        """
+    )
+
+
 def test_concurrent_first_dumps_on_independent_handles():
     _run(
         """

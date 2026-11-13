@@ -2045,3 +2045,26 @@ best of 3 x 1000):
 | stage nested tree (channel) | 10.0 us/send | 9.9 us/send |
 
 Status: full suite 1186 pass, 1 skip; ruff clean.
+
+## 2026-11-13 — idle workers stop importing the map module
+
+A worker's idle sweep imported `pymizu._map`, and numpy with it, on its
+first park, so the first task on a new pool queued behind a ~25 ms import.
+The sweep now reads the module from `sys.modules` and does nothing until a
+map has loaded it. The canonical suite has no first-task row; these are
+probe numbers.
+
+Results (fresh pool per sample, minimum of 12, median in brackets; A is
+the base build):
+
+| first task | A | B |
+|----|----|----|
+| builtin, 4 workers | 11.6 ms (17.6) | 0.03 ms (0.04) |
+| builtin, 1 worker | 22.0 ms (22.7) | 0.03 ms (0.03) |
+| `benchmarks.tasks` fn, 1 worker | 28.5 ms (28.9) | 27.7 ms (28.2) |
+
+The last row is unchanged by design: its cost is the worker importing the
+task's own module (numpy, then the `PRICES` table).
+
+Status: full suite 1182 pass, 1 skip; ruff format, ruff check and pyrefly
+clean.
