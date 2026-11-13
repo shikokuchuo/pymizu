@@ -525,6 +525,50 @@ def map_overhead(p):
             best_ms(spec_template),
             "ms wall",
         )
+
+        def spec_source():
+            p.map(
+                pymizu.call(source="x + 1"),
+                spec_x,
+                stream=True,
+                n_chunks=256,
+            ).collect()
+
+        spec_source()
+        note(
+            "map spec stream 256",
+            "pymizu source",
+            best_ms(spec_source),
+            "ms wall",
+        )
+
+        def spec_source_prefix():
+            p.map(
+                pymizu.call(source="y = x + 1\ny * 2"),
+                spec_x,
+                stream=True,
+                n_chunks=256,
+            ).collect()
+
+        spec_source_prefix()
+        note(
+            "map spec stream 256",
+            "pymizu source prefix",
+            best_ms(spec_source_prefix),
+            "ms wall",
+        )
+
+        pm1 = p.map_prepare(plus_one, list(range(32)), n_chunks=1)
+        try:
+            pm1.run().collect()
+            note(
+                "map single morsel",
+                "pymizu prepared32",
+                best_ms(lambda: pm1.run().collect()),
+                "ms wall",
+            )
+        finally:
+            pm1.close()
     finally:
         pm.close()
 

@@ -287,10 +287,44 @@ def delayed_second_runner(region_name, ordinal, gen, seed_spec):
 
 
 def map_ctx_names(_):
-    """The worker's map-context cache keys (one attach per worker per map)."""
+    """The worker's map-context cache keys."""
     from pymizu import _map
 
     return list(_map._ctx_cache)
+
+
+def nested_stale_runner(marker):
+    """Run a stale runner on the map region named by marker, counting opens."""
+    from pymizu import _map
+
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            with open(marker) as f:
+                name = f.read()
+        except FileNotFoundError:
+            name = ""
+        if name:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
+
+    opens = 0
+    map_open = _map._pymizu._map_open
+
+    def counted_open(name):
+        nonlocal opens
+        opens += 1
+        return map_open(name)
+
+    _map._pymizu._map_open = counted_open
+    try:
+        # The one-shot map is generation 0; generation 1 claims no morsel.
+        out = _map._runner_ix(name, 1, None)
+    finally:
+        _map._pymizu._map_open = map_open
+    assert out == _map._pymizu._map_result([], [])
+    return opens
 
 
 def sleep_then(i, t):

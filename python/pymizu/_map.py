@@ -6,10 +6,10 @@ fits the entry inline budget (the region-less blob path). It then submits
 one *runner* task per live worker: runners self-schedule element ranges
 off the shared cursor in the map region (morsel-driven scheduling), one
 adaptive-sized batch per `_map_next` transition, and publish their batch
-histories and values as their single ordinary result. Workers materialize
-the map context at most once each (a small cache keyed by region name); a
-raw-buffer x is wrapped once per worker and indexed per element, never
-deserialized.
+histories and values as their single ordinary result. Workers cache
+multi-morsel map contexts by region name; single-morsel runner contexts
+are private and released at return. A raw-buffer x is wrapped with its
+context and indexed per element, never deserialized.
 
 Seeding: `seed` derives deterministic per-element streams of the stdlib
 `random` module — element `i` runs under
@@ -118,6 +118,12 @@ class _Ctx:
 
 
 _ctx_cache: dict[str, _Ctx] = {}
+
+# Source specs share only their immutable split/compiled artifacts. Argument
+# namespaces and closures stay per context. This table owns no mappings, so
+# the worker's idle sweep leaves it intact for the next spec-stream chunk.
+_SOURCE_CACHE_MAX = 8
+_source_cache: dict[str, tuple[_Any, _Any]] = {}
 
 
 def _sweep_ctx_cache() -> None:
@@ -241,15 +247,21 @@ def _resolve_name(code: str) -> _Callable[..., _Any]:
 
 
 def _source_fn(code: str, positional: list, named: dict) -> _Callable:
-    """A source-kind spec as the per-element function: the ast split once
-    per runner (exec the prefix, eval the trailing expression — the
-    source convention), each element bound as x in a fresh namespace over
-    the constant arguments, matching a task's own fresh namespace."""
-    prefix, tail = _split_source(code)
-    prefix_code = (
-        compile(prefix, "<map>", "exec") if prefix is not None else None
-    )
-    tail_code = compile(tail, "<map>", "eval") if tail is not None else None
+    """A source-kind spec as the per-element function: reuse the immutable
+    ast split and compiled code, but build the constant-argument namespace
+    and closure fresh. Each element binds x in a fresh namespace over those
+    constants, matching a task's own fresh namespace."""
+    artifacts = _source_cache.get(code)
+    if artifacts is None:
+        prefix, tail = _split_source(code)
+        artifacts = (
+            compile(prefix, "<map>", "exec") if prefix is not None else None,
+            compile(tail, "<map>", "eval") if tail is not None else None,
+        )
+        if len(_source_cache) >= _SOURCE_CACHE_MAX:
+            _source_cache.clear()
+        _source_cache[code] = artifacts
+    prefix_code, tail_code = artifacts
     base_ns: dict[str, _Any] = {"__builtins__": __builtins__}
     for i, v in enumerate(positional):
         base_ns[f"_{i + 1}"] = v
@@ -279,7 +291,7 @@ def _runner_ix(
     are its ascii form, exactly as `_seed_spec` builds them)."""
     k = gen_field >> _GEN_SHIFT
     gen = gen_field % (1 << _GEN_SHIFT)
-    ctx = _map_ctx(region_name)
+    ctx = _map_ctx(region_name, private_single=True)
     if k >= ctx.claim_n:
         raise pymizu.MizuError(
             "pymizu: malformed runner stream: the runner ordinal is out "
@@ -290,7 +302,7 @@ def _runner_ix(
         if seed_pair is None
         else (str(seed_pair[0]).encode("ascii"), seed_pair[1])
     )
-    return _runner(region_name, k, gen, seed_spec)
+    return _runner(region_name, k, gen, seed_spec, ctx)
 
 
 def _view_accessor(x: _Any) -> _Callable[[int], _Any]:
@@ -321,11 +333,11 @@ def _raw_accessor(view: _Any, tag: int) -> _Callable[[int], _Any]:
     return view.cast(_TAG_MV[tag]).__getitem__
 
 
-def _map_ctx(name: str) -> _Ctx:
+def _map_ctx(name: str, private_single: bool = False) -> _Ctx:
+    """Attach a context, caching it unless a runner's one-morsel miss owns
+    it privately. Native streaming chunks use the default caching path."""
     ctx = _ctx_cache.get(name)
     if ctx is None:
-        if len(_ctx_cache) >= _CTX_CACHE_MAX:
-            _ctx_cache.clear()
         capsule = _pymizu._map_open(name)
         hdr = _pymizu._map_header(capsule)
         raw = _pymizu._map_desc(capsule)
@@ -365,7 +377,10 @@ def _map_ctx(name: str) -> _Ctx:
             hdr["out_tag"] != 0,
             hdr["claim_n"],
         )
-        _ctx_cache[name] = ctx
+        if not (private_single and hdr["n_morsels"] == 1):
+            if len(_ctx_cache) >= _CTX_CACHE_MAX:
+                _ctx_cache.clear()
+            _ctx_cache[name] = ctx
     return ctx
 
 
@@ -566,6 +581,7 @@ def _runner(
     ordinal: int,
     gen: int,
     seed_spec: tuple[bytes, int] | None,
+    ctx: _Ctx | None = None,
 ) -> tuple:
     """Worker-side morsel runner, riding each runner task. Opens (or
     reuses) the map context, obtains the pool signals worker-locally —
@@ -581,7 +597,8 @@ def _runner(
     alone."""
     pool = pymizu.current_pool()
     assert pool is not None  # a runner always executes inside a task
-    ctx = _map_ctx(region_name)
+    if ctx is None:
+        ctx = _map_ctx(region_name, private_single=True)
     assert ctx.get is not None  # a runner region always stages x
     sig = pool._h._signals()
     hist = []

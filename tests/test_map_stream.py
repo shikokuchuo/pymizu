@@ -579,6 +579,21 @@ def test_stream_prepared_error_restages(pool):
         pm.close()
 
 
+def test_stream_native_chunk_context_stays_cached(pool):
+    m = pool.map(map_ctx_names, list(range(16)), stream=True, n_chunks=4)
+    out = m.collect()
+    assert len(out) == 16
+    assert all(m.name in names for names in out)
+
+
+def test_stream_spec_chunk_context_not_cached(pool):
+    src = "from pymizu import _map\nlist(_map._ctx_cache)"
+    out = pool.map(
+        pymizu.call(source=src), list(range(8)), stream=True, n_chunks=8
+    ).collect()
+    assert out == [[] for _ in range(8)]
+
+
 def test_stream_ctx_cache_swept_on_idle():
     # the worker's idle sweep drops completed maps' contexts (P-16): a
     # multi-chunk map's cache entry clears at the first idle beat
