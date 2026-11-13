@@ -173,7 +173,7 @@ def test_codec_nested_fallback(echo):
     x = [[0] * 65]
     assert echo.send(x) is None
     assert echo.recv(timeout=5) == x
-    # a cyclic graph walks into the depth bound: pickle, the cycle intact
+    # a cyclic graph declines at the first revisit: pickle, the cycle intact
     y = []
     y.append(y)
     assert echo.send(y) is None
@@ -182,22 +182,25 @@ def test_codec_nested_fallback(echo):
 
 
 def test_codec_nested_aliasing(echo):
-    # a shared subtree crosses as independent copies (the codec does not
-    # memoize): equal per occurrence, never identical
-    x = [1, 2]
-    assert echo.send([x, x]) is None
+    # a container referenced twice declines the codec: pickle keeps the
+    # sharing
+    for x in ([1, 2], {"k": 1}, ([1],)):
+        assert echo.send([x, x]) is None
+        out = echo.recv(timeout=5)
+        assert out == [x, x]
+        assert out[0] is out[1]
+    # past the alias guard's inline table
+    xs = [[i] for i in range(40)]
+    assert echo.send([xs, {"k": xs}]) is None
     out = echo.recv(timeout=5)
-    assert out == [x, x]
-    assert out[0] is not out[1]
-
-
-def test_codec_node_budget(echo):
-    # a doubling DAG walks past the node budget: pickle, aliasing intact
+    assert out[0] == xs
+    assert out[1]["k"] is out[0]
+    # a doubling DAG stays linear
     x = [1]
-    for _ in range(20):
+    for _ in range(40):
         x = [x, x]
     assert echo.send(x) is None
-    out = echo.recv(timeout=30)
+    out = echo.recv(timeout=5)
     assert out[0] is out[1]
 
 

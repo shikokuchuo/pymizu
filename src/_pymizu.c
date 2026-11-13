@@ -844,19 +844,21 @@ static int stage_convert_buffer(const Py_buffer *v, mizu_slot_hdr *hdr,
    never a silent misread. */
 #define PYMIZU_CODEC_CAP 64       /* container element cap: staging stays bounded */
 /* Recursion bound on the writer and reader, container nesting only. Past
-   it the writer falls back to pickle (a cyclic graph walks straight into
-   the bound) and the reader errors (a valid stream never approaches
-   it). */
+   it the writer falls back to pickle and the reader errors (a valid
+   stream never approaches it). A cyclic graph never reaches it: the
+   alias guard below declines at the first revisit. */
 #define PYMIZU_CODEC_MAXDEPTH 500
-/* Node budget on the writer's size walk. Nothing is memoized: a subtree
-   referenced twice is walked and written once per reference, so an
-   aliased tree's stream grows superlinearly in its live objects (a
-   doubling DAG of ~25 lists walks 2^24 nodes) where pickle's memo is
-   instant. The budget aborts the walk into the pickle fallback; counted
-   per container occurrence (the element loops probe scalars first), ~5
-   stream bytes per node, so honest payloads are admitted to ~5 MB. The
-   reader needs no budget: a stream's nodes are linear in its bytes. */
-#define PYMIZU_CODEC_MAXNODES 1048576   /* 2^20 */
+/* The writer's alias guard. Nothing is memoized, so a container written
+   once per reference would arrive as independent copies (and an aliased
+   tree's stream would grow superlinearly in its live objects): the walk
+   instead declines to pickle, whose memo keeps the sharing, on the second
+   sight of a container. Only a container with more than one reference can
+   be aliased, so the set holds those alone — a freshly built tree's inner
+   containers never touch it. A shared tuple of scalars is exempt: a value
+   through and through, it is written per occurrence like the scalars
+   themselves (a constant tuple in a comprehension is one object across
+   every row). The reader needs no guard: a stream is a tree. */
+#define PYMIZU_CODEC_SEEN_INLINE 16   /* a power of two */
 
 enum {
   PYMIZU_TAG_BOOL = 'b', PYMIZU_TAG_INT = 'i', PYMIZU_TAG_FLOAT = 'f',
@@ -885,9 +887,8 @@ static int codec_tag_of(PyObject *o) {
   return 0;
 }
 
-/* Size pass, 0 ok / -1 reject (not in the subset, an int past int64, a
-   lone-surrogate str, over the cap, past the depth bound, over the node
-   budget). Never sets an error. */
+/* Scalar size pass, 0 ok / -1 reject (not a codec scalar, an int past
+   int64, a lone-surrogate str). Never sets an error. */
 static int codec_scalar_size(PyObject *o, uint64_t *sz) {
   if (o == Py_None) {
     *sz += 1;
@@ -1103,17 +1104,72 @@ static int codec_walk_scalar(PyObject *o, uint8_t **pp, const uint8_t *end,
   return -1;
 }
 
+typedef struct {
+  PyObject **tab;   /* open addressing, NULL-empty; NULL until the first add */
+  size_t cap;       /* a power of two */
+  size_t n;
+  PyObject *inl[PYMIZU_CODEC_SEEN_INLINE];
+} codec_seen;
+
+static size_t codec_seen_slot(PyObject *o, size_t cap) {
+  return (size_t) (((uint64_t) (uintptr_t) o >> 4) * 0x9E3779B97F4A7C15ull
+                   >> 32) & (cap - 1);
+}
+
+/* 0 a first sight (recorded), -1 a repeat or a failed growth: a decline
+   either way. Never sets an error. */
+static int codec_seen_add(codec_seen *s, PyObject *o) {
+  if (s->tab == NULL) {
+    memset(s->inl, 0, sizeof s->inl);
+    s->tab = s->inl;
+    s->cap = PYMIZU_CODEC_SEEN_INLINE;
+  } else if (s->n * 2 >= s->cap) {
+    const size_t cap = s->cap * 2;
+    PyObject **tab = PyMem_RawCalloc(cap, sizeof *tab);
+    if (tab == NULL) return -1;
+    for (size_t j = 0; j < s->cap; j++) {
+      PyObject *e = s->tab[j];
+      if (e == NULL) continue;
+      size_t i = codec_seen_slot(e, cap);
+      while (tab[i] != NULL) i = (i + 1) & (cap - 1);
+      tab[i] = e;
+    }
+    if (s->tab != s->inl) PyMem_RawFree(s->tab);
+    s->tab = tab;
+    s->cap = cap;
+  }
+  size_t i = codec_seen_slot(o, s->cap);
+  while (s->tab[i] != NULL) {
+    if (s->tab[i] == o) return -1;
+    i = (i + 1) & (s->cap - 1);
+  }
+  s->tab[i] = o;
+  s->n++;
+  return 0;
+}
+
+/* A tuple holding scalars only: the alias guard's exemption. */
+static int codec_tuple_flat(PyObject *o, Py_ssize_t n) {
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject *it = PyTuple_GET_ITEM(o, i);
+    if (it != Py_None && codec_tag_of(it) == 0) return 0;
+  }
+  return 1;
+}
+
 /* The container walk recurses into list/tuple/dict trees, validating as it
    writes. Scalar-first elements keep the flat hot path at one probe; dict
-   keys stay scalar. The depth and node bounds are the old size pass's. */
+   keys stay scalar. */
 static int codec_walk_depth(PyObject *o, uint8_t **pp, const uint8_t *end,
-                            uint64_t *sz, unsigned depth, uint64_t *nodes) {
-  if (depth >= PYMIZU_CODEC_MAXDEPTH || ++*nodes > PYMIZU_CODEC_MAXNODES)
-    return -1;
+                            uint64_t *sz, unsigned depth, codec_seen *seen) {
+  if (depth >= PYMIZU_CODEC_MAXDEPTH) return -1;
   if (PyList_CheckExact(o) || PyTuple_CheckExact(o)) {
     int is_list = PyList_CheckExact(o) != 0;
     Py_ssize_t n = is_list ? PyList_GET_SIZE(o) : PyTuple_GET_SIZE(o);
     if (n > PYMIZU_CODEC_CAP) return -1;
+    if (Py_REFCNT(o) > 1 && (is_list || !codec_tuple_flat(o, n)) &&
+        codec_seen_add(seen, o) < 0)
+      return -1;
     uint8_t *p = codec_emit(pp, end, sz, 5);
     if (p != NULL) {
       p[0] = (uint8_t) (is_list ? PYMIZU_TAG_LIST : PYMIZU_TAG_TUPLE);
@@ -1124,7 +1180,7 @@ static int codec_walk_depth(PyObject *o, uint8_t **pp, const uint8_t *end,
       PyObject *it = is_list ? PyList_GET_ITEM(o, i) :
         PyTuple_GET_ITEM(o, i);
       if (codec_walk_scalar(it, pp, end, sz) < 0 &&
-          codec_walk_depth(it, pp, end, sz, depth + 1, nodes) < 0)
+          codec_walk_depth(it, pp, end, sz, depth + 1, seen) < 0)
         return -1;
     }
     return 0;
@@ -1132,6 +1188,7 @@ static int codec_walk_depth(PyObject *o, uint8_t **pp, const uint8_t *end,
   if (PyDict_CheckExact(o)) {
     const Py_ssize_t n = PyDict_Size(o);
     if (n > PYMIZU_CODEC_CAP) return -1;
+    if (Py_REFCNT(o) > 1 && codec_seen_add(seen, o) < 0) return -1;
     uint8_t *p = codec_emit(pp, end, sz, 5);
     if (p != NULL) {
       p[0] = PYMIZU_TAG_DICT;
@@ -1143,7 +1200,7 @@ static int codec_walk_depth(PyObject *o, uint8_t **pp, const uint8_t *end,
     while (PyDict_Next(o, &pos, &k, &v)) {
       if (codec_walk_scalar(k, pp, end, sz) < 0) return -1;
       if (codec_walk_scalar(v, pp, end, sz) < 0 &&
-          codec_walk_depth(v, pp, end, sz, depth + 1, nodes) < 0)
+          codec_walk_depth(v, pp, end, sz, depth + 1, seen) < 0)
         return -1;
     }
     return 0;
@@ -1153,8 +1210,12 @@ static int codec_walk_depth(PyObject *o, uint8_t **pp, const uint8_t *end,
 
 static int codec_walk(PyObject *o, uint8_t **pp, const uint8_t *end,
                       uint64_t *sz) {
-  uint64_t nodes = 0;
-  return codec_walk_depth(o, pp, end, sz, 0, &nodes);
+  codec_seen seen;
+  seen.tab = NULL;
+  seen.cap = seen.n = 0;
+  const int rc = codec_walk_depth(o, pp, end, sz, 0, &seen);
+  if (seen.tab != NULL && seen.tab != seen.inl) PyMem_RawFree(seen.tab);
+  return rc;
 }
 
 /* The codec's driver: the fused walk against the inline budget. 0 the

@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster `Pool.map()` with a `pymizu.call()` source spec, especially
   spec-stream maps with many chunks.
 - Faster sends of nested list, tuple, and dict payloads between Python
-  processes.
+  processes. Both ends need this version: an older pymizu fails the
+  receive of such a payload with "corrupt payload slot".
 
 ### Fixed
 

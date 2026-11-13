@@ -124,7 +124,7 @@ pymizu chooses the cheapest transport for each value:
    From 256 KB the receive is a view.
 3. A `str` that fits in a slot crosses as raw UTF-8.
 4. Booleans, numbers, and nested lists, tuples, and dicts of them cross in a compact binary form.
-   A container referenced more than once in such a payload arrives as independent copies; only pickle (below) preserves aliasing.
+   A payload that references the same list or dict more than once crosses as a pickle instead, which keeps the sharing.
 5. Everything else crosses as a pickle (protocol 4).
 
 Each end of a channel knows the peer's language.

@@ -764,6 +764,12 @@ def test_codec_stream_declines():
     assert _codec_stream({1}) is None  # a set has no codec row
     assert _codec_stream(object()) is None
     assert _codec_stream(bytearray(1)) is None  # not an exact codec type
+    x = []
+    assert _codec_stream([x, x]) is None  # an aliased container
+    assert _codec_stream([[i] for i in range(40)] * 2) is None
+    t = (1, "a", None)
+    assert _codec_stream([t, t]) == _codec_stream([(1, "a", None)] * 2)
+    assert _codec_stream([[[i] for i in range(40)]]) is not None
 
 
 def test_codec_stream_spill():
