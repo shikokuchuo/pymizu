@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Faster first task on a new pool: it no longer waits 10 to 25 ms while
   an idle worker loads numpy. Workers now load numpy only when a task or
   map needs it.
+- Faster `Pool.submit_batch()` for short batches on an idle pool: a batch
+  now wakes at most one idle worker per task, not every idle worker.
 
 ### Fixed
 
