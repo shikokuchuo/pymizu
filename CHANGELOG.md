@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster re-sends of a received `Frame` with unchanged string columns after
+  a round trip through an Arrow consumer such as `pa.table(frame)`.
 - Faster `Pool.map()` collection and lower shared-memory use for a
   (non-prepared) map collected by value.
 - Faster `Pool.map()` with a `pymizu.call()` source spec, especially
