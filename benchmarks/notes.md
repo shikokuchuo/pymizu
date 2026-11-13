@@ -40,7 +40,7 @@ probes and A/B isolations stay in the log.
 | sequential rt, channel | 0.3 us/rt | 2026-10-03 |
 | sequential rt, pool | 0.6 us/task | 2026-11-09 |
 | pipelined, channel | 4.68M rt/s | 2026-10-03 |
-| pipelined, channel batch | 10.1M rt/s | 2026-08-24 |
+| pipelined, channel batch | 10.2M rt/s | 2026-11-13 |
 | pipelined, pool | 2.48M tasks/s | 2026-09-28 |
 | pipelined, pool batch | 4.15M tasks/s | 2026-11-09 |
 | payload 8,000 B | 2.0 us/task | 2026-11-09 |
@@ -49,39 +49,39 @@ probes and A/B isolations stay in the log.
 | fan-out x 2000, 4 workers | 296.4k tasks/s | 2026-11-08 |
 | streaming, channel batch | 21.6M msg/s | 2026-10-03 |
 | map trivial f | 0.06 us/elt | 2026-11-06 |
-| map trivial f, template copy / view | 752k / 742k tasks/s | 2026-10-03 |
-| map trivial f, seed | 1.7 us/elt | 2026-11-06 |
+| map trivial f, template copy / view | 780k / 759k tasks/s | 2026-11-13 |
+| map trivial f, seed | 1.6 us/elt | 2026-11-13 |
 | map trivial f, stream | 0.17 us/elt | 2026-11-08 |
 | map trivial f, prepared | 0.05 us/elt | 2026-11-06 |
 | map winsum x 2000 | 747.0k tasks/s | 2026-11-09 |
-| map winsum x 20000 | 783.1k tasks/s | 2026-11-09 |
+| map winsum x 20000 | 795.8k tasks/s | 2026-11-13 |
 | map skewed f x 4000 | 5.1 ms wall | 2026-11-08 |
-| stage memcpy | 100.5 us/send | 2026-08-30 |
-| stage identity | 101.6 us/send | 2026-08-30 |
+| stage memcpy | 99.1 us/send | 2026-11-13 |
+| stage identity | 100.6 us/send | 2026-11-13 |
 | stage int64 | 99.7 us/send | 2026-09-11 |
-| stage nested tree | 10.0 us/send | 2026-11-07 |
+| stage nested tree | 9.8 us/send | 2026-11-13 |
 | frame 10col relay, unmodified REF | 5.3 us/rt | 2026-11-08 |
 | frame 10col relay, one computed col | 201.0 us/rt | 2026-11-08 |
 | frame strcol relay, unmodified string REF | 2,410.8 us/rt | 2026-10-03 |
-| stage widen (foreign pair) | 241.5 us/send | 2026-10-03 |
-| stage masked (foreign pair) | 97.3 us/send | 2026-10-01 |
+| stage widen (foreign pair) | 233.1 us/send | 2026-11-13 |
+| stage masked (foreign pair) | 90.8 us/send | 2026-11-13 |
 | stage masked int64 (foreign pair) | 97.6 us/send | 2026-10-03 |
-| stage masked+scan (foreign pair) | 136.0 us/send | 2026-10-03 |
+| stage masked+scan (foreign pair) | 100.0 us/send | 2026-11-13 |
 | stage str list MIZS (foreign pair) | 5,350.6 us/send | 2026-10-03 |
 | stage f64 matrix MIZH (foreign pair) | 104.1 us/send | 2026-10-03 |
-| echo f64 matrix MIZH (R echo) | 432.6 us/rt | 2026-10-03 |
+| echo f64 matrix MIZH (R echo) | 298.9 us/rt | 2026-11-13 |
 | crosslang map trivial fn, spec | 0.1 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec template | ~0 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec seed | 0.2 us/elt | 2026-10-01 |
 | crosslang map trivial fn, spec prepared | 0.1 us/elt | 2026-10-01 |
 | crosslang map compute, spec | 335k tasks/s | 2026-10-03 |
-| submit plan k = 0 (W2 row) | 82.7 us/task | 2026-11-08 |
-| submit plan k = 1 (W2 row) | 99.1 us/task | 2026-11-08 |
+| submit plan k = 0 (W2 row) | 80.7 us/task | 2026-11-13 |
+| submit plan k = 1 (W2 row) | 91.1 us/task | 2026-11-13 |
 | submit plan k = 4 (W2 row) | 97.6 us/task | 2026-11-06 |
-| submit plan k = 16 (W2 row) | 147.8 us/task | 2026-11-08 |
-| event-driven, channel armed | 2.67M rt/s | 2026-11-08 |
-| event-driven, channel recv_async | 834k rt/s | 2026-11-08 |
-| event-driven, channel recv_async cancel | 1.00M cancel/s | 2026-11-08 |
+| submit plan k = 16 (W2 row) | 143.4 us/task | 2026-11-13 |
+| event-driven, channel armed | 2.70M rt/s | 2026-11-13 |
+| event-driven, channel recv_async | 860k rt/s | 2026-11-13 |
+| event-driven, channel recv_async cancel | 1.01M cancel/s | 2026-11-13 |
 | event-driven, pool collect_async | 1.74M tasks/s | 2026-11-09 |
 | event-driven, pool collect_all_async | 3.85M tasks/s | 2026-11-09 |
 | event-driven, pool 64 waiters | 3.61M tasks/s | 2026-11-09 |
@@ -2068,3 +2068,47 @@ task's own module (numpy, then the `PRICES` table).
 
 Status: full suite 1182 pass, 1 skip; ruff format, ruff check and pyrefly
 clean.
+
+## 2026-11-13 — batch submit wakes one worker per task (libmizu d24ec0a)
+
+The core's batch submit woke every idle worker after the first publish
+and again per task at the close, repeating the syscall on a worker whose
+wake was already in flight. Each sweep now reads the parked mask once and
+wakes at most one worker per task, counting the workers the same batch
+already woke. The canonical suite has no short-batch row on an idle pool,
+so the A/B is a probe (8 workers, `os.getpid` tasks, 1 ms between rounds
+so the pool parks, median of 1500 rounds; A is the core before the
+change).
+
+| row | A | B |
+|----|----|----|
+| n = 1 round trip | 51.9 us | 38.6 us |
+| n = 2 round trip | 56.8 us | 28.9 us |
+| n = 4 round trip | 65.1 us | 42.8 us |
+| n = 8 round trip | 78.1 us | 66.5 us |
+| n = 64 round trip | 132.2 us | 114.4 us |
+| n = 1 `submit_batch` call alone | 48.5 us | 20.7 us |
+| n = 8 `submit_batch` call alone | 73.3 us | 63.8 us |
+| n = 8 `submit_batch`, 1 idle worker of 8 | 45.6 us | 15.0 us |
+| worker parks per round, n = 1 / 2 / 4 | 8.81 / 9.04 / 9.64 | 1.00 / 2.02 / 4.50 |
+
+Burst throughput is unchanged: the suite's pipelined pool batch row read
+2.60M tasks/s, and an isolated alternating A/B of its shape (three pairs,
+six reps each) put both builds at 2.3-2.65M — the 4.15M best is not
+reached on today's host by either build.
+
+Canonical suite on B, one run (the crosslang map script was not run).
+Best-known swaps: pipelined channel batch 10.1M -> 10.2M, map template
+copy / view 752k / 742k -> 780k / 759k, map seed 1.7 -> 1.6, map winsum
+x 20000 783.1k -> 795.8k, stage memcpy 100.5 -> 99.1, stage identity
+101.6 -> 100.6, stage nested tree 10.0 -> 9.8, stage widen 241.5 ->
+233.1, stage masked 97.3 -> 90.8, stage masked+scan 136.0 -> 100.0, echo
+f64 matrix MIZH 432.6 -> 298.9, submit plan k = 0 / 1 / 16 82.7 / 99.1 /
+147.8 -> 80.7 / 91.1 / 143.4, channel armed 2.67M -> 2.70M, recv_async
+834k -> 860k, recv_async cancel 1.00M -> 1.01M. None of these rows
+exercises the batch wake; they are host-state bests, not this change's.
+Executor outstanding read 81.1k / 82.8k / 81.0k / 80.9k (two of four
+above the table; the composite row is left as is).
+
+Status: libmizu unit and integration suites pass; pymizu pool, executor
+and map tests 301 pass, 1 skip.
