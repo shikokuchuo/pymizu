@@ -25,11 +25,13 @@ static void frame_stage_free(struct frame_stage *se);
 // The column block's lifecycle (pyframe.h's) -------------------------------------
 
 void fcol_free(fcol *c) {
+  free(c->offs64);
   if (c->ahold != NULL) {
     /* an adopted column is wholly borrowed — values, validity, bytes and
-       lev_off ride the hold's batch release, and the lazy owned buffers
-       (bits / codes0 / valid_owned) belong to LGL and region kinds an
-       adopted column never takes: nothing to free, just the decref */
+       lev_off ride the hold's batch release, and the other lazy owned
+       buffers (bits / codes0 / valid_owned) belong to LGL and region
+       kinds an adopted column never takes: nothing more to free, just
+       the decref */
     ahold_decref(c->ahold);
     return;
   }
@@ -442,8 +444,12 @@ static int64_t fcol_str64_check(fcol *c) {
    Null counts are never re-walked: a recorded vnulls serves (every bitmap
    producer stores it — the region read, the adoption, the copy builds,
    the first STR64 check and the scan below), and the scan's clean verdict
-   memoizes as known_free. Returns the null count, -1 on OOM. */
-static int64_t fcol_ensure_export(fcol *c) {
+   memoizes as known_free. wide (the public export's form) also widens a
+   copy-backed string column's offsets to i64, once: every Frame string
+   column then leaves as large_utf8, whether it borrows a region's MIZS
+   block (STR64) or holds its own copy. Runs under the GIL. Returns the
+   null count, -1 on OOM. */
+static int64_t fcol_ensure_export(fcol *c, int wide) {
   int64_t n = c->n, nulls = 0;
   if (c->kind == FCOL_U8) return 0;
   if (c->kind == FCOL_STR64) {
@@ -533,6 +539,13 @@ static int64_t fcol_ensure_export(fcol *c) {
       }
     }
   }
+  if (wide && c->kind == FCOL_STR && c->offs64 == NULL) {
+    int64_t *w = malloc(((size_t) n + 1) * sizeof(int64_t));
+    if (w == NULL) return -1;
+    const int32_t *o = (const int32_t *) c->values;
+    for (int64_t i = 0; i <= n; i++) w[i] = o[i];
+    c->offs64 = w;
+  }
   return nulls;
 }
 
@@ -577,11 +590,15 @@ static void frame_arrow_carve_init(frame_arrow_carve *cv, uint8_t *blk,
 /* The root + per-column fill shared by the public export and the stage
    cache: nulls the fcol_ensure_export counts, delta the rebase for a
    borrowed column's region pointers (0 reads the frame's own mapping).
-   Releases stay NULL — the serving layer stamps them per handout. */
+   wide is the public export's form: a copy-backed string column leaves as
+   large_utf8 off its widened offsets (fcol_ensure_export built offs64),
+   the type a region-backed one has; the stage cache keeps the i32 offsets
+   it writes from. Releases stay NULL — the serving layer stamps them per
+   handout. */
 static void frame_arrow_fill(const frame_cols *fc, const int64_t *nulls,
                              ptrdiff_t delta, const frame_arrow_carve *cv,
                              ArrowSchema *root_s, ArrowArray *root_a,
-                             const void **root_buf) {
+                             const void **root_buf, int wide) {
   const int ncols = fc->ncols;
   /* the root: a struct of ncols children */
   root_s->format = "+s";
@@ -614,7 +631,7 @@ static void frame_arrow_fill(const frame_cols *fc, const int64_t *nulls,
     case FCOL_U64: fmt = "L"; break;
     case FCOL_U8: fmt = "C"; break;
     case FCOL_LGL: fmt = "b"; break;
-    case FCOL_STR: fmt = "u"; break;
+    case FCOL_STR: fmt = wide ? "U" : "u"; break;
     case FCOL_STR64: fmt = "U"; break;
     case FCOL_DICT: fmt = "i"; break;
     case FCOL_DATE: fmt = "tdD"; break;
@@ -656,7 +673,7 @@ static void frame_arrow_fill(const frame_cols *fc, const int64_t *nulls,
     switch (c->kind) {
     case FCOL_STR:
       a->n_buffers = 3;
-      bufs[1] = c->values;
+      bufs[1] = wide ? (const void *) c->offs64 : (const void *) c->values;
       bufs[2] = c->bytes;
       break;
     case FCOL_STR64: {
@@ -916,7 +933,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
                    fc->names + fc->name_off[i]);
       return NULL;
     }
-    int64_t nn = fcol_ensure_export(&fc->cols[i]);
+    int64_t nn = fcol_ensure_export(&fc->cols[i], 1);
     if (nn < 0) {
       free(nulls);
       if (!PyErr_Occurred()) PyErr_NoMemory();
@@ -977,7 +994,7 @@ PyObject *Frame_arrow_c_stream(MizuFrame *self, PyObject *args,
     return PyErr_NoMemory();
   }
   frame_arrow_fill(fc, nulls, ex->acq_delta, &ex->cv, &ex->root_s,
-                   &ex->root_a, ex->root_buf);
+                   &ex->root_a, ex->root_buf, 1);
   free(nulls);
   st->get_schema = fx_get_schema;
   st->get_next = fx_get_next;
@@ -1041,7 +1058,7 @@ static frame_stage *frame_stage_build(MizuFrame *f) {
                    fc->names + fc->name_off[i]);
       goto fail;
     }
-    int64_t nn = fcol_ensure_export(&fc->cols[i]);
+    int64_t nn = fcol_ensure_export(&fc->cols[i], 0);
     if (nn < 0) {
       if (!PyErr_Occurred()) PyErr_NoMemory();
       goto fail;
@@ -1062,7 +1079,7 @@ static frame_stage *frame_stage_build(MizuFrame *f) {
   }
   /* delta 0: the buffers read the frame's own mapping in place */
   frame_arrow_fill(fc, nulls, 0, &se->cv, &se->root_s, &se->root_a,
-                   se->root_buf);
+                   se->root_buf, 0);
   se->fc = fc;
   atomic_fetch_add_explicit(&fc->refs, 1, memory_order_relaxed);
   free(nulls);

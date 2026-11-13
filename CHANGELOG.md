@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A `Frame` string column now always exports to Arrow as `large_string`.
+  Columns of a frame built with `Frame.from_arrow()` or received below the
+  shared-memory size floor exported as `string` before.
 - Faster re-sends of a received `Frame` with unchanged string columns after
   a round trip through an Arrow consumer such as `pa.table(frame)`.
 - Faster `Pool.map()` collection and lower shared-memory use for a
