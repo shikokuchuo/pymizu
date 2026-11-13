@@ -152,7 +152,7 @@ Construction adopts the producer's own buffers wherever the column layout is alr
 
 Values cross exactly, but types normalize. A column whose type forces a copy is copied rather than declined:
 
-| In | Out (the received frame's Arrow export) |
+| In | Out (the frame's Arrow export, before or after a send) |
 |----|----|
 | `string` | `large_string` |
 | `string_view` | `large_string` (copies) |

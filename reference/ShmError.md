@@ -4,6 +4,8 @@ A shared-memory region operation failed. Also an OSError: the failure is at the 
 
 Usage
 
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L56-L61)
+
 ``` python
 ShmError()
 ```

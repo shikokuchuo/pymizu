@@ -4,6 +4,8 @@ A data.frame's Python home: named columns with a row count.
 
 Usage
 
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L42-L54)
+
 ``` python
 Frame()
 ```
@@ -25,6 +27,8 @@ to_dict() returns the columns as a dict without an Arrow library, and **arrow_c_
 
 Usage
 
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L52)
+
 ``` python
 __arrow_c_stream__(requested_schema=None)
 ```
@@ -37,6 +41,8 @@ Return len(self).
 
 Usage
 
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L53)
+
 ``` python
 __len__()
 ```
@@ -46,6 +52,8 @@ __len__()
 from_arrow(obj) -\> Frame
 
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L50-L51)
 
 ``` python
 from_arrow(obj)
@@ -90,6 +98,8 @@ MizuError The Arrow type has no portable equivalent (the error names the column)
 to_dict() -\> dict
 
 Usage
+
+[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L49)
 
 ``` python
 to_dict()
