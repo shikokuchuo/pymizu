@@ -15,7 +15,8 @@
 enum {
   FCOL_F64, FCOL_I32, FCOL_I64, FCOL_U8, FCOL_C128,
   FCOL_LGL,   /* i32 0/1, MIZU_NA_INT32 null — exports Arrow bool */
-  FCOL_STR,   /* values = i32 offsets (n+1); bytes packed */
+  FCOL_STR,   /* values = i32 offsets (n+1); bytes packed — exports
+                 Arrow large_utf8 like STR64, off the widened offs64 */
   FCOL_DICT,  /* values = i32 codes 0-based (MIZU_NA_INT32 null) + levels */
   FCOL_DATE,  /* i32 days, MIZU_NA_INT32 null — Arrow date32 */
   FCOL_TS,    /* i64 counts of unit, MIZU_NA_INT64 null — Arrow timestamp */
@@ -61,6 +62,9 @@ typedef struct {
                          re-counts */
   uint8_t *bits;      /* LGL: the bit-packed values, built at export */
   int32_t *codes0;    /* DICT codes1: the 0-based shift, built at export */
+  int64_t *offs64;    /* STR: the offsets widened to i64, built at the
+                         public Arrow export (owned, an adopted column's
+                         too) */
   uint8_t borrowed;   /* the tree wrap's: values/valid point into the
                          region (never freed here) */
   uint8_t valid_owned;/* valid was built here (freed even when borrowed) */

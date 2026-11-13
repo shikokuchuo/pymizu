@@ -495,8 +495,29 @@ def test_from_arrow_conversions_not_declines():
     assert d["n"][2] == np.timedelta64(250000, "ns")
     out = pa.table(f)
     assert out.schema.field("u").type == pa.uint64()
-    assert out.schema.field("v").type == pa.string()
+    assert out.schema.field("v").type == pa.large_string()
     assert out.schema.field("n").type == pa.duration("ns")
+
+
+def test_copy_backed_strings_export_large_string():
+    pa = pytest.importorskip("pyarrow")
+    vals = ["a", None, "héllo", ""]
+    adopted = pymizu.Frame.from_arrow(pa.table({"s": pa.array(vals)}))
+    copied = pymizu.Frame.from_arrow(
+        pa.table({"s": pa.chunked_array([vals[:2], vals[2:]])})
+    )
+    empty = pymizu.Frame.from_arrow(pa.table({"s": pa.array([], pa.string())}))
+    assert _pymizu._frame_debug(adopted)["adopted"] == (True,)
+    assert _pymizu._frame_debug(copied)["adopted"] == (False,)
+    for f, want in ((adopted, vals), (copied, vals), (empty, [])):
+        for _ in range(2):  # the widened offsets build once and are reused
+            col = pa.table(f).column("s")
+            assert col.type == pa.large_string()
+            assert col.to_pylist() == want
+    out = pa.table(copied)
+    del adopted, copied, empty, f
+    gc.collect()
+    assert out.column("s").to_pylist() == vals
 
 
 def ns_table(n=20000):
