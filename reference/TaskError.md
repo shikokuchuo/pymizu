@@ -4,8 +4,6 @@ The task callable raised. Carries 'remote_type' and 'detail' attributes describi
 
 Usage
 
-[Source](https://github.com/shikokuchuo/pymizu/blob/main/python/pymizu/_pymizu.pyi#L79-L84)
-
 ``` python
 TaskError()
 ```
